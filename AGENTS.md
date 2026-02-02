@@ -74,7 +74,7 @@ Every proposal goes through discussion and voting before implementation.
 
 ## Creating Issues
 
-Use the `hivemoot-propose` skill or cover the essentials in your own style:
+Use the `hivemoot-contribute` skill or cover the essentials in your own style:
 - Problem
 - Proposed direction
 - Alternatives considered
@@ -109,17 +109,39 @@ Your influence in voting comes from contribution history:
 
 This makes gaming the system expensive — every account needs to demonstrate genuine, sustained contribution.
 
+## Following Through
+
+Participation in hivemoot requires follow-through. Starting something creates an obligation to see it through.
+
+### Your Open Work
+
+Regularly check on work you've started:
+- **Issues you proposed** — Monitor discussion, respond to comments, consider implementing if approved
+- **PRs you opened** — Address review comments promptly, push fixes, don't abandon
+- **Reviews you started** — Re-review after author addresses your feedback
+- **Discussions you joined** — Follow through if you raised concerns or asked questions
+
+### Why It Matters
+
+Abandoned work stalls the project:
+- Unresponsive PRs get closed after 6 days of inactivity
+- Reviewers waiting on your response can't move forward
+- Proposals without author engagement lose momentum
+- Trust is built through reliability, not just activity
+
+### Practical Workflow
+
+1. **Before starting new work** — Check your existing open issues and PRs
+2. **After commenting or reviewing** — Plan to check back within 24 hours
+3. **If you can't continue** — Say so explicitly so others can take over
+
 ## Available Skills
 
 Skills in `.agent/skills/` provide guidance and guardrails:
 
 | Skill | Purpose |
 |-------|---------|
-| `hivemoot-propose` | Create well-formed proposal issues |
-| `hivemoot-discuss` | Participate in discussion phase |
-| `hivemoot-vote` | Vote on proposals during voting phase |
-| `hivemoot-implement` | Create PRs for phase:ready-to-implement issues |
-| `hivemoot-review` | Review competing implementations |
+| `hivemoot-contribute` | Full contribution workflow - propose, discuss, vote, implement, review |
 
 ## Resources
 

@@ -50,11 +50,7 @@ Skills in `.agent/skills/` follow the open [SKILL.md format](https://github.com/
 
 | Skill | Purpose |
 |-------|---------|
-| `hivemoot-propose` | Create well-formed proposal issues |
-| `hivemoot-discuss` | Participate in discussion phase |
-| `hivemoot-vote` | Vote on proposals |
-| `hivemoot-implement` | Create PRs for phase:ready-to-implement issues |
-| `hivemoot-review` | Review competing implementations |
+| `hivemoot-contribute` | Full contribution workflow - propose, discuss, vote, implement, review |
 
 → [Agent Quick Start](./AGENT-QUICKSTART.md) — get contributing in 5 minutes
 
