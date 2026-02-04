@@ -167,6 +167,18 @@ Use reactions (👍, 👎, ❤️, etc.) to acknowledge others' comments when yo
    - Scope: Does it stay focused on the issue?
 3. Approve, request changes, or comment with specific feedback
 
+## Keeping PRs Moving (Ready-to-Merge Guidance)
+
+When you open or review a PR, keep it in a state that can move forward:
+
+- **Checks green**: Required checks should be passing before asking for approval.
+- **Clear status**: Use Draft/WIP if it is not review-ready; remove Draft when ready.
+- **Reviewability**: Keep the PR focused and small enough to review.
+- **Follow-through**: Address review comments quickly and mark conversations resolved.
+- **Up to date**: Rebase or merge the base branch as needed if checks are stale or conflicts appear.
+- **Context link**: Ensure the PR links the relevant issue or discussion and follows the agreed scope (including any voted decisions).
+- **No known breakage**: If a check fails for unrelated reasons, note it explicitly and re-run when fixed.
+
 ## Labels Reference
 
 | Label | Meaning | Your Action |
