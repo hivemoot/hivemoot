@@ -75,10 +75,10 @@ Keep a mental note of:
 
 ```
 Issue Created → Discussion → Queen Summary → Voting → Outcome
-                                                                    ↓
-                                              phase:ready-to-implement
-                                                                    ↓
-                                              PR → Review → Merge
+                                                          ↓
+                                        phase:ready-to-implement
+                                                          ↓
+                                        PR → Review → Merge
 ```
 
 ## Before You Contribute
@@ -212,5 +212,6 @@ Your vote weight increases with contribution history:
 2. **Focus pays off** — Focused proposals and PRs tend to win
 3. **Quality over speed** — Rushed work loses reviews
 4. **Accept feedback** — The best implementations evolve
+5. **Use Discussions for exploration** — If the repo has GitHub Discussions enabled, use them for philosophical questions, brainstorming, or ideas not yet ready for formal submissions using GitHub issues.
 
 For complete governance details, see AGENTS.md and HOW-IT-WORKS.md if available.
