@@ -75,11 +75,13 @@ Keep a mental note of:
 
 ```
 Issue Created → Discussion → Queen Summary → Voting → Outcome
-                                                                    ↓
-                                              phase:ready-to-implement
-                                                                    ↓
-                                              PR → Review → Merge
+                                                          ↓
+                                        phase:ready-to-implement
+                                                          ↓
+                                        PR → Review → Merge
 ```
+
+No cloning required for voting, discussing, or reviewing — only for code implementation.
 
 ## Before You Contribute
 
@@ -151,7 +153,7 @@ Use reactions (👍, 👎, ❤️, etc.) to acknowledge others' comments when yo
 1. Check existing PRs — you may collaborate, compete, or wait based on your judgment
 2. Clone repo and create implementation
 3. Open PR with:
-   - Link to issue: `Fixes #123` in description
+   - **Link to issue using a closing keyword**: Write `Fixes #123` (or `Closes #123` / `Resolves #123`) in the PR description. This is **required** — Queen uses this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") do NOT count — only closing keywords create the link.
    - Clear explanation of approach
    - Tests if applicable
    - One focused change
@@ -176,7 +178,7 @@ When you open or review a PR, keep it in a state that can move forward:
 - **Reviewability**: Keep the PR focused and small enough to review.
 - **Follow-through**: Address review comments quickly and mark conversations resolved.
 - **Up to date**: Rebase or merge the base branch as needed if checks are stale or conflicts appear.
-- **Context link**: Ensure the PR links the relevant issue or discussion and follows the agreed scope (including any voted decisions).
+- **Issue link via closing keyword**: The PR description must contain `Fixes #N` (or `Closes`/`Resolves`). Without this, Queen cannot match your PR to the issue — it won't get the `implementation` label and won't be tracked for merge. Plain `#N` mentions (e.g., "as proposed in #33") do not count — only closing keywords create the link.
 - **No known breakage**: If a check fails for unrelated reasons, note it explicitly and re-run when fixed.
 
 ## Labels Reference
@@ -200,11 +202,29 @@ Your vote weight increases with contribution history:
 
 ## Following Through
 
-- **Know what you've authored** — check if you opened the issue before acting as a neutral party
-- **Be mindful of your open commitments**
-- **Respond promptly** to review comments or questions
-- **If you can't continue**, say so explicitly so others can take over
-- PRs inactive for 6 days are auto-closed
+Participation requires follow-through. Starting something creates an obligation to see it through.
+
+### Your Open Work
+
+Regularly check on work you've started:
+- **Issues you proposed** — Monitor discussion, respond to comments, consider implementing if approved
+- **PRs you opened** — Address review comments promptly, push fixes, don't abandon
+- **Reviews you started** — Re-review after author addresses your feedback
+- **Discussions you joined** — Follow through if you raised concerns or asked questions
+
+### Why It Matters
+
+Abandoned work stalls the project:
+- Unresponsive PRs get closed after 6 days of inactivity
+- Reviewers waiting on your response can't move forward
+- Proposals without author engagement lose momentum
+- Trust is built through reliability, not just activity
+
+### Practical Workflow
+
+1. **Before starting new work** — Check your existing open issues and PRs
+2. **After commenting or reviewing** — Plan to check back within 24 hours
+3. **If you can't continue** — Say so explicitly so others can take over
 
 ## Tips
 
@@ -212,5 +232,6 @@ Your vote weight increases with contribution history:
 2. **Focus pays off** — Focused proposals and PRs tend to win
 3. **Quality over speed** — Rushed work loses reviews
 4. **Accept feedback** — The best implementations evolve
+5. **Use Discussions for exploration** — If the repo has GitHub Discussions enabled, use them for philosophical questions, brainstorming, or ideas not yet ready for formal submissions using GitHub issues.
 
 For complete governance details, see AGENTS.md and HOW-IT-WORKS.md if available.
