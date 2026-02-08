@@ -83,7 +83,7 @@ describe("buildSummary()", () => {
     expect(summary.implement).toHaveLength(1);
     expect(summary.implement[0].number).toBe(45);
     expect(summary.implement[0].assigned).toBeUndefined();
-    expect(summary.implement[0].age).toBe("3 days old");
+    expect(summary.implement[0].age).toBe("3 days ago");
     expect(summary.implement[0].tags).toEqual([]);
   });
 
@@ -173,11 +173,11 @@ describe("buildSummary()", () => {
     expect(summary.repo).toEqual(repo);
   });
 
-  it('shows "today" for issues created today', () => {
+  it("shows relative time for issues created today", () => {
     const issue = makeIssue({ createdAt: "2025-06-15T06:00:00Z" });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
-    expect(summary.implement[0].age).toBe("today");
+    expect(summary.implement[0].age).toBe("6 hours ago");
   });
 
   it("handles PRs with null statusCheckRollup without crashing", () => {
@@ -391,7 +391,7 @@ describe("buildSummary()", () => {
 
   // ── Structured PR fields ──────────────────────────────────────────
 
-  it("populates compact check/merge/approval fields on review PRs", () => {
+  it("populates compact check/merge/review fields on review PRs", () => {
     const pr = makePR({
       number: 49,
       mergeable: "MERGEABLE",
@@ -407,7 +407,7 @@ describe("buildSummary()", () => {
     expect(item.status).toBe("approved");
     expect(item.checks).toBe("passing");
     expect(item.mergeable).toBe("clean");
-    expect(item.approvals).toBe(1);
+    expect(item.review).toEqual({ approvals: 1, changesRequested: 0 });
   });
 
   it("populates null checks when no statusCheckRollup", () => {
@@ -524,5 +524,43 @@ describe("buildSummary()", () => {
     const summary = buildSummary(repo, [], [pr], "testuser", now);
     expect(summary.addressFeedback).toHaveLength(1);
     expect(summary.driveImplementation).toHaveLength(0);
+  });
+
+  // ── Null author handling ──────────────────────────────────────────
+
+  it("classifyIssue with null author uses 'ghost'", () => {
+    const issue = makeIssue({ number: 90, author: null });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.implement[0].author).toBe("ghost");
+  });
+
+  it("classifyPR with null author uses 'ghost'", () => {
+    const pr = makePR({ number: 91, author: null });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs).toHaveLength(1);
+    expect(summary.reviewPRs[0].author).toBe("ghost");
+  });
+
+  it("buildCompetitionMap with null author PR counts as competition", () => {
+    const issue = makeIssue({ number: 45, title: "Dashboard" });
+    const pr = makePR({
+      number: 100,
+      author: null,
+      labels: [{ name: "implementation" }],
+      closingIssuesReferences: [{ number: 45 }],
+    });
+
+    const summary = buildSummary(repo, [issue], [pr], "testuser", now);
+    expect(summary.implement[0].competingPRs).toBe(1);
+  });
+
+  // ── Notes field ───────────────────────────────────────────────────
+
+  it("initializes notes as empty array", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.notes).toEqual([]);
   });
 });

@@ -6,14 +6,7 @@ import type {
   SummaryItem,
 } from "../config/types.js";
 import { generateAlerts } from "./alerts.js";
-import { hasLabel, hasExactLabel, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount } from "./utils.js";
-
-function timeAgo(dateStr: string, now: Date): string {
-  const days = daysSince(dateStr, now);
-  if (days === 0) return "today";
-  if (days === 1) return "1 day old";
-  return `${days} days old`;
-}
+import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo } from "./utils.js";
 
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
@@ -43,7 +36,7 @@ function classifyIssue(
       : undefined;
 
   const tags = issue.labels.map((l) => l.name);
-  const author = issue.author.login;
+  const author = issue.author?.login ?? "ghost";
   const comments = issue.comments.length;
 
   const base: SummaryItem = {
@@ -94,12 +87,15 @@ function classifyPR(
 ): { bucket: "reviewPRs" | "addressFeedback"; item: SummaryItem } {
   const age = timeAgo(pr.createdAt, now);
   const tags = pr.labels.map((l) => l.name);
-  const author = pr.author.login;
+  const author = pr.author?.login ?? "ghost";
   const comments = pr.comments.length;
   const ciFailing = hasCIFailure(pr);
   const checks = compactChecks(checkStatus(pr));
   const merge = compactMergeable(mergeStatus(pr));
-  const approvals = approvalCount(pr);
+  const review = {
+    approvals: approvalCount(pr),
+    changesRequested: changesRequestedCount(pr),
+  };
 
   if (pr.isDraft || ciFailing || pr.reviewDecision === "CHANGES_REQUESTED") {
     let status: string;
@@ -109,7 +105,7 @@ function classifyPR(
 
     return {
       bucket: "addressFeedback",
-      item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, approvals },
+      item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, review },
     };
   }
 
@@ -117,7 +113,7 @@ function classifyPR(
 
   return {
     bucket: "reviewPRs",
-    item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, approvals },
+    item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, review },
   };
 }
 
@@ -125,7 +121,7 @@ function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, 
   const map = new Map<number, number>();
   for (const pr of prs) {
     if (!hasLabel(pr.labels, "implementation")) continue;
-    if (pr.author.login === currentUser) continue;
+    if (pr.author?.login === currentUser) continue;
     for (const ref of pr.closingIssuesReferences) {
       map.set(ref.number, (map.get(ref.number) ?? 0) + 1);
     }
@@ -209,5 +205,6 @@ export function buildSummary(
     reviewPRs: filteredReviewPRs,
     addressFeedback: filteredAddressFeedback,
     alerts,
+    notes: [],
   };
 }

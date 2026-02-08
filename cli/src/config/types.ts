@@ -23,7 +23,7 @@ export interface GitHubIssue {
   title: string;
   labels: Array<{ name: string }>;
   assignees: Array<{ login: string }>;
-  author: { login: string };
+  author: { login: string } | null;
   comments: Array<{ createdAt: string }>;
   createdAt: string;
   updatedAt: string;
@@ -38,14 +38,14 @@ export interface StatusCheck {
 
 export interface PRReview {
   state: string;
-  author: { login: string };
+  author: { login: string } | null;
 }
 
 export interface GitHubPR {
   number: number;
   title: string;
   state: string;
-  author: { login: string };
+  author: { login: string } | null;
   labels: Array<{ name: string }>;
   comments: Array<{ createdAt: string }>;
   reviews: PRReview[];
@@ -68,6 +68,11 @@ export interface RepoRef {
 
 // ── Summary Types ──────────────────────────────────────────────────
 
+export interface ReviewSummary {
+  approvals: number;
+  changesRequested: number;
+}
+
 export interface SummaryItem {
   number: number;
   title: string;
@@ -75,7 +80,7 @@ export interface SummaryItem {
   author: string;
   // Common fields
   comments: number;
-  age: string;                 // "today" | "1 day old" | "3 days old"
+  age: string;                 // "just now" | "5 minutes ago" | "2 hours ago" | "3 days ago"
   // Issue-specific
   assigned?: string;           // comma-separated logins, or undefined (= unassigned)
   competingPRs?: number;       // only on implement items with competing PRs
@@ -83,7 +88,7 @@ export interface SummaryItem {
   status?: string;             // "waiting" | "approved" | "changes-requested" | "draft"
   checks?: string | null;      // "passing" | "failing" | "pending" | null
   mergeable?: string | null;   // "clean" | "conflicts" | null
-  approvals?: number;
+  review?: ReviewSummary;
 }
 
 export interface Alert {
@@ -102,6 +107,7 @@ export interface RepoSummary {
   reviewPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
   alerts: Alert[];
+  notes: string[];
 }
 
 // ── CLI Options ────────────────────────────────────────────────────
@@ -110,6 +116,7 @@ export interface BuzzOptions {
   role?: string;
   json?: boolean;
   limit?: number;
+  fetchLimit?: number;
   repo?: string;
 }
 

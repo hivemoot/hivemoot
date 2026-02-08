@@ -10,14 +10,22 @@ import { jsonBuzz, jsonStatus } from "../output/json.js";
 
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
+  const fetchLimit = options.fetchLimit ?? 200;
 
   const [issues, prs, currentUser] = await Promise.all([
-    fetchIssues(repo),
-    fetchPulls(repo),
+    fetchIssues(repo, fetchLimit),
+    fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
   ]);
 
   const summary = buildSummary(repo, issues, prs, currentUser);
+
+  if (issues.length >= fetchLimit) {
+    summary.notes.push(`Only the first ${fetchLimit} issues were fetched. Use --fetch-limit to increase.`);
+  }
+  if (prs.length >= fetchLimit) {
+    summary.notes.push(`Only the first ${fetchLimit} PRs were fetched. Use --fetch-limit to increase.`);
+  }
 
   if (options.role) {
     const teamConfig = await loadTeamConfig(repo);

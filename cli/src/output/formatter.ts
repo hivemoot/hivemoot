@@ -29,21 +29,21 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
   if (sectionType === "implement") {
     parts.push(kv("assigned", item.assigned ?? "--"));
     parts.push(kv("comments", item.comments));
-    parts.push(kv("age", item.age));
+    parts.push(kv("created", item.age));
     if (item.competingPRs !== undefined) {
       parts.push(kv("competing", item.competingPRs));
     }
   } else if (sectionType === "vote" || sectionType === "discuss" || sectionType === "driveDiscussion") {
     parts.push(kv("comments", item.comments));
-    parts.push(kv("age", item.age));
+    parts.push(kv("created", item.age));
   } else {
     // PR sections: reviewPRs, addressFeedback, driveImplementation
     if (item.status !== undefined) parts.push(kv("status", item.status));
     if (item.checks !== undefined && item.checks !== null) parts.push(kv("checks", item.checks));
     if (item.mergeable !== undefined && item.mergeable !== null) parts.push(kv("merge", item.mergeable));
-    if (item.approvals !== undefined) parts.push(kv("approvals", item.approvals));
+    if (item.review) parts.push(kv("review", `${item.review.approvals} approved, ${item.review.changesRequested} changes-requested`));
     parts.push(kv("comments", item.comments));
-    parts.push(kv("age", item.age));
+    parts.push(kv("created", item.age));
   }
 
   return parts.join("  ");
@@ -107,6 +107,10 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
     ].filter(Boolean),
   );
+
+  if (summary.notes.length > 0) {
+    sections.push(summary.notes.map((n) => chalk.dim(`  ${n}`)).join("\n"));
+  }
 
   if (sections.length === 0) {
     return chalk.dim("  No open issues or PRs.");

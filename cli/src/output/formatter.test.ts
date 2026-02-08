@@ -7,15 +7,16 @@ const summary: RepoSummary = {
   currentUser: "alice",
   driveDiscussion: [],
   driveImplementation: [],
-  voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days old" }],
+  voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days ago" }],
   discuss: [],
   implement: [
-    { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days old" },
-    { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "1 day old" },
+    { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days ago" },
+    { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday" },
   ],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days old", status: "waiting", checks: "passing", mergeable: "clean", approvals: 0 }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "waiting", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [],
   alerts: [{ icon: "\u26a0\ufe0f", message: "PR #49 waiting on review 2 days" }],
+  notes: [],
 };
 
 const role: RoleConfig = {
@@ -112,15 +113,16 @@ describe("formatBuzz()", () => {
     // The metadata line should have key: value pairs
     expect(output).toContain("by:");
     expect(output).toContain("comments:");
-    expect(output).toContain("age:");
+    expect(output).toContain("created:");
   });
 
-  it("renders PR metadata with status, checks, merge, approvals", () => {
+  it("renders PR metadata with status, checks, merge, review", () => {
     const output = formatBuzz("engineer", role, summary);
     expect(output).toContain("status:");
     expect(output).toContain("checks:");
     expect(output).toContain("merge:");
-    expect(output).toContain("approvals:");
+    expect(output).toContain("review:");
+    expect(output).toContain("0 approved, 0 changes-requested");
   });
 });
 
@@ -150,6 +152,7 @@ describe("formatStatus()", () => {
       reviewPRs: [],
       addressFeedback: [],
       alerts: [],
+      notes: [],
     };
     const output = formatStatus(empty);
     expect(output).toContain("No open issues or PRs");
@@ -166,22 +169,23 @@ describe("DRIVE sections", () => {
     repo: { owner: "hivemoot", repo: "colony" },
     currentUser: "alice",
     driveDiscussion: [
-      { number: 80, title: "My Discussion", tags: ["phase:discussion"], author: "alice", comments: 3, age: "2 days old" },
+      { number: 80, title: "My Discussion", tags: ["phase:discussion"], author: "alice", comments: 3, age: "2 days ago" },
     ],
     driveImplementation: [
-      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "1 day old", status: "draft", checks: null, mergeable: null, approvals: 0 },
-      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "today", status: "changes-requested", checks: "passing", mergeable: "clean", approvals: 0 },
+      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "yesterday", status: "draft", checks: null, mergeable: null, review: { approvals: 0, changesRequested: 0 } },
+      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "just now", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
     ],
     voteOn: [],
     discuss: [
-      { number: 81, title: "Other Discussion", tags: ["discuss"], author: "bob", comments: 1, age: "1 day old" },
+      { number: 81, title: "Other Discussion", tags: ["discuss"], author: "bob", comments: 1, age: "yesterday" },
     ],
     implement: [],
     reviewPRs: [],
     addressFeedback: [
-      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days old", status: "changes-requested", checks: "passing", mergeable: "clean", approvals: 0 },
+      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
     ],
     alerts: [{ icon: "\u26a0\ufe0f", message: "test alert" }],
+    notes: [],
   };
 
   it("renders DRIVE THE DISCUSSION section", () => {
@@ -217,6 +221,22 @@ describe("DRIVE sections", () => {
     const output = formatStatus(summary);
     expect(output).not.toContain("DRIVE THE DISCUSSION");
     expect(output).not.toContain("DRIVE THE IMPLEMENTATION");
+  });
+});
+
+describe("notes rendering", () => {
+  it("renders notes as dim text at end of output", () => {
+    const withNotes: RepoSummary = {
+      ...summary,
+      notes: ["Only the first 200 issues were fetched. Use --fetch-limit to increase."],
+    };
+    const output = formatStatus(withNotes);
+    expect(output).toContain("Only the first 200 issues were fetched");
+  });
+
+  it("does not render notes section when notes array is empty", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("fetch-limit");
   });
 });
 

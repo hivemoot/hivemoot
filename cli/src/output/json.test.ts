@@ -7,12 +7,13 @@ const summary: RepoSummary = {
   currentUser: "alice",
   driveDiscussion: [],
   driveImplementation: [],
-  voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days old" }],
-  discuss: [{ number: 52, title: "API versioning", tags: ["discuss"], author: "bob", comments: 5, age: "1 day old" }],
-  implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days old" }],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days old", status: "waiting", checks: "passing", mergeable: "clean", approvals: 0 }],
-  addressFeedback: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "today", status: "draft", checks: "failing", mergeable: null, approvals: 0 }],
+  voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days ago" }],
+  discuss: [{ number: 52, title: "API versioning", tags: ["discuss"], author: "bob", comments: 5, age: "yesterday" }],
+  implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago" }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "waiting", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  addressFeedback: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
   alerts: [{ icon: "\u26a0\ufe0f", message: "PR #49 waiting on review 2 days" }],
+  notes: [],
 };
 
 const role: RoleConfig = {
@@ -61,19 +62,38 @@ describe("jsonStatus()", () => {
     const result = JSON.parse(jsonStatus(summary));
     // Verify issue items have comments/age
     expect(result.voteOn[0].comments).toBe(2);
-    expect(result.voteOn[0].age).toBe("3 days old");
+    expect(result.voteOn[0].age).toBe("3 days ago");
     expect(result.voteOn[0]).not.toHaveProperty("detail");
 
-    // Verify PR items have status/checks/mergeable/approvals
+    // Verify PR items have status/checks/mergeable/review
     expect(result.reviewPRs[0].status).toBe("waiting");
     expect(result.reviewPRs[0].checks).toBe("passing");
     expect(result.reviewPRs[0].mergeable).toBe("clean");
-    expect(result.reviewPRs[0].approvals).toBe(0);
+    expect(result.reviewPRs[0].review).toEqual({ approvals: 0, changesRequested: 0 });
     expect(result.reviewPRs[0]).not.toHaveProperty("detail");
 
     // Verify addressFeedback items
     expect(result.addressFeedback[0].status).toBe("draft");
     expect(result.addressFeedback[0].checks).toBe("failing");
+  });
+});
+
+describe("notes in JSON output", () => {
+  it("includes notes in jsonBuzz output", () => {
+    const withNotes: RepoSummary = { ...summary, notes: ["truncation warning"] };
+    const result = JSON.parse(jsonBuzz("engineer", role, withNotes));
+    expect(result.summary.notes).toEqual(["truncation warning"]);
+  });
+
+  it("includes notes in jsonStatus output", () => {
+    const withNotes: RepoSummary = { ...summary, notes: ["truncation warning"] };
+    const result = JSON.parse(jsonStatus(withNotes));
+    expect(result.notes).toEqual(["truncation warning"]);
+  });
+
+  it("includes empty notes array when no notes", () => {
+    const result = JSON.parse(jsonStatus(summary));
+    expect(result.notes).toEqual([]);
   });
 });
 

@@ -2,7 +2,7 @@ import type { GitHubIssue, RepoRef } from "../config/types.js";
 import { CliError } from "../config/types.js";
 import { gh } from "./client.js";
 
-export async function fetchIssues(repo: RepoRef): Promise<GitHubIssue[]> {
+export async function fetchIssues(repo: RepoRef, limit = 200): Promise<GitHubIssue[]> {
   const json = await gh([
     "issue",
     "list",
@@ -13,7 +13,7 @@ export async function fetchIssues(repo: RepoRef): Promise<GitHubIssue[]> {
     "--json",
     "number,title,labels,assignees,author,comments,createdAt,updatedAt,url",
     "--limit",
-    "200",
+    String(limit),
   ]);
   let parsed: unknown;
   try {

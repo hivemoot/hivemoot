@@ -38,6 +38,7 @@ program
   .option("--role <role>", "Role to assume (e.g. engineer, tech_lead)")
   .option("--json", "Output as JSON")
   .option("--limit <n>", "Max items per section", parseLimit)
+  .option("--fetch-limit <n>", "Max issues/PRs to fetch from GitHub (default: 200)", parseLimit)
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
   .action(buzzCommand);
 

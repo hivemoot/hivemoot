@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasLabel, hasExactLabel, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount } from "./utils.js";
+import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount } from "./utils.js";
 import type { GitHubPR } from "../config/types.js";
 
 function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
@@ -89,6 +89,66 @@ describe("hasExactLabel()", () => {
     expect(hasExactLabel([{ name: "implementation" }], "implementation")).toBe(true);
     expect(hasExactLabel([{ name: "merge-ready" }], "merge-ready")).toBe(true);
     expect(hasExactLabel([{ name: "stale" }], "stale")).toBe(true);
+  });
+});
+
+describe("timeAgo()", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  it('returns "just now" for seconds ago', () => {
+    expect(timeAgo("2025-06-15T11:59:30Z", now)).toBe("just now");
+  });
+
+  it('returns "1 minute ago" for exactly 1 minute', () => {
+    expect(timeAgo("2025-06-15T11:59:00Z", now)).toBe("1 minute ago");
+  });
+
+  it("returns minutes for < 60 minutes", () => {
+    expect(timeAgo("2025-06-15T11:15:00Z", now)).toBe("45 minutes ago");
+  });
+
+  it('returns "1 hour ago" for exactly 1 hour', () => {
+    expect(timeAgo("2025-06-15T11:00:00Z", now)).toBe("1 hour ago");
+  });
+
+  it("returns hours for < 24 hours", () => {
+    expect(timeAgo("2025-06-15T06:00:00Z", now)).toBe("6 hours ago");
+  });
+
+  it('returns "yesterday" for 1 day', () => {
+    expect(timeAgo("2025-06-14T12:00:00Z", now)).toBe("yesterday");
+  });
+
+  it("returns days for < 7 days", () => {
+    expect(timeAgo("2025-06-12T12:00:00Z", now)).toBe("3 days ago");
+  });
+
+  it('returns "1 week ago" for 7-13 days', () => {
+    expect(timeAgo("2025-06-05T12:00:00Z", now)).toBe("1 week ago");
+  });
+
+  it("returns weeks for 14-29 days", () => {
+    expect(timeAgo("2025-05-25T12:00:00Z", now)).toBe("3 weeks ago");
+  });
+
+  it('returns "1 month ago" for 30-59 days', () => {
+    expect(timeAgo("2025-05-10T12:00:00Z", now)).toBe("1 month ago");
+  });
+
+  it("returns months for 60-364 days", () => {
+    expect(timeAgo("2025-01-15T12:00:00Z", now)).toBe("5 months ago");
+  });
+
+  it('returns "1 year ago" for 365-729 days', () => {
+    expect(timeAgo("2024-06-15T12:00:00Z", now)).toBe("1 year ago");
+  });
+
+  it("returns years for > 729 days", () => {
+    expect(timeAgo("2022-06-15T12:00:00Z", now)).toBe("3 years ago");
+  });
+
+  it('returns "just now" for future dates (clock skew)', () => {
+    expect(timeAgo("2025-06-16T12:00:00Z", now)).toBe("just now");
   });
 });
 
@@ -279,5 +339,83 @@ describe("approvalCount()", () => {
       ],
     });
     expect(approvalCount(pr)).toBe(0);
+  });
+
+  it("handles null author reviews without crashing", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "APPROVED", author: null },
+      ],
+    });
+    expect(approvalCount(pr)).toBe(1);
+  });
+});
+
+describe("changesRequestedCount()", () => {
+  it("returns 0 for no reviews", () => {
+    const pr = makePR({ reviews: [] });
+    expect(changesRequestedCount(pr)).toBe(0);
+  });
+
+  it("counts latest CHANGES_REQUESTED review", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: { login: "alice" } },
+      ],
+    });
+    expect(changesRequestedCount(pr)).toBe(1);
+  });
+
+  it("returns 0 when CHANGES_REQUESTED is followed by APPROVED", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: { login: "alice" } },
+        { state: "APPROVED", author: { login: "alice" } },
+      ],
+    });
+    expect(changesRequestedCount(pr)).toBe(0);
+  });
+
+  it("counts multiple reviewers with outstanding change requests", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "APPROVED", author: { login: "alice" } },
+        { state: "CHANGES_REQUESTED", author: { login: "bob" } },
+        { state: "CHANGES_REQUESTED", author: { login: "carol" } },
+      ],
+    });
+    expect(changesRequestedCount(pr)).toBe(2);
+  });
+
+  it("handles mixed states across multiple reviewers", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: { login: "alice" } },
+        { state: "APPROVED", author: { login: "bob" } },
+        { state: "APPROVED", author: { login: "alice" } },
+        { state: "CHANGES_REQUESTED", author: { login: "bob" } },
+      ],
+    });
+    // alice: CR → APPROVED (latest = APPROVED, not counted)
+    // bob: APPROVED → CR (latest = CR, counted)
+    expect(changesRequestedCount(pr)).toBe(1);
+  });
+
+  it("ignores COMMENTED reviews", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "COMMENTED", author: { login: "alice" } },
+      ],
+    });
+    expect(changesRequestedCount(pr)).toBe(0);
+  });
+
+  it("handles null author reviews without crashing", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: null },
+      ],
+    });
+    expect(changesRequestedCount(pr)).toBe(1);
   });
 });

@@ -2,7 +2,7 @@ import type { GitHubPR, RepoRef } from "../config/types.js";
 import { CliError } from "../config/types.js";
 import { gh } from "./client.js";
 
-export async function fetchPulls(repo: RepoRef): Promise<GitHubPR[]> {
+export async function fetchPulls(repo: RepoRef, limit = 200): Promise<GitHubPR[]> {
   const json = await gh([
     "pr",
     "list",
@@ -13,7 +13,7 @@ export async function fetchPulls(repo: RepoRef): Promise<GitHubPR[]> {
     "--json",
     "number,title,state,author,labels,comments,reviews,createdAt,updatedAt,url,isDraft,reviewDecision,mergeable,statusCheckRollup,closingIssuesReferences",
     "--limit",
-    "200",
+    String(limit),
   ]);
   let parsed: unknown;
   try {

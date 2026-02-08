@@ -10,6 +10,31 @@ export function hasExactLabel(labels: Array<{ name: string }>, labelName: string
   return labels.some((l) => l.name.toLowerCase() === labelName.toLowerCase());
 }
 
+/** Human-relative time string ("just now", "5 minutes ago", "yesterday", etc.). */
+export function timeAgo(dateStr: string, now: Date): string {
+  const ms = now.getTime() - new Date(dateStr).getTime();
+  if (ms < 0) return "just now"; // future date — clock skew or bad data
+
+  const minutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(ms / 3_600_000);
+  const days = Math.floor(ms / 86_400_000);
+
+  if (minutes < 1) return "just now";
+  if (minutes === 1) return "1 minute ago";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return "1 week ago";
+  if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 60) return "1 month ago";
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  const years = Math.floor(days / 365);
+  if (years === 1) return "1 year ago";
+  return `${years} years ago`;
+}
+
 export function daysSince(dateStr: string, now: Date): number {
   const diff = now.getTime() - new Date(dateStr).getTime();
   return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)));
@@ -52,18 +77,32 @@ export function mergeStatus(pr: GitHubPR): string | null {
   return null;
 }
 
-/**
- * Count unique approvals (latest review per author).
- */
-export function approvalCount(pr: GitHubPR): number {
-  if (!pr.reviews || pr.reviews.length === 0) return 0;
-  const latestByAuthor = new Map<string, string>();
-  for (const review of pr.reviews) {
-    latestByAuthor.set(review.author.login, review.state);
+/** Collapse reviews to the latest state per author. */
+function latestReviewByAuthor(pr: GitHubPR): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const review of pr.reviews ?? []) {
+    map.set(review.author?.login ?? "ghost", review.state);
   }
+  return map;
+}
+
+/** Count unique approvals (latest review per author). */
+export function approvalCount(pr: GitHubPR): number {
   let count = 0;
-  for (const state of latestByAuthor.values()) {
+  for (const state of latestReviewByAuthor(pr).values()) {
     if (state === "APPROVED") count++;
+  }
+  return count;
+}
+
+/**
+ * Count unique changes-requested reviews (latest review per author).
+ * If an author requests changes then later approves, they are no longer counted.
+ */
+export function changesRequestedCount(pr: GitHubPR): number {
+  let count = 0;
+  for (const state of latestReviewByAuthor(pr).values()) {
+    if (state === "CHANGES_REQUESTED") count++;
   }
   return count;
 }

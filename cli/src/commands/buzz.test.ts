@@ -66,6 +66,7 @@ const testSummary = {
   reviewPRs: [],
   addressFeedback: [],
   alerts: [],
+  notes: [],
 };
 const testTeamConfig = {
   roles: {
@@ -95,8 +96,8 @@ describe("buzzCommand", () => {
 
     expect(mockedResolveRepo).toHaveBeenCalledWith(undefined);
     expect(mockedLoadTeamConfig).toHaveBeenCalledWith(testRepo);
-    expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo);
-    expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo);
+    expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo, 200);
+    expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo, 200);
     expect(mockedFormatBuzz).toHaveBeenCalledWith(
       "engineer",
       testTeamConfig.roles.engineer,
@@ -175,5 +176,61 @@ describe("buzzCommand", () => {
     await expect(buzzCommand({ role: "nonexistent" })).rejects.toMatchObject({
       message: expect.stringContaining("engineer"),
     });
+  });
+
+  it("passes fetchLimit to fetch functions", async () => {
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({ fetchLimit: 500 });
+
+    expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo, 500);
+    expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo, 500);
+  });
+
+  it("defaults fetchLimit to 200", async () => {
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo, 200);
+    expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo, 200);
+  });
+
+  it("adds truncation note when issues hit fetchLimit", async () => {
+    const manyIssues = Array.from({ length: 200 }, (_, i) => ({ number: i }));
+    mockedFetchIssues.mockResolvedValue(manyIssues as any);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Only the first 200 issues were fetched. Use --fetch-limit to increase.");
+  });
+
+  it("adds truncation note when PRs hit fetchLimit", async () => {
+    const manyPRs = Array.from({ length: 200 }, (_, i) => ({ number: i }));
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue(manyPRs as any);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Only the first 200 PRs were fetched. Use --fetch-limit to increase.");
+  });
+
+  it("no truncation note when results are under the limit", async () => {
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toHaveLength(0);
   });
 });
