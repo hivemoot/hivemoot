@@ -141,6 +141,24 @@ describe("buildSummary()", () => {
     expect(summary.addressFeedback[0].status).toBe("changes-requested");
   });
 
+  it("classifies PR with individual CHANGES_REQUESTED review but no reviewDecision into addressFeedback", () => {
+    const pr = makePR({
+      number: 150,
+      reviewDecision: "",
+      reviews: [
+        { state: "APPROVED", author: { login: "reviewer-a" } },
+        { state: "CHANGES_REQUESTED", author: { login: "reviewer-b" } },
+      ],
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.addressFeedback).toHaveLength(1);
+    expect(summary.addressFeedback[0].number).toBe(150);
+    expect(summary.addressFeedback[0].status).toBe("changes-requested");
+    expect(summary.addressFeedback[0].review).toEqual({ approvals: 1, changesRequested: 1 });
+    expect(summary.reviewPRs).toHaveLength(0);
+  });
+
   it("includes all labels as tags on issues", () => {
     const issue = makeIssue({
       labels: [{ name: "vote" }, { name: "security" }, { name: "breaking-change" }],

@@ -97,10 +97,10 @@ function classifyPR(
     changesRequested: changesRequestedCount(pr),
   };
 
-  if (pr.isDraft || ciFailing || pr.reviewDecision === "CHANGES_REQUESTED") {
+  if (pr.isDraft || ciFailing || pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) {
     let status: string;
     if (pr.isDraft) status = "draft";
-    else if (pr.reviewDecision === "CHANGES_REQUESTED") status = "changes-requested";
+    else if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) status = "changes-requested";
     else status = "waiting";
 
     return {
