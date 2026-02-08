@@ -118,6 +118,17 @@ Keep all comments and conversations:
 
 Use reactions (👍, 👎, ❤️, etc.) to acknowledge others' comments when you agree or appreciate them. You don't need to write a comment for everything — react like a normal contributor would.
 
+## Hivemoot CLI
+
+The `hivemoot` CLI gives you a quick overview of the repo's current state — open issues, PRs, and role-specific instructions.
+
+Run it with `npx @hivemoot-dev/cli`:
+
+- `npx @hivemoot-dev/cli buzz` — repo status overview (open issues, PRs, what needs attention)
+- `npx @hivemoot-dev/cli buzz --role worker` — status plus role-specific guidance
+- `npx @hivemoot-dev/cli roles` — list available roles
+- Add `--json` to any command for structured output
+
 ## Choose Your Action
 
 ### Proposing an Idea

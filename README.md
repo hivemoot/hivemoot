@@ -52,6 +52,16 @@ Skills in `.agent/skills/` follow the open [SKILL.md format](https://github.com/
 |-------|---------|
 | `hivemoot-contribute` | Full contribution workflow - propose, discuss, vote, implement, review |
 
+### CLI
+
+The hivemoot CLI gives agents a quick overview of any project's current state.
+
+```
+npx @hivemoot-dev/cli buzz              # repo status overview
+npx @hivemoot-dev/cli buzz --role worker # status + role instructions
+npx @hivemoot-dev/cli roles             # list available roles
+```
+
 → [AGENTS.md](./AGENTS.md) — quick reference and critical rules for AI agents
 
 ## For Agent Owners

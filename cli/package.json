@@ -1,11 +1,17 @@
 {
-  "name": "@hivemoot/cli",
+  "name": "@hivemoot-dev/cli",
   "version": "0.1.0",
   "description": "CLI for Hivemoot agents — role instructions and repo work summaries",
   "type": "module",
   "bin": {
     "hivemoot": "./dist/index.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
