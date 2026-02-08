@@ -38,7 +38,7 @@ describe("hasLabel()", () => {
   });
 
   it("matches exact segment after splitting on separators", () => {
-    expect(hasLabel([{ name: "blocked:human-help-needed" }], "blocked")).toBe(true);
+    expect(hasLabel([{ name: "priority:high" }], "priority")).toBe(true);
     expect(hasLabel([{ name: "discuss:api-versioning" }], "discuss")).toBe(true);
     expect(hasLabel([{ name: "vote:auth" }], "vote")).toBe(true);
   });

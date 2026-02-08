@@ -206,39 +206,27 @@ describe("generateAlerts()", () => {
 
   // ── Blocked issue alerts ───────────────────────────────────────────
 
-  it("alerts on blocked issues", () => {
+  it("alerts on needs:human issues", () => {
     const issue = makeIssue({
       number: 77,
-      labels: [{ name: "blocked:human-help-needed" }],
+      labels: [{ name: "needs:human" }],
     });
 
     const alerts = generateAlerts([issue], [], now);
-    const blockedAlerts = alerts.filter((a) => a.message.includes("blocked"));
-    expect(blockedAlerts).toHaveLength(1);
-    expect(blockedAlerts[0].message).toContain("#77");
+    const humanAlerts = alerts.filter((a) => a.message.includes("needs human"));
+    expect(humanAlerts).toHaveLength(1);
+    expect(humanAlerts[0].message).toContain("#77");
   });
 
-  it("alerts on any blocked variant label", () => {
-    const issue = makeIssue({
-      number: 88,
-      labels: [{ name: "blocked:dependency" }],
-    });
-
-    const alerts = generateAlerts([issue], [], now);
-    const blockedAlerts = alerts.filter((a) => a.message.includes("blocked"));
-    expect(blockedAlerts).toHaveLength(1);
-    expect(blockedAlerts[0].message).toContain("#88");
-  });
-
-  it("does not alert on issues without blocked label", () => {
+  it("does not alert on issues without needs:human label", () => {
     const issue = makeIssue({
       number: 90,
       labels: [{ name: "bug" }],
     });
 
     const alerts = generateAlerts([issue], [], now);
-    const blockedAlerts = alerts.filter((a) => a.message.includes("blocked"));
-    expect(blockedAlerts).toHaveLength(0);
+    const humanAlerts = alerts.filter((a) => a.message.includes("needs human"));
+    expect(humanAlerts).toHaveLength(0);
   });
 
   // ── phase:discussion stale detection ──────────────────────────────

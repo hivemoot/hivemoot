@@ -260,12 +260,12 @@ describe("buildSummary()", () => {
     expect(summary.voteOn).toHaveLength(0);
   });
 
-  // ── Blocked issue filtering ────────────────────────────────────────
+  // ── Needs-human issue filtering ────────────────────────────────────
 
-  it("excludes blocked issues from implement bucket", () => {
+  it("excludes needs:human issues from implement bucket", () => {
     const issue = makeIssue({
       number: 77,
-      labels: [{ name: "blocked:human-help-needed" }],
+      labels: [{ name: "needs:human" }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
@@ -274,20 +274,20 @@ describe("buildSummary()", () => {
     expect(summary.discuss).toHaveLength(0);
   });
 
-  it("excludes blocked issues even with other labels present", () => {
+  it("excludes needs:human issues even with other labels present", () => {
     const issue = makeIssue({
       number: 78,
-      labels: [{ name: "bug" }, { name: "blocked:human-help-needed" }],
+      labels: [{ name: "bug" }, { name: "needs:human" }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
     expect(summary.implement).toHaveLength(0);
   });
 
-  it("excludes blocked issues from voteOn even with vote label", () => {
+  it("excludes needs:human issues from voteOn even with vote label", () => {
     const issue = makeIssue({
       number: 79,
-      labels: [{ name: "vote" }, { name: "blocked:human-help-needed" }],
+      labels: [{ name: "vote" }, { name: "needs:human" }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
@@ -295,10 +295,10 @@ describe("buildSummary()", () => {
     expect(summary.implement).toHaveLength(0);
   });
 
-  it("excludes blocked issues from discuss even with discuss label", () => {
+  it("excludes needs:human issues from discuss even with discuss label", () => {
     const issue = makeIssue({
       number: 80,
-      labels: [{ name: "discuss" }, { name: "blocked:human-help-needed" }],
+      labels: [{ name: "discuss" }, { name: "needs:human" }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);

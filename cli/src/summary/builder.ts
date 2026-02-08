@@ -35,7 +35,7 @@ function compactMergeable(raw: string | null): string | null {
 function classifyIssue(
   issue: GitHubIssue,
   now: Date,
-): { bucket: "voteOn" | "discuss" | "implement" | "blocked"; item: SummaryItem } {
+): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman"; item: SummaryItem } {
   const age = timeAgo(issue.createdAt, now);
   const assigned =
     issue.assignees.length > 0
@@ -55,10 +55,10 @@ function classifyIssue(
     age,
   };
 
-  // Blocked issues are excluded from all actionable buckets
-  if (hasLabel(issue.labels, "blocked")) {
+  // Issues needing human attention are excluded from all actionable buckets
+  if (hasExactLabel(issue.labels, "needs:human")) {
     return {
-      bucket: "blocked",
+      bucket: "needsHuman",
       item: { ...base, assigned },
     };
   }
@@ -151,7 +151,7 @@ export function buildSummary(
     if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
     else if (bucket === "implement") implement.push(item);
-    // "blocked" issues intentionally excluded from all buckets
+    // "needsHuman" issues intentionally excluded from all buckets
   }
 
   // Annotate implement items with competing PR counts

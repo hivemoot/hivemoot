@@ -32,12 +32,12 @@ export function generateAlerts(
     }
   }
 
-  // Blocked issues: need human intervention
+  // Issues needing human attention
   for (const issue of issues) {
-    if (hasLabel(issue.labels, "blocked")) {
+    if (hasExactLabel(issue.labels, "needs:human")) {
       alerts.push({
         icon: "\ud83d\uded1",
-        message: `#${issue.number} is blocked and needs human help`,
+        message: `#${issue.number} needs human attention`,
       });
     }
   }

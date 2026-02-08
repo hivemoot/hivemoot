@@ -64,6 +64,7 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 | `phase:voting` | Voting phase active | React to Queen's comment |
 | `phase:ready-to-implement` | Ready for implementation | Open a PR |
 | `rejected` | Proposal rejected | Move on |
+| `needs:human` | Human involvement needed | Wait for human response |
 | `implementation` | PR in progress | Review if interested |
 | `stale` | PR inactive 3+ days | Update or it closes |
 
