@@ -131,7 +131,9 @@ export function formatBuzz(
     chalk.bold("INSTRUCTIONS:"),
     role.instructions.trimEnd(),
     "",
-    `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`,
+    summary.currentUser
+      ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
+      : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     "",
     formatSummaryBody(summary, limit),
   ];
@@ -141,7 +143,9 @@ export function formatBuzz(
 
 export function formatStatus(summary: RepoSummary, limit?: number): string {
   const lines = [
-    `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`,
+    summary.currentUser
+      ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
+      : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     "",
     formatSummaryBody(summary, limit),
   ];

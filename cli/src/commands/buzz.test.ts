@@ -60,6 +60,8 @@ const testRepo = { owner: "hivemoot", repo: "test" };
 const testSummary = {
   repo: testRepo,
   currentUser: "testuser",
+  driveDiscussion: [],
+  driveImplementation: [],
   voteOn: [],
   discuss: [],
   implement: [],
@@ -232,5 +234,128 @@ describe("buzzCommand", () => {
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toHaveLength(0);
+  });
+
+  // ── Graceful degradation on partial fetch failure ──────────────
+
+  it("shows PRs with warning when issues fetch fails", async () => {
+    mockedFetchIssues.mockRejectedValue(new CliError("issues boom", "GH_ERROR"));
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
+  });
+
+  it("shows issues with warning when PRs fetch fails", async () => {
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockRejectedValue(new CliError("prs boom", "GH_ERROR"));
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
+  });
+
+  it("works with empty currentUser when user fetch fails", async () => {
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedFetchCurrentUser.mockRejectedValue(new Error("auth failed"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "");
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not determine GitHub user (auth failed) — drive sections, competition counts, and author highlighting are unavailable.",
+    );
+  });
+
+  it("throws first CliError when all three fetches fail", async () => {
+    const cliErr = new CliError("not authenticated", "GH_NOT_AUTHENTICATED");
+    mockedFetchIssues.mockRejectedValue(new Error("network"));
+    mockedFetchPulls.mockRejectedValue(cliErr);
+    mockedFetchCurrentUser.mockRejectedValue(new Error("timeout"));
+
+    await expect(buzzCommand({})).rejects.toBe(cliErr);
+  });
+
+  it("throws first rejection reason when all fail and none are CliError", async () => {
+    const firstErr = new Error("network");
+    mockedFetchIssues.mockRejectedValue(firstErr);
+    mockedFetchPulls.mockRejectedValue(new Error("also network"));
+    mockedFetchCurrentUser.mockRejectedValue(new Error("timeout"));
+
+    await expect(buzzCommand({})).rejects.toBe(firstErr);
+  });
+
+  it("produces single combined warning when both data fetches fail", async () => {
+    mockedFetchIssues.mockRejectedValue(new CliError("boom", "GH_ERROR"));
+    mockedFetchPulls.mockRejectedValue(new CliError("boom2", "GH_ERROR"));
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not fetch issues (boom) or pull requests (boom2) — showing limited summary.",
+    );
+    expect(summaryArg.notes).toHaveLength(1);
+  });
+
+  it("throws most actionable CliError when all fail with multiple CliErrors", async () => {
+    const genericErr = new CliError("generic failure", "GH_ERROR");
+    const authErr = new CliError("not authenticated", "GH_NOT_AUTHENTICATED");
+    mockedFetchIssues.mockRejectedValue(genericErr);
+    mockedFetchPulls.mockRejectedValue(new Error("timeout"));
+    mockedFetchCurrentUser.mockRejectedValue(authErr);
+
+    await expect(buzzCommand({})).rejects.toBe(authErr);
+  });
+
+  it("includes error detail from non-CliError rejections", async () => {
+    mockedFetchIssues.mockRejectedValue(new Error("ETIMEDOUT"));
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch issues (ETIMEDOUT) — showing PRs only.");
+  });
+
+  it("includes error detail in both data and user failure notes", async () => {
+    mockedFetchIssues.mockRejectedValue(new CliError("rate limited", "RATE_LIMITED"));
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedFetchCurrentUser.mockRejectedValue(new Error("token expired"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not fetch issues (rate limited) — showing PRs only.",
+    );
+    expect(summaryArg.notes).toContain(
+      "Could not determine GitHub user (token expired) — drive sections, competition counts, and author highlighting are unavailable.",
+    );
+    expect(summaryArg.notes).toHaveLength(2);
   });
 });
