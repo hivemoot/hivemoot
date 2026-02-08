@@ -12,8 +12,10 @@ describe("initCommand", () => {
     const output = vi.mocked(console.log).mock.calls[0][0] as string;
     expect(output).toContain("team:");
     expect(output).toContain("roles:");
+    expect(output).toContain("pm:");
     expect(output).toContain("engineer:");
-    expect(output).toContain("reviewer:");
+    expect(output).toContain("architect:");
+    expect(output).toContain("qa:");
     expect(output).toContain("description:");
     expect(output).toContain("instructions:");
   });
@@ -24,6 +26,7 @@ describe("initCommand", () => {
     const output = vi.mocked(console.log).mock.calls[0][0] as string;
     expect(output).toContain("# Hivemoot team configuration");
     expect(output).toContain(".github/hivemoot.yml");
+    expect(output).toContain("Roles define personas");
   });
 
   it("template contains valid YAML structure", async () => {
@@ -32,7 +35,9 @@ describe("initCommand", () => {
     const output = vi.mocked(console.log).mock.calls[0][0] as string;
     expect(output).toMatch(/team:\s/);
     expect(output).toMatch(/roles:\s/);
+    expect(output).toMatch(/pm:\s/);
     expect(output).toMatch(/engineer:\s/);
-    expect(output).toMatch(/reviewer:\s/);
+    expect(output).toMatch(/architect:\s/);
+    expect(output).toMatch(/qa:\s/);
   });
 });
