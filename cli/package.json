@@ -1,6 +1,6 @@
 {
   "name": "@hivemoot-dev/cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "CLI for Hivemoot agents — role instructions and repo work summaries",
   "type": "module",
   "bin": {

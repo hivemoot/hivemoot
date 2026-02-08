@@ -1,9 +1,13 @@
+import { createRequire } from "node:module";
 import { Command, InvalidArgumentError } from "commander";
 import { buzzCommand } from "./commands/buzz.js";
 import { rolesCommand } from "./commands/roles.js";
 import { initCommand } from "./commands/init.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
+
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json") as { version: string };
 
 function parseLimit(value: string): number {
   const n = parseInt(value, 10);
@@ -18,7 +22,7 @@ const program = new Command();
 program
   .name("hivemoot")
   .description("CLI for Hivemoot agents — role instructions and repo work summaries")
-  .version("0.1.0")
+  .version(version)
   .option("--github-token <token>", "GitHub personal access token (or set GITHUB_TOKEN env var)");
 
 program.hook("preAction", () => {
