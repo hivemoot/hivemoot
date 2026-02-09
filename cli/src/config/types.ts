@@ -104,6 +104,10 @@ export interface SummaryItem {
   lastCommit?: string;                // "2 hours ago" — when the latest commit landed
   lastComment?: string;               // "5 hours ago" — when the latest comment was posted
   updated?: string;                   // "30 minutes ago" — pr.updatedAt (catch-all)
+  // Notification fields
+  unread?: boolean;                   // true if there's an unread notification
+  unreadReason?: string;              // "comment" | "mention" | "author" | "ci_activity"
+  unreadAge?: string;                 // "2h ago" — when the notification was last updated
 }
 
 export interface RepoSummary {

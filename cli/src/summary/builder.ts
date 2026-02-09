@@ -6,6 +6,7 @@ import type {
   SummaryItem,
 } from "../config/types.js";
 import type { VoteMap } from "../github/votes.js";
+import type { NotificationMap } from "../github/notifications.js";
 import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo, reviewContext, latestCommitAge, latestCommentAge, commentContext } from "./utils.js";
 
 /** Map verbose check labels to compact values for structured output. */
@@ -148,6 +149,7 @@ export function buildSummary(
   currentUser: string,
   now: Date = new Date(),
   votes: VoteMap = new Map(),
+  notifications: NotificationMap = new Map(),
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -222,6 +224,26 @@ export function buildSummary(
     if (item.author === currentUser) { driveImplementation.push(item); return false; }
     return true;
   });
+
+  // Annotate all items with unread notification status
+  const allItems = [
+    ...needsHuman,
+    ...driveDiscussion,
+    ...driveImplementation,
+    ...filteredVoteOn,
+    ...filteredDiscuss,
+    ...implement,
+    ...filteredReviewPRs,
+    ...filteredAddressFeedback,
+  ];
+  for (const item of allItems) {
+    const n = notifications.get(item.number);
+    if (n) {
+      item.unread = true;
+      item.unreadReason = n.reason;
+      item.unreadAge = timeAgo(n.updatedAt, now);
+    }
+  }
 
   return {
     repo,

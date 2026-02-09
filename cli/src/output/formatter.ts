@@ -95,6 +95,11 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
     parts.push(kv("created", item.age));
   }
 
+  if (item.unread && item.unreadReason) {
+    const age = item.unreadAge ? ` (${item.unreadAge})` : "";
+    parts.push(kv("new", `${item.unreadReason}${age}`));
+  }
+
   return parts.join("  ");
 }
 
@@ -102,11 +107,12 @@ function formatItem(item: SummaryItem, currentUser: string, sectionType: Section
   const isYou = item.author === currentUser;
   const prefix = isYou ? chalk.green("★") : " ";
   const num = chalk.cyan(`#${item.number}`);
+  const unreadDot = item.unread ? " " + chalk.yellow("●") : "";
   const tags = formatTags(item.tags);
   const hasProblems = (item.checks && /fail/i.test(item.checks)) || (item.mergeable && /conflict/i.test(item.mergeable));
   const warningIcon = hasProblems ? " " + chalk.red("✗") : "";
 
-  const titleLine = `${prefix} ${num} ${item.title}${tags}${warningIcon}`;
+  const titleLine = `${prefix} ${num}${unreadDot} ${item.title}${tags}${warningIcon}`;
   const metaLine = `       ${formatMeta(item, sectionType, currentUser)}`;
 
   return `${titleLine}\n${metaLine}`;

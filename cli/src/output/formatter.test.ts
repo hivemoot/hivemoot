@@ -357,6 +357,87 @@ describe("you: indicator on issue sections", () => {
   });
 });
 
+describe("unread notification indicator", () => {
+  it("shows yellow dot for unread items", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      implement: [
+        { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days ago", unread: true, unreadReason: "comment", unreadAge: "2h ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toContain("●");
+    expect(output).toMatch(/#45.*●/);
+  });
+
+  it("does not show yellow dot for read items", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("●");
+  });
+
+  it("shows yellow dot alongside star for authored unread items", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      implement: [
+        { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday", unread: true, unreadReason: "mention", unreadAge: "30m ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toMatch(/★.*#47.*●/);
+  });
+
+  it("shows yellow dot on PR items", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      reviewPRs: [
+        { number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toMatch(/#49.*●/);
+  });
+
+  it("shows yellow dot on vote items", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      voteOn: [
+        { number: 50, title: "Auth redesign", tags: ["vote"], author: "bob", comments: 0, age: "3 days ago", unread: true, unreadReason: "comment", unreadAge: "5h ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toMatch(/#50.*●/);
+  });
+
+  it("renders 'new: reason (age)' on metadata line for unread issues", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      implement: [
+        { number: 45, title: "User Dashboard", tags: [], author: "bob", comments: 0, age: "3 days ago", unread: true, unreadReason: "mention", unreadAge: "2h ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toContain("new:");
+    expect(output).toContain("mention (2h ago)");
+  });
+
+  it("renders 'new: reason (age)' on metadata line for unread PRs", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      reviewPRs: [
+        { number: 49, title: "Search", tags: [], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toContain("new:");
+    expect(output).toContain("review_requested (1h ago)");
+  });
+
+  it("does not render 'new:' for items without notifications", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("new:");
+  });
+});
+
 describe("formatRoles()", () => {
   it("lists roles with descriptions", () => {
     const output = formatRoles(teamConfig, "hivemoot/colony");

@@ -25,6 +25,10 @@ vi.mock("../github/votes.js", () => ({
   fetchVotes: vi.fn(),
 }));
 
+vi.mock("../github/notifications.js", () => ({
+  fetchNotifications: vi.fn(),
+}));
+
 vi.mock("../summary/builder.js", () => ({
   buildSummary: vi.fn(),
 }));
@@ -45,6 +49,7 @@ import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
+import { fetchNotifications } from "../github/notifications.js";
 import { buildSummary } from "../summary/builder.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
@@ -56,6 +61,7 @@ const mockedFetchIssues = vi.mocked(fetchIssues);
 const mockedFetchPulls = vi.mocked(fetchPulls);
 const mockedFetchCurrentUser = vi.mocked(fetchCurrentUser);
 const mockedFetchVotes = vi.mocked(fetchVotes);
+const mockedFetchNotifications = vi.mocked(fetchNotifications);
 const mockedBuildSummary = vi.mocked(buildSummary);
 const mockedFormatBuzz = vi.mocked(formatBuzz);
 const mockedFormatStatus = vi.mocked(formatStatus);
@@ -94,6 +100,7 @@ beforeEach(() => {
   mockedFetchPulls.mockResolvedValue([]);
   mockedFetchCurrentUser.mockResolvedValue("testuser");
   mockedFetchVotes.mockResolvedValue(new Map());
+  mockedFetchNotifications.mockResolvedValue(new Map());
   mockedBuildSummary.mockReturnValue(testSummary);
 });
 
@@ -254,7 +261,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
   });
@@ -268,7 +275,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
   });
@@ -282,7 +289,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "", expect.any(Date), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "", expect.any(Date), expect.any(Map), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not determine GitHub user (auth failed) — drive sections, competition counts, and author highlighting are unavailable.",
@@ -316,7 +323,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not fetch issues (boom) or pull requests (boom2) — showing limited summary.",
@@ -391,9 +398,9 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    // buildSummary should be called with the votes map as last arg
+    // buildSummary should be called with the votes map and notification map
     expect(mockedBuildSummary).toHaveBeenCalledWith(
-      testRepo, [votingIssue], [], "testuser", expect.any(Date), voteMap,
+      testRepo, [votingIssue], [], "testuser", expect.any(Date), voteMap, expect.any(Map),
     );
   });
 
@@ -431,5 +438,61 @@ describe("buzzCommand", () => {
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).not.toContain("Could not fetch vote data — vote status unavailable.");
+  });
+
+  // ── Notification fetching ─────────────────────────────────────────
+
+  it("calls fetchNotifications in parallel with issues/PRs/user", async () => {
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchNotifications).toHaveBeenCalledWith(testRepo);
+  });
+
+  it("passes notification map to buildSummary", async () => {
+    const notificationMap = new Map([[42, { reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), notificationMap,
+    );
+  });
+
+  it("adds note when fetchNotifications fails", async () => {
+    mockedFetchNotifications.mockRejectedValue(new Error("API error"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch notifications — unread indicators unavailable.");
+  });
+
+  it("passes empty notification map when fetchNotifications fails", async () => {
+    mockedFetchNotifications.mockRejectedValue(new Error("API error"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const notificationsArg = mockedBuildSummary.mock.calls[0][6];
+    expect(notificationsArg).toEqual(new Map());
+  });
+
+  it("does not add notification failure note when fetchNotifications succeeds", async () => {
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).not.toContain("Could not fetch notifications — unread indicators unavailable.");
   });
 });

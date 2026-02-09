@@ -5,6 +5,8 @@ import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
+import { fetchNotifications } from "../github/notifications.js";
+import type { NotificationMap } from "../github/notifications.js";
 import { buildSummary } from "../summary/builder.js";
 import { isVotingIssue } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
@@ -18,13 +20,14 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const fetchLimit = options.fetchLimit ?? 200;
 
-  const [issuesResult, prsResult, userResult] = await Promise.allSettled([
+  const [issuesResult, prsResult, userResult, notificationsResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
+    fetchNotifications(repo),
   ]);
 
-  // If all three failed, surface the most actionable CliError.
+  // If the primary fetches all failed, surface the most actionable CliError.
   if (
     issuesResult.status === "rejected" &&
     prsResult.status === "rejected" &&
@@ -41,6 +44,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const issues = issuesResult.status === "fulfilled" ? issuesResult.value : [];
   const prs = prsResult.status === "fulfilled" ? prsResult.value : [];
   const currentUser = userResult.status === "fulfilled" ? userResult.value : "";
+  const notifications: NotificationMap = notificationsResult.status === "fulfilled" ? notificationsResult.value : new Map();
 
   // Fetch vote reactions for voting-phase issues
   const votingIssueNumbers = issues
@@ -55,7 +59,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     voteFetchFailed = true;
   }
 
-  const summary = buildSummary(repo, issues, prs, currentUser, new Date(), votes);
+  const summary = buildSummary(repo, issues, prs, currentUser, new Date(), votes, notifications);
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
     summary.notes.push(
@@ -75,6 +79,10 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   if (voteFetchFailed) {
     summary.notes.push("Could not fetch vote data — vote status unavailable.");
+  }
+
+  if (notificationsResult.status === "rejected") {
+    summary.notes.push("Could not fetch notifications — unread indicators unavailable.");
   }
 
   if (issues.length >= fetchLimit) {

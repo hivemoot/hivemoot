@@ -97,6 +97,47 @@ describe("notes in JSON output", () => {
   });
 });
 
+describe("unread notification fields in JSON", () => {
+  const unreadSummary: RepoSummary = {
+    ...summary,
+    implement: [
+      { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago", unread: true, unreadReason: "comment", unreadAge: "2h ago" },
+    ],
+    reviewPRs: [
+      { number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+    ],
+  };
+
+  it("includes unread, unreadReason, and unreadAge in jsonStatus when set", () => {
+    const result = JSON.parse(jsonStatus(unreadSummary));
+    expect(result.implement[0].unread).toBe(true);
+    expect(result.implement[0].unreadReason).toBe("comment");
+    expect(result.implement[0].unreadAge).toBe("2h ago");
+    expect(result.reviewPRs[0].unread).toBe(true);
+    expect(result.reviewPRs[0].unreadReason).toBe("review_requested");
+    expect(result.reviewPRs[0].unreadAge).toBe("1h ago");
+  });
+
+  it("includes unread, unreadReason, and unreadAge in jsonBuzz when set", () => {
+    const result = JSON.parse(jsonBuzz("engineer", role, unreadSummary));
+    expect(result.summary.implement[0].unread).toBe(true);
+    expect(result.summary.implement[0].unreadReason).toBe("comment");
+    expect(result.summary.implement[0].unreadAge).toBe("2h ago");
+    expect(result.summary.reviewPRs[0].unread).toBe(true);
+    expect(result.summary.reviewPRs[0].unreadReason).toBe("review_requested");
+    expect(result.summary.reviewPRs[0].unreadAge).toBe("1h ago");
+  });
+
+  it("omits unread fields from items without notifications", () => {
+    const result = JSON.parse(jsonStatus(summary));
+    expect(result.implement[0]).not.toHaveProperty("unread");
+    expect(result.implement[0]).not.toHaveProperty("unreadReason");
+    expect(result.implement[0]).not.toHaveProperty("unreadAge");
+    expect(result.voteOn[0]).not.toHaveProperty("unread");
+    expect(result.reviewPRs[0]).not.toHaveProperty("unread");
+  });
+});
+
 describe("jsonRoles()", () => {
   it("returns valid JSON with roles array", () => {
     const result = JSON.parse(jsonRoles(teamConfig));

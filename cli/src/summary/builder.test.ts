@@ -810,4 +810,100 @@ describe("buildSummary()", () => {
     expect(summary.driveDiscussion[0].yourVote).toBe("👎");
     expect(summary.driveDiscussion[0].yourVoteAge).toBe("2 days ago");
   });
+
+  // ── Notification annotation ──────────────────────────────────────
+
+  it("annotates voteOn items with unread notification", () => {
+    const issue = makeIssue({ number: 50, labels: [{ name: "phase:voting" }] });
+    const notifications = new Map([[50, { reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.voteOn[0].unread).toBe(true);
+    expect(summary.voteOn[0].unreadReason).toBe("mention");
+    expect(summary.voteOn[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates discuss items with unread notification", () => {
+    const issue = makeIssue({ number: 52, labels: [{ name: "discuss" }] });
+    const notifications = new Map([[52, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.discuss[0].unread).toBe(true);
+    expect(summary.discuss[0].unreadReason).toBe("comment");
+    expect(summary.discuss[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates implement items with unread notification", () => {
+    const issue = makeIssue({ number: 45 });
+    const notifications = new Map([[45, { reason: "author", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.implement[0].unread).toBe(true);
+    expect(summary.implement[0].unreadReason).toBe("author");
+    expect(summary.implement[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates needsHuman items with unread notification", () => {
+    const issue = makeIssue({ number: 77, labels: [{ name: "needs:human" }] });
+    const notifications = new Map([[77, { reason: "ci_activity", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.needsHuman[0].unread).toBe(true);
+    expect(summary.needsHuman[0].unreadReason).toBe("ci_activity");
+    expect(summary.needsHuman[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates reviewPRs items with unread notification", () => {
+    const pr = makePR({ number: 49 });
+    const notifications = new Map([[49, { reason: "review_requested", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
+    expect(summary.reviewPRs[0].unread).toBe(true);
+    expect(summary.reviewPRs[0].unreadReason).toBe("review_requested");
+    expect(summary.reviewPRs[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates driveDiscussion items with unread notification", () => {
+    const issue = makeIssue({ number: 52, labels: [{ name: "discuss" }], author: { login: "testuser" } });
+    const notifications = new Map([[52, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.driveDiscussion[0].unread).toBe(true);
+    expect(summary.driveDiscussion[0].unreadReason).toBe("comment");
+    expect(summary.driveDiscussion[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates driveImplementation items with unread notification", () => {
+    const pr = makePR({ number: 49, author: { login: "testuser" } });
+    const notifications = new Map([[49, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
+    expect(summary.driveImplementation[0].unread).toBe(true);
+    expect(summary.driveImplementation[0].unreadReason).toBe("comment");
+    expect(summary.driveImplementation[0].unreadAge).toBe("2h ago");
+  });
+
+  it("computes unreadAge relative to now", () => {
+    const issue = makeIssue({ number: 45 });
+    const notifications = new Map([[45, { reason: "comment", updatedAt: "2025-06-14T12:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.implement[0].unreadAge).toBe("yesterday");
+  });
+
+  it("does not set unread when item is not in notifications map", () => {
+    const issue = makeIssue({ number: 45 });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map());
+    expect(summary.implement[0].unread).toBeUndefined();
+    expect(summary.implement[0].unreadReason).toBeUndefined();
+    expect(summary.implement[0].unreadAge).toBeUndefined();
+  });
+
+  it("defaults to empty notification map when not provided", () => {
+    const issue = makeIssue({ number: 45 });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement[0].unread).toBeUndefined();
+  });
 });
