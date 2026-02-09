@@ -39,6 +39,11 @@ export interface StatusCheck {
 export interface PRReview {
   state: string;
   author: { login: string } | null;
+  submittedAt?: string;
+}
+
+export interface PRCommit {
+  committedDate: string;
 }
 
 export interface GitHubPR {
@@ -57,6 +62,7 @@ export interface GitHubPR {
   mergeable: string;
   statusCheckRollup: StatusCheck[] | null;
   closingIssuesReferences: Array<{ number: number }>;
+  commits: PRCommit[];
 }
 
 // ── Repo Identity ──────────────────────────────────────────────────
@@ -85,20 +91,21 @@ export interface SummaryItem {
   assigned?: string;           // comma-separated logins, or undefined (= unassigned)
   competingPRs?: number;       // only on implement items with competing PRs
   // PR-specific
-  status?: string;             // "waiting" | "approved" | "changes-requested" | "draft"
+  status?: string;             // "pending" | "approved" | "changes-requested" | "draft"
   checks?: string | null;      // "passing" | "failing" | "pending" | null
   mergeable?: string | null;   // "clean" | "conflicts" | null
   review?: ReviewSummary;
-}
-
-export interface Alert {
-  icon: string;
-  message: string;
+  yourReview?: string;
+  yourReviewAge?: string;             // "3 days ago" — when you last reviewed
+  lastCommit?: string;                // "2 hours ago" — when the latest commit landed
+  lastComment?: string;               // "5 hours ago" — when the latest comment was posted
+  updated?: string;                   // "30 minutes ago" — pr.updatedAt (catch-all)
 }
 
 export interface RepoSummary {
   repo: RepoRef;
   currentUser: string;
+  needsHuman: SummaryItem[];
   driveDiscussion: SummaryItem[];
   driveImplementation: SummaryItem[];
   voteOn: SummaryItem[];
@@ -106,7 +113,6 @@ export interface RepoSummary {
   implement: SummaryItem[];
   reviewPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
-  alerts: Alert[];
   notes: string[];
 }
 

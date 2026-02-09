@@ -60,6 +60,7 @@ const testRepo = { owner: "hivemoot", repo: "test" };
 const testSummary = {
   repo: testRepo,
   currentUser: "testuser",
+  needsHuman: [],
   driveDiscussion: [],
   driveImplementation: [],
   voteOn: [],
@@ -67,7 +68,6 @@ const testSummary = {
   implement: [],
   reviewPRs: [],
   addressFeedback: [],
-  alerts: [],
   notes: [],
 };
 const testTeamConfig = {

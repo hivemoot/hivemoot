@@ -5,6 +5,7 @@ import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 const summary: RepoSummary = {
   repo: { owner: "hivemoot", repo: "colony" },
   currentUser: "alice",
+  needsHuman: [],
   driveDiscussion: [],
   driveImplementation: [],
   voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days ago" }],
@@ -13,9 +14,8 @@ const summary: RepoSummary = {
     { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days ago" },
     { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday" },
   ],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "waiting", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [],
-  alerts: [{ icon: "\u26a0\ufe0f", message: "PR #49 waiting on review 2 days" }],
   notes: [],
 };
 
@@ -91,14 +91,19 @@ describe("formatBuzz()", () => {
     expect(output).not.toMatch(/★.*#49/);
   });
 
-  it("includes REQUIRES YOUR ATTENTION section at the top", () => {
-    const output = formatBuzz("engineer", role, summary);
-    expect(output).toContain("REQUIRES YOUR ATTENTION");
-    expect(output).toContain("PR #49 waiting on review 2 days");
-    // Attention section should appear before VOTE ON ISSUES
-    const attentionIdx = output.indexOf("REQUIRES YOUR ATTENTION");
+  it("includes NEEDS HUMAN section when present", () => {
+    const withHuman: RepoSummary = {
+      ...summary,
+      needsHuman: [{ number: 99, title: "Blocked issue", tags: ["needs:human"], author: "bob", comments: 0, age: "2 days ago" }],
+    };
+    const output = formatBuzz("engineer", role, withHuman);
+    expect(output).toContain("NEEDS HUMAN");
+    expect(output).toContain("#99");
+    expect(output).toContain("Blocked issue");
+    // NEEDS HUMAN should appear before VOTE ON ISSUES
+    const humanIdx = output.indexOf("NEEDS HUMAN");
     const voteIdx = output.indexOf("VOTE ON ISSUES");
-    expect(attentionIdx).toBeLessThan(voteIdx);
+    expect(humanIdx).toBeLessThan(voteIdx);
   });
 
   it("respects limit parameter", () => {
@@ -122,7 +127,8 @@ describe("formatBuzz()", () => {
     expect(output).toContain("checks:");
     expect(output).toContain("merge:");
     expect(output).toContain("review:");
-    expect(output).toContain("0 approved, 0 changes-requested");
+    expect(output).toContain("0 approved");
+    expect(output).not.toContain("changes-requested");
   });
 });
 
@@ -144,6 +150,7 @@ describe("formatStatus()", () => {
     const empty: RepoSummary = {
       repo: { owner: "test", repo: "empty" },
       currentUser: "test-user",
+      needsHuman: [],
       driveDiscussion: [],
       driveImplementation: [],
       voteOn: [],
@@ -151,7 +158,6 @@ describe("formatStatus()", () => {
       implement: [],
       reviewPRs: [],
       addressFeedback: [],
-      alerts: [],
       notes: [],
     };
     const output = formatStatus(empty);
@@ -168,6 +174,7 @@ describe("DRIVE sections", () => {
   const driveSummary: RepoSummary = {
     repo: { owner: "hivemoot", repo: "colony" },
     currentUser: "alice",
+    needsHuman: [],
     driveDiscussion: [
       { number: 80, title: "My Discussion", tags: ["phase:discussion"], author: "alice", comments: 3, age: "2 days ago" },
     ],
@@ -184,7 +191,6 @@ describe("DRIVE sections", () => {
     addressFeedback: [
       { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
     ],
-    alerts: [{ icon: "\u26a0\ufe0f", message: "test alert" }],
     notes: [],
   };
 
@@ -203,15 +209,13 @@ describe("DRIVE sections", () => {
     expect(output).toContain("status:");
   });
 
-  it("places DRIVE sections after ATTENTION and before VOTE/DISCUSS", () => {
+  it("places DRIVE sections before DISCUSS", () => {
     const output = formatStatus(driveSummary);
-    const attentionIdx = output.indexOf("REQUIRES YOUR ATTENTION");
     const driveDiscIdx = output.indexOf("DRIVE THE DISCUSSION");
     const driveImplIdx = output.indexOf("DRIVE THE IMPLEMENTATION");
     const discussIdx = output.indexOf("DISCUSS ISSUES");
     const feedbackIdx = output.indexOf("ADDRESS FEEDBACK");
 
-    expect(attentionIdx).toBeLessThan(driveDiscIdx);
     expect(driveDiscIdx).toBeLessThan(driveImplIdx);
     expect(driveImplIdx).toBeLessThan(discussIdx);
     expect(discussIdx).toBeLessThan(feedbackIdx);
@@ -221,6 +225,39 @@ describe("DRIVE sections", () => {
     const output = formatStatus(summary);
     expect(output).not.toContain("DRIVE THE DISCUSSION");
     expect(output).not.toContain("DRIVE THE IMPLEMENTATION");
+  });
+});
+
+describe("NEEDS HUMAN section", () => {
+  it("renders NEEDS HUMAN section with issue metadata", () => {
+    const withHuman: RepoSummary = {
+      ...summary,
+      needsHuman: [
+        { number: 77, title: "Deploy approval needed", tags: ["needs:human", "ops"], author: "bot", comments: 1, age: "yesterday", assigned: "alice" },
+      ],
+    };
+    const output = formatStatus(withHuman);
+    expect(output).toContain("NEEDS HUMAN");
+    expect(output).toContain("#77");
+    expect(output).toContain("Deploy approval needed");
+    expect(output).toContain("assigned:");
+  });
+
+  it("hides NEEDS HUMAN section when empty", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("NEEDS HUMAN");
+  });
+
+  it("places NEEDS HUMAN before DRIVE sections", () => {
+    const withBoth: RepoSummary = {
+      ...summary,
+      needsHuman: [{ number: 77, title: "Blocked", tags: ["needs:human"], author: "bot", comments: 0, age: "yesterday" }],
+      driveDiscussion: [{ number: 80, title: "Discussion", tags: [], author: "alice", comments: 0, age: "yesterday" }],
+    };
+    const output = formatStatus(withBoth);
+    const humanIdx = output.indexOf("NEEDS HUMAN");
+    const driveIdx = output.indexOf("DRIVE THE DISCUSSION");
+    expect(humanIdx).toBeLessThan(driveIdx);
   });
 });
 

@@ -5,8 +5,7 @@ import type {
   RepoSummary,
   SummaryItem,
 } from "../config/types.js";
-import { generateAlerts } from "./alerts.js";
-import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo } from "./utils.js";
+import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo, reviewContext, latestCommitAge, latestCommentAge } from "./utils.js";
 
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
@@ -46,6 +45,8 @@ function classifyIssue(
     author,
     comments,
     age,
+    lastComment: latestCommentAge(issue, now),
+    updated: timeAgo(issue.updatedAt, now),
   };
 
   // Issues needing human attention are excluded from all actionable buckets
@@ -101,7 +102,7 @@ function classifyPR(
     let status: string;
     if (pr.isDraft) status = "draft";
     else if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) status = "changes-requested";
-    else status = "waiting";
+    else status = "pending";
 
     return {
       bucket: "addressFeedback",
@@ -109,7 +110,7 @@ function classifyPR(
     };
   }
 
-  const status = pr.reviewDecision === "APPROVED" ? "approved" : "waiting";
+  const status = pr.reviewDecision === "APPROVED" ? "approved" : "pending";
 
   return {
     bucket: "reviewPRs",
@@ -136,6 +137,7 @@ export function buildSummary(
   currentUser: string,
   now: Date = new Date(),
 ): RepoSummary {
+  const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
   const discuss: SummaryItem[] = [];
   const implement: SummaryItem[] = [];
@@ -144,10 +146,10 @@ export function buildSummary(
 
   for (const issue of issues) {
     const { bucket, item } = classifyIssue(issue, now);
-    if (bucket === "voteOn") voteOn.push(item);
+    if (bucket === "needsHuman") needsHuman.push(item);
+    else if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
     else if (bucket === "implement") implement.push(item);
-    // "needsHuman" issues intentionally excluded from all buckets
   }
 
   // Annotate implement items with competing PR counts
@@ -161,11 +163,17 @@ export function buildSummary(
 
   for (const pr of prs) {
     const { bucket, item } = classifyPR(pr, now);
+    const ctx = reviewContext(pr, currentUser, now);
+    if (ctx) {
+      item.yourReview = ctx.yourReview;
+      item.yourReviewAge = ctx.yourReviewAge;
+    }
+    item.lastCommit = latestCommitAge(pr, now);
+    item.lastComment = latestCommentAge(pr, now);
+    item.updated = timeAgo(pr.updatedAt, now);
     if (bucket === "reviewPRs") reviewPRs.push(item);
     else addressFeedback.push(item);
   }
-
-  const alerts = generateAlerts(issues, prs, now);
 
   // Extract authored items into "drive" buckets so the agent knows what it owns
   const driveDiscussion: SummaryItem[] = [];
@@ -197,6 +205,7 @@ export function buildSummary(
   return {
     repo,
     currentUser,
+    needsHuman,
     driveDiscussion,
     driveImplementation,
     voteOn: filteredVoteOn,
@@ -204,7 +213,6 @@ export function buildSummary(
     implement,
     reviewPRs: filteredReviewPRs,
     addressFeedback: filteredAddressFeedback,
-    alerts,
     notes: [],
   };
 }

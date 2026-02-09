@@ -37,6 +37,7 @@ function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
     mergeable: "MERGEABLE",
     statusCheckRollup: [],
     closingIssuesReferences: [],
+    commits: [],
     ...overrides,
   };
 }
@@ -102,7 +103,7 @@ describe("buildSummary()", () => {
     const summary = buildSummary(repo, [], [pr], "testuser", now);
     expect(summary.reviewPRs).toHaveLength(1);
     expect(summary.reviewPRs[0].number).toBe(49);
-    expect(summary.reviewPRs[0].status).toBe("waiting");
+    expect(summary.reviewPRs[0].status).toBe("pending");
   });
 
   it("classifies approved PRs correctly", () => {
@@ -195,7 +196,7 @@ describe("buildSummary()", () => {
     const issue = makeIssue({ createdAt: "2025-06-15T06:00:00Z" });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
-    expect(summary.implement[0].age).toBe("6 hours ago");
+    expect(summary.implement[0].age).toBe("6h ago");
   });
 
   it("handles PRs with null statusCheckRollup without crashing", () => {
@@ -580,5 +581,149 @@ describe("buildSummary()", () => {
   it("initializes notes as empty array", () => {
     const summary = buildSummary(repo, [], [], "testuser", now);
     expect(summary.notes).toEqual([]);
+  });
+
+  // ── Review context fields ──────────────────────────────────────────
+
+  it("populates yourReview and yourReviewAge on reviewPRs when currentUser has reviewed", () => {
+    const pr = makePR({
+      number: 150,
+      reviews: [
+        { state: "APPROVED", author: { login: "testuser" }, submittedAt: "2025-06-14T00:00:00Z" },
+      ],
+      commits: [{ committedDate: "2025-06-14T12:00:00Z" }],
+      reviewDecision: "APPROVED",
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs).toHaveLength(1);
+    expect(summary.reviewPRs[0].yourReview).toBe("approved");
+    expect(summary.reviewPRs[0].yourReviewAge).toBe("yesterday");
+  });
+
+  it("does not set yourReview when currentUser has NOT reviewed the PR", () => {
+    const pr = makePR({
+      number: 151,
+      reviews: [
+        { state: "APPROVED", author: { login: "other" }, submittedAt: "2025-06-14T00:00:00Z" },
+      ],
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs).toHaveLength(1);
+    expect(summary.reviewPRs[0].yourReview).toBeUndefined();
+    expect(summary.reviewPRs[0].yourReviewAge).toBeUndefined();
+  });
+
+  it("populates review context on addressFeedback items too", () => {
+    const pr = makePR({
+      number: 152,
+      reviewDecision: "CHANGES_REQUESTED",
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: { login: "testuser" }, submittedAt: "2025-06-13T00:00:00Z" },
+      ],
+      commits: [{ committedDate: "2025-06-14T00:00:00Z" }],
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.addressFeedback).toHaveLength(1);
+    expect(summary.addressFeedback[0].yourReview).toBe("changes-requested");
+    expect(summary.addressFeedback[0].yourReviewAge).toBe("2 days ago");
+  });
+
+  // ── Temporal fields on issue items ──────────────────────────────────
+
+  it("populates lastComment and updated on issue items", () => {
+    const issue = makeIssue({
+      number: 170,
+      labels: [{ name: "discuss" }],
+      comments: [{ createdAt: "2025-06-15T07:00:00Z" }],
+      updatedAt: "2025-06-15T11:30:00Z",
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.discuss[0].lastComment).toBe("5h ago");
+    expect(summary.discuss[0].updated).toBe("30m ago");
+  });
+
+  it("sets lastComment to undefined on issues with no comments", () => {
+    const issue = makeIssue({ number: 171, comments: [] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement[0].lastComment).toBeUndefined();
+    expect(summary.implement[0].updated).toBeDefined();
+  });
+
+  it("populates temporal fields on vote issues", () => {
+    const issue = makeIssue({
+      number: 172,
+      labels: [{ name: "phase:voting" }],
+      comments: [
+        { createdAt: "2025-06-13T00:00:00Z" },
+        { createdAt: "2025-06-15T10:00:00Z" },
+      ],
+      updatedAt: "2025-06-15T10:00:00Z",
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.voteOn[0].lastComment).toBe("2h ago");
+    expect(summary.voteOn[0].updated).toBe("2h ago");
+  });
+
+  it("populates temporal fields on implement issues", () => {
+    const issue = makeIssue({
+      number: 173,
+      comments: [{ createdAt: "2025-06-14T12:00:00Z" }],
+      updatedAt: "2025-06-15T06:00:00Z",
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement[0].lastComment).toBe("yesterday");
+    expect(summary.implement[0].updated).toBe("6h ago");
+  });
+
+  // ── Temporal fields on PR items ────────────────────────────────────
+
+  it("populates lastCommit, lastComment, and updated on all PR items", () => {
+    const pr = makePR({
+      number: 160,
+      commits: [{ committedDate: "2025-06-15T10:00:00Z" }],
+      comments: [{ createdAt: "2025-06-15T07:00:00Z" }],
+      updatedAt: "2025-06-15T11:30:00Z",
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs[0].lastCommit).toBe("2h ago");
+    expect(summary.reviewPRs[0].lastComment).toBe("5h ago");
+    expect(summary.reviewPRs[0].updated).toBe("30m ago");
+  });
+
+  it("sets lastCommit to undefined when PR has no commits", () => {
+    const pr = makePR({ number: 161, commits: [] });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs[0].lastCommit).toBeUndefined();
+  });
+
+  it("sets lastComment to undefined when PR has no comments", () => {
+    const pr = makePR({ number: 162, comments: [] });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs[0].lastComment).toBeUndefined();
+  });
+
+  it("populates temporal fields on addressFeedback items", () => {
+    const pr = makePR({
+      number: 163,
+      isDraft: true,
+      commits: [{ committedDate: "2025-06-14T12:00:00Z" }],
+      comments: [{ createdAt: "2025-06-13T12:00:00Z" }],
+      updatedAt: "2025-06-15T06:00:00Z",
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.addressFeedback[0].lastCommit).toBe("yesterday");
+    expect(summary.addressFeedback[0].lastComment).toBe("2 days ago");
+    expect(summary.addressFeedback[0].updated).toBe("6h ago");
   });
 });

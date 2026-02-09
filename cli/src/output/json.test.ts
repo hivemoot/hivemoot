@@ -5,14 +5,14 @@ import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 const summary: RepoSummary = {
   repo: { owner: "hivemoot", repo: "colony" },
   currentUser: "alice",
+  needsHuman: [],
   driveDiscussion: [],
   driveImplementation: [],
   voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days ago" }],
   discuss: [{ number: 52, title: "API versioning", tags: ["discuss"], author: "bob", comments: 5, age: "yesterday" }],
   implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago" }],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "waiting", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
-  alerts: [{ icon: "\u26a0\ufe0f", message: "PR #49 waiting on review 2 days" }],
   notes: [],
 };
 
@@ -37,7 +37,7 @@ describe("jsonBuzz()", () => {
     expect(result.role.instructions).toBe("You are a senior engineer.");
     expect(result.summary.repo).toBe("hivemoot/colony");
     expect(result.summary.voteOn).toHaveLength(1);
-    expect(result.summary.alerts).toHaveLength(1);
+    expect(result.summary.needsHuman).toHaveLength(0);
   });
 });
 
@@ -66,7 +66,7 @@ describe("jsonStatus()", () => {
     expect(result.voteOn[0]).not.toHaveProperty("detail");
 
     // Verify PR items have status/checks/mergeable/review
-    expect(result.reviewPRs[0].status).toBe("waiting");
+    expect(result.reviewPRs[0].status).toBe("pending");
     expect(result.reviewPRs[0].checks).toBe("passing");
     expect(result.reviewPRs[0].mergeable).toBe("clean");
     expect(result.reviewPRs[0].review).toEqual({ approvals: 0, changesRequested: 0 });

@@ -26,7 +26,7 @@ program
   .option("--github-token <token>", "GitHub personal access token (or set GITHUB_TOKEN env var)");
 
 program.hook("preAction", () => {
-  const token = program.opts().githubToken as string | undefined;
+  const token = (program.opts().githubToken ?? process.env.GITHUB_TOKEN) as string | undefined;
   if (token) {
     setGhToken(token);
   }

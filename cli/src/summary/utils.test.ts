@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount } from "./utils.js";
+import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, reviewContext, latestCommitAge, latestCommentAge } from "./utils.js";
 import type { GitHubPR } from "../config/types.js";
 
 function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
@@ -19,6 +19,7 @@ function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
     mergeable: "MERGEABLE",
     statusCheckRollup: [],
     closingIssuesReferences: [],
+    commits: [],
     ...overrides,
   };
 }
@@ -99,20 +100,20 @@ describe("timeAgo()", () => {
     expect(timeAgo("2025-06-15T11:59:30Z", now)).toBe("just now");
   });
 
-  it('returns "1 minute ago" for exactly 1 minute', () => {
-    expect(timeAgo("2025-06-15T11:59:00Z", now)).toBe("1 minute ago");
+  it("returns compact minutes for < 60 minutes", () => {
+    expect(timeAgo("2025-06-15T11:59:00Z", now)).toBe("1m ago");
+    expect(timeAgo("2025-06-15T11:15:00Z", now)).toBe("45m ago");
   });
 
-  it("returns minutes for < 60 minutes", () => {
-    expect(timeAgo("2025-06-15T11:15:00Z", now)).toBe("45 minutes ago");
+  it("returns compact hours for exact hours", () => {
+    expect(timeAgo("2025-06-15T11:00:00Z", now)).toBe("1h ago");
+    expect(timeAgo("2025-06-15T06:00:00Z", now)).toBe("6h ago");
   });
 
-  it('returns "1 hour ago" for exactly 1 hour', () => {
-    expect(timeAgo("2025-06-15T11:00:00Z", now)).toBe("1 hour ago");
-  });
-
-  it("returns hours for < 24 hours", () => {
-    expect(timeAgo("2025-06-15T06:00:00Z", now)).toBe("6 hours ago");
+  it("returns hours+minutes for non-exact hours", () => {
+    expect(timeAgo("2025-06-15T10:30:00Z", now)).toBe("1h30m ago");
+    expect(timeAgo("2025-06-15T08:48:00Z", now)).toBe("3h12m ago");
+    expect(timeAgo("2025-06-14T12:15:00Z", now)).toBe("23h45m ago");
   });
 
   it('returns "yesterday" for 1 day', () => {
@@ -417,5 +418,135 @@ describe("changesRequestedCount()", () => {
       ],
     });
     expect(changesRequestedCount(pr)).toBe(1);
+  });
+});
+
+// ── reviewContext ────────────────────────────────────────────────────
+
+describe("reviewContext()", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  it("returns null when user has no reviews", () => {
+    const pr = makePR({
+      reviews: [{ state: "APPROVED", author: { login: "other" }, submittedAt: "2025-06-02T00:00:00Z" }],
+    });
+    expect(reviewContext(pr, "scout", now)).toBeNull();
+  });
+
+  it("returns yourReview and yourReviewAge", () => {
+    const pr = makePR({
+      reviews: [{ state: "APPROVED", author: { login: "scout" }, submittedAt: "2025-06-14T12:00:00Z" }],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "approved",
+      yourReviewAge: "yesterday",
+    });
+  });
+
+  it("returns changes-requested review with age", () => {
+    const pr = makePR({
+      reviews: [{ state: "CHANGES_REQUESTED", author: { login: "scout" }, submittedAt: "2025-06-12T12:00:00Z" }],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "changes-requested",
+      yourReviewAge: "3 days ago",
+    });
+  });
+
+  it("returns 'unknown' age when submittedAt is missing", () => {
+    const pr = makePR({
+      reviews: [{ state: "APPROVED", author: { login: "scout" } }],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "approved",
+      yourReviewAge: "unknown",
+    });
+  });
+
+  it("uses latest review when user has multiple reviews", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "CHANGES_REQUESTED", author: { login: "scout" }, submittedAt: "2025-06-01T00:00:00Z" },
+        { state: "APPROVED", author: { login: "scout" }, submittedAt: "2025-06-14T12:00:00Z" },
+      ],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "approved",
+      yourReviewAge: "yesterday",
+    });
+  });
+
+  it("maps DISMISSED state correctly", () => {
+    const pr = makePR({
+      reviews: [{ state: "DISMISSED", author: { login: "scout" }, submittedAt: "2025-06-14T12:00:00Z" }],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "dismissed",
+      yourReviewAge: "yesterday",
+    });
+  });
+
+  it("maps COMMENTED state correctly", () => {
+    const pr = makePR({
+      reviews: [{ state: "COMMENTED", author: { login: "scout" }, submittedAt: "2025-06-15T11:00:00Z" }],
+    });
+    expect(reviewContext(pr, "scout", now)).toEqual({
+      yourReview: "commented",
+      yourReviewAge: "1h ago",
+    });
+  });
+});
+
+// ── latestCommitAge ──────────────────────────────────────────────────
+
+describe("latestCommitAge()", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  it("returns undefined when no commits", () => {
+    const pr = makePR({ commits: [] });
+    expect(latestCommitAge(pr, now)).toBeUndefined();
+  });
+
+  it("returns age of single commit", () => {
+    const pr = makePR({ commits: [{ committedDate: "2025-06-15T10:00:00Z" }] });
+    expect(latestCommitAge(pr, now)).toBe("2h ago");
+  });
+
+  it("picks the latest commit from multiple", () => {
+    const pr = makePR({
+      commits: [
+        { committedDate: "2025-06-13T00:00:00Z" },
+        { committedDate: "2025-06-15T11:00:00Z" },
+        { committedDate: "2025-06-14T00:00:00Z" },
+      ],
+    });
+    expect(latestCommitAge(pr, now)).toBe("1h ago");
+  });
+});
+
+// ── latestCommentAge ──────────────────────────────────────────────────
+
+describe("latestCommentAge()", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  it("returns undefined when no comments", () => {
+    const pr = makePR({ comments: [] });
+    expect(latestCommentAge(pr, now)).toBeUndefined();
+  });
+
+  it("returns age of single comment", () => {
+    const pr = makePR({ comments: [{ createdAt: "2025-06-15T07:00:00Z" }] });
+    expect(latestCommentAge(pr, now)).toBe("5h ago");
+  });
+
+  it("picks the latest comment from multiple", () => {
+    const pr = makePR({
+      comments: [
+        { createdAt: "2025-06-12T00:00:00Z" },
+        { createdAt: "2025-06-15T11:30:00Z" },
+        { createdAt: "2025-06-14T00:00:00Z" },
+      ],
+    });
+    expect(latestCommentAge(pr, now)).toBe("30m ago");
   });
 });

@@ -20,10 +20,12 @@ export function timeAgo(dateStr: string, now: Date): string {
   const days = Math.floor(ms / 86_400_000);
 
   if (minutes < 1) return "just now";
-  if (minutes === 1) return "1 minute ago";
-  if (minutes < 60) return `${minutes} minutes ago`;
-  if (hours === 1) return "1 hour ago";
-  if (hours < 24) return `${hours} hours ago`;
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes === 0) return `${hours}h ago`;
+    return `${hours}h${remainingMinutes}m ago`;
+  }
   if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
   if (days < 14) return "1 week ago";
@@ -105,4 +107,63 @@ export function changesRequestedCount(pr: GitHubPR): number {
     if (state === "CHANGES_REQUESTED") count++;
   }
   return count;
+}
+
+// ── Review context ────────────────────────────────────────────────
+
+export interface ReviewContext {
+  yourReview: string;
+  yourReviewAge: string;
+}
+
+/**
+ * Compute the current user's review relationship to a PR.
+ * Returns null if the user has not reviewed this PR.
+ */
+export function reviewContext(pr: GitHubPR, currentUser: string, now: Date): ReviewContext | null {
+  // Find currentUser's latest review (gh returns chronologically, last wins)
+  let latestState: string | undefined;
+  let latestTime: string | undefined;
+  for (const review of pr.reviews ?? []) {
+    if (review.author?.login === currentUser) {
+      latestState = review.state;
+      latestTime = review.submittedAt;
+    }
+  }
+
+  if (!latestState) return null;
+
+  const stateMap: Record<string, string> = {
+    CHANGES_REQUESTED: "changes-requested",
+    APPROVED: "approved",
+    COMMENTED: "commented",
+    DISMISSED: "dismissed",
+  };
+  const yourReview = stateMap[latestState] ?? latestState.toLowerCase();
+  const yourReviewAge = latestTime ? timeAgo(latestTime, now) : "unknown";
+
+  return { yourReview, yourReviewAge };
+}
+
+// ── Temporal helpers ──────────────────────────────────────────────
+
+/** Relative time of the most recent commit, or undefined if no commits. */
+export function latestCommitAge(pr: GitHubPR, now: Date): string | undefined {
+  const commits = pr.commits ?? [];
+  if (commits.length === 0) return undefined;
+  let latest = commits[0].committedDate;
+  for (let i = 1; i < commits.length; i++) {
+    if (commits[i].committedDate > latest) latest = commits[i].committedDate;
+  }
+  return timeAgo(latest, now);
+}
+
+/** Relative time of the most recent comment, or undefined if no comments. */
+export function latestCommentAge(item: { comments: Array<{ createdAt: string }> }, now: Date): string | undefined {
+  if (item.comments.length === 0) return undefined;
+  let latest = item.comments[0].createdAt;
+  for (let i = 1; i < item.comments.length; i++) {
+    if (item.comments[i].createdAt > latest) latest = item.comments[i].createdAt;
+  }
+  return timeAgo(latest, now);
 }

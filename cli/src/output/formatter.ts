@@ -4,7 +4,7 @@ import type { RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config
 const DIVIDER_WIDTH = 50;
 
 // Section types determine which metadata keys appear on the second line
-type SectionType = "vote" | "discuss" | "implement" | "reviewPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation";
+type SectionType = "vote" | "discuss" | "implement" | "reviewPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation" | "needsHuman";
 
 function sectionDivider(title: string, count: number): string {
   const label = ` ${title} (${count}) `;
@@ -26,22 +26,46 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
   const authorVal = isYou ? chalk.green(`${item.author} (you)`) : chalk.dim(item.author);
   const parts: string[] = [`by: ${authorVal}`];
 
-  if (sectionType === "implement") {
+  if (sectionType === "implement" || sectionType === "needsHuman") {
     parts.push(kv("assigned", item.assigned ?? "--"));
     parts.push(kv("comments", item.comments));
+    if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
+    if (item.updated) parts.push(kv("updated", item.updated));
     parts.push(kv("created", item.age));
     if (item.competingPRs !== undefined) {
       parts.push(kv("competing", item.competingPRs));
     }
   } else if (sectionType === "vote" || sectionType === "discuss" || sectionType === "driveDiscussion") {
     parts.push(kv("comments", item.comments));
+    if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
+    if (item.updated) parts.push(kv("updated", item.updated));
     parts.push(kv("created", item.age));
   } else {
     // PR sections: reviewPRs, addressFeedback, driveImplementation
-    if (item.status !== undefined) parts.push(kv("status", item.status));
-    if (item.checks !== undefined && item.checks !== null) parts.push(kv("checks", item.checks));
-    if (item.mergeable !== undefined && item.mergeable !== null) parts.push(kv("merge", item.mergeable));
-    if (item.review) parts.push(kv("review", `${item.review.approvals} approved, ${item.review.changesRequested} changes-requested`));
+    if (item.status !== undefined) {
+      const statusVal = /changes.requested/i.test(item.status) ? chalk.red(item.status) : chalk.dim(item.status);
+      parts.push(`status: ${statusVal}`);
+    }
+    if (item.checks !== undefined && item.checks !== null) {
+      const checksVal = /fail/i.test(item.checks) ? chalk.red(item.checks) : chalk.dim(item.checks);
+      parts.push(`checks: ${checksVal}`);
+    }
+    if (item.mergeable !== undefined && item.mergeable !== null) {
+      const mergeVal = /conflict/i.test(item.mergeable) ? chalk.red(item.mergeable) : chalk.dim(item.mergeable);
+      parts.push(`merge: ${mergeVal}`);
+    }
+    if (item.review) {
+      const segments = [`${item.review.approvals} approved`];
+      if (item.review.changesRequested > 0) segments.push(chalk.red(`${item.review.changesRequested} changes-requested`));
+      parts.push(kv("review", segments.join(", ")));
+    }
+    if (item.yourReview) {
+      const age = item.yourReviewAge ? ` (${item.yourReviewAge})` : "";
+      parts.push(kv("you", `${item.yourReview}${age}`));
+    }
+    if (item.lastCommit) parts.push(kv("last-commit", item.lastCommit));
+    if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
+    if (item.updated) parts.push(kv("updated", item.updated));
     parts.push(kv("comments", item.comments));
     parts.push(kv("created", item.age));
   }
@@ -54,8 +78,10 @@ function formatItem(item: SummaryItem, currentUser: string, sectionType: Section
   const prefix = isYou ? chalk.green("★") : " ";
   const num = chalk.cyan(`#${item.number}`);
   const tags = formatTags(item.tags);
+  const hasProblems = (item.checks && /fail/i.test(item.checks)) || (item.mergeable && /conflict/i.test(item.mergeable));
+  const warningIcon = hasProblems ? " " + chalk.red("✗") : "";
 
-  const titleLine = `${prefix} ${num} ${item.title}${tags}`;
+  const titleLine = `${prefix} ${num} ${item.title}${tags}${warningIcon}`;
   const metaLine = `       ${formatMeta(item, sectionType, currentUser)}`;
 
   return `${titleLine}\n${metaLine}`;
@@ -87,17 +113,9 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
   const sections: string[] = [];
 
-  // Attention items at the top
-  if (summary.alerts.length > 0) {
-    const alertLines = [
-      sectionDivider("REQUIRES YOUR ATTENTION", summary.alerts.length),
-      ...summary.alerts.map((a) => `  ${a.icon}  ${chalk.yellow(a.message)}`),
-    ];
-    sections.push(alertLines.join("\n"));
-  }
-
   sections.push(
     ...[
+      formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
       formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
       formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
       formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
