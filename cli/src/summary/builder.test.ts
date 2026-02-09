@@ -48,7 +48,7 @@ describe("buildSummary()", () => {
       number: 50,
       title: "Auth redesign",
       labels: [{ name: "vote" }],
-      comments: [{ createdAt: "2025-06-13T00:00:00Z" }, { createdAt: "2025-06-14T00:00:00Z" }],
+      comments: [{ createdAt: "2025-06-13T00:00:00Z", author: { login: "bot" } }, { createdAt: "2025-06-14T00:00:00Z", author: { login: "bot" } }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
@@ -65,7 +65,7 @@ describe("buildSummary()", () => {
       number: 52,
       title: "API versioning",
       labels: [{ name: "discuss" }],
-      comments: [{ createdAt: "2025-06-13T00:00:00Z" }],
+      comments: [{ createdAt: "2025-06-13T00:00:00Z", author: { login: "bot" } }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
@@ -637,7 +637,7 @@ describe("buildSummary()", () => {
     const issue = makeIssue({
       number: 170,
       labels: [{ name: "discuss" }],
-      comments: [{ createdAt: "2025-06-15T07:00:00Z" }],
+      comments: [{ createdAt: "2025-06-15T07:00:00Z", author: { login: "bot" } }],
       updatedAt: "2025-06-15T11:30:00Z",
     });
 
@@ -659,8 +659,8 @@ describe("buildSummary()", () => {
       number: 172,
       labels: [{ name: "phase:voting" }],
       comments: [
-        { createdAt: "2025-06-13T00:00:00Z" },
-        { createdAt: "2025-06-15T10:00:00Z" },
+        { createdAt: "2025-06-13T00:00:00Z", author: { login: "bot" } },
+        { createdAt: "2025-06-15T10:00:00Z", author: { login: "bot" } },
       ],
       updatedAt: "2025-06-15T10:00:00Z",
     });
@@ -673,7 +673,7 @@ describe("buildSummary()", () => {
   it("populates temporal fields on implement issues", () => {
     const issue = makeIssue({
       number: 173,
-      comments: [{ createdAt: "2025-06-14T12:00:00Z" }],
+      comments: [{ createdAt: "2025-06-14T12:00:00Z", author: { login: "bot" } }],
       updatedAt: "2025-06-15T06:00:00Z",
     });
 
@@ -725,5 +725,89 @@ describe("buildSummary()", () => {
     expect(summary.addressFeedback[0].lastCommit).toBe("yesterday");
     expect(summary.addressFeedback[0].lastComment).toBe("2 days ago");
     expect(summary.addressFeedback[0].updated).toBe("6h ago");
+  });
+
+  // ── Comment context on issues ──────────────────────────────────────
+
+  it("populates yourComment and yourCommentAge when currentUser has commented on an issue", () => {
+    const issue = makeIssue({
+      number: 200,
+      labels: [{ name: "discuss" }],
+      comments: [
+        { createdAt: "2025-06-14T00:00:00Z", author: { login: "other" } },
+        { createdAt: "2025-06-15T09:00:00Z", author: { login: "testuser" } },
+      ],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.discuss[0].yourComment).toBe("commented");
+    expect(summary.discuss[0].yourCommentAge).toBe("3h ago");
+  });
+
+  it("does not set yourComment when currentUser has not commented", () => {
+    const issue = makeIssue({
+      number: 201,
+      labels: [{ name: "discuss" }],
+      comments: [
+        { createdAt: "2025-06-14T00:00:00Z", author: { login: "other" } },
+      ],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.discuss[0].yourComment).toBeUndefined();
+    expect(summary.discuss[0].yourCommentAge).toBeUndefined();
+  });
+
+  it("populates yourComment on implement issues", () => {
+    const issue = makeIssue({
+      number: 202,
+      comments: [
+        { createdAt: "2025-06-15T11:00:00Z", author: { login: "testuser" } },
+      ],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement[0].yourComment).toBe("commented");
+    expect(summary.implement[0].yourCommentAge).toBe("1h ago");
+  });
+
+  // ── Vote annotation on voting items ────────────────────────────────
+
+  it("populates yourVote and yourVoteAge from votes map on voteOn items", () => {
+    const issue = makeIssue({
+      number: 300,
+      labels: [{ name: "phase:voting" }],
+    });
+    const votes = new Map([[300, { reaction: "👍", createdAt: "2025-06-14T12:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, votes);
+    expect(summary.voteOn[0].yourVote).toBe("👍");
+    expect(summary.voteOn[0].yourVoteAge).toBe("yesterday");
+  });
+
+  it("does not set yourVote when issue is not in votes map", () => {
+    const issue = makeIssue({
+      number: 301,
+      labels: [{ name: "phase:voting" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map());
+    expect(summary.voteOn[0].yourVote).toBeUndefined();
+    expect(summary.voteOn[0].yourVoteAge).toBeUndefined();
+  });
+
+  it("retains vote info on extended-voting items moved to driveDiscussion", () => {
+    const issue = makeIssue({
+      number: 302,
+      labels: [{ name: "phase:extended-voting" }],
+      author: { login: "testuser" },
+    });
+    const votes = new Map([[302, { reaction: "👎", createdAt: "2025-06-13T00:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, votes);
+    // Extended-voting authored items move to driveDiscussion
+    expect(summary.driveDiscussion).toHaveLength(1);
+    expect(summary.driveDiscussion[0].yourVote).toBe("👎");
+    expect(summary.driveDiscussion[0].yourVoteAge).toBe("2 days ago");
   });
 });

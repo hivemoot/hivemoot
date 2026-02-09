@@ -21,6 +21,10 @@ vi.mock("../github/user.js", () => ({
   fetchCurrentUser: vi.fn(),
 }));
 
+vi.mock("../github/votes.js", () => ({
+  fetchVotes: vi.fn(),
+}));
+
 vi.mock("../summary/builder.js", () => ({
   buildSummary: vi.fn(),
 }));
@@ -40,6 +44,7 @@ import { resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
+import { fetchVotes } from "../github/votes.js";
 import { buildSummary } from "../summary/builder.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
@@ -50,6 +55,7 @@ const mockedLoadTeamConfig = vi.mocked(loadTeamConfig);
 const mockedFetchIssues = vi.mocked(fetchIssues);
 const mockedFetchPulls = vi.mocked(fetchPulls);
 const mockedFetchCurrentUser = vi.mocked(fetchCurrentUser);
+const mockedFetchVotes = vi.mocked(fetchVotes);
 const mockedBuildSummary = vi.mocked(buildSummary);
 const mockedFormatBuzz = vi.mocked(formatBuzz);
 const mockedFormatStatus = vi.mocked(formatStatus);
@@ -87,6 +93,7 @@ beforeEach(() => {
   mockedFetchIssues.mockResolvedValue([]);
   mockedFetchPulls.mockResolvedValue([]);
   mockedFetchCurrentUser.mockResolvedValue("testuser");
+  mockedFetchVotes.mockResolvedValue(new Map());
   mockedBuildSummary.mockReturnValue(testSummary);
 });
 
@@ -199,7 +206,7 @@ describe("buzzCommand", () => {
   });
 
   it("adds truncation note when issues hit fetchLimit", async () => {
-    const manyIssues = Array.from({ length: 200 }, (_, i) => ({ number: i }));
+    const manyIssues = Array.from({ length: 200 }, (_, i) => ({ number: i, labels: [] }));
     mockedFetchIssues.mockResolvedValue(manyIssues as any);
     mockedFetchPulls.mockResolvedValue([]);
     mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
@@ -247,7 +254,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
   });
@@ -261,7 +268,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
   });
@@ -275,7 +282,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "");
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "", expect.any(Date), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not determine GitHub user (auth failed) — drive sections, competition counts, and author highlighting are unavailable.",
@@ -309,7 +316,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser");
+    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map));
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not fetch issues (boom) or pull requests (boom2) — showing limited summary.",
@@ -357,5 +364,72 @@ describe("buzzCommand", () => {
       "Could not determine GitHub user (token expired) — drive sections, competition counts, and author highlighting are unavailable.",
     );
     expect(summaryArg.notes).toHaveLength(2);
+  });
+
+  // ── Vote fetching ───────────────────────────────────────────────
+
+  it("calls fetchVotes with voting issue numbers", async () => {
+    const votingIssue = { number: 42, labels: [{ name: "phase:voting" }] };
+    const normalIssue = { number: 43, labels: [{ name: "bug" }] };
+    mockedFetchIssues.mockResolvedValue([votingIssue, normalIssue] as any);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchVotes).toHaveBeenCalledWith(testRepo, [42], "testuser");
+  });
+
+  it("passes votes map to buildSummary", async () => {
+    const votingIssue = { number: 42, labels: [{ name: "vote" }] };
+    mockedFetchIssues.mockResolvedValue([votingIssue] as any);
+    const voteMap = new Map([[42, { reaction: "👍", createdAt: "2025-01-01T00:00:00Z" }]]);
+    mockedFetchVotes.mockResolvedValue(voteMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    // buildSummary should be called with the votes map as last arg
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo, [votingIssue], [], "testuser", expect.any(Date), voteMap,
+    );
+  });
+
+  it("does not call fetchVotes when no voting issues exist", async () => {
+    mockedFetchIssues.mockResolvedValue([{ number: 1, labels: [{ name: "bug" }] }] as any);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchVotes).toHaveBeenCalledWith(testRepo, [], "testuser");
+  });
+
+  it("adds note when fetchVotes fails", async () => {
+    const votingIssue = { number: 42, labels: [{ name: "phase:voting" }] };
+    mockedFetchIssues.mockResolvedValue([votingIssue] as any);
+    mockedFetchVotes.mockRejectedValue(new Error("GraphQL error"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch vote data — vote status unavailable.");
+  });
+
+  it("does not add vote failure note when fetchVotes succeeds", async () => {
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).not.toContain("Could not fetch vote data — vote status unavailable.");
   });
 });

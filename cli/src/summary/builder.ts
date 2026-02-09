@@ -5,7 +5,8 @@ import type {
   RepoSummary,
   SummaryItem,
 } from "../config/types.js";
-import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo, reviewContext, latestCommitAge, latestCommentAge } from "./utils.js";
+import type { VoteMap } from "../github/votes.js";
+import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo, reviewContext, latestCommitAge, latestCommentAge, commentContext } from "./utils.js";
 
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
@@ -26,6 +27,7 @@ function compactMergeable(raw: string | null): string | null {
 
 function classifyIssue(
   issue: GitHubIssue,
+  currentUser: string,
   now: Date,
 ): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman"; item: SummaryItem } {
   const age = timeAgo(issue.createdAt, now);
@@ -48,6 +50,15 @@ function classifyIssue(
     lastComment: latestCommentAge(issue, now),
     updated: timeAgo(issue.updatedAt, now),
   };
+
+  // Populate comment context for the current user
+  if (currentUser) {
+    const ctx = commentContext(issue, currentUser, now);
+    if (ctx) {
+      base.yourComment = ctx.yourComment;
+      base.yourCommentAge = ctx.yourCommentAge;
+    }
+  }
 
   // Issues needing human attention are excluded from all actionable buckets
   if (hasExactLabel(issue.labels, "needs:human")) {
@@ -136,6 +147,7 @@ export function buildSummary(
   prs: GitHubPR[],
   currentUser: string,
   now: Date = new Date(),
+  votes: VoteMap = new Map(),
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -145,11 +157,20 @@ export function buildSummary(
   const addressFeedback: SummaryItem[] = [];
 
   for (const issue of issues) {
-    const { bucket, item } = classifyIssue(issue, now);
+    const { bucket, item } = classifyIssue(issue, currentUser, now);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
     else if (bucket === "implement") implement.push(item);
+  }
+
+  // Annotate voting items with vote reactions from the votes map
+  for (const item of voteOn) {
+    const vote = votes.get(item.number);
+    if (vote) {
+      item.yourVote = vote.reaction;
+      item.yourVoteAge = timeAgo(vote.createdAt, now);
+    }
   }
 
   // Annotate implement items with competing PR counts

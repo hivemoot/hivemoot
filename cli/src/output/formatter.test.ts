@@ -277,6 +277,86 @@ describe("notes rendering", () => {
   });
 });
 
+describe("you: indicator on issue sections", () => {
+  it("renders 'you: not voted' on voting issues with no participation", () => {
+    const voteSummary: RepoSummary = {
+      ...summary,
+      voteOn: [{ number: 50, title: "Auth redesign", tags: ["phase:voting"], author: "bob", comments: 0, age: "3 days ago" }],
+    };
+    const output = formatStatus(voteSummary);
+    expect(output).toContain("you:");
+    expect(output).toContain("not voted");
+  });
+
+  it("renders 'you: voted 👍' on voting issues where user voted", () => {
+    const voteSummary: RepoSummary = {
+      ...summary,
+      voteOn: [{ number: 50, title: "Auth redesign", tags: ["phase:voting"], author: "bob", comments: 0, age: "3 days ago", yourVote: "👍", yourVoteAge: "yesterday" }],
+    };
+    const output = formatStatus(voteSummary);
+    expect(output).toContain("you:");
+    expect(output).toContain("voted 👍");
+    expect(output).toContain("yesterday");
+  });
+
+  it("renders 'you: commented, voted 👍' when both are present", () => {
+    const voteSummary: RepoSummary = {
+      ...summary,
+      voteOn: [{ number: 50, title: "Auth", tags: ["vote"], author: "bob", comments: 1, age: "1 day", yourComment: "commented", yourCommentAge: "3h ago", yourVote: "👍", yourVoteAge: "yesterday" }],
+    };
+    const output = formatStatus(voteSummary);
+    expect(output).toContain("commented (3h ago), voted 👍 (yesterday)");
+  });
+
+  it("renders 'you: commented, not voted' on voting issues where user commented but didn't vote", () => {
+    const voteSummary: RepoSummary = {
+      ...summary,
+      voteOn: [{ number: 50, title: "Auth", tags: ["vote"], author: "bob", comments: 1, age: "1 day", yourComment: "commented", yourCommentAge: "3h ago" }],
+    };
+    const output = formatStatus(voteSummary);
+    expect(output).toContain("commented (3h ago), not voted");
+  });
+
+  it("renders 'you: commented' on discuss issues where user commented", () => {
+    const discSummary: RepoSummary = {
+      ...summary,
+      discuss: [{ number: 60, title: "API design", tags: ["discuss"], author: "bob", comments: 1, age: "1 day", yourComment: "commented", yourCommentAge: "5h ago" }],
+    };
+    const output = formatStatus(discSummary);
+    expect(output).toContain("you:");
+    expect(output).toContain("commented (5h ago)");
+  });
+
+  it("does not render 'you:' on discuss issues with no participation", () => {
+    const discSummary: RepoSummary = {
+      ...summary,
+      discuss: [{ number: 60, title: "API design", tags: ["discuss"], author: "bob", comments: 0, age: "1 day" }],
+    };
+    const output = formatStatus(discSummary);
+    // Check that there's no "you:" in the discuss section
+    const discussSection = output.split("DISCUSS ISSUES")[1]?.split("──")[0] ?? "";
+    expect(discussSection).not.toContain("you:");
+  });
+
+  it("renders 'you: commented' on implement issues where user commented", () => {
+    const implSummary: RepoSummary = {
+      ...summary,
+      implement: [{ number: 70, title: "Build feature", tags: [], author: "bob", comments: 1, age: "1 day", yourComment: "commented", yourCommentAge: "2h ago" }],
+    };
+    const output = formatStatus(implSummary);
+    expect(output).toContain("you:");
+    expect(output).toContain("commented (2h ago)");
+  });
+
+  it("does not render 'you:' on implement issues with no participation", () => {
+    const output = formatStatus(summary);
+    // #45 by bob with no yourComment — should not have "you:" in its metadata
+    const implementSection = output.split("READY TO IMPLEMENT")[1]?.split("REVIEW")[0] ?? "";
+    // Only the star marker for alice's item should have "you" — as "(you)" in the author field
+    expect(implementSection).not.toMatch(/\byou:.*not voted/);
+  });
+});
+
 describe("formatRoles()", () => {
   it("lists roles with descriptions", () => {
     const output = formatRoles(teamConfig, "hivemoot/colony");

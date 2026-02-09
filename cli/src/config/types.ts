@@ -24,7 +24,7 @@ export interface GitHubIssue {
   labels: Array<{ name: string }>;
   assignees: Array<{ login: string }>;
   author: { login: string } | null;
-  comments: Array<{ createdAt: string }>;
+  comments: Array<{ createdAt: string; author: { login: string } | null }>;
   createdAt: string;
   updatedAt: string;
   url: string;
@@ -52,7 +52,7 @@ export interface GitHubPR {
   state: string;
   author: { login: string } | null;
   labels: Array<{ name: string }>;
-  comments: Array<{ createdAt: string }>;
+  comments: Array<{ createdAt: string; author: { login: string } | null }>;
   reviews: PRReview[];
   createdAt: string;
   updatedAt: string;
@@ -95,6 +95,10 @@ export interface SummaryItem {
   checks?: string | null;      // "passing" | "failing" | "pending" | null
   mergeable?: string | null;   // "clean" | "conflicts" | null
   review?: ReviewSummary;
+  yourComment?: string;                // "commented"
+  yourCommentAge?: string;             // "3h ago" — when you last commented
+  yourVote?: string;                   // "👍" | "👎" | "😕" | "👀"
+  yourVoteAge?: string;                // "1d ago" — when you voted
   yourReview?: string;
   yourReviewAge?: string;             // "3 days ago" — when you last reviewed
   lastCommit?: string;                // "2 hours ago" — when the latest commit landed

@@ -26,20 +26,45 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
   const authorVal = isYou ? chalk.green(`${item.author} (you)`) : chalk.dim(item.author);
   const parts: string[] = [`by: ${authorVal}`];
 
-  if (sectionType === "implement" || sectionType === "needsHuman") {
+  if (sectionType === "vote" || sectionType === "discuss" || sectionType === "driveDiscussion") {
+    parts.push(kv("comments", item.comments));
+
+    // Build "you:" composite field for issue sections
+    const youParts: string[] = [];
+    if (item.yourComment) {
+      const commentAge = item.yourCommentAge ? ` (${item.yourCommentAge})` : "";
+      youParts.push(`${item.yourComment}${commentAge}`);
+    }
+    if (item.yourVote) {
+      const voteAge = item.yourVoteAge ? ` (${item.yourVoteAge})` : "";
+      youParts.push(`voted ${item.yourVote}${voteAge}`);
+    } else if (sectionType === "vote") {
+      // Always show vote status on voting sections
+      youParts.push("not voted");
+    }
+    if (youParts.length > 0) {
+      parts.push(kv("you", youParts.join(", ")));
+    }
+
+    if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
+    if (item.updated) parts.push(kv("updated", item.updated));
+    parts.push(kv("created", item.age));
+  } else if (sectionType === "implement" || sectionType === "needsHuman") {
     parts.push(kv("assigned", item.assigned ?? "--"));
     parts.push(kv("comments", item.comments));
+
+    // Show "you:" on non-voting issue sections only if user has commented
+    if (item.yourComment) {
+      const commentAge = item.yourCommentAge ? ` (${item.yourCommentAge})` : "";
+      parts.push(kv("you", `${item.yourComment}${commentAge}`));
+    }
+
     if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
     if (item.updated) parts.push(kv("updated", item.updated));
     parts.push(kv("created", item.age));
     if (item.competingPRs !== undefined) {
       parts.push(kv("competing", item.competingPRs));
     }
-  } else if (sectionType === "vote" || sectionType === "discuss" || sectionType === "driveDiscussion") {
-    parts.push(kv("comments", item.comments));
-    if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
-    if (item.updated) parts.push(kv("updated", item.updated));
-    parts.push(kv("created", item.age));
   } else {
     // PR sections: reviewPRs, addressFeedback, driveImplementation
     if (item.status !== undefined) {

@@ -1,10 +1,12 @@
-import { CliError, type BuzzOptions } from "../config/types.js";
+import { CliError, type BuzzOptions, type GitHubIssue } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
 import { resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
+import { fetchVotes } from "../github/votes.js";
 import { buildSummary } from "../summary/builder.js";
+import { isVotingIssue } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
 
@@ -40,7 +42,20 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const prs = prsResult.status === "fulfilled" ? prsResult.value : [];
   const currentUser = userResult.status === "fulfilled" ? userResult.value : "";
 
-  const summary = buildSummary(repo, issues, prs, currentUser);
+  // Fetch vote reactions for voting-phase issues
+  const votingIssueNumbers = issues
+    .filter((issue: GitHubIssue) => isVotingIssue(issue.labels))
+    .map((issue: GitHubIssue) => issue.number);
+
+  let votes = new Map<number, { reaction: string; createdAt: string }>();
+  let voteFetchFailed = false;
+  try {
+    votes = await fetchVotes(repo, votingIssueNumbers, currentUser);
+  } catch {
+    voteFetchFailed = true;
+  }
+
+  const summary = buildSummary(repo, issues, prs, currentUser, new Date(), votes);
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
     summary.notes.push(
@@ -56,6 +71,10 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     summary.notes.push(
       `Could not determine GitHub user (${errorDetail(userResult.reason)}) — drive sections, competition counts, and author highlighting are unavailable.`,
     );
+  }
+
+  if (voteFetchFailed) {
+    summary.notes.push("Could not fetch vote data — vote status unavailable.");
   }
 
   if (issues.length >= fetchLimit) {

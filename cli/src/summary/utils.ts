@@ -1,5 +1,47 @@
 import type { GitHubPR } from "../config/types.js";
 
+// ── Comment context ──────────────────────────────────────────────
+
+export interface CommentContext {
+  yourComment: string;
+  yourCommentAge: string;
+}
+
+/**
+ * Compute the current user's latest comment on an issue/PR.
+ * Returns null if the user has not commented.
+ */
+export function commentContext(
+  item: { comments: Array<{ createdAt: string; author: { login: string } | null }> },
+  currentUser: string,
+  now: Date,
+): CommentContext | null {
+  let latestTime: string | undefined;
+  for (const comment of item.comments) {
+    if (comment.author?.login === currentUser) {
+      if (!latestTime || comment.createdAt > latestTime) {
+        latestTime = comment.createdAt;
+      }
+    }
+  }
+  if (!latestTime) return null;
+  return { yourComment: "commented", yourCommentAge: timeAgo(latestTime, now) };
+}
+
+// ── Voting issue detection ───────────────────────────────────────
+
+/**
+ * Whether an issue is in a voting phase based on its labels.
+ * Matches: phase:voting, phase:extended-voting, or the keyword "vote".
+ */
+export function isVotingIssue(labels: Array<{ name: string }>): boolean {
+  return (
+    hasExactLabel(labels, "phase:voting") ||
+    hasExactLabel(labels, "phase:extended-voting") ||
+    hasLabel(labels, "vote")
+  );
+}
+
 export function hasLabel(labels: Array<{ name: string }>, keyword: string): boolean {
   return labels.some((l) =>
     l.name.toLowerCase().split(/[:\-_]/).some((seg) => seg === keyword),

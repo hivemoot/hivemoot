@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, reviewContext, latestCommitAge, latestCommentAge } from "./utils.js";
+import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, reviewContext, latestCommitAge, latestCommentAge, commentContext, isVotingIssue } from "./utils.js";
 import type { GitHubPR } from "../config/types.js";
 
 function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
@@ -548,5 +548,106 @@ describe("latestCommentAge()", () => {
       ],
     });
     expect(latestCommentAge(pr, now)).toBe("30m ago");
+  });
+});
+
+// ── commentContext ──────────────────────────────────────────────────
+
+describe("commentContext()", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  it("returns null when no comments exist", () => {
+    const item = { comments: [] as Array<{ createdAt: string; author: { login: string } | null }> };
+    expect(commentContext(item, "scout", now)).toBeNull();
+  });
+
+  it("returns null when user has not commented", () => {
+    const item = {
+      comments: [
+        { createdAt: "2025-06-14T00:00:00Z", author: { login: "other" } },
+      ],
+    };
+    expect(commentContext(item, "scout", now)).toBeNull();
+  });
+
+  it("returns yourComment and yourCommentAge for user's comment", () => {
+    const item = {
+      comments: [
+        { createdAt: "2025-06-15T09:00:00Z", author: { login: "scout" } },
+      ],
+    };
+    expect(commentContext(item, "scout", now)).toEqual({
+      yourComment: "commented",
+      yourCommentAge: "3h ago",
+    });
+  });
+
+  it("picks the latest comment when user has multiple", () => {
+    const item = {
+      comments: [
+        { createdAt: "2025-06-13T00:00:00Z", author: { login: "scout" } },
+        { createdAt: "2025-06-15T11:00:00Z", author: { login: "scout" } },
+        { createdAt: "2025-06-14T00:00:00Z", author: { login: "scout" } },
+      ],
+    };
+    expect(commentContext(item, "scout", now)).toEqual({
+      yourComment: "commented",
+      yourCommentAge: "1h ago",
+    });
+  });
+
+  it("handles null author without crashing", () => {
+    const item = {
+      comments: [
+        { createdAt: "2025-06-14T00:00:00Z", author: null },
+      ],
+    };
+    expect(commentContext(item, "scout", now)).toBeNull();
+  });
+
+  it("ignores other users' comments", () => {
+    const item = {
+      comments: [
+        { createdAt: "2025-06-15T11:00:00Z", author: { login: "alice" } },
+        { createdAt: "2025-06-14T00:00:00Z", author: { login: "scout" } },
+        { createdAt: "2025-06-15T11:30:00Z", author: { login: "bob" } },
+      ],
+    };
+    expect(commentContext(item, "scout", now)).toEqual({
+      yourComment: "commented",
+      yourCommentAge: "yesterday",
+    });
+  });
+});
+
+// ── isVotingIssue ──────────────────────────────────────────────────
+
+describe("isVotingIssue()", () => {
+  it("returns true for phase:voting label", () => {
+    expect(isVotingIssue([{ name: "phase:voting" }])).toBe(true);
+  });
+
+  it("returns true for phase:extended-voting label", () => {
+    expect(isVotingIssue([{ name: "phase:extended-voting" }])).toBe(true);
+  });
+
+  it("returns true for vote keyword label", () => {
+    expect(isVotingIssue([{ name: "vote" }])).toBe(true);
+  });
+
+  it("returns true for vote:topic keyword label", () => {
+    expect(isVotingIssue([{ name: "vote:auth" }])).toBe(true);
+  });
+
+  it("returns false for non-voting labels", () => {
+    expect(isVotingIssue([{ name: "discuss" }, { name: "bug" }])).toBe(false);
+  });
+
+  it("returns false for empty labels", () => {
+    expect(isVotingIssue([])).toBe(false);
+  });
+
+  it("returns false for phase:discussion", () => {
+    expect(isVotingIssue([{ name: "phase:discussion" }])).toBe(false);
   });
 });
