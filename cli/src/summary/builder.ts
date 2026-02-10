@@ -30,7 +30,7 @@ function classifyIssue(
   issue: GitHubIssue,
   currentUser: string,
   now: Date,
-): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman"; item: SummaryItem } {
+): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified"; item: SummaryItem } {
   const age = timeAgo(issue.createdAt, now);
   const assigned =
     issue.assignees.length > 0
@@ -90,7 +90,7 @@ function classifyIssue(
   }
 
   return {
-    bucket: "implement",
+    bucket: "unclassified",
     item: { ...base, assigned },
   };
 }
@@ -156,6 +156,7 @@ export function buildSummary(
   const voteOn: SummaryItem[] = [];
   const discuss: SummaryItem[] = [];
   const implement: SummaryItem[] = [];
+  const unclassified: SummaryItem[] = [];
   const reviewPRs: SummaryItem[] = [];
   const addressFeedback: SummaryItem[] = [];
 
@@ -165,6 +166,7 @@ export function buildSummary(
     else if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
     else if (bucket === "implement") implement.push(item);
+    else if (bucket === "unclassified") unclassified.push(item);
   }
 
   // Annotate voting items with vote reactions from the votes map
@@ -234,6 +236,7 @@ export function buildSummary(
     ...filteredVoteOn,
     ...filteredDiscuss,
     ...implement,
+    ...unclassified,
     ...filteredReviewPRs,
     ...filteredAddressFeedback,
   ];
@@ -255,6 +258,7 @@ export function buildSummary(
     voteOn: filteredVoteOn,
     discuss: filteredDiscuss,
     implement,
+    unclassified,
     reviewPRs: filteredReviewPRs,
     addressFeedback: filteredAddressFeedback,
     notes: [],

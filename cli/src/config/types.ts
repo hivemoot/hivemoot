@@ -120,6 +120,7 @@ export interface RepoSummary {
   voteOn: SummaryItem[];
   discuss: SummaryItem[];
   implement: SummaryItem[];
+  unclassified?: SummaryItem[];
   reviewPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
   notes: string[];

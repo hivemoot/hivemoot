@@ -4,7 +4,7 @@ import type { RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config
 const DIVIDER_WIDTH = 50;
 
 // Section types determine which metadata keys appear on the second line
-type SectionType = "vote" | "discuss" | "implement" | "reviewPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation" | "needsHuman";
+type SectionType = "vote" | "discuss" | "implement" | "unclassified" | "reviewPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation" | "needsHuman";
 
 function sectionDivider(title: string, count: number): string {
   const label = ` ${title} (${count}) `;
@@ -49,7 +49,7 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
     if (item.lastComment) parts.push(kv("last-comment", item.lastComment));
     if (item.updated) parts.push(kv("updated", item.updated));
     parts.push(kv("created", item.age));
-  } else if (sectionType === "implement" || sectionType === "needsHuman") {
+  } else if (sectionType === "implement" || sectionType === "unclassified" || sectionType === "needsHuman") {
     parts.push(kv("assigned", item.assigned ?? "--"));
     parts.push(kv("comments", item.comments));
 
@@ -152,6 +152,7 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
       formatSection("DISCUSS ISSUES", summary.discuss, u, "discuss", limit),
       formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
+      formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
       formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
       formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
     ].filter(Boolean),

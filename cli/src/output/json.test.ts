@@ -11,6 +11,7 @@ const summary: RepoSummary = {
   voteOn: [{ number: 50, title: "Auth redesign", tags: ["vote", "security"], author: "alice", comments: 2, age: "3 days ago" }],
   discuss: [{ number: 52, title: "API versioning", tags: ["discuss"], author: "bob", comments: 5, age: "yesterday" }],
   implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago" }],
+  unclassified: [],
   reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
   notes: [],
@@ -47,8 +48,21 @@ describe("jsonStatus()", () => {
     expect(result.repo).toBe("hivemoot/colony");
     expect(result.voteOn).toHaveLength(1);
     expect(result.implement).toHaveLength(1);
+    expect(result.unclassified).toEqual([]);
     expect(result.reviewPRs).toHaveLength(1);
     expect(result).not.toHaveProperty("role");
+  });
+
+  it("includes unclassified items in JSON output", () => {
+    const withUnclassified: RepoSummary = {
+      ...summary,
+      unclassified: [
+        { number: 72, title: "Investigate flaky logs", tags: [], author: "bob", comments: 1, age: "2 days ago" },
+      ],
+    };
+    const result = JSON.parse(jsonStatus(withUnclassified));
+    expect(result.unclassified).toHaveLength(1);
+    expect(result.unclassified[0].number).toBe(72);
   });
 
   it("includes tags in summary items", () => {

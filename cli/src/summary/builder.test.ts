@@ -9,7 +9,7 @@ function makeIssue(overrides: Partial<GitHubIssue> = {}): GitHubIssue {
   return {
     number: 1,
     title: "Test issue",
-    labels: [],
+    labels: [{ name: "phase:ready-to-implement" }],
     assignees: [],
     author: { login: "alice" },
     comments: [],
@@ -74,18 +74,19 @@ describe("buildSummary()", () => {
     expect(summary.discuss[0].comments).toBe(1);
   });
 
-  it("classifies unlabeled issues into implement bucket with empty tags", () => {
+  it("classifies unlabeled issues into unclassified bucket with empty tags", () => {
     const issue = makeIssue({
       number: 45,
       title: "User Dashboard",
+      labels: [],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
-    expect(summary.implement).toHaveLength(1);
-    expect(summary.implement[0].number).toBe(45);
-    expect(summary.implement[0].assigned).toBeUndefined();
-    expect(summary.implement[0].age).toBe("3 days ago");
-    expect(summary.implement[0].tags).toEqual([]);
+    expect(summary.unclassified).toHaveLength(1);
+    expect(summary.unclassified![0].number).toBe(45);
+    expect(summary.unclassified![0].assigned).toBeUndefined();
+    expect(summary.unclassified![0].age).toBe("3 days ago");
+    expect(summary.unclassified![0].tags).toEqual([]);
   });
 
   it("includes canonical URL on issue summary items", () => {

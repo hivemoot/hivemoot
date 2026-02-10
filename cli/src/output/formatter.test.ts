@@ -16,6 +16,7 @@ const summary: RepoSummary = {
   ],
   reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [],
+  unclassified: [],
   notes: [],
 };
 
@@ -167,6 +168,20 @@ describe("formatStatus()", () => {
   it("renders implement items with assigned key", () => {
     const output = formatStatus(summary);
     expect(output).toContain("assigned:");
+  });
+
+  it("renders UNCLASSIFIED section when present", () => {
+    const withUnclassified: RepoSummary = {
+      ...summary,
+      unclassified: [
+        { number: 72, title: "Investigate flaky logs", tags: [], author: "bob", comments: 1, age: "2 days ago" },
+      ],
+    };
+
+    const output = formatStatus(withUnclassified);
+    expect(output).toContain("UNCLASSIFIED ISSUES");
+    expect(output).toContain("#72");
+    expect(output).toContain("Investigate flaky logs");
   });
 });
 
