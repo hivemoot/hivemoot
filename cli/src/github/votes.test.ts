@@ -15,19 +15,34 @@ beforeEach(() => {
 });
 
 function makeGraphQLResponse(issueComments: Array<{
+  id?: string;
   body: string;
   createdAt: string;
   reactions: Array<{ content: string; createdAt: string; userLogin: string | null }>;
-}>) {
+}>, options?: {
+  hasPreviousPage?: boolean;
+  startCursor?: string | null;
+  reactionHasNextPage?: boolean;
+  reactionEndCursor?: string | null;
+}) {
   return JSON.stringify({
     data: {
       repository: {
         issue: {
           comments: {
+            pageInfo: {
+              hasPreviousPage: options?.hasPreviousPage ?? false,
+              startCursor: options?.startCursor ?? null,
+            },
             nodes: issueComments.map((c) => ({
+              id: c.id ?? "comment-id",
               body: c.body,
               createdAt: c.createdAt,
               reactions: {
+                pageInfo: {
+                  hasNextPage: options?.reactionHasNextPage ?? false,
+                  endCursor: options?.reactionEndCursor ?? null,
+                },
                 nodes: c.reactions.map((r) => ({
                   content: r.content,
                   createdAt: r.createdAt,
@@ -36,6 +51,29 @@ function makeGraphQLResponse(issueComments: Array<{
               },
             })),
           },
+        },
+      },
+    },
+  });
+}
+
+function makeReactionsNodeResponse(reactions: Array<{ content: string; createdAt: string; userLogin: string | null }>, options?: {
+  hasNextPage?: boolean;
+  endCursor?: string | null;
+}) {
+  return JSON.stringify({
+    data: {
+      node: {
+        reactions: {
+          pageInfo: {
+            hasNextPage: options?.hasNextPage ?? false,
+            endCursor: options?.endCursor ?? null,
+          },
+          nodes: reactions.map((r) => ({
+            content: r.content,
+            createdAt: r.createdAt,
+            user: r.userLogin ? { login: r.userLogin } : null,
+          })),
         },
       },
     },
@@ -253,5 +291,69 @@ describe("fetchVotes()", () => {
 
     const result = await fetchVotes(repo, [42], "scout");
     expect(result.size).toBe(0);
+  });
+
+  it("paginates comments to find voting comment beyond latest 100 comments", async () => {
+    mockedGh
+      .mockResolvedValueOnce(
+        makeGraphQLResponse(
+          [
+            {
+              id: "new-comments-only",
+              body: "regular comment",
+              createdAt: "2024-01-20T10:00:00Z",
+              reactions: [],
+            },
+          ],
+          { hasPreviousPage: true, startCursor: "older-comments-cursor" },
+        ),
+      )
+      .mockResolvedValueOnce(
+        makeGraphQLResponse([
+          {
+            id: "older-vote-comment",
+            body: '<!-- hivemoot-metadata: {"version":1,"type":"voting","cycle":1,"createdAt":"2024-01-15T10:00:00.000Z","issueNumber":42} -->',
+            createdAt: "2024-01-15T10:00:00Z",
+            reactions: [
+              { content: "THUMBS_UP", createdAt: "2024-01-16T12:00:00Z", userLogin: "scout" },
+            ],
+          },
+        ]),
+      );
+
+    const result = await fetchVotes(repo, [42], "scout");
+    expect(result.get(42)?.reaction).toBe("👍");
+    expect(mockedGh).toHaveBeenCalledTimes(2);
+  });
+
+  it("paginates reactions when vote is not in first 100 reactions", async () => {
+    mockedGh
+      .mockResolvedValueOnce(
+        makeGraphQLResponse(
+          [
+            {
+              id: "vote-comment-1",
+              body: '<!-- hivemoot-metadata: {"version":1,"type":"voting","cycle":1,"createdAt":"2024-01-15T10:00:00.000Z","issueNumber":42} -->',
+              createdAt: "2024-01-15T10:00:00Z",
+              reactions: [
+                { content: "THUMBS_DOWN", createdAt: "2024-01-15T11:00:00Z", userLogin: "other" },
+              ],
+            },
+          ],
+          { reactionHasNextPage: true, reactionEndCursor: "more-reactions" },
+        ),
+      )
+      .mockResolvedValueOnce(
+        makeReactionsNodeResponse([
+          { content: "EYES", createdAt: "2024-01-16T12:00:00Z", userLogin: "scout" },
+        ]),
+      );
+
+    const result = await fetchVotes(repo, [42], "scout");
+    expect(result.get(42)).toEqual({
+      reaction: "👀",
+      createdAt: "2024-01-16T12:00:00Z",
+    });
+    expect(mockedGh).toHaveBeenCalledTimes(2);
   });
 });

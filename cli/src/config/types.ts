@@ -82,6 +82,7 @@ export interface ReviewSummary {
 export interface SummaryItem {
   number: number;
   title: string;
+  url?: string;
   tags: string[];
   author: string;
   // Common fields

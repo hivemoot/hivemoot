@@ -22,9 +22,14 @@ const REACTION_EMOJI: Record<string, string> = {
 };
 
 interface GraphQLComment {
+  id: string;
   body: string;
   createdAt: string;
   reactions: {
+    pageInfo?: {
+      hasNextPage?: boolean;
+      endCursor?: string | null;
+    };
     nodes: Array<{
       content: string;
       createdAt: string;
@@ -33,33 +38,85 @@ interface GraphQLComment {
   };
 }
 
-interface GraphQLResponse {
+interface IssueCommentsConnection {
+  pageInfo?: {
+    hasPreviousPage?: boolean;
+    startCursor?: string | null;
+  };
+  nodes: GraphQLComment[];
+}
+
+interface IssueCommentsResponse {
   data: {
     repository: {
       issue: {
-        comments: {
-          nodes: GraphQLComment[];
-        };
+        comments: IssueCommentsConnection;
       } | null;
     };
   };
 }
 
-const QUERY = `
-query ($owner: String!, $repo: String!, $number: Int!) {
+interface CommentReactionsResponse {
+  data: {
+    node: {
+      reactions: {
+        pageInfo?: {
+          hasNextPage?: boolean;
+          endCursor?: string | null;
+        };
+        nodes: Array<{
+          content: string;
+          createdAt: string;
+          user: { login: string } | null;
+        }>;
+      };
+    } | null;
+  };
+}
+
+const ISSUE_COMMENTS_QUERY = `
+query ($owner: String!, $repo: String!, $number: Int!, $commentsCursor: String) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
-      comments(last: 50) {
+      comments(last: 100, before: $commentsCursor) {
+        pageInfo {
+          hasPreviousPage
+          startCursor
+        }
         nodes {
+          id
           body
           createdAt
           reactions(first: 100) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               content
               createdAt
               user { login }
             }
           }
+        }
+      }
+    }
+  }
+}`;
+
+const COMMENT_REACTIONS_QUERY = `
+query ($commentId: ID!, $reactionsCursor: String) {
+  node(id: $commentId) {
+    ... on IssueComment {
+      reactions(first: 100, after: $reactionsCursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          content
+          createdAt
+          user { login }
         }
       }
     }
@@ -77,21 +134,21 @@ function isVotingComment(body: string): boolean {
   }
 }
 
-/**
- * Find the current user's reaction on the latest voting comment for a single issue.
- */
-function extractVote(comments: GraphQLComment[], currentUser: string): VoteInfo | undefined {
-  // Find the latest voting comment (last in array = most recent)
+function findLatestVotingComment(comments: GraphQLComment[]): GraphQLComment | undefined {
   let votingComment: GraphQLComment | undefined;
   for (const comment of comments) {
     if (isVotingComment(comment.body)) {
       votingComment = comment;
     }
   }
-  if (!votingComment) return undefined;
+  return votingComment;
+}
 
-  // Find the current user's reaction
-  for (const reaction of votingComment.reactions.nodes) {
+function extractUserVote(
+  reactions: Array<{ content: string; createdAt: string; user: { login: string } | null }>,
+  currentUser: string,
+): VoteInfo | undefined {
+  for (const reaction of reactions) {
     if (reaction.user?.login === currentUser) {
       const emoji = REACTION_EMOJI[reaction.content] ?? reaction.content;
       return { reaction: emoji, createdAt: reaction.createdAt };
@@ -100,29 +157,94 @@ function extractVote(comments: GraphQLComment[], currentUser: string): VoteInfo 
   return undefined;
 }
 
-async function fetchVoteForIssue(
+async function fetchIssueCommentsPage(
   repo: RepoRef,
   issueNumber: number,
-  currentUser: string,
-): Promise<VoteInfo | undefined> {
-  const raw = await gh([
+  commentsCursor: string | null,
+): Promise<IssueCommentsConnection | undefined> {
+  const args = [
     "api",
     "graphql",
     "-f",
-    `query=${QUERY}`,
+    `query=${ISSUE_COMMENTS_QUERY}`,
     "-F",
     `owner=${repo.owner}`,
     "-F",
     `repo=${repo.repo}`,
     "-F",
     `number=${issueNumber}`,
-  ]);
+  ];
+  if (commentsCursor) {
+    args.push("-F", `commentsCursor=${commentsCursor}`);
+  } else {
+    args.push("-f", "commentsCursor=");
+  }
 
-  const response: GraphQLResponse = JSON.parse(raw);
-  const comments = response.data?.repository?.issue?.comments?.nodes;
-  if (!comments) return undefined;
+  const raw = await gh(args);
+  const response: IssueCommentsResponse = JSON.parse(raw);
+  return response.data?.repository?.issue?.comments;
+}
 
-  return extractVote(comments, currentUser);
+async function fetchAdditionalReactions(
+  commentId: string,
+  currentUser: string,
+  reactionsCursor: string | null,
+): Promise<VoteInfo | undefined> {
+  let cursor = reactionsCursor;
+  while (cursor) {
+    const raw = await gh([
+      "api",
+      "graphql",
+      "-f",
+      `query=${COMMENT_REACTIONS_QUERY}`,
+      "-F",
+      `commentId=${commentId}`,
+      "-F",
+      `reactionsCursor=${cursor}`,
+    ]);
+    const response: CommentReactionsResponse = JSON.parse(raw);
+    const reactions = response.data?.node?.reactions;
+    if (!reactions) return undefined;
+
+    const vote = extractUserVote(reactions.nodes, currentUser);
+    if (vote) return vote;
+
+    if (!reactions.pageInfo?.hasNextPage) break;
+    cursor = reactions.pageInfo.endCursor ?? null;
+  }
+
+  return undefined;
+}
+
+async function fetchVoteForIssue(
+  repo: RepoRef,
+  issueNumber: number,
+  currentUser: string,
+): Promise<VoteInfo | undefined> {
+  let commentsCursor: string | null = null;
+  while (true) {
+    const commentsConnection = await fetchIssueCommentsPage(repo, issueNumber, commentsCursor);
+    if (!commentsConnection) return undefined;
+
+    const votingComment = findLatestVotingComment(commentsConnection.nodes);
+    if (votingComment) {
+      const vote = extractUserVote(votingComment.reactions.nodes, currentUser);
+      if (vote) return vote;
+
+      if (votingComment.reactions.pageInfo?.hasNextPage) {
+        return fetchAdditionalReactions(
+          votingComment.id,
+          currentUser,
+          votingComment.reactions.pageInfo.endCursor ?? null,
+        );
+      }
+      return undefined;
+    }
+
+    if (!commentsConnection.pageInfo?.hasPreviousPage) return undefined;
+    commentsCursor = commentsConnection.pageInfo.startCursor ?? null;
+    if (!commentsCursor) return undefined;
+  }
 }
 
 /**

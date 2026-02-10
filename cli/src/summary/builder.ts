@@ -44,6 +44,7 @@ function classifyIssue(
   const base: SummaryItem = {
     number: issue.number,
     title: issue.title,
+    url: issue.url,
     tags,
     author,
     comments,
@@ -118,7 +119,7 @@ function classifyPR(
 
     return {
       bucket: "addressFeedback",
-      item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, review },
+      item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status, checks, mergeable: merge, review },
     };
   }
 
@@ -126,7 +127,7 @@ function classifyPR(
 
   return {
     bucket: "reviewPRs",
-    item: { number: pr.number, title: pr.title, tags, author, comments, age, status, checks, mergeable: merge, review },
+    item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status, checks, mergeable: merge, review },
   };
 }
 
@@ -176,7 +177,7 @@ export function buildSummary(
   }
 
   // Annotate implement items with competing PR counts
-  const competitionMap = buildCompetitionMap(prs, currentUser);
+  const competitionMap = currentUser ? buildCompetitionMap(prs, currentUser) : new Map<number, number>();
   for (const item of implement) {
     const count = competitionMap.get(item.number) ?? 0;
     if (count > 0) {

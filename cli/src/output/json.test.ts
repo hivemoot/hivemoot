@@ -76,6 +76,27 @@ describe("jsonStatus()", () => {
     expect(result.addressFeedback[0].status).toBe("draft");
     expect(result.addressFeedback[0].checks).toBe("failing");
   });
+
+  it("includes canonical item URLs when present", () => {
+    const withUrls: RepoSummary = {
+      ...summary,
+      implement: [
+        {
+          ...summary.implement[0],
+          url: "https://github.com/hivemoot/colony/issues/45",
+        },
+      ],
+      reviewPRs: [
+        {
+          ...summary.reviewPRs[0],
+          url: "https://github.com/hivemoot/colony/pull/49",
+        },
+      ],
+    };
+    const result = JSON.parse(jsonStatus(withUrls));
+    expect(result.implement[0].url).toBe("https://github.com/hivemoot/colony/issues/45");
+    expect(result.reviewPRs[0].url).toBe("https://github.com/hivemoot/colony/pull/49");
+  });
 });
 
 describe("notes in JSON output", () => {

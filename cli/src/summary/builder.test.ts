@@ -88,6 +88,12 @@ describe("buildSummary()", () => {
     expect(summary.implement[0].tags).toEqual([]);
   });
 
+  it("includes canonical URL on issue summary items", () => {
+    const issue = makeIssue({ number: 45, url: "https://github.com/hivemoot/colony/issues/45" });
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement[0].url).toBe("https://github.com/hivemoot/colony/issues/45");
+  });
+
   it("shows assignee names in implement item", () => {
     const issue = makeIssue({
       assignees: [{ login: "alice" }],
@@ -98,12 +104,13 @@ describe("buildSummary()", () => {
   });
 
   it("classifies normal PRs into reviewPRs bucket", () => {
-    const pr = makePR({ number: 49, title: "Search" });
+    const pr = makePR({ number: 49, title: "Search", url: "https://github.com/hivemoot/colony/pull/49" });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
     expect(summary.reviewPRs).toHaveLength(1);
     expect(summary.reviewPRs[0].number).toBe(49);
     expect(summary.reviewPRs[0].status).toBe("pending");
+    expect(summary.reviewPRs[0].url).toBe("https://github.com/hivemoot/colony/pull/49");
   });
 
   it("classifies approved PRs correctly", () => {
@@ -374,6 +381,19 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [issue], [pr], "testuser", now);
+    expect(summary.implement[0].competingPRs).toBeUndefined();
+  });
+
+  it("does not compute competition when current user is unknown", () => {
+    const issue = makeIssue({ number: 45, title: "User Dashboard" });
+    const pr = makePR({
+      number: 100,
+      labels: [{ name: "implementation" }],
+      closingIssuesReferences: [{ number: 45 }],
+      author: { login: "someone" },
+    });
+
+    const summary = buildSummary(repo, [issue], [pr], "", now);
     expect(summary.implement[0].competingPRs).toBeUndefined();
   });
 
