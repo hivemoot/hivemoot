@@ -122,6 +122,7 @@ export interface RepoSummary {
   implement: SummaryItem[];
   unclassified?: SummaryItem[];
   reviewPRs: SummaryItem[];
+  draftPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
   notes: string[];
 }

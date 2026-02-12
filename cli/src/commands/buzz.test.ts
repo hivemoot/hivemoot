@@ -79,6 +79,7 @@ const testSummary = {
   discuss: [],
   implement: [],
   reviewPRs: [],
+  draftPRs: [],
   addressFeedback: [],
   notes: [],
 };

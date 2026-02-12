@@ -98,7 +98,7 @@ function classifyIssue(
 function classifyPR(
   pr: GitHubPR,
   now: Date,
-): { bucket: "reviewPRs" | "addressFeedback"; item: SummaryItem } {
+): { bucket: "reviewPRs" | "draftPRs" | "addressFeedback"; item: SummaryItem } {
   const age = timeAgo(pr.createdAt, now);
   const tags = pr.labels.map((l) => l.name);
   const author = pr.author?.login ?? "ghost";
@@ -106,15 +106,22 @@ function classifyPR(
   const ciFailing = hasCIFailure(pr);
   const checks = compactChecks(checkStatus(pr));
   const merge = compactMergeable(mergeStatus(pr));
+  const changesRequested = changesRequestedCount(pr);
   const review = {
     approvals: approvalCount(pr),
-    changesRequested: changesRequestedCount(pr),
+    changesRequested,
   };
 
-  if (pr.isDraft || ciFailing || pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) {
+  if (pr.isDraft) {
+    return {
+      bucket: "draftPRs",
+      item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status: "draft", checks, mergeable: merge, review },
+    };
+  }
+
+  if (ciFailing || pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0) {
     let status: string;
-    if (pr.isDraft) status = "draft";
-    else if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) status = "changes-requested";
+    if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0) status = "changes-requested";
     else status = "pending";
 
     return {
@@ -158,6 +165,7 @@ export function buildSummary(
   const implement: SummaryItem[] = [];
   const unclassified: SummaryItem[] = [];
   const reviewPRs: SummaryItem[] = [];
+  const draftPRs: SummaryItem[] = [];
   const addressFeedback: SummaryItem[] = [];
 
   for (const issue of issues) {
@@ -198,6 +206,7 @@ export function buildSummary(
     item.lastComment = latestCommentAge(pr, now);
     item.updated = timeAgo(pr.updatedAt, now);
     if (bucket === "reviewPRs") reviewPRs.push(item);
+    else if (bucket === "draftPRs") draftPRs.push(item);
     else addressFeedback.push(item);
   }
 
@@ -238,6 +247,7 @@ export function buildSummary(
     ...implement,
     ...unclassified,
     ...filteredReviewPRs,
+    ...draftPRs,
     ...filteredAddressFeedback,
   ];
   for (const item of allItems) {
@@ -260,6 +270,7 @@ export function buildSummary(
     implement,
     unclassified,
     reviewPRs: filteredReviewPRs,
+    draftPRs,
     addressFeedback: filteredAddressFeedback,
     notes: [],
   };

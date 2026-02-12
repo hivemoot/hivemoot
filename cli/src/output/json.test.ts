@@ -13,7 +13,8 @@ const summary: RepoSummary = {
   implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago" }],
   unclassified: [],
   reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
-  addressFeedback: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
+  draftPRs: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
+  addressFeedback: [{ number: 54, title: "Decision explorer fixups", tags: [], author: "frank", comments: 1, age: "1h ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 1 } }],
   notes: [],
 };
 
@@ -69,7 +70,7 @@ describe("jsonStatus()", () => {
     const result = JSON.parse(jsonStatus(summary));
     expect(result.voteOn[0].tags).toEqual(["vote", "security"]);
     expect(result.implement[0].tags).toEqual(["enhancement"]);
-    expect(result.addressFeedback[0].tags).toEqual([]);
+    expect(result.draftPRs[0].tags).toEqual([]);
   });
 
   it("includes structured fields instead of detail string", () => {
@@ -86,9 +87,12 @@ describe("jsonStatus()", () => {
     expect(result.reviewPRs[0].review).toEqual({ approvals: 0, changesRequested: 0 });
     expect(result.reviewPRs[0]).not.toHaveProperty("detail");
 
+    // Verify draftPRs items
+    expect(result.draftPRs[0].status).toBe("draft");
+    expect(result.draftPRs[0].checks).toBe("failing");
+
     // Verify addressFeedback items
-    expect(result.addressFeedback[0].status).toBe("draft");
-    expect(result.addressFeedback[0].checks).toBe("failing");
+    expect(result.addressFeedback[0].status).toBe("changes-requested");
   });
 
   it("includes canonical item URLs when present", () => {

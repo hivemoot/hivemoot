@@ -122,12 +122,12 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs[0].status).toBe("approved");
   });
 
-  it("classifies draft PRs into addressFeedback", () => {
+  it("classifies draft PRs into draftPRs", () => {
     const pr = makePR({ isDraft: true });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
-    expect(summary.addressFeedback).toHaveLength(1);
-    expect(summary.addressFeedback[0].status).toBe("draft");
+    expect(summary.draftPRs).toHaveLength(1);
+    expect(summary.draftPRs[0].status).toBe("draft");
   });
 
   it("classifies PRs with CI failures into addressFeedback", () => {
@@ -192,6 +192,7 @@ describe("buildSummary()", () => {
     expect(summary.discuss).toHaveLength(0);
     expect(summary.implement).toHaveLength(0);
     expect(summary.reviewPRs).toHaveLength(0);
+    expect(summary.draftPRs).toHaveLength(0);
     expect(summary.addressFeedback).toHaveLength(0);
   });
 
@@ -218,15 +219,15 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs[0].number).toBe(99);
   });
 
-  it("classifies PR with null statusCheckRollup and draft into addressFeedback", () => {
+  it("classifies PR with null statusCheckRollup and draft into draftPRs", () => {
     const pr = makePR({
       isDraft: true,
       statusCheckRollup: null,
     });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
-    expect(summary.addressFeedback).toHaveLength(1);
-    expect(summary.addressFeedback[0].status).toBe("draft");
+    expect(summary.draftPRs).toHaveLength(1);
+    expect(summary.draftPRs[0].status).toBe("draft");
   });
 
   // ── Bot governance label classification ──────────────────────────
@@ -530,7 +531,7 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs).toHaveLength(0);
   });
 
-  it("moves authored PRs from addressFeedback to driveImplementation", () => {
+  it("keeps authored draft PRs in draftPRs", () => {
     const pr = makePR({
       number: 53,
       author: { login: "testuser" },
@@ -538,9 +539,9 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
-    expect(summary.driveImplementation).toHaveLength(1);
-    expect(summary.driveImplementation[0].number).toBe(53);
-    expect(summary.addressFeedback).toHaveLength(0);
+    expect(summary.driveImplementation).toHaveLength(0);
+    expect(summary.draftPRs).toHaveLength(1);
+    expect(summary.draftPRs[0].number).toBe(53);
   });
 
   it("keeps non-authored PRs in reviewPRs", () => {
@@ -554,7 +555,7 @@ describe("buildSummary()", () => {
     expect(summary.driveImplementation).toHaveLength(0);
   });
 
-  it("keeps non-authored PRs in addressFeedback", () => {
+  it("keeps non-authored draft PRs in draftPRs", () => {
     const pr = makePR({
       number: 53,
       author: { login: "other" },
@@ -562,7 +563,7 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
-    expect(summary.addressFeedback).toHaveLength(1);
+    expect(summary.draftPRs).toHaveLength(1);
     expect(summary.driveImplementation).toHaveLength(0);
   });
 
@@ -733,7 +734,7 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs[0].lastComment).toBeUndefined();
   });
 
-  it("populates temporal fields on addressFeedback items", () => {
+  it("populates temporal fields on draftPRs items", () => {
     const pr = makePR({
       number: 163,
       isDraft: true,
@@ -743,9 +744,9 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [], [pr], "testuser", now);
-    expect(summary.addressFeedback[0].lastCommit).toBe("yesterday");
-    expect(summary.addressFeedback[0].lastComment).toBe("2 days ago");
-    expect(summary.addressFeedback[0].updated).toBe("6h ago");
+    expect(summary.draftPRs[0].lastCommit).toBe("yesterday");
+    expect(summary.draftPRs[0].lastComment).toBe("2 days ago");
+    expect(summary.draftPRs[0].updated).toBe("6h ago");
   });
 
   // ── Comment context on issues ──────────────────────────────────────
@@ -882,6 +883,16 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs[0].unread).toBe(true);
     expect(summary.reviewPRs[0].unreadReason).toBe("review_requested");
     expect(summary.reviewPRs[0].unreadAge).toBe("2h ago");
+  });
+
+  it("annotates draftPRs items with unread notification", () => {
+    const pr = makePR({ number: 98, isDraft: true });
+    const notifications = new Map([[98, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
+    expect(summary.draftPRs[0].unread).toBe(true);
+    expect(summary.draftPRs[0].unreadReason).toBe("comment");
+    expect(summary.draftPRs[0].unreadAge).toBe("2h ago");
   });
 
   it("annotates driveDiscussion items with unread notification", () => {

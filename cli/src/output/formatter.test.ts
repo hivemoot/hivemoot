@@ -15,6 +15,7 @@ const summary: RepoSummary = {
     { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday" },
   ],
   reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  draftPRs: [],
   addressFeedback: [],
   unclassified: [],
   notes: [],
@@ -158,6 +159,7 @@ describe("formatStatus()", () => {
       discuss: [],
       implement: [],
       reviewPRs: [],
+      draftPRs: [],
       addressFeedback: [],
       notes: [],
     };
@@ -183,6 +185,20 @@ describe("formatStatus()", () => {
     expect(output).toContain("#72");
     expect(output).toContain("Investigate flaky logs");
   });
+
+  it("renders DRAFT PRs section when present", () => {
+    const withDrafts: RepoSummary = {
+      ...summary,
+      draftPRs: [
+        { number: 53, title: "WIP settings panel", tags: [], author: "bob", comments: 2, age: "yesterday", status: "draft", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+      ],
+    };
+
+    const output = formatStatus(withDrafts);
+    expect(output).toContain("DRAFT PRs");
+    expect(output).toContain("#53");
+    expect(output).toContain("WIP settings panel");
+  });
 });
 
 describe("DRIVE sections", () => {
@@ -203,6 +219,7 @@ describe("DRIVE sections", () => {
     ],
     implement: [],
     reviewPRs: [],
+    draftPRs: [],
     addressFeedback: [
       { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
     ],

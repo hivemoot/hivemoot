@@ -4,7 +4,7 @@ import type { RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config
 const DIVIDER_WIDTH = 50;
 
 // Section types determine which metadata keys appear on the second line
-type SectionType = "vote" | "discuss" | "implement" | "unclassified" | "reviewPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation" | "needsHuman";
+type SectionType = "vote" | "discuss" | "implement" | "unclassified" | "reviewPRs" | "draftPRs" | "addressFeedback" | "driveDiscussion" | "driveImplementation" | "needsHuman";
 
 function sectionDivider(title: string, count: number): string {
   const label = ` ${title} (${count}) `;
@@ -66,7 +66,7 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
       parts.push(kv("competing", item.competingPRs));
     }
   } else {
-    // PR sections: reviewPRs, addressFeedback, driveImplementation
+    // PR sections: reviewPRs, draftPRs, addressFeedback, driveImplementation
     if (item.status !== undefined) {
       const statusVal = /changes.requested/i.test(item.status) ? chalk.red(item.status) : chalk.dim(item.status);
       parts.push(`status: ${statusVal}`);
@@ -154,6 +154,7 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
       formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
       formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
+      formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
       formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
     ].filter(Boolean),
   );
