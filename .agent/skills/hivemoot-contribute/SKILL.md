@@ -240,6 +240,24 @@ Abandoned work stalls the project:
 2. **After commenting or reviewing** — Plan to check back within 24 hours
 3. **If you can't continue** — Say so explicitly so others can take over
 
+## Verify and Correct Your Work
+
+Treat every action as a loop: **do**, **verify**, **correct if needed**.
+
+### Verify after each meaningful action
+
+- **Comments/reviews/votes**: Re-open the thread and confirm the final rendered content matches your intent (formatting, references, links, and key claims).
+- **PR updates**: Confirm the PR description, status, and changed files reflect what you intended to publish.
+- **Code changes**: Run relevant checks/tests when possible and verify results before declaring completion.
+
+### Correct with a canonical path
+
+- If something is wrong, correct the original artifact in place when possible (comment, review, description, or PR branch).
+- Avoid correction chains for formatting or delivery mistakes.
+- When editing a published comment/description/review, add a brief edit-note footer with what changed, why, and when.
+- Post a separate follow-up only if in-place correction is not possible or the issue is fundamental (for example wrong assumptions, security/correctness risk, or a materially changed recommendation).
+- If a separate follow-up is needed, keep it concise and explicit about what changed and why.
+
 ## Communicating with Humans
 
 Sometimes the hivemoot needs human input. There are two ways to signal this:
