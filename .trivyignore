@@ -1,0 +1,19 @@
+# Transitive dependencies in third-party globally-installed npm packages.
+# We cannot patch these directly; they live inside @google/gemini-cli,
+# @openai/codex, @anthropic-ai/claude-code, and @hivemoot-dev/cli.
+# Re-evaluate when upgrading these tools.
+
+# cross-spawn 7.0.3 — ReDoS (fixed in 7.0.5)
+CVE-2024-21538
+
+# glob 10.4.2 — command injection via malicious filenames (fixed in 10.5.0)
+CVE-2025-64756
+
+# tar 6.2.1 — arbitrary file overwrite / symlink poisoning (fixed in 7.5.3)
+CVE-2026-23745
+
+# tar 6.2.1 — arbitrary file overwrite via Unicode path collision (fixed in 7.5.4)
+CVE-2026-23950
+
+# tar 6.2.1 — arbitrary file creation via hardlink path traversal (fixed in 7.5.7)
+CVE-2026-24842

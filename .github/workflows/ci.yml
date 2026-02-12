@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        run: shellcheck scripts/*.sh
+
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: Dockerfile
+
+  compose-config:
+    name: Compose Config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+  env-docs:
+    name: Env Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check env vars documented in .env.example
+        run: |
+          set -euo pipefail
+          vars=$(grep -oP '\$\{\K[A-Z][A-Z0-9_]*' docker-compose.yml | sort -u)
+          fail=0
+          for var in $vars; do
+            if ! grep -qF "$var" .env.example; then
+              echo "::error::${var} is in docker-compose.yml but missing from .env.example"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "All compose variables documented in .env.example"
+          exit "$fail"
+
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+
+  docker-build:
+    name: Docker Build & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hivemoot-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: hivemoot-agent:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true

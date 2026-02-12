@@ -1,0 +1,105 @@
+x-agent-base: &agent-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      CODEX_VERSION: ${CODEX_VERSION:-latest}
+      GEMINI_VERSION: ${GEMINI_VERSION:-latest}
+      CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
+      HIVEMOOT_CLI_VERSION: ${HIVEMOOT_CLI_VERSION:-latest}
+  image: hivemoot-agent:local
+  deploy:
+    resources:
+      limits:
+        memory: ${AGENT_MEMORY_LIMIT:-16g}
+        cpus: "${AGENT_CPU_LIMIT:-4.0}"
+        pids: ${AGENT_PIDS_LIMIT:-512}
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+  volumes:
+    - ./data:/workspace
+    - ./secrets:/run/secrets:ro
+    - codex-home:/home/node/.codex
+    - gemini-home:/home/node/.gemini
+    - claude-home:/home/node/.claude
+    - claude-config:/home/node/.config/claude
+  stdin_open: true
+  tty: true
+
+x-agent-env: &agent-env
+  RUN_MODE: ${RUN_MODE:-once}
+  AGENT_PROVIDER: ${AGENT_PROVIDER:-claude}
+  AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-api_key}
+  AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-1800}
+  BASE_SECS: ${BASE_SECS:-600}
+  JITTER_SECS: ${JITTER_SECS:-150}
+  FRESH_CLONE: ${FRESH_CLONE:-1}
+  AGENT_MODEL: ${AGENT_MODEL:-}
+  AGENT_EXTRA_PROMPT: ${AGENT_EXTRA_PROMPT:-}
+  AGENT_ID_01: ${AGENT_ID_01:-}
+  AGENT_ID_02: ${AGENT_ID_02:-}
+  AGENT_ID_03: ${AGENT_ID_03:-}
+  AGENT_ID_04: ${AGENT_ID_04:-}
+  AGENT_ID_05: ${AGENT_ID_05:-}
+  AGENT_ID_06: ${AGENT_ID_06:-}
+  AGENT_ID_07: ${AGENT_ID_07:-}
+  AGENT_ID_08: ${AGENT_ID_08:-}
+  AGENT_ID_09: ${AGENT_ID_09:-}
+  AGENT_ID_10: ${AGENT_ID_10:-}
+  AGENT_GITHUB_TOKEN_01: ${AGENT_GITHUB_TOKEN_01:-}
+  AGENT_GITHUB_TOKEN_02: ${AGENT_GITHUB_TOKEN_02:-}
+  AGENT_GITHUB_TOKEN_03: ${AGENT_GITHUB_TOKEN_03:-}
+  AGENT_GITHUB_TOKEN_04: ${AGENT_GITHUB_TOKEN_04:-}
+  AGENT_GITHUB_TOKEN_05: ${AGENT_GITHUB_TOKEN_05:-}
+  AGENT_GITHUB_TOKEN_06: ${AGENT_GITHUB_TOKEN_06:-}
+  AGENT_GITHUB_TOKEN_07: ${AGENT_GITHUB_TOKEN_07:-}
+  AGENT_GITHUB_TOKEN_08: ${AGENT_GITHUB_TOKEN_08:-}
+  AGENT_GITHUB_TOKEN_09: ${AGENT_GITHUB_TOKEN_09:-}
+  AGENT_GITHUB_TOKEN_10: ${AGENT_GITHUB_TOKEN_10:-}
+  AGENT_GITHUB_TOKEN_01_FILE: ${AGENT_GITHUB_TOKEN_01_FILE:-}
+  AGENT_GITHUB_TOKEN_02_FILE: ${AGENT_GITHUB_TOKEN_02_FILE:-}
+  AGENT_GITHUB_TOKEN_03_FILE: ${AGENT_GITHUB_TOKEN_03_FILE:-}
+  AGENT_GITHUB_TOKEN_04_FILE: ${AGENT_GITHUB_TOKEN_04_FILE:-}
+  AGENT_GITHUB_TOKEN_05_FILE: ${AGENT_GITHUB_TOKEN_05_FILE:-}
+  AGENT_GITHUB_TOKEN_06_FILE: ${AGENT_GITHUB_TOKEN_06_FILE:-}
+  AGENT_GITHUB_TOKEN_07_FILE: ${AGENT_GITHUB_TOKEN_07_FILE:-}
+  AGENT_GITHUB_TOKEN_08_FILE: ${AGENT_GITHUB_TOKEN_08_FILE:-}
+  AGENT_GITHUB_TOKEN_09_FILE: ${AGENT_GITHUB_TOKEN_09_FILE:-}
+  AGENT_GITHUB_TOKEN_10_FILE: ${AGENT_GITHUB_TOKEN_10_FILE:-}
+  AGENT_GIT_EMAIL_DOMAIN: ${AGENT_GIT_EMAIL_DOMAIN:-agents.local}
+  OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+  GOOGLE_API_KEY_FILE: ${GOOGLE_API_KEY_FILE:-}
+  GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
+  ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
+  MAX_CONSECUTIVE_FAILURES: ${MAX_CONSECUTIVE_FAILURES:-5}
+  HIVEMOOT_CLI_VERSION: ${HIVEMOOT_CLI_VERSION:-latest}
+  HIVEMOOT_CLI_UPDATE: ${HIVEMOOT_CLI_UPDATE:-auto}
+  LAUNCH_JITTER_MIN_SECS: ${LAUNCH_JITTER_MIN_SECS:-120}
+  LAUNCH_JITTER_MAX_SECS: ${LAUNCH_JITTER_MAX_SECS:-180}
+
+services:
+  hivemoot-agent:
+    <<: *agent-base
+    stop_grace_period: 5m
+    environment:
+      <<: *agent-env
+      TARGET_REPO: ${TARGET_REPO:-}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
+
+  auth-codex:
+    <<: *agent-base
+    entrypoint: ["codex", "login", "--device-auth"]
+
+  auth-gemini:
+    <<: *agent-base
+    entrypoint: ["gemini"]
+
+  auth-claude:
+    <<: *agent-base
+    entrypoint: ["claude"]
+
+volumes:
+  codex-home:
+  gemini-home:
+  claude-home:
+  claude-config:

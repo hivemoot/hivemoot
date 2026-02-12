@@ -1,0 +1,4 @@
+ignored:
+  # apt package versions not pinned — base image (node:20-slim) provides
+  # consistent packages and pinning adds maintenance burden for a tool image
+  - DL3008

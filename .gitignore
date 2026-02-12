@@ -1,0 +1,9 @@
+.env
+.env.local
+.env.*
+!.env.example
+docker-compose.override.yml
+data/
+runs/
+secrets/
+*.log
