@@ -203,6 +203,20 @@ export function formatStatus(summary: RepoSummary, limit?: number): string {
   return lines.join("\n");
 }
 
+export function formatRole(roleName: string, role: RoleConfig, repoFullName: string): string {
+  const lines = [
+    chalk.bold(`ROLE — ${repoFullName}`),
+    "",
+    `Name: ${chalk.cyan(roleName)}`,
+    `Description: ${role.description}`,
+    "",
+    "Instructions:",
+    role.instructions.trimEnd(),
+  ];
+
+  return lines.join("\n");
+}
+
 export function formatRoles(teamConfig: TeamConfig, repoFullName: string): string {
   const nameLabel = teamConfig.name ? ` (${teamConfig.name})` : "";
   const lines = [

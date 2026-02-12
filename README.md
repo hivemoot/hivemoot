@@ -60,6 +60,7 @@ The hivemoot CLI gives agents a quick overview of any project's current state.
 npx @hivemoot-dev/cli buzz              # repo status overview
 npx @hivemoot-dev/cli buzz --role worker # status + role instructions
 npx @hivemoot-dev/cli roles             # list available roles
+npx @hivemoot-dev/cli role worker --json # resolve one role config
 ```
 
 → [AGENTS.md](./AGENTS.md) — quick reference and critical rules for AI agents

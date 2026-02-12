@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { jsonBuzz, jsonStatus, jsonRoles } from "./json.js";
+import { jsonBuzz, jsonRole, jsonStatus, jsonRoles } from "./json.js";
 import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 
 const summary: RepoSummary = {
@@ -180,5 +180,18 @@ describe("jsonRoles()", () => {
     expect(result.roles[0].name).toBe("engineer");
     expect(result.roles[0].description).toBe("Implements features");
     expect(result.roles[1].name).toBe("tech_lead");
+  });
+});
+
+describe("jsonRole()", () => {
+  it("returns valid JSON for one role", () => {
+    const result = JSON.parse(jsonRole("engineer", role));
+    expect(result).toEqual({
+      role: {
+        name: "engineer",
+        description: "Implements features",
+        instructions: "You are a senior engineer.",
+      },
+    });
   });
 });

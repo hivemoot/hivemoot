@@ -61,3 +61,17 @@ export function jsonRoles(teamConfig: TeamConfig): string {
 
   return JSON.stringify({ roles }, null, 2);
 }
+
+export function jsonRole(roleName: string, role: RoleConfig): string {
+  return JSON.stringify(
+    {
+      role: {
+        name: roleName,
+        description: role.description,
+        instructions: role.instructions,
+      },
+    },
+    null,
+    2,
+  );
+}

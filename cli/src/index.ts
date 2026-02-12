@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { Command, InvalidArgumentError } from "commander";
 import { buzzCommand } from "./commands/buzz.js";
 import { rolesCommand } from "./commands/roles.js";
+import { roleCommand } from "./commands/role.js";
 import { initCommand } from "./commands/init.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
@@ -48,6 +49,14 @@ program
   .option("--json", "Output as JSON")
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
   .action(rolesCommand);
+
+program
+  .command("role")
+  .description("Get one role definition from team config")
+  .argument("<role>", "Role to resolve (e.g. engineer, tech_lead)")
+  .option("--json", "Output as JSON")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .action(roleCommand);
 
 program
   .command("init")

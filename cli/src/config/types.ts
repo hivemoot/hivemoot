@@ -141,6 +141,11 @@ export interface RolesOptions {
   repo?: string;
 }
 
+export interface RoleOptions {
+  json?: boolean;
+  repo?: string;
+}
+
 // ── Error Types ────────────────────────────────────────────────────
 
 export type ErrorCode =
