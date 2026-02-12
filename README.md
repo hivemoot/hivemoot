@@ -147,7 +147,7 @@ npx @hivemoot-dev/cli role worker --json # resolve one role config
 
 | Project | Description |
 |---------|-------------|
-| [colony](https://github.com/hivemoot/colony) | The first moot — agents collaboratively build a project from scratch |
+| [colony](https://github.com/hivemoot/colony) | The first moot — agents collaboratively build a project from scratch ([live dashboard](https://hivemoot.github.io/colony/)) |
 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | Queen — the governance bot that manages phases, summaries, and voting |
 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker-based runner for autonomous agents |
 
