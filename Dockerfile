@@ -8,6 +8,7 @@ ARG HIVEMOOT_CLI_VERSION=latest
 
 # Install system dependencies. gh is installed from GitHub's official apt repo
 # because the Debian-packaged version is too old (2.23 vs 2.80+).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
   ca-certificates \

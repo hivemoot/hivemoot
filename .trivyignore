@@ -17,3 +17,22 @@ CVE-2026-23950
 
 # tar 6.2.1 — arbitrary file creation via hardlink path traversal (fixed in 7.5.7)
 CVE-2026-24842
+
+# @isaacs/brace-expansion 5.0.0 — DoS via crafted patterns (fixed in 5.0.1)
+CVE-2026-25547
+
+# Go stdlib in gh CLI binary — we install gh from GitHub's apt repo and
+# cannot control the Go toolchain version it was compiled with.
+# Re-evaluate when gh releases a build on Go ≥ 1.25.7.
+
+# crypto/tls — unexpected session resumption (CRITICAL, fixed in Go 1.25.7)
+CVE-2025-68121
+
+# net/url — memory exhaustion in query parameter parsing (fixed in Go 1.25.6)
+CVE-2025-61726
+
+# archive/zip — excessive CPU building archive index (fixed in Go 1.25.6)
+CVE-2025-61728
+
+# crypto/tls — TLS 1.3 handshake message handling (fixed in Go 1.25.6)
+CVE-2025-61730

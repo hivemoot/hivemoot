@@ -52,7 +52,7 @@ watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
 
 # Validate numeric settings
 for var_name in periodic_interval periodic_jitter max_failures; do
-  eval "val=\$$var_name"
+  val="${!var_name}"
   case "$val" in
     ''|*[!0-9]*) echo "${var_name} must be a non-negative integer" >&2; exit 1 ;;
   esac
@@ -328,6 +328,7 @@ mkdir -p "$lock_dir"
 declare -a all_bg_pids=()
 shutdown_requested=0
 
+# shellcheck disable=SC2317,SC2329  # invoked via trap
 cleanup() {
   local path=""
   for path in "${temp_token_files[@]-}"; do
@@ -335,7 +336,7 @@ cleanup() {
   done
 }
 
-# shellcheck disable=SC2317  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap
 handle_shutdown() {
   if [ "$shutdown_requested" -eq 0 ]; then
     shutdown_requested=1
