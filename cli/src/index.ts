@@ -4,6 +4,8 @@ import { buzzCommand } from "./commands/buzz.js";
 import { rolesCommand } from "./commands/roles.js";
 import { roleCommand } from "./commands/role.js";
 import { initCommand } from "./commands/init.js";
+import { watchCommand } from "./commands/watch.js";
+import { ackCommand } from "./commands/ack.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -62,6 +64,23 @@ program
   .command("init")
   .description("Print a sample .github/hivemoot.yml template")
   .action(initCommand);
+
+program
+  .command("watch")
+  .description("Watch for @mentions and output events (long-running)")
+  .requiredOption("--repo <owner/repo>", "Target repository")
+  .option("--interval <seconds>", "Poll interval in seconds", parseLimit, 300)
+  .option("--once", "Check once and exit")
+  .option("--state-file <path>", "State file path", ".hivemoot-watch.json")
+  .option("--reasons <list>", "Notification reasons to watch", "mention")
+  .action(watchCommand);
+
+program
+  .command("ack")
+  .description("Acknowledge a processed mention event (mark read + record in journal)")
+  .argument("<key>", "Composite key: threadId:updatedAt")
+  .requiredOption("--state-file <path>", "Path to the watch state file")
+  .action(ackCommand);
 
 // Global error handler
 program.exitOverride();

@@ -5,7 +5,15 @@ vi.mock("./client.js", () => ({
 }));
 
 import { gh } from "./client.js";
-import { fetchNotifications, parseSubjectNumber } from "./notifications.js";
+import {
+  fetchNotifications,
+  fetchMentionNotifications,
+  markNotificationRead,
+  fetchCommentBody,
+  buildMentionEvent,
+  parseSubjectNumber,
+} from "./notifications.js";
+import type { RawNotification, CommentDetail } from "./notifications.js";
 
 const mockedGh = vi.mocked(gh);
 const repo = { owner: "hivemoot", repo: "colony" };
@@ -16,12 +24,18 @@ beforeEach(() => {
 
 function makeNotification(overrides: Record<string, unknown> = {}) {
   return {
+    id: "1001",
     unread: true,
     reason: "comment",
     updated_at: "2025-06-15T10:00:00Z",
     subject: {
       url: "https://api.github.com/repos/hivemoot/colony/issues/42",
       type: "Issue",
+      title: "Fix layout",
+      latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/999",
+    },
+    repository: {
+      full_name: "hivemoot/colony",
     },
     ...overrides,
   };
@@ -162,5 +176,198 @@ describe("fetchNotifications()", () => {
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(0);
+  });
+});
+
+describe("fetchMentionNotifications()", () => {
+  it("calls gh with repo and all=false (no since by default)", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "--paginate",
+      "/repos/hivemoot/colony/notifications",
+      "-f", "all=false",
+    ]);
+  });
+
+  it("includes since param when provided", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-01-15T00:00:00Z");
+
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "--paginate",
+      "/repos/hivemoot/colony/notifications",
+      "-f", "all=false",
+      "-f", "since=2026-01-15T00:00:00Z",
+    ]);
+  });
+
+  it("filters by specified reasons", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([
+      makeNotification({ reason: "mention" }),
+      makeNotification({ id: "1002", reason: "comment" }),
+      makeNotification({ id: "1003", reason: "author" }),
+    ]));
+
+    const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+    expect(result).toHaveLength(1);
+    expect(result[0].reason).toBe("mention");
+  });
+
+  it("supports multiple reasons", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([
+      makeNotification({ reason: "mention" }),
+      makeNotification({ id: "1002", reason: "comment" }),
+    ]));
+
+    const result = await fetchMentionNotifications("hivemoot/colony", ["mention", "comment"]);
+    expect(result).toHaveLength(2);
+  });
+
+  it("filters out read notifications", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([
+      makeNotification({ reason: "mention", unread: false }),
+    ]));
+
+    const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+    expect(result).toHaveLength(0);
+  });
+
+  it("filters out non-Issue/PR types", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([
+      makeNotification({
+        reason: "mention",
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/releases/5", type: "Release", title: "v1", latest_comment_url: null },
+      }),
+    ]));
+
+    const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe("markNotificationRead()", () => {
+  it("calls PATCH on the thread endpoint", async () => {
+    mockedGh.mockResolvedValue("");
+
+    await markNotificationRead("12345");
+
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "--method", "PATCH",
+      "/notifications/threads/12345",
+    ]);
+  });
+});
+
+describe("fetchCommentBody()", () => {
+  it("returns comment detail for a valid URL", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      body: "Hello world",
+      author: "dmitry",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-999",
+    }));
+
+    const result = await fetchCommentBody("https://api.github.com/repos/hivemoot/colony/issues/comments/999");
+    expect(result).toEqual({
+      body: "Hello world",
+      author: "dmitry",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-999",
+    });
+  });
+
+  it("returns null for empty URL", async () => {
+    const result = await fetchCommentBody("");
+    expect(result).toBeNull();
+    expect(mockedGh).not.toHaveBeenCalled();
+  });
+
+  it("returns null when gh call fails", async () => {
+    mockedGh.mockRejectedValue(new Error("API error"));
+
+    const result = await fetchCommentBody("https://api.github.com/repos/hivemoot/colony/issues/comments/999");
+    expect(result).toBeNull();
+  });
+});
+
+describe("buildMentionEvent()", () => {
+  const baseNotification: RawNotification = {
+    id: "5001",
+    unread: true,
+    reason: "mention",
+    updated_at: "2026-02-12T15:30:00Z",
+    subject: {
+      url: "https://api.github.com/repos/hivemoot/colony/issues/42",
+      type: "Issue",
+      title: "Fix layout",
+      latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/999",
+    },
+    repository: {
+      full_name: "hivemoot/colony",
+    },
+  };
+
+  const baseComment: CommentDetail = {
+    body: "@hivemoot-worker please look at this",
+    author: "dmitry",
+    htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-999",
+  };
+
+  it("builds a complete MentionEvent from notification + comment", () => {
+    const event = buildMentionEvent(baseNotification, baseComment, "hivemoot-worker");
+
+    expect(event).toEqual({
+      agent: "hivemoot-worker",
+      repo: "hivemoot/colony",
+      number: 42,
+      type: "Issue",
+      title: "Fix layout",
+      author: "dmitry",
+      body: "@hivemoot-worker please look at this",
+      url: "https://github.com/hivemoot/colony/issues/42#issuecomment-999",
+      threadId: "5001",
+      timestamp: "2026-02-12T15:30:00Z",
+    });
+  });
+
+  it("handles null comment gracefully", () => {
+    const event = buildMentionEvent(baseNotification, null, "hivemoot-worker");
+
+    expect(event).not.toBeNull();
+    expect(event!.author).toBe("unknown");
+    expect(event!.body).toBe("");
+    expect(event!.url).toBe("");
+  });
+
+  it("returns null when subject URL has no number", () => {
+    const bad: RawNotification = {
+      ...baseNotification,
+      subject: {
+        ...baseNotification.subject,
+        url: "https://api.github.com/repos/hivemoot/colony",
+      },
+    };
+
+    expect(buildMentionEvent(bad, baseComment, "agent")).toBeNull();
+  });
+
+  it("handles PullRequest type", () => {
+    const prNotification: RawNotification = {
+      ...baseNotification,
+      subject: {
+        ...baseNotification.subject,
+        url: "https://api.github.com/repos/hivemoot/colony/pulls/99",
+        type: "PullRequest",
+      },
+    };
+
+    const event = buildMentionEvent(prNotification, baseComment, "hivemoot-worker");
+    expect(event!.type).toBe("PullRequest");
+    expect(event!.number).toBe(99);
   });
 });

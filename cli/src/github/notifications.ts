@@ -1,4 +1,4 @@
-import type { RepoRef } from "../config/types.js";
+import type { RepoRef, MentionEvent } from "../config/types.js";
 import { gh } from "./client.js";
 
 export interface NotificationInfo {
@@ -8,14 +8,26 @@ export interface NotificationInfo {
 
 export type NotificationMap = Map<number, NotificationInfo>;
 
-interface RawNotification {
+export interface RawNotification {
+  id: string;
   unread: boolean;
   reason: string;
   updated_at: string;
   subject: {
     url: string;
     type: string;
+    title: string;
+    latest_comment_url: string | null;
   };
+  repository: {
+    full_name: string;
+  };
+}
+
+export interface CommentDetail {
+  body: string;
+  author: string;
+  htmlUrl: string;
 }
 
 /** Extract issue/PR number from a GitHub API subject URL (last path segment). */
@@ -53,4 +65,95 @@ export async function fetchNotifications(repo: RepoRef): Promise<NotificationMap
   }
 
   return map;
+}
+
+/**
+ * Fetch unread mention notifications for a repo, filtered by reason.
+ * When `since` is provided, only returns notifications updated after that time.
+ * When omitted, returns all unread notifications (relying on GitHub's unread filter).
+ */
+export async function fetchMentionNotifications(
+  repo: string,
+  reasons: string[],
+  since?: string,
+): Promise<RawNotification[]> {
+  const args = [
+    "api",
+    "--paginate",
+    `/repos/${repo}/notifications`,
+    "-f", "all=false",
+  ];
+  if (since) {
+    args.push("-f", `since=${since}`);
+  }
+
+  const raw = await gh(args);
+
+  const notifications: RawNotification[] = JSON.parse(raw);
+
+  return notifications.filter((n) => {
+    if (!n.unread) return false;
+    if (!reasons.includes(n.reason)) return false;
+    if (n.subject.type !== "Issue" && n.subject.type !== "PullRequest") return false;
+    return true;
+  });
+}
+
+/** Mark a single notification thread as read. */
+export async function markNotificationRead(threadId: string): Promise<void> {
+  await gh([
+    "api",
+    "--method", "PATCH",
+    `/notifications/threads/${threadId}`,
+  ]);
+}
+
+/**
+ * Fetch the comment body and author from a comment API URL.
+ * Returns null if the URL is missing or the fetch fails.
+ */
+export async function fetchCommentBody(commentUrl: string): Promise<CommentDetail | null> {
+  if (!commentUrl) return null;
+
+  try {
+    const raw = await gh([
+      "api",
+      commentUrl,
+      "--jq", '{ body: .body, author: (.user.login // .author.login // "unknown"), htmlUrl: .html_url }',
+    ]);
+    const parsed = JSON.parse(raw) as { body: string; author: string; htmlUrl: string };
+    return {
+      body: parsed.body,
+      author: parsed.author,
+      htmlUrl: parsed.htmlUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a MentionEvent from a raw notification and its associated comment.
+ * Returns null if the notification can't be mapped to a valid event.
+ */
+export function buildMentionEvent(
+  notification: RawNotification,
+  comment: CommentDetail | null,
+  agent: string,
+): MentionEvent | null {
+  const number = parseSubjectNumber(notification.subject.url);
+  if (number === undefined) return null;
+
+  return {
+    agent,
+    repo: notification.repository.full_name,
+    number,
+    type: notification.subject.type,
+    title: notification.subject.title,
+    author: comment?.author ?? "unknown",
+    body: comment?.body ?? "",
+    url: comment?.htmlUrl ?? "",
+    threadId: notification.id,
+    timestamp: notification.updated_at,
+  };
 }

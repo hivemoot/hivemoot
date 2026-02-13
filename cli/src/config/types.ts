@@ -147,6 +147,31 @@ export interface RoleOptions {
   repo?: string;
 }
 
+export interface WatchOptions {
+  repo?: string;
+  interval?: number;
+  once?: boolean;
+  stateFile?: string;
+  reasons?: string;
+}
+
+export interface AckOptions {
+  stateFile: string;
+}
+
+export interface MentionEvent {
+  agent: string;      // authenticated user login
+  repo: string;       // owner/repo
+  number: number;     // issue/PR number
+  type: string;       // "Issue" | "PullRequest"
+  title: string;
+  author: string;     // commenter who triggered the mention
+  body: string;       // comment text
+  url: string;        // HTML URL of the comment
+  threadId: string;   // notification thread ID
+  timestamp: string;  // ISO 8601
+}
+
 // ── Error Types ────────────────────────────────────────────────────
 
 export type ErrorCode =
