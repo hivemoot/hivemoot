@@ -1,92 +1,598 @@
 #!/usr/bin/env bash
+# Unified loop mode: periodic agent runs with optional mention-triggered runs
+# via WATCH_MENTIONS=1. Per-agent locks prevent concurrent execution.
 set -euo pipefail
 
 log() {
   printf '[run-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-shutdown_requested=0
-multi_pid=""
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
 
-# shellcheck disable=SC2317,SC2329  # invoked via trap on line below
-request_shutdown() {
-  if [ "$shutdown_requested" -eq 0 ]; then
-    shutdown_requested=1
-    log "Shutdown signal received; will exit after current cycle completes"
-    if [ -n "$multi_pid" ]; then
-      kill -TERM "$multi_pid" 2>/dev/null || true
-    fi
+seed_provider_home() {
+  local shared_path="$1"
+  local agent_path="$2"
+
+  if [ ! -e "$shared_path" ]; then
+    return 0
+  fi
+
+  if [ -d "$shared_path" ]; then
+    mkdir -p "$agent_path"
+    cp -R "$shared_path"/. "$agent_path"/
+  else
+    mkdir -p "$(dirname "$agent_path")"
+    cp "$shared_path" "$agent_path"
   fi
 }
 
-trap request_shutdown TERM INT
+# ── Configuration ──────────────────────────────────────────────────
 
-base_secs="${BASE_SECS:-600}"
-jitter_secs="${JITTER_SECS:-150}"
+workspace_root="${WORKSPACE_ROOT:-/workspace}"
+email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
+global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
+target_repo="${TARGET_REPO:-}"
+max_agents=10
+token_tmp_root="/tmp/hivemoot-agent-token-files"
+lock_dir="/tmp/agent-locks"
+
+# Periodic scheduling (backward compat: fall back to BASE_SECS / JITTER_SECS)
+periodic_interval="${PERIODIC_INTERVAL_SECS:-${BASE_SECS:-3600}}"
+periodic_jitter="${PERIODIC_JITTER_SECS:-${JITTER_SECS:-300}}"
 max_failures="${MAX_CONSECUTIVE_FAILURES:-5}"
-consecutive_failures=0
 
-case "$base_secs" in
-  ''|*[!0-9]*) echo "BASE_SECS must be a positive integer" >&2; exit 1 ;;
-esac
-case "$jitter_secs" in
-  ''|*[!0-9]*) echo "JITTER_SECS must be a non-negative integer" >&2; exit 1 ;;
-esac
-case "$max_failures" in
-  ''|*[!0-9]*) echo "MAX_CONSECUTIVE_FAILURES must be a positive integer" >&2; exit 1 ;;
-esac
+# Mention watching (opt-in)
+watch_mentions="${WATCH_MENTIONS:-}"
+watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
 
-if [ "$base_secs" -le 0 ]; then
-  echo "BASE_SECS must be > 0" >&2; exit 1
+# Validate numeric settings
+for var_name in periodic_interval periodic_jitter max_failures; do
+  eval "val=\$$var_name"
+  case "$val" in
+    ''|*[!0-9]*) echo "${var_name} must be a non-negative integer" >&2; exit 1 ;;
+  esac
+done
+
+if [ "$periodic_interval" -le 0 ]; then
+  echo "PERIODIC_INTERVAL_SECS must be > 0" >&2; exit 1
 fi
 if [ "$max_failures" -le 0 ]; then
   echo "MAX_CONSECUTIVE_FAILURES must be > 0" >&2; exit 1
 fi
 
-log "Loop mode started (base=${base_secs}s jitter=±${jitter_secs}s)"
+if [ "$watch_mentions" = "1" ]; then
+  case "$watch_poll_interval" in
+    ''|*[!0-9]*) echo "WATCH_POLL_INTERVAL must be a non-negative integer" >&2; exit 1 ;;
+  esac
+  if [ "$watch_poll_interval" -eq 0 ]; then
+    echo "WATCH_POLL_INTERVAL must be > 0" >&2; exit 1
+  fi
+  if [ -z "$target_repo" ]; then
+    echo "TARGET_REPO is required when WATCH_MENTIONS=1." >&2
+    exit 1
+  fi
+fi
 
-while [ "$shutdown_requested" -eq 0 ]; do
-  # Background + wait so our TERM trap fires immediately
-  /opt/hivemoot-agent/scripts/run-multi.sh &
-  multi_pid=$!
+# ── Agent Slot Parsing ─────────────────────────────────────────────
 
-  set +e
-  wait "$multi_pid"
-  multi_exit=$?
-  set -e
-  multi_pid=""
+load_slot_token() {
+  local suffix="$1"
+  local token_var="AGENT_GITHUB_TOKEN_${suffix}"
+  local token_file_var="${token_var}_FILE"
+  local token="${!token_var:-}"
+  local token_file="${!token_file_var:-}"
 
-  if [ "$shutdown_requested" -ne 0 ]; then
-    log "Shutdown requested; exiting loop"
-    break
+  if [ -n "$token" ] && [ -n "$token_file" ]; then
+    echo "Set either ${token_var} or ${token_file_var}, not both." >&2
+    exit 1
   fi
 
-  if [ "$multi_exit" -eq 0 ]; then
-    consecutive_failures=0
-    log "Run completed successfully"
-  else
-    consecutive_failures=$((consecutive_failures + 1))
-    log "Run failed (exit=${multi_exit}, consecutive_failures=${consecutive_failures})"
-    if [ "$consecutive_failures" -ge "$max_failures" ]; then
-      log "Reached max consecutive failures threshold (${max_failures}); exiting loop"
-      exit "$multi_exit"
+  if [ -z "$token" ] && [ -n "$token_file" ]; then
+    if [ ! -f "$token_file" ]; then
+      echo "${token_file_var} does not exist: ${token_file}" >&2
+      exit 1
     fi
+    token="$(tr -d '\r\n' < "$token_file")"
   fi
 
-  # Clamp jitter so distribution stays symmetric around base_secs
-  effective_jitter="$jitter_secs"
-  if [ "$effective_jitter" -ge "$base_secs" ]; then
-    effective_jitter=$((base_secs - 1))
+  printf '%s' "$token"
+}
+
+declare -A seen_agents=()
+declare -a agent_ids=()
+declare -a agent_tokens=()
+
+for slot in $(seq 1 "$max_agents"); do
+  suffix="$(printf '%02d' "$slot")"
+  id_var="AGENT_ID_${suffix}"
+  token_var="AGENT_GITHUB_TOKEN_${suffix}"
+  token_file_var="${token_var}_FILE"
+
+  agent_id="$(trim "${!id_var:-}")"
+  token_inline="${!token_var:-}"
+  token_file="${!token_file_var:-}"
+
+  if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
+    continue
   fi
-  min_delay=$((base_secs - effective_jitter))
-  max_delay=$((base_secs + effective_jitter))
-  span=$((max_delay - min_delay + 1))
-  delay=$((min_delay + RANDOM % span))
-  log "Sleeping ${delay}s before next run"
-  # Interruptible sleep
-  sleep "$delay" &
-  wait $! || true
+
+  if [ -z "$agent_id" ]; then
+    echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
+    exit 1
+  fi
+
+  agent_token="$(load_slot_token "$suffix")"
+  if [ -z "$agent_token" ]; then
+    echo "Missing token for slot ${suffix}. Set ${token_var} or ${token_file_var}." >&2
+    exit 1
+  fi
+
+  case "$agent_id" in
+    ''|*[!a-zA-Z0-9._-]*)
+      echo "Invalid agent id: ${agent_id}" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -n "${seen_agents[$agent_id]:-}" ]; then
+    echo "Duplicate agent id detected: ${agent_id}" >&2
+    exit 1
+  fi
+  seen_agents["$agent_id"]=1
+
+  agent_ids+=("$agent_id")
+  agent_tokens+=("$agent_token")
 done
+
+if [ "${#agent_ids[@]}" -eq 0 ]; then
+  echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
+  exit 1
+fi
+
+agent_count="${#agent_ids[@]}"
+
+# Write tokens to temp files and clear env vars
+declare -a temp_token_files=()
+mkdir -p "$token_tmp_root"
+chmod 700 "$token_tmp_root" 2>/dev/null || true
+
+declare -A agent_token_files=()
+for index in "${!agent_ids[@]}"; do
+  aid="${agent_ids[$index]}"
+  tok="${agent_tokens[$index]}"
+  token_file="$(mktemp "${token_tmp_root}/${aid}.XXXXXX")"
+  printf '%s' "$tok" > "$token_file"
+  chmod 600 "$token_file" 2>/dev/null || true
+  temp_token_files+=("$token_file")
+  agent_token_files["$aid"]="$token_file"
+done
+
+for slot in $(seq 1 "$max_agents"); do
+  suffix="$(printf '%02d' "$slot")"
+  unset "AGENT_GITHUB_TOKEN_${suffix}" "AGENT_GITHUB_TOKEN_${suffix}_FILE" || true
+done
+
+# ── Preflight ──────────────────────────────────────────────────────
+
+preflight_check() {
+  local failures=0
+
+  log "Pre-flight: validating configuration"
+
+  local provider="${AGENT_PROVIDER:-claude}"
+  local auth_mode="${AGENT_AUTH_MODE:-auto}"
+  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+
+  if ! command -v "$provider" >/dev/null 2>&1; then
+    echo "Pre-flight: ${provider} CLI is not installed." >&2
+    failures=$((failures + 1))
+  fi
+
+  if ! command -v hivemoot >/dev/null 2>&1; then
+    echo "Pre-flight: hivemoot CLI is not installed." >&2
+    failures=$((failures + 1))
+  fi
+
+  if [ ! -f "$prompt_file" ]; then
+    echo "Pre-flight: prompt file not found: ${prompt_file}" >&2
+    failures=$((failures + 1))
+  fi
+
+  # Provider auth check
+  case "$provider" in
+    codex)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( [ -n "${OPENAI_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+        echo "Pre-flight: OPENAI_API_KEY missing for codex + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    gemini)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( { [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; } && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+        echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for gemini + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    claude)
+      local resolved="$auth_mode"
+      [ "$resolved" = "auto" ] && resolved=$( [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
+      if [ "$resolved" = "api_key" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "Pre-flight: ANTHROPIC_API_KEY missing for claude + api_key mode." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+  esac
+
+  # Validate agent tokens against GitHub API
+  for index in "${!agent_ids[@]}"; do
+    local aid="${agent_ids[$index]}"
+    local tok="${agent_tokens[$index]}"
+
+    if [ "$watch_mentions" = "1" ]; then
+      # Mention watching requires user tokens (for notifications API)
+      if ! GH_TOKEN="$tok" gh api user --jq .login >/dev/null 2>&1; then
+        echo "Pre-flight: token for agent '${aid}' is not a valid user token (required for WATCH_MENTIONS=1)." >&2
+        failures=$((failures + 1))
+        continue
+      fi
+    else
+      # Periodic-only mode accepts both user and installation tokens
+      if ! GH_TOKEN="$tok" gh api user --jq .login >/dev/null 2>&1; then
+        if ! GH_TOKEN="$tok" gh api installation --jq .id >/dev/null 2>&1; then
+          echo "Pre-flight: token for agent '${aid}' is invalid or expired." >&2
+          failures=$((failures + 1))
+          continue
+        fi
+      fi
+    fi
+
+    if [ -n "$target_repo" ]; then
+      if ! GH_TOKEN="$tok" gh api "repos/${target_repo}" --jq .full_name >/dev/null 2>&1; then
+        echo "Pre-flight: token for agent '${aid}' cannot access ${target_repo}." >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  done
+
+  if [ "$failures" -gt 0 ]; then
+    echo "Pre-flight: ${failures} check(s) failed." >&2
+    exit 1
+  fi
+
+  log "Pre-flight: all checks passed (agents=${agent_count} repo=${target_repo:-unset})"
+}
+
+prepare_hivemoot_cli() {
+  local update_mode="${HIVEMOOT_CLI_UPDATE:-auto}"
+  local spec="@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION:-latest}"
+
+  if [ "$update_mode" = "skip" ]; then
+    log "Pre-run: skipping hivemoot CLI update (HIVEMOOT_CLI_UPDATE=skip)"
+  else
+    log "Pre-run: updating hivemoot CLI (${spec})"
+    npm install -g "$spec"
+    hash -r
+  fi
+
+  if ! command -v hivemoot >/dev/null 2>&1; then
+    echo "hivemoot CLI is not available." >&2
+    exit 1
+  fi
+}
+
+preflight_check
+prepare_hivemoot_cli
+
+# ── Agent Home Setup ──────────────────────────────────────────────
+
+for index in "${!agent_ids[@]}"; do
+  aid="${agent_ids[$index]}"
+  agent_home="${workspace_root}/homes/${aid}"
+
+  mkdir -p \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share"
+  chmod 700 \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share" 2>/dev/null || true
+
+  # Copy shared provider auth state into each agent home
+  seed_provider_home "/home/node/.codex" "$agent_home/.codex"
+  seed_provider_home "/home/node/.gemini" "$agent_home/.gemini"
+  seed_provider_home "/home/node/.claude" "$agent_home/.claude"
+  seed_provider_home "/home/node/.config/claude" "$agent_home/.config/claude"
+
+  # Ensure agent subprocesses can find npm-installed binaries
+  # shellcheck disable=SC2016
+  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
+    > "$agent_home/.profile"
+done
+
+# ── Lock & Run Infrastructure ──────────────────────────────────────
+
+mkdir -p "$lock_dir"
+
+# Track all background PIDs for cleanup
+declare -a all_bg_pids=()
+shutdown_requested=0
+
+cleanup() {
+  local path=""
+  for path in "${temp_token_files[@]-}"; do
+    rm -f "$path" 2>/dev/null || true
+  done
+}
+
+# shellcheck disable=SC2317  # invoked via trap
+handle_shutdown() {
+  if [ "$shutdown_requested" -eq 0 ]; then
+    shutdown_requested=1
+    log "Shutdown signal received; stopping background processes"
+    for pid in "${all_bg_pids[@]-}"; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
+trap cleanup EXIT
+trap handle_shutdown TERM INT
+
+# Try to run an agent with per-agent flock.
+# Returns 0 if the agent was busy (lock not acquired) or ran successfully.
+# Returns non-zero only on actual run-once.sh failure, allowing callers
+# to distinguish between "nothing wrong" and "agent run crashed."
+#
+# Args: agent_id extra_prompt [ack_key state_file]
+# When ack_key + state_file are provided and the run succeeds (exit 0),
+# calls `hivemoot ack` to mark the mention as read. On failure the mention
+# stays unread so the next poll cycle retries it.
+try_run_agent() {
+  local agent_id="$1"
+  local extra_prompt="$2"
+  local ack_key="${3:-}"
+  local state_file="${4:-}"
+  local lock_file="${lock_dir}/${agent_id}.lock"
+  local token_file="${agent_token_files[$agent_id]}"
+  local agent_workspace="${workspace_root}/agents/${agent_id}"
+  local agent_repo="${agent_workspace}/repo"
+  local agent_log_dir="${workspace_root}/runs/${agent_id}"
+  local agent_home="${workspace_root}/homes/${agent_id}"
+
+  mkdir -p "$agent_workspace" "$agent_log_dir" "$agent_home"
+
+  (
+    flock -n 200 || { log "${agent_id}: busy, skipping"; exit 0; }
+
+    log "${agent_id}: lock acquired, starting run"
+
+    export HOME="$agent_home"
+    export WORKSPACE_ROOT="$agent_workspace"
+    export REPO_DIR="$agent_repo"
+    export LOG_DIR="$agent_log_dir"
+    export AGENT_GITHUB_TOKEN_FILE="$token_file"
+    export AGENT_GIT_NAME="$agent_id"
+    export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
+    export HIVEMOOT_BUZZ_ROLE="$agent_id"
+    export AGENT_EXTRA_PROMPT="$extra_prompt"
+
+    unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
+
+    agent_exit=0
+    /opt/hivemoot-agent/scripts/run-once.sh || agent_exit=$?
+
+    if [ "$agent_exit" -ne 0 ]; then
+      log "${agent_id}: run exited with code ${agent_exit}"
+    fi
+
+    # Deferred ack: only mark notification as read after a successful run.
+    # On failure the mention stays unread so the next poll cycle retries it.
+    if [ "$agent_exit" -eq 0 ] && [ -n "$ack_key" ] && [ -n "$state_file" ]; then
+      GH_TOKEN="$(cat "$token_file")" hivemoot ack "$ack_key" \
+        --state-file "$state_file" || log "${agent_id}: ack failed for ${ack_key}"
+    fi
+
+    log "${agent_id}: lock released"
+    exit "$agent_exit"
+  ) 200>"$lock_file"
+}
+
+# ── Mention Watchers (one per agent, only when WATCH_MENTIONS=1) ──
+
+start_mention_watcher() {
+  local agent_id="$1"
+  local agent_token="${agent_tokens[$2]}"
+  local agent_workspace="${workspace_root}/agents/${agent_id}"
+  local state_file="${agent_workspace}/watch-state.json"
+
+  mkdir -p "$agent_workspace"
+
+  log "Starting mention watcher for ${agent_id}"
+
+  # Run hivemoot watch in a supervised subshell with restart-on-failure.
+  # Backoff resets when the watcher survives longer than 60s (not an immediate crash).
+  (
+    restart_delay=5
+    max_delay=300
+
+    while true; do
+      start_time=$SECONDS
+
+      GH_TOKEN="$agent_token" hivemoot watch \
+        --repo "$target_repo" \
+        --state-file "$state_file" \
+        --interval "$watch_poll_interval" 2>&1 | while IFS= read -r line; do
+
+        # Skip non-JSON lines (stderr log messages mixed in)
+        if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
+          printf '[watcher:%s] %s\n' "$agent_id" "$line" >&2
+          continue
+        fi
+
+        local thread_id=""
+        local number=""
+        local title=""
+        local author=""
+        local body=""
+        local url=""
+
+        thread_id="$(printf '%s' "$line" | jq -r '.threadId // empty')"
+        number="$(printf '%s' "$line" | jq -r '.number // empty')"
+        title="$(printf '%s' "$line" | jq -r '.title // empty')"
+        author="$(printf '%s' "$line" | jq -r '.author // empty')"
+        body="$(printf '%s' "$line" | jq -r '.body // empty')"
+        url="$(printf '%s' "$line" | jq -r '.url // empty')"
+        timestamp="$(printf '%s' "$line" | jq -r '.timestamp // empty')"
+
+        log "${agent_id}: mention detected on #${number} by @${author}"
+
+        # Build the extra prompt with mention context
+        local mention_prompt="PRIORITY: You were @mentioned on #${number}: \"${title}\".
+Mentioned by: @${author}
+Comment: \"${body}\"
+URL: ${url}
+
+First, react to the comment with a 👀 (eyes) reaction to let the author know you are looking into this.
+Then read the full thread, research the topic, and take appropriate action with a meaningful response."
+
+        local combined_prompt="${global_extra_prompt:+${global_extra_prompt}
+
+}${mention_prompt}"
+
+        # Build ack key (threadId:updatedAt) for deferred acknowledgment
+        local ack_key=""
+        if [ -n "$thread_id" ] && [ -n "$timestamp" ]; then
+          ack_key="${thread_id}:${timestamp}"
+        fi
+
+        # Try to acquire agent lock and run; pass ack info for deferred mark-read.
+        # Redirect stdin from /dev/null so the backgrounded child doesn't inherit
+        # the pipe fd — inherited pipe fds can flip to O_NONBLOCK and cause the
+        # parent while-read loop to fail with EAGAIN, killing the watcher.
+        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" </dev/null &
+
+      done || true  # Don't let pipefail+errexit kill the restart loop
+
+      # Reset backoff if watcher ran for more than 60s (not an immediate crash)
+      elapsed=$((SECONDS - start_time))
+      if [ "$elapsed" -gt 60 ]; then
+        restart_delay=5
+      fi
+
+      log "${agent_id}: watcher exited after ${elapsed}s, restarting in ${restart_delay}s"
+      sleep "$restart_delay" &
+      wait $! || break
+
+      restart_delay=$((restart_delay * 2))
+      if [ "$restart_delay" -gt "$max_delay" ]; then
+        restart_delay="$max_delay"
+      fi
+    done
+  ) &
+
+  local watcher_pid=$!
+  all_bg_pids+=("$watcher_pid")
+  log "Mention watcher for ${agent_id} started (pid=${watcher_pid})"
+}
+
+# ── Periodic Scheduler ─────────────────────────────────────────────
+
+start_periodic_scheduler() {
+  log "Starting periodic scheduler (interval=${periodic_interval}s +/-${periodic_jitter}s)"
+
+  (
+    consecutive_failures=0
+
+    # This subshell terminates via SIGTERM from handle_shutdown, not via
+    # a shared variable (subshells get a frozen copy of parent state).
+    while true; do
+      # Sleep first — agents just started, give watchers time to settle
+      effective_jitter="$periodic_jitter"
+      if [ "$effective_jitter" -ge "$periodic_interval" ]; then
+        effective_jitter=$((periodic_interval - 1))
+      fi
+      min_delay=$((periodic_interval - effective_jitter))
+      max_delay=$((periodic_interval + effective_jitter))
+      span=$((max_delay - min_delay + 1))
+      delay=$((min_delay + RANDOM % span))
+
+      log "Periodic: sleeping ${delay}s before next cycle"
+      sleep "$delay" &
+      wait $! || true
+
+      log "Periodic: starting cycle for ${agent_count} agents"
+
+      declare -a cycle_pids=()
+      for index in "${!agent_ids[@]}"; do
+        aid="${agent_ids[$index]}"
+
+        try_run_agent "$aid" "$global_extra_prompt" &
+        cycle_pids+=($!)
+      done
+
+      # Wait for all agent runs and track results
+      cycle_ok=0
+      for pid in "${cycle_pids[@]}"; do
+        if wait "$pid" 2>/dev/null; then
+          cycle_ok=1
+        fi
+      done
+
+      if [ "$cycle_ok" -eq 1 ]; then
+        consecutive_failures=0
+        log "Periodic: cycle completed"
+      else
+        consecutive_failures=$((consecutive_failures + 1))
+        log "Periodic: cycle failed (consecutive_failures=${consecutive_failures})"
+        if [ "$consecutive_failures" -ge "$max_failures" ]; then
+          log "Periodic: reached max consecutive failures (${max_failures}); exiting"
+          kill -TERM $$ 2>/dev/null || true
+          exit 1
+        fi
+      fi
+    done
+  ) &
+
+  local scheduler_pid=$!
+  all_bg_pids+=("$scheduler_pid")
+  log "Periodic scheduler started (pid=${scheduler_pid})"
+}
+
+# ── Main ───────────────────────────────────────────────────────────
+
+log "Loop mode starting: ${agent_count} agents, repo=${target_repo:-unset}"
+log "  Periodic interval: ${periodic_interval}s +/-${periodic_jitter}s"
+if [ "$watch_mentions" = "1" ]; then
+  log "  Mention watching: enabled (poll interval: ${watch_poll_interval}s)"
+else
+  log "  Mention watching: disabled (set WATCH_MENTIONS=1 to enable)"
+fi
+log "  Max consecutive failures: ${max_failures}"
+
+# Start mention watchers if enabled
+if [ "$watch_mentions" = "1" ]; then
+  for index in "${!agent_ids[@]}"; do
+    start_mention_watcher "${agent_ids[$index]}" "$index"
+  done
+fi
+
+# Start periodic scheduler
+start_periodic_scheduler
+
+# Wait for all background processes
+log "All background processes running. Waiting..."
+wait
 
 log "Graceful shutdown complete"
 exit 0

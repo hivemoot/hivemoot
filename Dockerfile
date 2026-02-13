@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:24-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CODEX_VERSION=latest
@@ -6,18 +6,26 @@ ARG GEMINI_VERSION=latest
 ARG CLAUDE_CODE_VERSION=latest
 ARG HIVEMOOT_CLI_VERSION=latest
 
+# Install system dependencies. gh is installed from GitHub's official apt repo
+# because the Debian-packaged version is too old (2.23 vs 2.80+).
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
   ca-certificates \
   curl \
-  gh \
   git \
+  gpg \
   jq \
   less \
   openssh-client \
   procps \
   ripgrep \
   tini \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
+  && apt-get purge -y gpg && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/local/share/npm-global \

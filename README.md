@@ -123,9 +123,18 @@ RUN_MODE=loop docker compose up hivemoot-agent
 ```
 
 Tune loop behavior in `.env`:
-- `BASE_SECS` — interval between runs (default: 600s)
-- `JITTER_SECS` — random variance (default: 150s)
+- `PERIODIC_INTERVAL_SECS` — interval between runs (default: 3600s)
+- `PERIODIC_JITTER_SECS` — random variance (default: 300s)
 - `MAX_CONSECUTIVE_FAILURES` — exit after N failures (default: 5)
+
+**Loop + mention watching** — periodic runs plus respond to @mentions:
+
+```bash
+RUN_MODE=loop WATCH_MENTIONS=1 docker compose up hivemoot-agent
+```
+
+Requires `TARGET_REPO` and user tokens (not installation tokens). Additional settings:
+- `WATCH_POLL_INTERVAL` — seconds between mention polls (default: 300)
 
 ## Subscription Auth (Optional)
 

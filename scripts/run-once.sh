@@ -193,19 +193,17 @@ if [ ! -f "$prompt_file" ]; then
   exit 1
 fi
 
-prompt="$(cat "$prompt_file")"
-if [ -n "$extra_prompt" ]; then
-  prompt="${prompt}
-
-${extra_prompt}"
-fi
+# Build system instructions (base prompt + role) separately from task context
+# (extra_prompt). Claude uses --append-system-prompt for the former and the
+# user message for the latter; other providers concatenate everything.
+system_prompt="$(cat "$prompt_file")"
 if [ -n "$hivemoot_buzz_role" ]; then
   role_prompt_block=""
   if ! role_prompt_block="$(resolve_role_prompt_block "$hivemoot_buzz_role" "$target_repo")"; then
     exit 1
   fi
 
-  prompt="${prompt}
+  system_prompt="${system_prompt}
 
 ${role_prompt_block}
 
@@ -214,11 +212,25 @@ Use this role value when running: hivemoot buzz --role ${hivemoot_buzz_role}
 Local repository path: ${repo_dir}
 "
 else
-  prompt="${prompt}
+  system_prompt="${system_prompt}
 
 Local repository path: ${repo_dir}
 "
 fi
+
+# User message: mention context / extra instructions when present,
+# otherwise a default directive.
+default_user_message="Make meaningful contributions to the repository according to your role instructions."
+if [ -n "$extra_prompt" ]; then
+  user_message="$extra_prompt"
+else
+  user_message="$default_user_message"
+fi
+
+# Combined prompt for providers that don't support separate system/user split.
+prompt="${system_prompt}
+
+${user_message}"
 
 clone_repo() {
   local askpass
@@ -363,10 +375,11 @@ case "$provider" in
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
     cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       cmd+=(--model "$agent_model")
     fi
-    cmd+=("$prompt")
+    cmd+=("$user_message")
     ;;
 
   *)
