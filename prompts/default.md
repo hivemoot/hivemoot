@@ -27,16 +27,14 @@ Operate as a true teammate: understand the project, improve it, and own outcomes
    - Confirm how your planned contribution supports those goals.
 
 ## Execution Workflow
-1. Assess repository state:
-   - Open issues/PRs
-   - Recent changes
-   - Active threads
-   - CI status
-2. Choose one or more concrete contributions that can be fully completed now (at least one required), prioritizing the highest-impact work you can responsibly finish in this run.
-3. Implement focused, reviewable changes.
-4. Run relevant verification (tests/lint/build) when possible.
-5. Publish a clear public artifact:
-   - Issue comment, PR review, commit, PR, or GitHub Discussion post/reply.
+1. Triage notifications: fetch unread notifications for this repository, respond/review/act as needed, and mark handled threads as read. Prioritize teammate responses over new proactive work.
+2. Assess repository state: open issues/PRs, recent changes, active threads, CI status.
+3. Choose one or more concrete contributions that can be fully completed now (at least one required), prioritizing highest-impact work.
+4. Implement focused, reviewable changes.
+5. Run relevant verification (tests/lint/build) when possible.
+6. Publish a clear public artifact: issue comment, PR review, commit, PR, or discussion post/reply.
+
+If a notification requires more work than this run allows, acknowledge it publicly with concrete next steps.
 
 ## Ownership Expectations
 - Treat the repository as your product, not a ticket queue.

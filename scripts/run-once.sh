@@ -209,11 +209,13 @@ ${role_prompt_block}
 
 Hivemoot buzz role: ${hivemoot_buzz_role}
 Use this role value when running: hivemoot buzz --role ${hivemoot_buzz_role}
+Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
 else
   system_prompt="${system_prompt}
 
+Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
 fi
