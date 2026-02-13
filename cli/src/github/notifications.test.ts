@@ -188,8 +188,7 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
-      "/repos/hivemoot/colony/notifications",
-      "-f", "all=false",
+      "/repos/hivemoot/colony/notifications?all=false",
     ]);
   });
 
@@ -201,10 +200,41 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
-      "/repos/hivemoot/colony/notifications",
-      "-f", "all=false",
-      "-f", "since=2026-01-15T00:00:00Z",
+      "/repos/hivemoot/colony/notifications?all=false&since=2026-01-15T00%3A00%3A00Z",
     ]);
+  });
+
+  it("embeds params as URL query string, not as -f body fields", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+
+    const args = mockedGh.mock.calls[0][0];
+    // Must NOT contain -f flags (which send body fields and cause 404 on GET)
+    expect(args).not.toContain("-f");
+    // URL must contain query string
+    expect(args[2]).toMatch(/\?all=false/);
+  });
+
+  it("URL-encodes since timestamps with colons correctly", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-02-13T02:11:08.000Z");
+
+    const url = mockedGh.mock.calls[0][0][2];
+    // Colons in ISO timestamps must be percent-encoded in the query string
+    expect(url).toContain("since=2026-02-13T02%3A11%3A08.000Z");
+    expect(url).not.toContain("-f");
+  });
+
+  it("omits since param when not provided", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+
+    const url = mockedGh.mock.calls[0][0][2];
+    expect(url).not.toContain("since");
+    expect(url).toBe("/repos/hivemoot/colony/notifications?all=false");
   });
 
   it("filters by specified reasons", async () => {

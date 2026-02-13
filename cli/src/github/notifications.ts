@@ -77,15 +77,16 @@ export async function fetchMentionNotifications(
   reasons: string[],
   since?: string,
 ): Promise<RawNotification[]> {
+  const params = new URLSearchParams({ all: "false" });
+  if (since) {
+    params.set("since", since);
+  }
+
   const args = [
     "api",
     "--paginate",
-    `/repos/${repo}/notifications`,
-    "-f", "all=false",
+    `/repos/${repo}/notifications?${params}`,
   ];
-  if (since) {
-    args.push("-f", `since=${since}`);
-  }
 
   const raw = await gh(args);
 
