@@ -15,6 +15,7 @@ const summary: RepoSummary = {
   reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
   draftPRs: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
   addressFeedback: [{ number: 54, title: "Decision explorer fixups", tags: [], author: "frank", comments: 1, age: "1h ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 1 } }],
+  notifications: [],
   notes: [],
 };
 
@@ -133,6 +134,44 @@ describe("notes in JSON output", () => {
   it("includes empty notes array when no notes", () => {
     const result = JSON.parse(jsonStatus(summary));
     expect(result.notes).toEqual([]);
+  });
+});
+
+describe("notifications array in JSON", () => {
+  const notifSummary: RepoSummary = {
+    ...summary,
+    notifications: [
+      { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+      { number: 49, title: "Add search", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
+    ],
+  };
+
+  it("includes notifications array first in jsonBuzz summary", () => {
+    const result = JSON.parse(jsonBuzz("engineer", role, notifSummary));
+    expect(result.summary.notifications).toHaveLength(2);
+    expect(result.summary.notifications[0].ackKey).toBe("T42:2025-06-15T10:00:00Z");
+    expect(result.summary.notifications[1].section).toBe("reviewPRs");
+    // notifications should be the first key in summary
+    const keys = Object.keys(result.summary);
+    expect(keys[0]).toBe("notifications");
+  });
+
+  it("includes notifications array first in jsonStatus", () => {
+    const result = JSON.parse(jsonStatus(notifSummary));
+    expect(result.notifications).toHaveLength(2);
+    expect(result.notifications[0].threadId).toBe("T42");
+    const keys = Object.keys(result);
+    expect(keys[0]).toBe("notifications");
+  });
+
+  it("includes empty notifications array when no notifications", () => {
+    const result = JSON.parse(jsonStatus(summary));
+    expect(result.notifications).toEqual([]);
+  });
+
+  it("includes empty notifications array in jsonBuzz when no notifications", () => {
+    const result = JSON.parse(jsonBuzz("engineer", role, summary));
+    expect(result.summary.notifications).toEqual([]);
   });
 });
 

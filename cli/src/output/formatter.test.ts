@@ -18,6 +18,7 @@ const summary: RepoSummary = {
   draftPRs: [],
   addressFeedback: [],
   unclassified: [],
+  notifications: [],
   notes: [],
 };
 
@@ -161,6 +162,7 @@ describe("formatStatus()", () => {
       reviewPRs: [],
       draftPRs: [],
       addressFeedback: [],
+      notifications: [],
       notes: [],
     };
     const output = formatStatus(empty);
@@ -223,6 +225,7 @@ describe("DRIVE sections", () => {
     addressFeedback: [
       { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
     ],
+    notifications: [],
     notes: [],
   };
 
@@ -467,6 +470,98 @@ describe("unread notification indicator", () => {
   it("does not render 'new:' for items without notifications", () => {
     const output = formatStatus(summary);
     expect(output).not.toContain("new:");
+  });
+});
+
+describe("NOTIFICATIONS section", () => {
+  it("renders NOTIFICATIONS section first when notifications exist", () => {
+    const notifSummary: RepoSummary = {
+      ...summary,
+      notifications: [
+        { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+        { number: 49, title: "Add search", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
+      ],
+    };
+    const output = formatStatus(notifSummary);
+    expect(output).toContain("NOTIFICATIONS");
+    expect(output).toContain("(2)");
+    expect(output).toContain("#42");
+    expect(output).toContain("Fix dashboard");
+    expect(output).toContain("comment");
+    expect(output).toContain("T42:2025-06-15T10:00:00Z");
+    expect(output).toContain("#49");
+    expect(output).toContain("review_requested");
+    // NOTIFICATIONS should appear before other sections
+    const notifIdx = output.indexOf("NOTIFICATIONS");
+    const voteIdx = output.indexOf("VOTE ON ISSUES");
+    expect(notifIdx).toBeLessThan(voteIdx);
+  });
+
+  it("hides NOTIFICATIONS section when empty", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("NOTIFICATIONS");
+  });
+
+  it("respects limit in NOTIFICATIONS section", () => {
+    const notifSummary: RepoSummary = {
+      ...summary,
+      notifications: [
+        // pre-sorted newest-first by buildSummary()
+        { number: 88, title: "Add search", threadId: "T88", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T88:2025-06-15T11:00:00Z", section: "reviewPRs" },
+        { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+      ],
+    };
+    const output = formatStatus(notifSummary, 1);
+    expect(output).toContain("#88");
+    expect(output).not.toContain("#42");
+    expect(output).toContain("... and 1 more");
+  });
+
+  it("preserves pre-sorted newest-first order from builder", () => {
+    const notifSummary: RepoSummary = {
+      ...summary,
+      notifications: [
+        // buildSummary() sorts newest-first; formatter preserves that order
+        { number: 49, title: "Newer PR", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
+        { number: 42, title: "Older issue", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+      ],
+    };
+
+    const output = formatStatus(notifSummary);
+    expect(output.indexOf("#49")).toBeLessThan(output.indexOf("#42"));
+  });
+
+  it("renders NOTIFICATIONS before NEEDS HUMAN", () => {
+    const withBoth: RepoSummary = {
+      ...summary,
+      needsHuman: [{ number: 77, title: "Blocked", tags: ["needs:human"], author: "bot", comments: 0, age: "yesterday" }],
+      notifications: [
+        { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+      ],
+    };
+    const output = formatStatus(withBoth);
+    const notifIdx = output.indexOf("NOTIFICATIONS");
+    const humanIdx = output.indexOf("NEEDS HUMAN");
+    expect(notifIdx).toBeLessThan(humanIdx);
+  });
+});
+
+describe("ackKey on metadata line", () => {
+  it("renders 'ack:' on metadata line for unread items with ackKey", () => {
+    const unreadSummary: RepoSummary = {
+      ...summary,
+      implement: [
+        { number: 45, title: "User Dashboard", tags: [], author: "bob", comments: 0, age: "3 days ago", unread: true, unreadReason: "mention", unreadAge: "2h ago", ackKey: "T45:2025-06-15T10:00:00Z" },
+      ],
+    };
+    const output = formatStatus(unreadSummary);
+    expect(output).toContain("ack:");
+    expect(output).toContain("T45:2025-06-15T10:00:00Z");
+  });
+
+  it("does not render 'ack:' when ackKey is not set", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("ack:");
   });
 });
 

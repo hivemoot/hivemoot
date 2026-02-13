@@ -1,5 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { hasLabel, hasExactLabel, timeAgo, daysSince, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, reviewContext, latestCommitAge, latestCommentAge, commentContext, isVotingIssue } from "./utils.js";
+import {
+  hasLabel,
+  hasExactLabel,
+  hasGovernanceLabel,
+  hasGovernanceLabelName,
+  timeAgo,
+  daysSince,
+  hasCIFailure,
+  checkStatus,
+  mergeStatus,
+  approvalCount,
+  changesRequestedCount,
+  reviewContext,
+  latestCommitAge,
+  latestCommentAge,
+  commentContext,
+  isVotingIssue,
+} from "./utils.js";
 import type { GitHubPR } from "../config/types.js";
 
 function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
@@ -90,6 +107,42 @@ describe("hasExactLabel()", () => {
     expect(hasExactLabel([{ name: "implementation" }], "implementation")).toBe(true);
     expect(hasExactLabel([{ name: "merge-ready" }], "merge-ready")).toBe(true);
     expect(hasExactLabel([{ name: "stale" }], "stale")).toBe(true);
+  });
+});
+
+describe("hasGovernanceLabel()", () => {
+  it("matches canonical hivemoot labels", () => {
+    expect(hasGovernanceLabel([{ name: "hivemoot:voting" }], "VOTING")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "hivemoot:ready-to-implement" }], "READY_TO_IMPLEMENT")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "hivemoot:candidate" }], "IMPLEMENTATION")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "hivemoot:needs-human" }], "NEEDS_HUMAN")).toBe(true);
+  });
+
+  it("matches legacy labels during transition", () => {
+    expect(hasGovernanceLabel([{ name: "phase:voting" }], "VOTING")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "phase:ready-to-implement" }], "READY_TO_IMPLEMENT")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "implementation" }], "IMPLEMENTATION")).toBe(true);
+    expect(hasGovernanceLabel([{ name: "needs:human" }], "NEEDS_HUMAN")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(hasGovernanceLabel([{ name: "HIVEMOOT:VOTING" }], "VOTING")).toBe(true);
+  });
+
+  it("returns false for mismatched labels", () => {
+    expect(hasGovernanceLabel([{ name: "phase:discussion" }], "VOTING")).toBe(false);
+    expect(hasGovernanceLabel([{ name: "bug" }], "IMPLEMENTATION")).toBe(false);
+  });
+});
+
+describe("hasGovernanceLabelName()", () => {
+  it("matches canonical and legacy names in string arrays", () => {
+    expect(hasGovernanceLabelName(["hivemoot:extended-voting"], "EXTENDED_VOTING")).toBe(true);
+    expect(hasGovernanceLabelName(["phase:extended-voting"], "EXTENDED_VOTING")).toBe(true);
+  });
+
+  it("returns false for non-matching names", () => {
+    expect(hasGovernanceLabelName(["phase:voting"], "READY_TO_IMPLEMENT")).toBe(false);
   });
 });
 
@@ -623,6 +676,14 @@ describe("commentContext()", () => {
 // ── isVotingIssue ──────────────────────────────────────────────────
 
 describe("isVotingIssue()", () => {
+  it("returns true for hivemoot:voting label", () => {
+    expect(isVotingIssue([{ name: "hivemoot:voting" }])).toBe(true);
+  });
+
+  it("returns true for hivemoot:extended-voting label", () => {
+    expect(isVotingIssue([{ name: "hivemoot:extended-voting" }])).toBe(true);
+  });
+
   it("returns true for phase:voting label", () => {
     expect(isVotingIssue([{ name: "phase:voting" }])).toBe(true);
   });

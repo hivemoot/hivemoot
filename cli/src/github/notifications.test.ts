@@ -68,8 +68,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(42)).toEqual({
+      threadId: "1001",
       reason: "mention",
       updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix layout",
+      url: "https://github.com/hivemoot/colony/issues/42",
+      itemType: "Issue",
     });
   });
 
@@ -105,7 +109,7 @@ describe("fetchNotifications()", () => {
   it("handles PullRequest subject type", async () => {
     mockedGh.mockResolvedValue(JSON.stringify([
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/99", type: "PullRequest" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/99", type: "PullRequest", title: "Add search", latest_comment_url: null },
         reason: "review_requested",
       }),
     ]));
@@ -113,8 +117,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(99)).toEqual({
+      threadId: "1001",
       reason: "review_requested",
       updatedAt: "2025-06-15T10:00:00Z",
+      title: "Add search",
+      url: "https://github.com/hivemoot/colony/pull/99",
+      itemType: "PullRequest",
     });
   });
 
@@ -127,8 +135,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(42)).toEqual({
+      threadId: "1001",
       reason: "mention",
       updatedAt: "2025-06-15T12:00:00Z",
+      title: "Fix layout",
+      url: "https://github.com/hivemoot/colony/issues/42",
+      itemType: "Issue",
     });
   });
 
@@ -145,11 +157,11 @@ describe("fetchNotifications()", () => {
   it("handles multiple different items", async () => {
     mockedGh.mockResolvedValue(JSON.stringify([
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/10", type: "Issue" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/10", type: "Issue", title: "Bug report", latest_comment_url: null },
         reason: "comment",
       }),
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/20", type: "PullRequest" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/20", type: "PullRequest", title: "Refactor", latest_comment_url: null },
         reason: "author",
       }),
     ]));

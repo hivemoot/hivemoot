@@ -109,6 +109,21 @@ export interface SummaryItem {
   unread?: boolean;                   // true if there's an unread notification
   unreadReason?: string;              // "comment" | "mention" | "author" | "ci_activity"
   unreadAge?: string;                 // "2h ago" — when the notification was last updated
+  threadId?: string;                  // GitHub notification thread ID for ack
+  notificationTimestamp?: string;     // raw ISO — needed together with threadId for ack key
+  ackKey?: string;                    // pre-formatted "threadId:timestamp" for `hivemoot ack`
+}
+
+export interface NotificationRef {
+  number: number;
+  title: string;
+  url?: string;
+  threadId: string;
+  reason: string;
+  timestamp: string;
+  age: string;           // relative time, e.g. "2h ago"
+  ackKey: string;
+  section: string;       // bucket: "implement", "reviewPRs", ... or "other" if not in fetched summary
 }
 
 export interface RepoSummary {
@@ -124,6 +139,7 @@ export interface RepoSummary {
   reviewPRs: SummaryItem[];
   draftPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
+  notifications: NotificationRef[];
   notes: string[];
 }
 

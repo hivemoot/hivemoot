@@ -1,13 +1,28 @@
 import type {
   GitHubIssue,
   GitHubPR,
+  NotificationRef,
   RepoRef,
   RepoSummary,
   SummaryItem,
 } from "../config/types.js";
 import type { VoteMap } from "../github/votes.js";
 import type { NotificationMap } from "../github/notifications.js";
-import { hasLabel, hasExactLabel, hasCIFailure, checkStatus, mergeStatus, approvalCount, changesRequestedCount, timeAgo, reviewContext, latestCommitAge, latestCommentAge, commentContext } from "./utils.js";
+import {
+  hasLabel,
+  hasCIFailure,
+  checkStatus,
+  mergeStatus,
+  approvalCount,
+  changesRequestedCount,
+  timeAgo,
+  reviewContext,
+  latestCommitAge,
+  latestCommentAge,
+  commentContext,
+  hasGovernanceLabel,
+  hasGovernanceLabelName,
+} from "./utils.js";
 
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
@@ -63,21 +78,21 @@ function classifyIssue(
   }
 
   // Issues needing human attention are excluded from all actionable buckets
-  if (hasExactLabel(issue.labels, "needs:human")) {
+  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) {
     return {
       bucket: "needsHuman",
       item: { ...base, assigned },
     };
   }
 
-  // Bot governance labels (exact match)
-  if (hasExactLabel(issue.labels, "phase:voting") || hasExactLabel(issue.labels, "phase:extended-voting")) {
+  // Bot governance labels (canonical + legacy aliases)
+  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) {
     return { bucket: "voteOn", item: base };
   }
-  if (hasExactLabel(issue.labels, "phase:discussion")) {
+  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) {
     return { bucket: "discuss", item: base };
   }
-  if (hasExactLabel(issue.labels, "phase:ready-to-implement")) {
+  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) {
     return { bucket: "implement", item: { ...base, assigned } };
   }
 
@@ -141,7 +156,7 @@ function classifyPR(
 function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, number> {
   const map = new Map<number, number>();
   for (const pr of prs) {
-    if (!hasLabel(pr.labels, "implementation")) continue;
+    if (!hasGovernanceLabel(pr.labels, "IMPLEMENTATION")) continue;
     if (pr.author?.login === currentUser) continue;
     for (const ref of pr.closingIssuesReferences) {
       map.set(ref.number, (map.get(ref.number) ?? 0) + 1);
@@ -220,7 +235,7 @@ export function buildSummary(
   });
 
   const filteredVoteOn = voteOn.filter((item) => {
-    if (item.author === currentUser && item.tags.includes("phase:extended-voting")) {
+    if (item.author === currentUser && hasGovernanceLabelName(item.tags, "EXTENDED_VOTING")) {
       driveDiscussion.push(item);
       return false;
     }
@@ -237,27 +252,74 @@ export function buildSummary(
     return true;
   });
 
-  // Annotate all items with unread notification status
-  const allItems = [
-    ...needsHuman,
-    ...driveDiscussion,
-    ...driveImplementation,
-    ...filteredVoteOn,
-    ...filteredDiscuss,
-    ...implement,
-    ...unclassified,
-    ...filteredReviewPRs,
-    ...draftPRs,
-    ...filteredAddressFeedback,
+  // Annotate all items with unread notification status and collect notification refs
+  const sectionEntries: [string, SummaryItem[]][] = [
+    ["needsHuman", needsHuman],
+    ["driveDiscussion", driveDiscussion],
+    ["driveImplementation", driveImplementation],
+    ["voteOn", filteredVoteOn],
+    ["discuss", filteredDiscuss],
+    ["implement", implement],
+    ["unclassified", unclassified],
+    ["reviewPRs", filteredReviewPRs],
+    ["draftPRs", draftPRs],
+    ["addressFeedback", filteredAddressFeedback],
   ];
-  for (const item of allItems) {
-    const n = notifications.get(item.number);
-    if (n) {
-      item.unread = true;
-      item.unreadReason = n.reason;
-      item.unreadAge = timeAgo(n.updatedAt, now);
+  const notificationRefs: NotificationRef[] = [];
+  const matchedNumbers = new Set<number>();
+
+  for (const [section, items] of sectionEntries) {
+    for (const item of items) {
+      const n = notifications.get(item.number);
+      if (n) {
+        matchedNumbers.add(item.number);
+        item.unread = true;
+        item.unreadReason = n.reason;
+        item.unreadAge = timeAgo(n.updatedAt, now);
+        item.threadId = n.threadId;
+        item.notificationTimestamp = n.updatedAt;
+        const ackKey = `${n.threadId}:${n.updatedAt}`;
+        item.ackKey = ackKey;
+
+        notificationRefs.push({
+          number: item.number,
+          title: item.title,
+          url: item.url,
+          threadId: n.threadId,
+          reason: n.reason,
+          timestamp: n.updatedAt,
+          age: timeAgo(n.updatedAt, now),
+          ackKey,
+          section,
+        });
+      }
     }
   }
+
+  // Include unread notification threads that do not map to currently fetched
+  // open items (e.g. closed threads or items beyond fetch limit).
+  for (const [number, n] of notifications.entries()) {
+    if (matchedNumbers.has(number)) continue;
+
+    const ackKey = `${n.threadId}:${n.updatedAt}`;
+    notificationRefs.push({
+      number,
+      title: n.title,
+      url: n.url,
+      threadId: n.threadId,
+      reason: n.reason,
+      timestamp: n.updatedAt,
+      age: timeAgo(n.updatedAt, now),
+      ackKey,
+      section: "other",
+    });
+  }
+
+  // Newest unread notifications first for triage and ack ergonomics.
+  notificationRefs.sort((a, b) => {
+    if (a.timestamp === b.timestamp) return a.number - b.number;
+    return a.timestamp > b.timestamp ? -1 : 1;
+  });
 
   return {
     repo,
@@ -272,6 +334,7 @@ export function buildSummary(
     reviewPRs: filteredReviewPRs,
     draftPRs,
     addressFeedback: filteredAddressFeedback,
+    notifications: notificationRefs,
     notes: [],
   };
 }

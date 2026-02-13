@@ -13,6 +13,7 @@ export function jsonBuzz(
         instructions: role.instructions,
       },
       summary: {
+        notifications: summary.notifications,
         repo: `${summary.repo.owner}/${summary.repo.repo}`,
         currentUser: summary.currentUser,
         driveDiscussion: summary.driveDiscussion,
@@ -36,6 +37,7 @@ export function jsonBuzz(
 export function jsonStatus(summary: RepoSummary): string {
   return JSON.stringify(
     {
+      notifications: summary.notifications,
       repo: `${summary.repo.owner}/${summary.repo.repo}`,
       currentUser: summary.currentUser,
       driveDiscussion: summary.driveDiscussion,

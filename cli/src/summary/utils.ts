@@ -1,5 +1,37 @@
 import type { GitHubPR } from "../config/types.js";
 
+export const GOVERNANCE_LABEL_ALIASES = {
+  DISCUSSION: ["hivemoot:discussion", "phase:discussion"],
+  VOTING: ["hivemoot:voting", "phase:voting"],
+  EXTENDED_VOTING: ["hivemoot:extended-voting", "phase:extended-voting"],
+  READY_TO_IMPLEMENT: ["hivemoot:ready-to-implement", "phase:ready-to-implement"],
+  NEEDS_HUMAN: ["hivemoot:needs-human", "needs:human"],
+  IMPLEMENTATION: ["hivemoot:candidate", "implementation"],
+  REJECTED: ["hivemoot:rejected", "rejected"],
+  INCONCLUSIVE: ["hivemoot:inconclusive", "inconclusive"],
+  STALE: ["hivemoot:stale", "stale"],
+  IMPLEMENTED: ["hivemoot:implemented", "implemented"],
+  MERGE_READY: ["hivemoot:merge-ready", "merge-ready"],
+} as const;
+
+export type GovernanceLabelKey = keyof typeof GOVERNANCE_LABEL_ALIASES;
+
+export function hasGovernanceLabel(
+  labels: Array<{ name: string }>,
+  key: GovernanceLabelKey,
+): boolean {
+  const aliases = GOVERNANCE_LABEL_ALIASES[key];
+  return labels.some((label) => aliases.some((alias) => alias === label.name.toLowerCase()));
+}
+
+export function hasGovernanceLabelName(
+  labelNames: string[],
+  key: GovernanceLabelKey,
+): boolean {
+  const aliases = GOVERNANCE_LABEL_ALIASES[key];
+  return labelNames.some((name) => aliases.some((alias) => alias === name.toLowerCase()));
+}
+
 // ── Comment context ──────────────────────────────────────────────
 
 export interface CommentContext {
@@ -32,12 +64,12 @@ export function commentContext(
 
 /**
  * Whether an issue is in a voting phase based on its labels.
- * Matches: phase:voting, phase:extended-voting, or the keyword "vote".
+ * Matches canonical/legacy voting labels, or the keyword "vote".
  */
 export function isVotingIssue(labels: Array<{ name: string }>): boolean {
   return (
-    hasExactLabel(labels, "phase:voting") ||
-    hasExactLabel(labels, "phase:extended-voting") ||
+    hasGovernanceLabel(labels, "VOTING") ||
+    hasGovernanceLabel(labels, "EXTENDED_VOTING") ||
     hasLabel(labels, "vote")
   );
 }

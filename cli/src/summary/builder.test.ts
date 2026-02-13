@@ -243,6 +243,17 @@ describe("buildSummary()", () => {
     expect(summary.voteOn[0].number).toBe(60);
   });
 
+  it("classifies hivemoot:voting issues into voteOn bucket", () => {
+    const issue = makeIssue({
+      number: 600,
+      labels: [{ name: "hivemoot:voting" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.voteOn).toHaveLength(1);
+    expect(summary.voteOn[0].number).toBe(600);
+  });
+
   it("classifies phase:extended-voting issues into voteOn bucket", () => {
     const issue = makeIssue({
       number: 61,
@@ -252,6 +263,17 @@ describe("buildSummary()", () => {
     const summary = buildSummary(repo, [issue], [], "testuser", now);
     expect(summary.voteOn).toHaveLength(1);
     expect(summary.voteOn[0].number).toBe(61);
+  });
+
+  it("classifies hivemoot:extended-voting issues into voteOn bucket", () => {
+    const issue = makeIssue({
+      number: 610,
+      labels: [{ name: "hivemoot:extended-voting" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.voteOn).toHaveLength(1);
+    expect(summary.voteOn[0].number).toBe(610);
   });
 
   it("classifies phase:discussion issues into discuss bucket", () => {
@@ -265,10 +287,33 @@ describe("buildSummary()", () => {
     expect(summary.discuss[0].number).toBe(62);
   });
 
+  it("classifies hivemoot:discussion issues into discuss bucket", () => {
+    const issue = makeIssue({
+      number: 620,
+      labels: [{ name: "hivemoot:discussion" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.discuss).toHaveLength(1);
+    expect(summary.discuss[0].number).toBe(620);
+  });
+
   it("classifies phase:ready-to-implement issues into implement bucket", () => {
     const issue = makeIssue({
       number: 63,
       labels: [{ name: "phase:ready-to-implement" }],
+      assignees: [{ login: "alice" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.implement[0].assigned).toBe("alice");
+  });
+
+  it("classifies hivemoot:ready-to-implement issues into implement bucket", () => {
+    const issue = makeIssue({
+      number: 630,
+      labels: [{ name: "hivemoot:ready-to-implement" }],
       assignees: [{ login: "alice" }],
     });
 
@@ -294,6 +339,18 @@ describe("buildSummary()", () => {
     const issue = makeIssue({
       number: 77,
       labels: [{ name: "needs:human" }],
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement).toHaveLength(0);
+    expect(summary.voteOn).toHaveLength(0);
+    expect(summary.discuss).toHaveLength(0);
+  });
+
+  it("excludes hivemoot:needs-human issues from implement bucket", () => {
+    const issue = makeIssue({
+      number: 770,
+      labels: [{ name: "hivemoot:needs-human" }],
     });
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
@@ -342,6 +399,19 @@ describe("buildSummary()", () => {
       number: 100,
       labels: [{ name: "implementation" }],
       closingIssuesReferences: [{ number: 45 }],
+    });
+
+    const summary = buildSummary(repo, [issue], [pr], "testuser", now);
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.implement[0].competingPRs).toBe(1);
+  });
+
+  it("sets competingPRs from hivemoot:candidate PR labels", () => {
+    const issue = makeIssue({ number: 451, title: "User Dashboard" });
+    const pr = makePR({
+      number: 1001,
+      labels: [{ name: "hivemoot:candidate" }],
+      closingIssuesReferences: [{ number: 451 }],
     });
 
     const summary = buildSummary(repo, [issue], [pr], "testuser", now);
@@ -502,6 +572,19 @@ describe("buildSummary()", () => {
     const summary = buildSummary(repo, [issue], [], "testuser", now);
     expect(summary.driveDiscussion).toHaveLength(1);
     expect(summary.driveDiscussion[0].number).toBe(61);
+    expect(summary.voteOn).toHaveLength(0);
+  });
+
+  it("moves authored hivemoot:extended-voting issues to driveDiscussion", () => {
+    const issue = makeIssue({
+      number: 611,
+      labels: [{ name: "hivemoot:extended-voting" }],
+      author: { login: "testuser" },
+    });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.driveDiscussion).toHaveLength(1);
+    expect(summary.driveDiscussion[0].number).toBe(611);
     expect(summary.voteOn).toHaveLength(0);
   });
 
@@ -837,7 +920,7 @@ describe("buildSummary()", () => {
 
   it("annotates voteOn items with unread notification", () => {
     const issue = makeIssue({ number: 50, labels: [{ name: "phase:voting" }] });
-    const notifications = new Map([[50, { reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[50, { threadId: "T50", reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.voteOn[0].unread).toBe(true);
@@ -847,7 +930,7 @@ describe("buildSummary()", () => {
 
   it("annotates discuss items with unread notification", () => {
     const issue = makeIssue({ number: 52, labels: [{ name: "discuss" }] });
-    const notifications = new Map([[52, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[52, { threadId: "T52", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.discuss[0].unread).toBe(true);
@@ -857,7 +940,7 @@ describe("buildSummary()", () => {
 
   it("annotates implement items with unread notification", () => {
     const issue = makeIssue({ number: 45 });
-    const notifications = new Map([[45, { reason: "author", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[45, { threadId: "T45", reason: "author", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.implement[0].unread).toBe(true);
@@ -867,7 +950,7 @@ describe("buildSummary()", () => {
 
   it("annotates needsHuman items with unread notification", () => {
     const issue = makeIssue({ number: 77, labels: [{ name: "needs:human" }] });
-    const notifications = new Map([[77, { reason: "ci_activity", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[77, { threadId: "T77", reason: "ci_activity", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.needsHuman[0].unread).toBe(true);
@@ -877,7 +960,7 @@ describe("buildSummary()", () => {
 
   it("annotates reviewPRs items with unread notification", () => {
     const pr = makePR({ number: 49 });
-    const notifications = new Map([[49, { reason: "review_requested", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[49, { threadId: "T49", reason: "review_requested", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
     expect(summary.reviewPRs[0].unread).toBe(true);
@@ -887,7 +970,7 @@ describe("buildSummary()", () => {
 
   it("annotates draftPRs items with unread notification", () => {
     const pr = makePR({ number: 98, isDraft: true });
-    const notifications = new Map([[98, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[98, { threadId: "T98", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
     expect(summary.draftPRs[0].unread).toBe(true);
@@ -897,7 +980,7 @@ describe("buildSummary()", () => {
 
   it("annotates driveDiscussion items with unread notification", () => {
     const issue = makeIssue({ number: 52, labels: [{ name: "discuss" }], author: { login: "testuser" } });
-    const notifications = new Map([[52, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[52, { threadId: "T52d", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.driveDiscussion[0].unread).toBe(true);
@@ -907,7 +990,7 @@ describe("buildSummary()", () => {
 
   it("annotates driveImplementation items with unread notification", () => {
     const pr = makePR({ number: 49, author: { login: "testuser" } });
-    const notifications = new Map([[49, { reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notifications = new Map([[49, { threadId: "T49d", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
 
     const summary = buildSummary(repo, [], [pr], "testuser", now, new Map(), notifications);
     expect(summary.driveImplementation[0].unread).toBe(true);
@@ -917,7 +1000,7 @@ describe("buildSummary()", () => {
 
   it("computes unreadAge relative to now", () => {
     const issue = makeIssue({ number: 45 });
-    const notifications = new Map([[45, { reason: "comment", updatedAt: "2025-06-14T12:00:00Z" }]]);
+    const notifications = new Map([[45, { threadId: "T45u", reason: "comment", updatedAt: "2025-06-14T12:00:00Z" }]]);
 
     const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
     expect(summary.implement[0].unreadAge).toBe("yesterday");
@@ -937,5 +1020,129 @@ describe("buildSummary()", () => {
 
     const summary = buildSummary(repo, [issue], [], "testuser", now);
     expect(summary.implement[0].unread).toBeUndefined();
+  });
+
+  // ── threadId / ackKey on SummaryItem ──────────────────────────────
+
+  it("sets threadId, notificationTimestamp, and ackKey on unread items", () => {
+    const issue = makeIssue({ number: 45 });
+    const notifications = new Map([[45, { threadId: "T45", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.implement[0].threadId).toBe("T45");
+    expect(summary.implement[0].notificationTimestamp).toBe("2025-06-15T10:00:00Z");
+    expect(summary.implement[0].ackKey).toBe("T45:2025-06-15T10:00:00Z");
+  });
+
+  it("does not set threadId or ackKey when item has no notification", () => {
+    const issue = makeIssue({ number: 45 });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map());
+    expect(summary.implement[0].threadId).toBeUndefined();
+    expect(summary.implement[0].notificationTimestamp).toBeUndefined();
+    expect(summary.implement[0].ackKey).toBeUndefined();
+  });
+
+  // ── notifications array on RepoSummary ────────────────────────────
+
+  it("builds notifications array from unread items across sections", () => {
+    const issue = makeIssue({ number: 42, title: "Fix dashboard", url: "https://github.com/hivemoot/colony/issues/42" });
+    const pr = makePR({ number: 49, title: "Add search", url: "https://github.com/hivemoot/colony/pull/49" });
+    const notifications = new Map([
+      [42, { threadId: "T42", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }],
+      [49, { threadId: "T49", reason: "review_requested", updatedAt: "2025-06-15T11:00:00Z" }],
+    ]);
+
+    const summary = buildSummary(repo, [issue], [pr], "testuser", now, new Map(), notifications);
+    expect(summary.notifications).toHaveLength(2);
+
+    const implRef = summary.notifications.find((n) => n.number === 42);
+    expect(implRef).toEqual({
+      number: 42,
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/colony/issues/42",
+      threadId: "T42",
+      reason: "comment",
+      timestamp: "2025-06-15T10:00:00Z",
+      age: "2h ago",
+      ackKey: "T42:2025-06-15T10:00:00Z",
+      section: "implement",
+    });
+
+    const prRef = summary.notifications.find((n) => n.number === 49);
+    expect(prRef).toEqual({
+      number: 49,
+      title: "Add search",
+      url: "https://github.com/hivemoot/colony/pull/49",
+      threadId: "T49",
+      reason: "review_requested",
+      timestamp: "2025-06-15T11:00:00Z",
+      age: "1h ago",
+      ackKey: "T49:2025-06-15T11:00:00Z",
+      section: "reviewPRs",
+    });
+  });
+
+  it("returns empty notifications array when no unread notifications", () => {
+    const issue = makeIssue({ number: 45 });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map());
+    expect(summary.notifications).toEqual([]);
+  });
+
+  it("returns empty notifications array when notifications param is omitted", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.notifications).toEqual([]);
+  });
+
+  it("includes section name in notification refs", () => {
+    const issue = makeIssue({ number: 52, labels: [{ name: "discuss" }] });
+    const notifications = new Map([[52, { threadId: "T52s", reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), notifications);
+    expect(summary.notifications).toHaveLength(1);
+    expect(summary.notifications[0].section).toBe("discuss");
+  });
+
+  it("sorts notifications newest-first across sections", () => {
+    const issue = makeIssue({ number: 42, title: "Older issue" });
+    const pr = makePR({ number: 49, title: "Newer PR" });
+    const notifications = new Map([
+      [42, { threadId: "T42", reason: "comment", updatedAt: "2025-06-15T10:00:00Z" }],
+      [49, { threadId: "T49", reason: "review_requested", updatedAt: "2025-06-15T11:00:00Z" }],
+    ]);
+
+    const summary = buildSummary(repo, [issue], [pr], "testuser", now, new Map(), notifications);
+    expect(summary.notifications).toHaveLength(2);
+    expect(summary.notifications[0].number).toBe(49);
+    expect(summary.notifications[1].number).toBe(42);
+  });
+
+  it("includes unmatched unread notifications as 'other' refs", () => {
+    const notifications = new Map([
+      [123, {
+        threadId: "T123",
+        reason: "mention",
+        updatedAt: "2025-06-15T12:00:00Z",
+        title: "Closed ticket still unread",
+        url: "https://github.com/hivemoot/colony/issues/123",
+        itemType: "Issue" as const,
+      }],
+    ]);
+
+    const summary = buildSummary(repo, [], [], "testuser", now, new Map(), notifications);
+    expect(summary.notifications).toEqual([
+      {
+        number: 123,
+        title: "Closed ticket still unread",
+        url: "https://github.com/hivemoot/colony/issues/123",
+        threadId: "T123",
+        reason: "mention",
+        timestamp: "2025-06-15T12:00:00Z",
+        age: "just now",
+        ackKey: "T123:2025-06-15T12:00:00Z",
+        section: "other",
+      },
+    ]);
   });
 });
