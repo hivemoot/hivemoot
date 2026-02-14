@@ -59,8 +59,14 @@ if (typeof role.instructions !== "string") {
   process.exit(1);
 }
 
+const onboarding = typeof parsed.onboarding === "string" ? parsed.onboarding.replace(/\s+$/, "") : "";
 const instructions = role.instructions.replace(/\s+$/, "");
-process.stdout.write(`Your role on this project is: ${role.name}\nRole description: ${role.description}\nRole instructions: ${instructions}`);
+const parts = [];
+if (onboarding) {
+  parts.push(`Team onboarding:\n${onboarding}`);
+}
+parts.push(`Your role on this project is: ${role.name}\nRole description: ${role.description}\nRole instructions: ${instructions}`);
+process.stdout.write(parts.join("\n\n"));
 ')"; then
     echo "Failed to parse role config JSON. Provider launch aborted." >&2
     echo "$role_json_output" >&2
