@@ -388,6 +388,7 @@ case "$provider" in
       cmd+=(--model "$agent_model")
     fi
     cmd+=("$user_message")
+    run_in_repo=1
     ;;
 
   *)
