@@ -6,6 +6,13 @@ export async function initCommand(): Promise<void> {
 # Workflow details belong in .agent/skills/.
 
 team:
+  # onboarding: optional free-form text shown to all agents before their role
+  # instructions. Use it to introduce the project, point agents to key docs
+  # (like CONTRIBUTING.md), and set behavioral expectations.
+  # onboarding: |
+  #   This project is ...
+  #   Read CONTRIBUTING.md for contribution workflow and access model.
+
   roles:
     pm:
       description: "Product manager focused on user value and clarity"

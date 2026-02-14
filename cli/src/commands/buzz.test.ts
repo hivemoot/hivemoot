@@ -121,6 +121,7 @@ describe("buzzCommand", () => {
       testTeamConfig.roles.engineer,
       testSummary,
       undefined,
+      undefined,
     );
     expect(console.log).toHaveBeenCalledWith("ROLE: engineer — Engineer role\n...");
   });
@@ -134,6 +135,7 @@ describe("buzzCommand", () => {
       "engineer",
       testTeamConfig.roles.engineer,
       testSummary,
+      undefined,
     );
     expect(console.log).toHaveBeenCalledWith('{"role":{"name":"engineer"}}');
     expect(mockedFormatBuzz).not.toHaveBeenCalled();
@@ -171,6 +173,7 @@ describe("buzzCommand", () => {
       testTeamConfig.roles.engineer,
       testSummary,
       5,
+      undefined,
     );
   });
 
@@ -180,6 +183,43 @@ describe("buzzCommand", () => {
     await buzzCommand({ role: "engineer", repo: "owner/custom" });
 
     expect(mockedResolveRepo).toHaveBeenCalledWith("owner/custom");
+  });
+
+  it("passes onboarding to formatBuzz when present in team config", async () => {
+    const teamWithOnboarding = {
+      ...testTeamConfig,
+      onboarding: "Read CONTRIBUTING.md first.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithOnboarding);
+    mockedFormatBuzz.mockReturnValue("output");
+
+    await buzzCommand({ role: "engineer" });
+
+    expect(mockedFormatBuzz).toHaveBeenCalledWith(
+      "engineer",
+      teamWithOnboarding.roles.engineer,
+      testSummary,
+      undefined,
+      "Read CONTRIBUTING.md first.",
+    );
+  });
+
+  it("passes onboarding to jsonBuzz when present in team config", async () => {
+    const teamWithOnboarding = {
+      ...testTeamConfig,
+      onboarding: "Read CONTRIBUTING.md first.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithOnboarding);
+    mockedJsonBuzz.mockReturnValue('{}');
+
+    await buzzCommand({ role: "engineer", json: true });
+
+    expect(mockedJsonBuzz).toHaveBeenCalledWith(
+      "engineer",
+      teamWithOnboarding.roles.engineer,
+      testSummary,
+      "Read CONTRIBUTING.md first.",
+    );
   });
 
   it("throws ROLE_NOT_FOUND for unknown role", async () => {

@@ -42,6 +42,16 @@ describe("jsonBuzz()", () => {
     expect(result.summary.voteOn).toHaveLength(1);
     expect(result.summary.needsHuman).toHaveLength(0);
   });
+
+  it("includes onboarding when provided", () => {
+    const result = JSON.parse(jsonBuzz("engineer", role, summary, "Welcome to the project."));
+    expect(result.onboarding).toBe("Welcome to the project.");
+  });
+
+  it("omits onboarding key when not provided", () => {
+    const result = JSON.parse(jsonBuzz("engineer", role, summary));
+    expect(result).not.toHaveProperty("onboarding");
+  });
 });
 
 describe("jsonStatus()", () => {
@@ -236,5 +246,16 @@ describe("jsonRole()", () => {
         instructions: "You are a senior engineer.",
       },
     });
+  });
+
+  it("includes onboarding when provided", () => {
+    const result = JSON.parse(jsonRole("engineer", role, "Read CONTRIBUTING.md first."));
+    expect(result.onboarding).toBe("Read CONTRIBUTING.md first.");
+    expect(result.role.name).toBe("engineer");
+  });
+
+  it("omits onboarding key when not provided", () => {
+    const result = JSON.parse(jsonRole("engineer", role));
+    expect(result).not.toHaveProperty("onboarding");
   });
 });

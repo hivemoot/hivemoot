@@ -198,8 +198,15 @@ export function formatBuzz(
   role: RoleConfig,
   summary: RepoSummary,
   limit?: number,
+  onboarding?: string,
 ): string {
-  const lines = [
+  const lines: string[] = [];
+
+  if (onboarding) {
+    lines.push(chalk.bold("ONBOARDING:"), onboarding.trimEnd(), "");
+  }
+
+  lines.push(
     chalk.bold(`ROLE: ${roleName}`) + ` — ${role.description}`,
     "",
     chalk.bold("INSTRUCTIONS:"),
@@ -210,7 +217,7 @@ export function formatBuzz(
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     "",
     formatSummaryBody(summary, limit),
-  ];
+  );
 
   return lines.join("\n");
 }
@@ -227,8 +234,14 @@ export function formatStatus(summary: RepoSummary, limit?: number): string {
   return lines.join("\n");
 }
 
-export function formatRole(roleName: string, role: RoleConfig, repoFullName: string): string {
-  const lines = [
+export function formatRole(roleName: string, role: RoleConfig, repoFullName: string, onboarding?: string): string {
+  const lines: string[] = [];
+
+  if (onboarding) {
+    lines.push(chalk.bold("ONBOARDING:"), onboarding.trimEnd(), "");
+  }
+
+  lines.push(
     chalk.bold(`ROLE — ${repoFullName}`),
     "",
     `Name: ${chalk.cyan(roleName)}`,
@@ -236,7 +249,7 @@ export function formatRole(roleName: string, role: RoleConfig, repoFullName: str
     "",
     "Instructions:",
     role.instructions.trimEnd(),
-  ];
+  );
 
   return lines.join("\n");
 }

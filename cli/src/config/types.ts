@@ -7,6 +7,7 @@ export interface RoleConfig {
 
 export interface TeamConfig {
   name?: string;
+  onboarding?: string;
   roles: Record<string, RoleConfig>;
 }
 

@@ -23,8 +23,8 @@ export async function roleCommand(roleName: string, options: RoleOptions): Promi
   const role = resolveRoleConfig(teamConfig, roleName);
 
   if (options.json) {
-    console.log(jsonRole(roleName, role));
+    console.log(jsonRole(roleName, role, teamConfig.onboarding));
   } else {
-    console.log(formatRole(roleName, role, `${repo.owner}/${repo.repo}`));
+    console.log(formatRole(roleName, role, `${repo.owner}/${repo.repo}`, teamConfig.onboarding));
   }
 }

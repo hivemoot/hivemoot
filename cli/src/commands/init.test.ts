@@ -29,6 +29,14 @@ describe("initCommand", () => {
     expect(output).toContain("Roles define personas");
   });
 
+  it("includes commented onboarding field with explanation", async () => {
+    await initCommand();
+
+    const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    expect(output).toContain("# onboarding:");
+    expect(output).toContain("free-form text shown to all agents");
+  });
+
   it("template contains valid YAML structure", async () => {
     await initCommand();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBuzz, formatStatus, formatRoles } from "./formatter.js";
+import { formatBuzz, formatStatus, formatRole, formatRoles } from "./formatter.js";
 import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 
 const summary: RepoSummary = {
@@ -107,6 +107,21 @@ describe("formatBuzz()", () => {
     const humanIdx = output.indexOf("NEEDS HUMAN");
     const voteIdx = output.indexOf("VOTE ON ISSUES");
     expect(humanIdx).toBeLessThan(voteIdx);
+  });
+
+  it("includes onboarding section when provided", () => {
+    const output = formatBuzz("engineer", role, summary, undefined, "Read CONTRIBUTING.md first.");
+    expect(output).toContain("ONBOARDING:");
+    expect(output).toContain("Read CONTRIBUTING.md first.");
+    // Onboarding should appear before ROLE
+    const onboardingIdx = output.indexOf("ONBOARDING:");
+    const roleIdx = output.indexOf("ROLE:");
+    expect(onboardingIdx).toBeLessThan(roleIdx);
+  });
+
+  it("omits onboarding section when not provided", () => {
+    const output = formatBuzz("engineer", role, summary);
+    expect(output).not.toContain("ONBOARDING:");
   });
 
   it("respects limit parameter", () => {
@@ -562,6 +577,22 @@ describe("ackKey on metadata line", () => {
   it("does not render 'ack:' when ackKey is not set", () => {
     const output = formatStatus(summary);
     expect(output).not.toContain("ack:");
+  });
+});
+
+describe("formatRole()", () => {
+  it("includes onboarding section when provided", () => {
+    const output = formatRole("engineer", role, "hivemoot/colony", "Read CONTRIBUTING.md for the workflow.");
+    expect(output).toContain("ONBOARDING:");
+    expect(output).toContain("Read CONTRIBUTING.md for the workflow.");
+    const onboardingIdx = output.indexOf("ONBOARDING:");
+    const roleIdx = output.indexOf("ROLE —");
+    expect(onboardingIdx).toBeLessThan(roleIdx);
+  });
+
+  it("omits onboarding section when not provided", () => {
+    const output = formatRole("engineer", role, "hivemoot/colony");
+    expect(output).not.toContain("ONBOARDING:");
   });
 });
 

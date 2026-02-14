@@ -105,9 +105,9 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     const roleConfig = teamConfig.roles[options.role];
 
     if (options.json) {
-      console.log(jsonBuzz(options.role, roleConfig, summary));
+      console.log(jsonBuzz(options.role, roleConfig, summary, teamConfig.onboarding));
     } else {
-      console.log(formatBuzz(options.role, roleConfig, summary, options.limit));
+      console.log(formatBuzz(options.role, roleConfig, summary, options.limit, teamConfig.onboarding));
     }
   } else {
     if (options.json) {

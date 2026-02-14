@@ -4,9 +4,11 @@ export function jsonBuzz(
   roleName: string,
   role: RoleConfig,
   summary: RepoSummary,
+  onboarding?: string,
 ): string {
   return JSON.stringify(
     {
+      ...(onboarding !== undefined && { onboarding }),
       role: {
         name: roleName,
         description: role.description,
@@ -66,9 +68,10 @@ export function jsonRoles(teamConfig: TeamConfig): string {
   return JSON.stringify({ roles }, null, 2);
 }
 
-export function jsonRole(roleName: string, role: RoleConfig): string {
+export function jsonRole(roleName: string, role: RoleConfig, onboarding?: string): string {
   return JSON.stringify(
     {
+      ...(onboarding !== undefined && { onboarding }),
       role: {
         name: roleName,
         description: role.description,
