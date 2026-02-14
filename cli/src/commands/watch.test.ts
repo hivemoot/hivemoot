@@ -12,6 +12,7 @@ vi.mock("../github/notifications.js", () => ({
   fetchMentionNotifications: vi.fn(),
   fetchCommentBody: vi.fn(),
   buildMentionEvent: vi.fn(),
+  isAgentMentioned: vi.fn(),
 }));
 
 vi.mock("../watch/state.js", async (importOriginal) => {
@@ -30,6 +31,7 @@ import {
   fetchMentionNotifications,
   fetchCommentBody,
   buildMentionEvent,
+  isAgentMentioned,
 } from "../github/notifications.js";
 import { loadState, saveState, mergeAckJournal } from "../watch/state.js";
 
@@ -37,6 +39,7 @@ const mockedFetchUser = vi.mocked(fetchCurrentUser);
 const mockedFetchMentions = vi.mocked(fetchMentionNotifications);
 const mockedFetchComment = vi.mocked(fetchCommentBody);
 const mockedBuildEvent = vi.mocked(buildMentionEvent);
+const mockedIsAgentMentioned = vi.mocked(isAgentMentioned);
 const mockedLoadState = vi.mocked(loadState);
 const mockedSaveState = vi.mocked(saveState);
 const mockedMergeAckJournal = vi.mocked(mergeAckJournal);
@@ -97,6 +100,7 @@ beforeEach(() => {
   mockedLoadState.mockResolvedValue(defaultState());
   mockedSaveState.mockResolvedValue(undefined);
   mockedFetchMentions.mockResolvedValue([]);
+  mockedIsAgentMentioned.mockReturnValue(true);
   // mergeAckJournal returns the state unchanged by default
   mockedMergeAckJournal.mockImplementation(async (_path, state) => state);
 });
@@ -260,24 +264,21 @@ describe("watchCommand (--once mode)", () => {
     }
   });
 
-  it("silently skips unparseable notification without marking it processed", async () => {
+  it("retries when comment fetch returns null (does not mark processed)", async () => {
     const notification = makeNotification();
     mockedFetchMentions.mockResolvedValue([notification]);
     mockedFetchComment.mockResolvedValue(null);
-    mockedBuildEvent.mockReturnValue(null); // can't parse
 
     await watchCommand({ repo: "owner/repo", once: true });
 
-    // No event emitted to stdout
-    expect(mockedBuildEvent).toHaveBeenCalled();
+    // Null-comment gate catches it before buildMentionEvent
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
     const eventWrites = (stdoutSpy.mock.calls as [string][])
       .map(([s]) => s)
       .filter((s) => s.includes('"agent"'));
     expect(eventWrites).toHaveLength(0);
 
-    // State saved but WITHOUT the unparseable key in processedThreadIds
-    // (it will reappear next poll, which is fine — all=false drops it
-    // once the thread gets new activity)
+    // Not marked processed — will retry next poll (transient API failure)
     expect(mockedSaveState).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
@@ -298,5 +299,99 @@ describe("watchCommand (--once mode)", () => {
     await expect(
       watchCommand({ repo: "owner/repo", once: true }),
     ).rejects.toThrow("Could not determine GitHub user");
+  });
+
+  it("skips stale-thread mention (agent not in comment body)", async () => {
+    const notification = makeNotification({ reason: "mention" });
+    const comment: CommentDetail = {
+      body: "@hivemoot-scout please review",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-999",
+    };
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue(comment);
+    mockedIsAgentMentioned.mockReturnValue(false);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    // Should NOT build or emit an event
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    const eventWrites = (stdoutSpy.mock.calls as [string][])
+      .map(([s]) => s)
+      .filter((s) => s.includes('"agent"'));
+    expect(eventWrites).toHaveLength(0);
+
+    // Stale mention is marked processed (won't retry)
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"],
+      }),
+    );
+  });
+
+  it("emits event when agent is actually mentioned", async () => {
+    const notification = makeNotification({ reason: "mention" });
+    const comment: CommentDetail = {
+      body: "@test-agent look at this",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-999",
+    };
+    const event = makeEvent();
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue(comment);
+    mockedIsAgentMentioned.mockReturnValue(true);
+    mockedBuildEvent.mockReturnValue(event);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedIsAgentMentioned).toHaveBeenCalledWith(comment.body, "test-agent");
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
+  it("bypasses mention check for non-mention reasons", async () => {
+    const notification = makeNotification({ reason: "comment" });
+    const comment: CommentDetail = {
+      body: "some comment that does NOT mention agent",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-999",
+    };
+    const event = makeEvent();
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue(comment);
+    mockedBuildEvent.mockReturnValue(event);
+
+    await watchCommand({ repo: "owner/repo", once: true, reasons: "comment" });
+
+    // isAgentMentioned should NOT be called for reason="comment"
+    expect(mockedIsAgentMentioned).not.toHaveBeenCalled();
+    // Event should still be emitted
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
+  it("emits event when no comment URL exists (issue-body mention)", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: null,
+      },
+    });
+    const event = makeEvent();
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedBuildEvent.mockReturnValue(event);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    // No comment fetch when there's no URL
+    expect(mockedFetchComment).not.toHaveBeenCalled();
+    // buildMentionEvent handles null comment — event should be emitted
+    expect(mockedBuildEvent).toHaveBeenCalledWith(notification, null, "test-agent");
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
   });
 });

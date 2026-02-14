@@ -12,6 +12,7 @@ import {
   fetchCommentBody,
   buildMentionEvent,
   parseSubjectNumber,
+  isAgentMentioned,
 } from "./notifications.js";
 import type { RawNotification, CommentDetail } from "./notifications.js";
 
@@ -411,5 +412,43 @@ describe("buildMentionEvent()", () => {
     const event = buildMentionEvent(prNotification, baseComment, "hivemoot-worker");
     expect(event!.type).toBe("PullRequest");
     expect(event!.number).toBe(99);
+  });
+});
+
+describe("isAgentMentioned()", () => {
+  it("matches exact @mention", () => {
+    expect(isAgentMentioned("@hivemoot-worker look at this", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches case-insensitively", () => {
+    expect(isAgentMentioned("@Hivemoot-Worker look at this", "hivemoot-worker")).toBe(true);
+  });
+
+  it("does not match suffix username (boundary check)", () => {
+    expect(isAgentMentioned("@hivemoot-worker-extra", "hivemoot-worker")).toBe(false);
+  });
+
+  it("matches at end of string", () => {
+    expect(isAgentMentioned("cc @hivemoot-worker", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches when followed by punctuation", () => {
+    expect(isAgentMentioned("@hivemoot-worker, thanks", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches when followed by newline", () => {
+    expect(isAgentMentioned("@hivemoot-worker\nplease review", "hivemoot-worker")).toBe(true);
+  });
+
+  it("does not match different username", () => {
+    expect(isAgentMentioned("@hivemoot-scout review this", "hivemoot-worker")).toBe(false);
+  });
+
+  it("does not match email addresses containing the username", () => {
+    expect(isAgentMentioned("contact foo@hivemoot-worker.com for details", "hivemoot-worker")).toBe(false);
+  });
+
+  it("returns false for empty body", () => {
+    expect(isAgentMentioned("", "hivemoot-worker")).toBe(false);
   });
 });

@@ -5,8 +5,9 @@ import {
   fetchMentionNotifications,
   fetchCommentBody,
   buildMentionEvent,
+  isAgentMentioned,
 } from "../github/notifications.js";
-import { loadState, saveState, mergeAckJournal } from "../watch/state.js";
+import { loadState, saveState, mergeAckJournal, addProcessedId } from "../watch/state.js";
 
 function log(message: string): void {
   process.stderr.write(`[watch ${new Date().toISOString()}] ${message}\n`);
@@ -112,6 +113,27 @@ async function runPollLoop(
         const comment = notification.subject.latest_comment_url
           ? await fetchCommentBody(notification.subject.latest_comment_url)
           : null;
+
+        // -- Null-comment gate: transient API failure --
+        // URL existed but fetch returned null → skip and retry next poll.
+        // No URL at all (e.g. issue-body mention) → fall through to
+        // buildMentionEvent which handles null comments gracefully.
+        if (comment === null && notification.subject.latest_comment_url) {
+          log(`Skipping ${notification.id}: comment fetch failed, will retry`);
+          continue;
+        }
+
+        // -- Mention verification (only for reason="mention" with a comment body) --
+        // GitHub keeps reason="mention" on a thread even when the latest comment
+        // doesn't mention the agent (stale thread subscription). Verify the
+        // comment body actually contains @agent before triggering a run.
+        // When there's no comment body (no URL), skip the check — the mention
+        // may be in the issue/PR body itself, which we can't fetch here.
+        if (comment !== null && notification.reason === "mention" && !isAgentMentioned(comment.body, agent)) {
+          log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
+          state = addProcessedId(state, processedKey);
+          continue;
+        }
 
         const event = buildMentionEvent(notification, comment, agent);
         if (!event) {

@@ -158,6 +158,17 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
 }
 
 /**
+ * Check if the comment body contains an @mention of the given GitHub login.
+ * Case-insensitive, boundary-safe on both sides:
+ *   Left:  rejects email local-parts (foo@agent)
+ *   Right: rejects suffix usernames (@agent-extra)
+ */
+export function isAgentMentioned(body: string, agent: string): boolean {
+  const escaped = agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![a-zA-Z0-9._+-])@${escaped}(?![a-zA-Z0-9-])`, "i").test(body);
+}
+
+/**
  * Build a MentionEvent from a raw notification and its associated comment.
  * Returns null if the notification can't be mapped to a valid event.
  */
