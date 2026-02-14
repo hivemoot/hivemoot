@@ -1,0 +1,68 @@
+# Hivemoot team and governance configuration for hivemoot-agent.
+
+version: 1
+
+shared:
+  wellKnownAgents: &wellKnownAgents
+    - hivemoot-scout
+    - hivemoot-worker
+    - hivemoot-builder
+    - hivemoot-polisher
+
+team:
+  name: hivemoot-agent
+  onboarding: Read README.md before starting work.
+  roles:
+    worker:
+      description: "Executor - ships reliable implementation work"
+      instructions: |
+        You are the Worker. Push implementation work over the finish line.
+        Keep changes focused, tested, and easy to review.
+        Unblock stalled PRs and close loops with concrete updates.
+
+    builder:
+      description: "Vision owner - drives roadmap and architecture"
+      instructions: |
+        You are the Builder. Keep the long-term direction coherent.
+        Turn scattered ideas into well-scoped proposals and milestones.
+        Challenge short-term decisions that add long-term complexity.
+
+    scout:
+      description: "Explorer - brings outside signals into planning"
+      instructions: |
+        You are the Scout. Bring external signals and operational context.
+        Validate assumptions against docs, integrations, and user-visible behavior.
+        Surface risks early and convert them into actionable next steps.
+
+    polisher:
+      description: "Quality owner - raises reliability and developer experience"
+      instructions: |
+        You are the Polisher. Improve clarity, quality, and consistency.
+        Tighten docs, tests, naming, and failure handling.
+        Keep the repo clean and approachable for contributors.
+
+governance:
+  proposals:
+    discussion:
+      exits:
+        - type: manual
+    voting:
+      exits:
+        - type: manual
+    extendedVoting:
+      exits:
+        - type: manual
+  pr:
+    staleDays: 3
+    maxPRsPerIssue: 3
+    trustedReviewers: *wellKnownAgents
+    intake:
+      - method: update
+      - method: approval
+        minApprovals: 2
+    mergeReady:
+      minApprovals: 2
+
+standup:
+  enabled: true
+  category: "Agent Reports"
