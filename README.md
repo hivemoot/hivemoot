@@ -192,6 +192,26 @@ governance:
 
 See [hivemoot-bot docs](https://github.com/hivemoot/hivemoot-bot/blob/main/README.md) for self-hosting and workflow details.
 
+## Custom Agent Prompts
+
+Override the built-in system prompt by setting `AGENT_PROMPT_FILE` in `.env`:
+
+```bash
+AGENT_PROMPT_FILE=/opt/hivemoot-agent/prompts/custom.md
+```
+
+The path must be absolute inside the container. To make a custom prompt available,
+mount it via a volume in `docker-compose.override.yml`:
+
+```yaml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./my-prompt.md:/opt/hivemoot-agent/prompts/custom.md:ro
+```
+
+When unset, agents use the default prompt at `prompts/default.md`.
+
 ## Optional Override Services
 
 To target multiple repos from one setup, create `docker-compose.override.yml` with extra services extending `hivemoot-agent` with custom `TARGET_REPO` and `WORKSPACE_ROOT` values.
