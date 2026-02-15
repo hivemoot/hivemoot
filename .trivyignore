@@ -1,7 +1,8 @@
 # Transitive dependencies in third-party globally-installed npm packages.
 # We cannot patch these directly; they live inside @google/gemini-cli,
 # @openai/codex, @anthropic-ai/claude-code, and @hivemoot-dev/cli.
-# Re-evaluate when upgrading these tools.
+# Re-evaluate on every CLI version bump — remove entries once the
+# upstream fix has landed in the pinned version.
 
 # cross-spawn 7.0.3 — ReDoS (fixed in 7.0.5)
 CVE-2024-21538
