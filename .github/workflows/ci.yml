@@ -82,8 +82,9 @@ jobs:
           exit-code: "1"
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-      - name: Generate Trivy JSON report
-        run: : > .trivyignore.empty
+      - name: Create empty trivyignore for unfiltered scan
+        run: |
+          : > .trivyignore.empty
       - name: Generate Trivy JSON report
         uses: aquasecurity/trivy-action@0.33.1
         with:

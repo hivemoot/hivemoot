@@ -34,7 +34,7 @@ present_cves="$(jq -r '
   | select(has("VulnerabilityID"))
   | .VulnerabilityID
 ' "$report_file" \
-  | grep -E '^CVE-[0-9]{4}-[0-9]+$' || true \
+  | { grep -E '^CVE-[0-9]{4}-[0-9]+$' || true; } \
   | sort -u)"
 
 stale_cves="$(comm -23 \
