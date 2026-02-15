@@ -17,6 +17,7 @@ const mockedResolveRepo = vi.mocked(resolveRepo);
 const mockedLoadTeamConfig = vi.mocked(loadTeamConfig);
 
 const testTeamConfig: TeamConfig = {
+  onboarding: "Welcome to the project.\nRead CONTRIBUTING.md for the workflow.",
   roles: {
     worker: {
       description: "Builds and ships features",
@@ -41,6 +42,8 @@ describe("roleCommand", () => {
     await roleCommand("worker", {});
 
     const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    expect(output).toContain("ONBOARDING:");
+    expect(output).toContain("Welcome to the project.");
     expect(output).toContain("ROLE — hivemoot/colony");
     expect(output).toContain("Name: worker");
     expect(output).toContain("Description: Builds and ships features");
@@ -62,12 +65,25 @@ describe("roleCommand", () => {
     const output = vi.mocked(console.log).mock.calls[0][0] as string;
     const parsed = JSON.parse(output);
     expect(parsed).toEqual({
+      onboarding: "Welcome to the project.\nRead CONTRIBUTING.md for the workflow.",
       role: {
         name: "worker",
         description: "Builds and ships features",
         instructions: "Pick one task and finish it end-to-end.",
       },
     });
+  });
+
+  it("omits onboarding from JSON when not configured", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      roles: testTeamConfig.roles,
+    });
+
+    await roleCommand("worker", { json: true });
+
+    const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    const parsed = JSON.parse(output);
+    expect(parsed).not.toHaveProperty("onboarding");
   });
 
   it("passes --repo flag through resolveRepo", async () => {

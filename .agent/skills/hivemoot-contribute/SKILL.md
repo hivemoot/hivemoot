@@ -89,6 +89,8 @@ Take time to understand the project before acting:
 
 1. **Read project documentation**
    - Find and read docs on vision, architecture, and conventions
+   - Check for repo-specific guidelines — commonly README.md, CONTRIBUTING.md, AGENTS.md, VISION.md, ARCHITECTURE.md, or similar
+   - When repo-level docs conflict with this generic guide on repo-specific details, follow the repo docs
    - Understand where the project is headed and why
 
 2. **Explore the codebase**

@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
+import type { NotificationRef, RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
 
 const DIVIDER_WIDTH = 50;
 
@@ -98,6 +98,9 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
   if (item.unread && item.unreadReason) {
     const age = item.unreadAge ? ` (${item.unreadAge})` : "";
     parts.push(kv("new", `${item.unreadReason}${age}`));
+    if (item.ackKey) {
+      parts.push(kv("ack", item.ackKey));
+    }
   }
 
   return parts.join("  ");
@@ -140,12 +143,32 @@ function formatSection(
   return parts.join("\n\n");
 }
 
+function formatNotificationsSection(refs: NotificationRef[], limit?: number): string {
+  if (refs.length === 0) return "";
+
+  // refs arrive pre-sorted newest-first from buildSummary()
+  const displayed = limit ? refs.slice(0, limit) : refs;
+  const header = sectionDivider("NOTIFICATIONS", refs.length);
+  const lines = displayed.map((r) => {
+    const num = chalk.cyan(`#${r.number}`);
+    return `  ${num} ${r.title}  ${chalk.dim(r.reason)}  ${chalk.dim(r.age)}  ${kv("ack", r.ackKey)}`;
+  });
+
+  const parts = [header, ...lines];
+  if (limit && refs.length > limit) {
+    parts.push(chalk.dim(`  ... and ${refs.length - limit} more`));
+  }
+
+  return parts.join("\n");
+}
+
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
   const sections: string[] = [];
 
   sections.push(
     ...[
+      formatNotificationsSection(summary.notifications, limit),
       formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
       formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
       formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
@@ -175,8 +198,15 @@ export function formatBuzz(
   role: RoleConfig,
   summary: RepoSummary,
   limit?: number,
+  onboarding?: string,
 ): string {
-  const lines = [
+  const lines: string[] = [];
+
+  if (onboarding) {
+    lines.push(chalk.bold("ONBOARDING:"), onboarding.trimEnd(), "");
+  }
+
+  lines.push(
     chalk.bold(`ROLE: ${roleName}`) + ` — ${role.description}`,
     "",
     chalk.bold("INSTRUCTIONS:"),
@@ -187,7 +217,7 @@ export function formatBuzz(
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     "",
     formatSummaryBody(summary, limit),
-  ];
+  );
 
   return lines.join("\n");
 }
@@ -204,8 +234,14 @@ export function formatStatus(summary: RepoSummary, limit?: number): string {
   return lines.join("\n");
 }
 
-export function formatRole(roleName: string, role: RoleConfig, repoFullName: string): string {
-  const lines = [
+export function formatRole(roleName: string, role: RoleConfig, repoFullName: string, onboarding?: string): string {
+  const lines: string[] = [];
+
+  if (onboarding) {
+    lines.push(chalk.bold("ONBOARDING:"), onboarding.trimEnd(), "");
+  }
+
+  lines.push(
     chalk.bold(`ROLE — ${repoFullName}`),
     "",
     `Name: ${chalk.cyan(roleName)}`,
@@ -213,7 +249,7 @@ export function formatRole(roleName: string, role: RoleConfig, repoFullName: str
     "",
     "Instructions:",
     role.instructions.trimEnd(),
-  ];
+  );
 
   return lines.join("\n");
 }

@@ -72,6 +72,33 @@ describe("loadTeamConfig", () => {
     expect(config.name).toBe("My Team");
   });
 
+  it("parses config with onboarding text", async () => {
+    const withOnboarding = yaml.dump({
+      team: {
+        onboarding: "Welcome to the project.\nRead CONTRIBUTING.md first.",
+        roles: {
+          engineer: {
+            description: "Engineer",
+            instructions: "Build things.",
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withOnboarding));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.onboarding).toBe("Welcome to the project.\nRead CONTRIBUTING.md first.");
+  });
+
+  it("returns undefined onboarding when field is absent", async () => {
+    mockedGh.mockResolvedValue(encode(validYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.onboarding).toBeUndefined();
+  });
+
   it("silently ignores unknown fields", async () => {
     const yamlWithExtras = yaml.dump({
       team: {
@@ -223,6 +250,66 @@ describe("loadTeamConfig", () => {
       code: "INVALID_CONFIG",
       message: expect.stringContaining("description exceeds"),
     });
+  });
+
+  it("throws INVALID_CONFIG when onboarding is not a string", async () => {
+    const badOnboarding = yaml.dump({
+      team: {
+        onboarding: 42,
+        roles: {
+          engineer: {
+            description: "Engineer",
+            instructions: "Build things.",
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badOnboarding));
+
+    await expect(loadTeamConfig(repo)).rejects.toThrow(CliError);
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("onboarding must be a string"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when onboarding exceeds 10000 chars", async () => {
+    const longOnboarding = yaml.dump({
+      team: {
+        onboarding: "x".repeat(10_001),
+        roles: {
+          engineer: {
+            description: "Engineer",
+            instructions: "Build things.",
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(longOnboarding));
+
+    await expect(loadTeamConfig(repo)).rejects.toThrow(CliError);
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("onboarding exceeds"),
+    });
+  });
+
+  it("accepts onboarding at exact max length", async () => {
+    const exactOnboarding = yaml.dump({
+      team: {
+        onboarding: "o".repeat(10_000),
+        roles: {
+          engineer: {
+            description: "Engineer",
+            instructions: "Build things.",
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(exactOnboarding));
+
+    const config = await loadTeamConfig(repo);
+    expect(config.onboarding).toHaveLength(10_000);
   });
 
   it("throws INVALID_CONFIG when instructions exceeds 10000 chars", async () => {

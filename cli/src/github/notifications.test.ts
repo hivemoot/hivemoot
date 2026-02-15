@@ -12,6 +12,7 @@ import {
   fetchCommentBody,
   buildMentionEvent,
   parseSubjectNumber,
+  isAgentMentioned,
 } from "./notifications.js";
 import type { RawNotification, CommentDetail } from "./notifications.js";
 
@@ -68,8 +69,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(42)).toEqual({
+      threadId: "1001",
       reason: "mention",
       updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix layout",
+      url: "https://github.com/hivemoot/colony/issues/42",
+      itemType: "Issue",
     });
   });
 
@@ -105,7 +110,7 @@ describe("fetchNotifications()", () => {
   it("handles PullRequest subject type", async () => {
     mockedGh.mockResolvedValue(JSON.stringify([
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/99", type: "PullRequest" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/99", type: "PullRequest", title: "Add search", latest_comment_url: null },
         reason: "review_requested",
       }),
     ]));
@@ -113,8 +118,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(99)).toEqual({
+      threadId: "1001",
       reason: "review_requested",
       updatedAt: "2025-06-15T10:00:00Z",
+      title: "Add search",
+      url: "https://github.com/hivemoot/colony/pull/99",
+      itemType: "PullRequest",
     });
   });
 
@@ -127,8 +136,12 @@ describe("fetchNotifications()", () => {
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
     expect(result.get(42)).toEqual({
+      threadId: "1001",
       reason: "mention",
       updatedAt: "2025-06-15T12:00:00Z",
+      title: "Fix layout",
+      url: "https://github.com/hivemoot/colony/issues/42",
+      itemType: "Issue",
     });
   });
 
@@ -145,11 +158,11 @@ describe("fetchNotifications()", () => {
   it("handles multiple different items", async () => {
     mockedGh.mockResolvedValue(JSON.stringify([
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/10", type: "Issue" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/10", type: "Issue", title: "Bug report", latest_comment_url: null },
         reason: "comment",
       }),
       makeNotification({
-        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/20", type: "PullRequest" },
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/20", type: "PullRequest", title: "Refactor", latest_comment_url: null },
         reason: "author",
       }),
     ]));
@@ -188,8 +201,7 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
-      "/repos/hivemoot/colony/notifications",
-      "-f", "all=false",
+      "/repos/hivemoot/colony/notifications?all=false",
     ]);
   });
 
@@ -201,10 +213,41 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
-      "/repos/hivemoot/colony/notifications",
-      "-f", "all=false",
-      "-f", "since=2026-01-15T00:00:00Z",
+      "/repos/hivemoot/colony/notifications?all=false&since=2026-01-15T00%3A00%3A00Z",
     ]);
+  });
+
+  it("embeds params as URL query string, not as -f body fields", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+
+    const args = mockedGh.mock.calls[0][0];
+    // Must NOT contain -f flags (which send body fields and cause 404 on GET)
+    expect(args).not.toContain("-f");
+    // URL must contain query string
+    expect(args[2]).toMatch(/\?all=false/);
+  });
+
+  it("URL-encodes since timestamps with colons correctly", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-02-13T02:11:08.000Z");
+
+    const url = mockedGh.mock.calls[0][0][2];
+    // Colons in ISO timestamps must be percent-encoded in the query string
+    expect(url).toContain("since=2026-02-13T02%3A11%3A08.000Z");
+    expect(url).not.toContain("-f");
+  });
+
+  it("omits since param when not provided", async () => {
+    mockedGh.mockResolvedValue("[]");
+
+    await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+
+    const url = mockedGh.mock.calls[0][0][2];
+    expect(url).not.toContain("since");
+    expect(url).toBe("/repos/hivemoot/colony/notifications?all=false");
   });
 
   it("filters by specified reasons", async () => {
@@ -369,5 +412,43 @@ describe("buildMentionEvent()", () => {
     const event = buildMentionEvent(prNotification, baseComment, "hivemoot-worker");
     expect(event!.type).toBe("PullRequest");
     expect(event!.number).toBe(99);
+  });
+});
+
+describe("isAgentMentioned()", () => {
+  it("matches exact @mention", () => {
+    expect(isAgentMentioned("@hivemoot-worker look at this", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches case-insensitively", () => {
+    expect(isAgentMentioned("@Hivemoot-Worker look at this", "hivemoot-worker")).toBe(true);
+  });
+
+  it("does not match suffix username (boundary check)", () => {
+    expect(isAgentMentioned("@hivemoot-worker-extra", "hivemoot-worker")).toBe(false);
+  });
+
+  it("matches at end of string", () => {
+    expect(isAgentMentioned("cc @hivemoot-worker", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches when followed by punctuation", () => {
+    expect(isAgentMentioned("@hivemoot-worker, thanks", "hivemoot-worker")).toBe(true);
+  });
+
+  it("matches when followed by newline", () => {
+    expect(isAgentMentioned("@hivemoot-worker\nplease review", "hivemoot-worker")).toBe(true);
+  });
+
+  it("does not match different username", () => {
+    expect(isAgentMentioned("@hivemoot-scout review this", "hivemoot-worker")).toBe(false);
+  });
+
+  it("does not match email addresses containing the username", () => {
+    expect(isAgentMentioned("contact foo@hivemoot-worker.com for details", "hivemoot-worker")).toBe(false);
+  });
+
+  it("returns false for empty body", () => {
+    expect(isAgentMentioned("", "hivemoot-worker")).toBe(false);
   });
 });

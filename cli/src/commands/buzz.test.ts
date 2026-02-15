@@ -81,6 +81,7 @@ const testSummary = {
   reviewPRs: [],
   draftPRs: [],
   addressFeedback: [],
+  notifications: [],
   notes: [],
 };
 const testTeamConfig = {
@@ -120,6 +121,7 @@ describe("buzzCommand", () => {
       testTeamConfig.roles.engineer,
       testSummary,
       undefined,
+      undefined,
     );
     expect(console.log).toHaveBeenCalledWith("ROLE: engineer — Engineer role\n...");
   });
@@ -133,6 +135,7 @@ describe("buzzCommand", () => {
       "engineer",
       testTeamConfig.roles.engineer,
       testSummary,
+      undefined,
     );
     expect(console.log).toHaveBeenCalledWith('{"role":{"name":"engineer"}}');
     expect(mockedFormatBuzz).not.toHaveBeenCalled();
@@ -170,6 +173,7 @@ describe("buzzCommand", () => {
       testTeamConfig.roles.engineer,
       testSummary,
       5,
+      undefined,
     );
   });
 
@@ -179,6 +183,43 @@ describe("buzzCommand", () => {
     await buzzCommand({ role: "engineer", repo: "owner/custom" });
 
     expect(mockedResolveRepo).toHaveBeenCalledWith("owner/custom");
+  });
+
+  it("passes onboarding to formatBuzz when present in team config", async () => {
+    const teamWithOnboarding = {
+      ...testTeamConfig,
+      onboarding: "Read CONTRIBUTING.md first.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithOnboarding);
+    mockedFormatBuzz.mockReturnValue("output");
+
+    await buzzCommand({ role: "engineer" });
+
+    expect(mockedFormatBuzz).toHaveBeenCalledWith(
+      "engineer",
+      teamWithOnboarding.roles.engineer,
+      testSummary,
+      undefined,
+      "Read CONTRIBUTING.md first.",
+    );
+  });
+
+  it("passes onboarding to jsonBuzz when present in team config", async () => {
+    const teamWithOnboarding = {
+      ...testTeamConfig,
+      onboarding: "Read CONTRIBUTING.md first.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithOnboarding);
+    mockedJsonBuzz.mockReturnValue('{}');
+
+    await buzzCommand({ role: "engineer", json: true });
+
+    expect(mockedJsonBuzz).toHaveBeenCalledWith(
+      "engineer",
+      teamWithOnboarding.roles.engineer,
+      testSummary,
+      "Read CONTRIBUTING.md first.",
+    );
   });
 
   it("throws ROLE_NOT_FOUND for unknown role", async () => {
@@ -389,6 +430,18 @@ describe("buzzCommand", () => {
     expect(mockedFetchVotes).toHaveBeenCalledWith(testRepo, [42], "testuser");
   });
 
+  it("calls fetchVotes for hivemoot:voting issues too", async () => {
+    const votingIssue = { number: 142, labels: [{ name: "hivemoot:voting" }] };
+    mockedFetchIssues.mockResolvedValue([votingIssue] as any);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchVotes).toHaveBeenCalledWith(testRepo, [142], "testuser");
+  });
+
   it("passes votes map to buildSummary", async () => {
     const votingIssue = { number: 42, labels: [{ name: "vote" }] };
     mockedFetchIssues.mockResolvedValue([votingIssue] as any);
@@ -453,7 +506,14 @@ describe("buzzCommand", () => {
   });
 
   it("passes notification map to buildSummary", async () => {
-    const notificationMap = new Map([[42, { reason: "mention", updatedAt: "2025-06-15T10:00:00Z" }]]);
+    const notificationMap = new Map([[42, {
+      threadId: "T42",
+      reason: "mention",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/test/issues/42",
+      itemType: "Issue" as const,
+    }]]);
     mockedFetchNotifications.mockResolvedValue(notificationMap);
     mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
     mockedFormatStatus.mockReturnValue("output");

@@ -6,6 +6,7 @@ import { CliError } from "./types.js";
 const ROLE_SLUG_RE = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 10_000;
+const MAX_ONBOARDING_LENGTH = 10_000;
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
   if (!raw.team) {
@@ -17,6 +18,24 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
   }
 
   const { team } = raw;
+
+  if (team.onboarding !== undefined) {
+    if (typeof team.onboarding !== "string") {
+      throw new CliError(
+        "Config error: team.onboarding must be a string",
+        "INVALID_CONFIG",
+        1,
+      );
+    }
+
+    if (team.onboarding.length > MAX_ONBOARDING_LENGTH) {
+      throw new CliError(
+        `Config error: team.onboarding exceeds ${MAX_ONBOARDING_LENGTH} characters`,
+        "INVALID_CONFIG",
+        1,
+      );
+    }
+  }
 
   if (!team.roles || typeof team.roles !== "object" || Object.keys(team.roles).length === 0) {
     throw new CliError(
@@ -87,6 +106,7 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
+    onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
   };
 }

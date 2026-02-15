@@ -2,8 +2,12 @@ import type { RepoRef, MentionEvent } from "../config/types.js";
 import { gh } from "./client.js";
 
 export interface NotificationInfo {
+  threadId: string;   // GitHub notification thread ID — needed for ack
   reason: string;     // "comment" | "mention" | "author" | "ci_activity" | ...
   updatedAt: string;  // ISO timestamp
+  title: string;      // Subject title — always present for Issue/PR notifications
+  url?: string;       // HTML URL for the issue/PR, when derivable
+  itemType?: "Issue" | "PullRequest";
 }
 
 export type NotificationMap = Map<number, NotificationInfo>;
@@ -36,6 +40,17 @@ export function parseSubjectNumber(url: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+function subjectHtmlUrl(
+  repo: RepoRef,
+  subjectType: "Issue" | "PullRequest",
+  number: number,
+): string {
+  if (subjectType === "Issue") {
+    return `https://github.com/${repo.owner}/${repo.repo}/issues/${number}`;
+  }
+  return `https://github.com/${repo.owner}/${repo.repo}/pull/${number}`;
+}
+
 /**
  * Fetch unread notifications for a repository.
  * Returns a map from issue/PR number to notification info.
@@ -60,7 +75,16 @@ export async function fetchNotifications(repo: RepoRef): Promise<NotificationMap
     const existing = map.get(num);
     // Keep the most recent notification per item
     if (!existing || n.updated_at > existing.updatedAt) {
-      map.set(num, { reason: n.reason, updatedAt: n.updated_at });
+      const subjectType = n.subject.type as "Issue" | "PullRequest";
+      const info: NotificationInfo = {
+        threadId: n.id,
+        reason: n.reason,
+        updatedAt: n.updated_at,
+        title: n.subject.title,
+        url: subjectHtmlUrl(repo, subjectType, num),
+        itemType: subjectType,
+      };
+      map.set(num, info);
     }
   }
 
@@ -77,15 +101,16 @@ export async function fetchMentionNotifications(
   reasons: string[],
   since?: string,
 ): Promise<RawNotification[]> {
+  const params = new URLSearchParams({ all: "false" });
+  if (since) {
+    params.set("since", since);
+  }
+
   const args = [
     "api",
     "--paginate",
-    `/repos/${repo}/notifications`,
-    "-f", "all=false",
+    `/repos/${repo}/notifications?${params}`,
   ];
-  if (since) {
-    args.push("-f", `since=${since}`);
-  }
 
   const raw = await gh(args);
 
@@ -130,6 +155,17 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
   } catch {
     return null;
   }
+}
+
+/**
+ * Check if the comment body contains an @mention of the given GitHub login.
+ * Case-insensitive, boundary-safe on both sides:
+ *   Left:  rejects email local-parts (foo@agent)
+ *   Right: rejects suffix usernames (@agent-extra)
+ */
+export function isAgentMentioned(body: string, agent: string): boolean {
+  const escaped = agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![a-zA-Z0-9._+-])@${escaped}(?![a-zA-Z0-9-])`, "i").test(body);
 }
 
 /**
