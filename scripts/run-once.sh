@@ -182,6 +182,11 @@ if ! gh api "repos/${target_repo}" --jq .full_name >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! gh auth setup-git 2>&1; then
+  echo "Failed to configure git credential helper via gh auth setup-git" >&2
+  exit 1
+fi
+
 if [ "$token_mode" = "user" ]; then
   agent_name="${agent_git_name:-$github_login}"
   agent_email="${agent_git_email:-${github_login}@users.noreply.github.com}"
