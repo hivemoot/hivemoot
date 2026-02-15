@@ -120,8 +120,6 @@ auth_mode="${AGENT_AUTH_MODE:-auto}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-repo_dir="${REPO_DIR:-${workspace_root}/repo}"
-log_dir="${LOG_DIR:-${workspace_root}/runs}"
 fresh_clone="${FRESH_CLONE:-1}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
@@ -129,6 +127,30 @@ agent_model="${AGENT_MODEL:-}"
 timeout_secs="${AGENT_TIMEOUT_SECONDS:-1800}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
+
+# When REPO_DIR/LOG_DIR are set externally (run-multi.sh, run-loop.sh),
+# isolation is handled by the caller. Otherwise, generate a JOB_ID to
+# namespace workspace/HOME/logs so every standalone run is isolated.
+managed_mode=0
+if [ -n "${REPO_DIR:-}" ] || [ -n "${LOG_DIR:-}" ]; then
+  managed_mode=1
+fi
+
+job_id="${JOB_ID:-}"
+if [ -z "$job_id" ] && [ "$managed_mode" -eq 0 ]; then
+  job_id="$(date '+%Y%m%d-%H%M%S')-$$"
+fi
+
+if [ -n "$job_id" ] && [ "$managed_mode" -eq 0 ]; then
+  repo_dir="${workspace_root}/${job_id}/repo"
+  log_dir="${workspace_root}/${job_id}/runs"
+  job_home="${workspace_root}/${job_id}/home"
+  log "Job isolation: JOB_ID=${job_id}"
+else
+  repo_dir="${REPO_DIR:-${workspace_root}/repo}"
+  log_dir="${LOG_DIR:-${workspace_root}/runs}"
+  job_home=""
+fi
 
 case "$auth_mode" in
   auto|api_key|subscription) ;;
@@ -198,6 +220,76 @@ fi
 log "GitHub token mode detected: ${token_mode}"
 
 mkdir -p "$workspace_root" "$log_dir"
+
+# Create an isolated HOME for this job and seed only auth credentials
+# (not conversation caches or session state). Skipped in managed mode
+# where the caller (run-multi.sh / run-loop.sh) handles HOME isolation.
+if [ -n "$job_home" ]; then
+  mkdir -p "$job_home/.config" "$job_home/.cache" "$job_home/.local/share"
+  chmod 700 "$job_home" "$job_home/.config" "$job_home/.cache" \
+    "$job_home/.local" "$job_home/.local/share" 2>/dev/null || true
+
+  # Selective auth seeding: copy ONLY credential files, skip session state.
+  # Claude Code: auth tokens live in ~/.config/claude/
+  if [ -d "${HOME}/.config/claude" ]; then
+    mkdir -p "$job_home/.config/claude"
+    cp -R "${HOME}/.config/claude"/. "$job_home/.config/claude"/
+  fi
+  # Claude Code: ~/.claude/ contains both auth and session state.
+  # Seed only the OAuth credential file; skip auto-memory and projects/.
+  if [ -f "${HOME}/.claude/.credentials.json" ]; then
+    mkdir -p "$job_home/.claude"
+    cp "${HOME}/.claude/.credentials.json" "$job_home/.claude/.credentials.json"
+  fi
+
+  # Codex: auth.json is the credential file
+  if [ -f "${HOME}/.codex/auth.json" ]; then
+    mkdir -p "$job_home/.codex"
+    cp "${HOME}/.codex/auth.json" "$job_home/.codex/auth.json"
+  fi
+  # Codex: skip ~/.codex/conversations/, ~/.codex/cache/
+
+  # Gemini: seed only known auth/credential files; skip session state
+  # (memory.md, settings.json, state.json, telemetry, etc.)
+  if [ -d "${HOME}/.gemini" ]; then
+    mkdir -p "$job_home/.gemini"
+    for f in oauth_creds.json google_accounts.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
+      if [ -f "${HOME}/.gemini/$f" ]; then
+        cp "${HOME}/.gemini/$f" "$job_home/.gemini/$f"
+      fi
+    done
+  fi
+
+  # Carry forward .profile so agent subprocesses find npm binaries
+  if [ -f "${HOME}/.profile" ]; then
+    cp "${HOME}/.profile" "$job_home/.profile"
+  fi
+
+  export HOME="$job_home"
+  log "Job HOME set to: ${job_home}"
+fi
+
+# Per-job cleanup: remove ephemeral state on exit when JOB_ID is set.
+# Registered early (before clone_repo) so that any failure between the
+# HOME redirect and provider launch still gets cleaned up.
+# shellcheck disable=SC2317,SC2329  # invoked via trap
+cleanup_job() {
+  if [ -z "$job_home" ]; then
+    return 0
+  fi
+  log "Cleaning up job state: JOB_ID=${job_id}"
+  # Remove the entire job-scoped directory (repo, logs, HOME).
+  # This prevents accumulation when JOB_ID is auto-generated for standalone runs.
+  local job_root="${workspace_root}/${job_id}"
+  if [ -d "$job_root" ]; then
+    rm -rf "$job_root"
+  fi
+  # Remove job-scoped tmp files
+  if [ -n "$job_id" ]; then
+    rm -f "/tmp/hivemoot-agent-${job_id}"* 2>/dev/null || true
+  fi
+}
+trap cleanup_job EXIT
 
 if [ ! -f "$prompt_file" ]; then
   echo "Prompt file not found: $prompt_file" >&2
