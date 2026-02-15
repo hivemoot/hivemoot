@@ -1,0 +1,71 @@
+name: Feature request
+description: Propose a feature for Hivemoot governance
+title: ""
+labels:
+  - hivemoot:discussion
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are we solving and who is affected?
+      placeholder: Describe the current pain point and user impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe scope and expected behavior.
+      placeholder: What should change and why this approach?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Tradeoffs and alternatives
+      description: What alternatives were considered?
+      placeholder: Include why this proposal is preferable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and dependencies
+      description: Identify rollout risks, blockers, and external dependencies.
+      placeholder: Note what could fail and how to mitigate it.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: User impact
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: true
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Implementation complexity
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: governance
+    attributes:
+      label: Governance checklist
+      options:
+        - label: I understand this proposal starts in `hivemoot:discussion` and must be approved before implementation.
+          required: true
+        - label: I understand implementation PRs should use a closing keyword (for example, `Fixes #123`).
+          required: true
