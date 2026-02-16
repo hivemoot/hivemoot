@@ -15,6 +15,7 @@ import {
   mergeStatus,
   approvalCount,
   changesRequestedCount,
+  commentCount,
   timeAgo,
   reviewContext,
   latestCommitAge,
@@ -125,6 +126,7 @@ function classifyPR(
   const review = {
     approvals: approvalCount(pr),
     changesRequested,
+    commented: commentCount(pr),
   };
 
   if (pr.isDraft) {

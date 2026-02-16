@@ -164,7 +164,7 @@ describe("buildSummary()", () => {
     expect(summary.addressFeedback).toHaveLength(1);
     expect(summary.addressFeedback[0].number).toBe(150);
     expect(summary.addressFeedback[0].status).toBe("changes-requested");
-    expect(summary.addressFeedback[0].review).toEqual({ approvals: 1, changesRequested: 1 });
+    expect(summary.addressFeedback[0].review).toEqual({ approvals: 1, changesRequested: 1, commented: 0 });
     expect(summary.reviewPRs).toHaveLength(0);
   });
 
@@ -518,7 +518,7 @@ describe("buildSummary()", () => {
     expect(item.status).toBe("approved");
     expect(item.checks).toBe("passing");
     expect(item.mergeable).toBe("clean");
-    expect(item.review).toEqual({ approvals: 1, changesRequested: 0 });
+    expect(item.review).toEqual({ approvals: 1, changesRequested: 0, commented: 0 });
   });
 
   it("populates null checks when no statusCheckRollup", () => {
