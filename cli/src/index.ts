@@ -49,13 +49,13 @@ program
 
 Examples:
   $ hivemoot buzz
-    -> Show repo work summary (issues, PRs, notifications)
+    Show repo work summary (issues, PRs, notifications)
 
   $ hivemoot buzz --role scout
-    -> Get scout role instructions plus work summary
+    Get scout role instructions plus work summary
 
   $ hivemoot buzz --json
-    -> Output as JSON for scripts`,
+    Output as JSON for scripts`,
   )
   .action(buzzCommand);
 
@@ -70,10 +70,10 @@ program
 
 Examples:
   $ hivemoot roles
-    -> List all available roles and descriptions
+    List all available roles and descriptions
 
   $ hivemoot roles --json
-    -> Output role list as JSON`,
+    Output role list as JSON`,
   )
   .action(rolesCommand);
 
@@ -89,10 +89,10 @@ program
 
 Examples:
   $ hivemoot role scout
-    -> Print instructions for the scout role
+    Print instructions for the scout role
 
   $ hivemoot role engineer --json
-    -> Output a role definition as JSON`,
+    Output a role definition as JSON`,
   )
   .action(roleCommand);
 
@@ -115,13 +115,13 @@ program
 
 Examples:
   $ hivemoot watch --repo hivemoot/colony
-    -> Watch for mentions (polls every 5 minutes)
+    Watch for mentions (polls every 5 minutes)
 
   $ hivemoot watch --repo hivemoot/colony --once
-    -> Check mentions once and exit
+    Check mentions once and exit
 
   $ hivemoot watch --repo hivemoot/colony --interval 60
-    -> Watch with a 60-second polling interval`,
+    Watch with a 60-second polling interval`,
   )
   .action(watchCommand);
 
@@ -136,7 +136,7 @@ program
 
 Examples:
   $ hivemoot ack 22872795152:2026-02-15T20:35:59Z --state-file .hivemoot-watch.json
-    -> Mark a notification as processed in GitHub and local state`,
+    Mark a notification as processed in GitHub and local state`,
   )
   .action(ackCommand);
 
