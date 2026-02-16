@@ -58,7 +58,10 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Paste relevant logs or command output.
+      description: |
+        Paste relevant logs or command output.
+
+        ⚠️ Security warning: Do not include secrets, tokens, API keys, passwords, or private keys. Redact sensitive values before posting.
       render: shell
 
   - type: textarea
