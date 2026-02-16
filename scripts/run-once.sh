@@ -110,10 +110,14 @@ for secret_var in \
   OPENAI_API_KEY \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
-  ANTHROPIC_API_KEY
+  ANTHROPIC_API_KEY \
+  ZAI_API_KEY
 do
   load_secret_from_file "$secret_var"
 done
+
+# shellcheck disable=SC1091  # resolved at runtime via BASH_SOURCE
+source "$(dirname "${BASH_SOURCE[0]}")/opencode-helpers.sh"
 
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
@@ -259,6 +263,19 @@ if [ -n "$job_home" ]; then
       fi
     done
   fi
+
+  # OpenCode: seed config from ~/.config/opencode/
+  if [ -d "${HOME}/.config/opencode" ]; then
+    mkdir -p "$job_home/.config/opencode"
+    cp -R "${HOME}/.config/opencode"/. "$job_home/.config/opencode"/
+  fi
+  if [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
+    mkdir -p "$job_home/.local/share/opencode"
+    cp "${HOME}/.local/share/opencode/auth.json" "$job_home/.local/share/opencode/auth.json"
+  fi
+
+  # OpenCode: auto-generate config and auth.json if missing
+  generate_opencode_config "$job_home"
 
   # Carry forward .profile so agent subprocesses find npm binaries
   if [ -f "${HOME}/.profile" ]; then
@@ -488,8 +505,43 @@ case "$provider" in
     run_in_repo=1
     ;;
 
+  opencode)
+    if ! command -v opencode >/dev/null 2>&1; then
+      echo "opencode CLI is not installed in the container." >&2
+      exit 1
+    fi
+    opencode_provider="${OPENCODE_PROVIDER:-}"
+
+    # Validate auth: BYOK with provider API key or interactive auth
+    if [ -n "$opencode_provider" ]; then
+      case "$opencode_provider" in
+        zai)
+          if [ -z "${ZAI_API_KEY:-}" ]; then
+            echo "ZAI_API_KEY is required when OPENCODE_PROVIDER=zai." >&2
+            exit 1
+          fi
+          ;;
+      esac
+      log "OpenCode BYOK mode: provider=${opencode_provider}"
+    elif [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
+      log "OpenCode interactive auth mode (cached auth.json)"
+    else
+      echo "OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
+      exit 1
+    fi
+
+    cmd=(opencode run)
+    opencode_model="${OPENCODE_MODEL:-}"
+    if [ -n "$opencode_model" ]; then
+      cmd+=(--model "$opencode_model")
+      log "OpenCode model: ${opencode_model}"
+    fi
+    cmd+=("$prompt")
+    run_in_repo=1
+    ;;
+
   *)
-    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude." >&2
+    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude|opencode." >&2
     exit 1
     ;;
 esac

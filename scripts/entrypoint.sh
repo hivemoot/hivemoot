@@ -30,7 +30,8 @@ for secret_var in \
   OPENAI_API_KEY \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
-  ANTHROPIC_API_KEY
+  ANTHROPIC_API_KEY \
+  ZAI_API_KEY
 do
   load_secret_from_file "$secret_var"
 done

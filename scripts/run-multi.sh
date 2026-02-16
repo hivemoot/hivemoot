@@ -29,6 +29,9 @@ seed_provider_home() {
   fi
 }
 
+# shellcheck disable=SC1091  # resolved at runtime via BASH_SOURCE
+source "$(dirname "${BASH_SOURCE[0]}")/opencode-helpers.sh"
+
 # Selective auth seeding: copy only credential files for a provider,
 # skipping conversation caches and session state. Use this instead of
 # seed_provider_home when JOB_ID isolation is active.
@@ -66,6 +69,20 @@ seed_provider_auth() {
       fi
     done
   fi
+
+  # OpenCode: config directory holds provider auth and permission settings
+  if [ -d "${source_home}/.config/opencode" ]; then
+    mkdir -p "${agent_home}/.config/opencode"
+    cp -R "${source_home}/.config/opencode"/. "${agent_home}/.config/opencode"/
+  fi
+  # OpenCode: auth credentials from ~/.local/share/opencode/
+  if [ -f "${source_home}/.local/share/opencode/auth.json" ]; then
+    mkdir -p "${agent_home}/.local/share/opencode"
+    cp "${source_home}/.local/share/opencode/auth.json" "${agent_home}/.local/share/opencode/auth.json"
+  fi
+
+  # OpenCode: auto-generate config and auth.json if missing
+  generate_opencode_config "$agent_home"
 }
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
@@ -299,6 +316,21 @@ preflight_check() {
         failures=$((failures + 1))
       fi
       ;;
+    opencode)
+      if [ -n "${OPENCODE_PROVIDER:-}" ]; then
+        case "${OPENCODE_PROVIDER}" in
+          zai)
+            if [ -z "${ZAI_API_KEY:-}" ]; then
+              echo "Pre-flight: ZAI_API_KEY missing for OPENCODE_PROVIDER=zai." >&2
+              failures=$((failures + 1))
+            fi
+            ;;
+        esac
+      elif [ ! -f "/home/node/.local/share/opencode/auth.json" ]; then
+        echo "Pre-flight: OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
+        failures=$((failures + 1))
+      fi
+      ;;
   esac
 
   # Validate ALL agent tokens against GitHub API
@@ -410,6 +442,13 @@ for index in "${!agent_ids[@]}"; do
     seed_provider_home "/home/node/.gemini" "$agent_home/.gemini"
     seed_provider_home "/home/node/.claude" "$agent_home/.claude"
     seed_provider_home "/home/node/.config/claude" "$agent_home/.config/claude"
+    seed_provider_home "/home/node/.config/opencode" "$agent_home/.config/opencode"
+    seed_provider_home "/home/node/.local/share/opencode" "$agent_home/.local/share/opencode"
+
+    # Generate OpenCode auth.json if missing (API key stored in auth.json,
+    # not in config provider options). Must run after seed_provider_home so
+    # the bind-mounted config is already in place.
+    generate_opencode_config "$agent_home"
 
     # Login shells (bash -lc) reset PATH from /etc/profile, losing the
     # Docker ENV that includes the npm global bin directory. Write a
