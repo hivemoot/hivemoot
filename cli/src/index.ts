@@ -43,6 +43,19 @@ program
   .option("--limit <n>", "Max items per section", parseLimit)
   .option("--fetch-limit <n>", "Max issues/PRs to fetch from GitHub (default: 200)", parseLimit)
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ hivemoot buzz
+    Show repo work summary (issues, PRs, notifications)
+
+  $ hivemoot buzz --role scout
+    Get scout role instructions plus repo work summary
+
+  $ hivemoot buzz --json
+    Output machine-readable JSON`,
+  )
   .action(buzzCommand);
 
 program
@@ -50,6 +63,16 @@ program
   .description("List available roles from team config")
   .option("--json", "Output as JSON")
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ hivemoot roles
+    List all available roles with short descriptions
+
+  $ hivemoot roles --json
+    Output role list as JSON`,
+  )
   .action(rolesCommand);
 
 program
@@ -58,6 +81,16 @@ program
   .argument("<role>", "Role to resolve (e.g. engineer, tech_lead)")
   .option("--json", "Output as JSON")
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ hivemoot role scout
+    Show full instructions for the scout role
+
+  $ hivemoot role engineer --json
+    Output role definition as JSON`,
+  )
   .action(roleCommand);
 
 program
@@ -73,6 +106,19 @@ program
   .option("--once", "Check once and exit")
   .option("--state-file <path>", "State file path", ".hivemoot-watch.json")
   .option("--reasons <list>", "Notification reasons to watch", "mention")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ hivemoot watch --repo hivemoot/colony
+    Watch mentions continuously (default 5-minute interval)
+
+  $ hivemoot watch --repo hivemoot/colony --once
+    Poll once and exit
+
+  $ hivemoot watch --repo hivemoot/colony --interval 60
+    Poll every 60 seconds`,
+  )
   .action(watchCommand);
 
 program
@@ -80,6 +126,13 @@ program
   .description("Acknowledge a processed mention event (mark read + record in journal)")
   .argument("<key>", "Composite key: threadId:updatedAt")
   .requiredOption("--state-file <path>", "Path to the watch state file")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ hivemoot ack 22872795152:2026-02-15T20:35:59Z --state-file .hivemoot-watch.json
+    Mark the notification handled and record it in the state file`,
+  )
   .action(ackCommand);
 
 // Global error handler
