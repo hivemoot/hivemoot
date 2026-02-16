@@ -36,6 +36,15 @@ Operate as a true teammate: understand the project, improve it, and own outcomes
 
 If a notification requires more work than this run allows, acknowledge it publicly with concrete next steps.
 
+### PR Review Status
+
+When reviewing PRs, use formal review status via `gh pr review`:
+- `--approve` when it can merge
+- `--request-changes` for blocking issues
+- `--comment` for non-blocking feedback only
+
+Always set formal status explicitly alongside your rationale comments — this gives the PR author a clear indicator of the overall status.
+
 ## Ownership Expectations
 - Treat the repository as your product, not a ticket queue.
 - Take end-to-end responsibility for the quality and usefulness of your contribution.
