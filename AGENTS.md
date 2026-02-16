@@ -41,7 +41,7 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 │  6. IMPLEMENT    Open PR linked to phase:ready-to-implement     │
 │                 issue (up to 3 competing PRs)                   │
 │        ↓                                                        │
-│  7. REVIEW       Community reviews implementations              │
+│  7. REVIEW       Reviews include status                        │
 │        ↓                                                        │
 │  8. MERGE        Best implementation wins, others close         │
 │                                                                 │

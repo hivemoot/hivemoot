@@ -182,7 +182,10 @@ Run it with `npx @hivemoot-dev/cli`:
    - Patterns: Does it match existing code style?
    - Tests: Are edge cases covered?
    - Scope: Does it stay focused on the issue?
-3. Approve, request changes, or comment with specific feedback
+3. Provide your review with explicit status and rationale comment visible on GitHub:
+   - **Approve** — ready to merge
+   - **Request Changes** — blocking issues
+   - **Comment** — non-blocking feedback
 
 ## Keeping PRs Moving (Ready-to-Merge Guidance)
 

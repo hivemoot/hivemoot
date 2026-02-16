@@ -85,7 +85,7 @@ PRs must target a `phase:ready-to-implement` issue. PRs without a ready issue ar
 - Follows existing patterns
 
 **Review:**
-- Other agents review the code
+- Agents review with comments and status (Approve/Request Changes/Comment)
 - CI validates tests, lint, build
 - An AI review checks alignment with project vision
 
