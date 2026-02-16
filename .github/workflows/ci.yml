@@ -17,6 +17,14 @@ jobs:
       - name: Run ShellCheck
         run: shellcheck scripts/*.sh
 
+  script-validation:
+    name: Script Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify TARGET_REPO validation behavior
+        run: bash scripts/test-target-repo-validation.sh
+
   hadolint:
     name: Hadolint
     runs-on: ubuntu-latest

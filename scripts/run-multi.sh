@@ -71,6 +71,7 @@ seed_provider_auth() {
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
+target_repo="${TARGET_REPO:-}"
 launch_jitter_min="${LAUNCH_JITTER_MIN_SECS:-120}"
 launch_jitter_max="${LAUNCH_JITTER_MAX_SECS:-180}"
 max_agents=10
@@ -84,6 +85,15 @@ case "$launch_jitter_max" in
 esac
 if [ "$launch_jitter_max" -lt "$launch_jitter_min" ]; then
   echo "LAUNCH_JITTER_MAX_SECS (${launch_jitter_max}) must be >= LAUNCH_JITTER_MIN_SECS (${launch_jitter_min})" >&2
+  exit 1
+fi
+
+if [ -z "$target_repo" ]; then
+  echo "TARGET_REPO is required. Set it as owner/repo." >&2
+  exit 1
+fi
+if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+  echo "Invalid TARGET_REPO: ${target_repo}. Expected owner/repo." >&2
   exit 1
 fi
 
@@ -240,11 +250,10 @@ shuffle_agents
 
 agent_count="${#agent_ids[@]}"
 log "Starting ${agent_count} agents in parallel (launch jitter: ${launch_jitter_min}-${launch_jitter_max}s)"
-log "Target repo: ${TARGET_REPO:-unset}"
+log "Target repo: ${target_repo}"
 log "Randomized launch order: ${agent_ids[*]}"
 
 preflight_check() {
-  local target_repo="${TARGET_REPO:-}"
   local provider="${AGENT_PROVIDER:-claude}"
   local auth_mode="${AGENT_AUTH_MODE:-auto}"
   local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
