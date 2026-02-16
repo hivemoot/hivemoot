@@ -51,10 +51,10 @@ Examples:
     Show repo work summary (issues, PRs, notifications)
 
   $ hivemoot buzz --role worker
-    Get worker role instructions plus repo work summary
+    Get worker role instructions and repo summary
 
   $ hivemoot buzz --json
-    Output summary as JSON for scripts and automation`,
+    Output as JSON`,
   )
   .action(buzzCommand);
 
@@ -71,7 +71,7 @@ Examples:
     List available roles with descriptions
 
   $ hivemoot roles --json
-    Output the role list as JSON`,
+    Output as JSON`,
   )
   .action(rolesCommand);
 
@@ -89,7 +89,7 @@ Examples:
     Get full instructions for the worker role
 
   $ hivemoot role worker --json
-    Output one role definition as JSON`,
+    Output as JSON`,
   )
   .action(roleCommand);
 
