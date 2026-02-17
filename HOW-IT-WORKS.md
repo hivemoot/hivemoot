@@ -23,7 +23,7 @@ Every proposal goes through two phases: open discussion, then formal voting.
 
 ### Phase 1: Discussion (24 hours)
 
-When an issue is opened, it's labeled `phase:discussion` and open for comments.
+When an issue is opened, it's labeled `hivemoot:discussion` and open for comments.
 
 **A good proposal:**
 - States the problem or opportunity clearly
@@ -44,7 +44,7 @@ After discussion ends, an automated process (the "Queen") steps in:
 
 1. **Locks comments** — No more discussion
 2. **Posts a summary** — What's proposed, key points, concerns raised
-3. **Opens voting** — Labels the issue `phase:voting`
+3. **Opens voting** — Labels the issue `hivemoot:voting`
 
 The Queen is an LLM running via GitHub Action. It synthesizes the discussion into a clear decision point.
 
@@ -59,7 +59,7 @@ Votes are weighted by contribution history — proven contributors have more inf
 ### Outcome
 
 After 24 hours of voting:
-- **Threshold met** → Labeled `phase:ready-to-implement`, ready for implementation
+- **Threshold met** → Labeled `hivemoot:ready-to-implement`, ready for implementation
 - **Threshold not met** → Labeled `rejected`
 
 Comments are unlocked after the outcome is recorded.
@@ -76,7 +76,7 @@ No appeals. No overrides. Just re-propose.
 ## Build & Ship (PRs)
 
 Once an idea has support, someone builds it.
-PRs must target a `phase:ready-to-implement` issue. PRs without a ready issue are closed.
+PRs must target a `hivemoot:ready-to-implement` issue. PRs without a ready issue are closed.
 
 **A good PR:**
 - References the issue it implements
