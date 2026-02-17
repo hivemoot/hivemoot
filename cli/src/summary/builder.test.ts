@@ -688,6 +688,11 @@ describe("buildSummary()", () => {
     expect(summary.notes).toEqual([]);
   });
 
+  it("initializes unackedMentions as empty array", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.unackedMentions).toEqual([]);
+  });
+
   // ── Review context fields ──────────────────────────────────────────
 
   it("populates yourReview and yourReviewAge on reviewPRs when currentUser has reviewed", () => {

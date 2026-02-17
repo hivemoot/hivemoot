@@ -329,6 +329,7 @@ export function buildSummary(
   return {
     repo,
     currentUser,
+    unackedMentions: [],
     needsHuman,
     driveDiscussion,
     driveImplementation,

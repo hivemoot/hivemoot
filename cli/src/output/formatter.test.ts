@@ -579,6 +579,28 @@ describe("NOTIFICATIONS section", () => {
   });
 });
 
+describe("UNACKED MENTIONS section", () => {
+  it("renders UNACKED MENTIONS section when unacked mentions exist", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const output = formatStatus(withUnacked);
+    expect(output).toContain("UNACKED MENTIONS");
+    expect(output).toContain("#18");
+    expect(output).toContain("mention");
+    expect(output).toContain("T18:2025-06-15T11:00:00Z");
+  });
+
+  it("hides UNACKED MENTIONS section when empty", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("UNACKED MENTIONS");
+  });
+});
+
 describe("ackKey on metadata line", () => {
   it("renders 'ack:' on metadata line for unread items with ackKey", () => {
     const unreadSummary: RepoSummary = {
