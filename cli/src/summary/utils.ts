@@ -183,6 +183,15 @@ export function changesRequestedCount(pr: GitHubPR): number {
   return count;
 }
 
+/** Count unique non-blocking feedback reviews (latest review per author). */
+export function commentCount(pr: GitHubPR): number {
+  let count = 0;
+  for (const state of latestReviewByAuthor(pr).values()) {
+    if (state === "COMMENTED") count++;
+  }
+  return count;
+}
+
 // ── Review context ────────────────────────────────────────────────
 
 export interface ReviewContext {
