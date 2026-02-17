@@ -1145,4 +1145,63 @@ describe("buildSummary()", () => {
       },
     ]);
   });
+
+  it("computes repository health metrics from fetched issues and PRs", () => {
+    const issues = [
+      makeIssue({ number: 201, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:30:00Z" }),
+      makeIssue({ number: 202, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-14T11:00:00Z" }),
+      makeIssue({ number: 203, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:00:00Z" }),
+      makeIssue({ number: 204, labels: [{ name: "hivemoot:discussion" }], updatedAt: "2025-06-15T10:00:00Z" }),
+      makeIssue({ number: 205, labels: [{ name: "hivemoot:voting" }], updatedAt: "2025-06-15T09:00:00Z" }),
+    ];
+
+    const prs = [
+      makePR({ number: 301, labels: [{ name: "hivemoot:merge-ready" }], updatedAt: "2025-06-14T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 302, reviewDecision: "CHANGES_REQUESTED", updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 303, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z" }),
+      makePR({ number: 304, updatedAt: "2025-06-10T10:00:00Z", author: { login: "testuser" } }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.repositoryHealth).toEqual({
+      openPRs: {
+        total: 4,
+        mergeReady: 1,
+        changesRequested: 1,
+        draft: 1,
+      },
+      reviewQueue: {
+        waitingForYourReview: 2,
+        oldestWaitingAge: "yesterday",
+      },
+      issuePipeline: {
+        discussion: 1,
+        voting: 1,
+        readyToImplement: 3,
+      },
+      staleRisk: {
+        prsOlderThan3Days: 1,
+        issuesStaleOver24h: 1,
+      },
+    });
+  });
+
+  it("ranks non-zero priority signals by score", () => {
+    const issues = [
+      makeIssue({ number: 211, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-14T11:00:00Z" }),
+      makeIssue({ number: 212, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:00:00Z" }),
+    ];
+    const prs = [
+      makePR({ number: 311, updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 312, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.prioritySignals?.map((signal) => signal.kind)).toEqual([
+      "review-queue",
+      "implementation-gap",
+      "stale-risk",
+    ]);
+    expect(summary.prioritySignals?.[0].summary).toContain("1 waiting");
+  });
 });

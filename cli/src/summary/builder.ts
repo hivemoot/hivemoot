@@ -2,7 +2,9 @@ import type {
   GitHubIssue,
   GitHubPR,
   NotificationRef,
+  PrioritySignal,
   RepoRef,
+  RepositoryHealth,
   RepoSummary,
   SummaryItem,
 } from "../config/types.js";
@@ -20,6 +22,7 @@ import {
   latestCommitAge,
   latestCommentAge,
   commentContext,
+  daysSince,
   hasGovernanceLabel,
   hasGovernanceLabelName,
 } from "./utils.js";
@@ -157,6 +160,101 @@ function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, 
     }
   }
   return map;
+}
+
+function buildRepositoryHealth(
+  issues: GitHubIssue[],
+  prs: GitHubPR[],
+  currentUser: string,
+  now: Date,
+): RepositoryHealth {
+  const draft = prs.filter((pr) => pr.isDraft).length;
+  const mergeReady = prs.filter((pr) => hasGovernanceLabel(pr.labels, "MERGE_READY")).length;
+  const changesRequested = prs.filter((pr) =>
+    pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0
+  ).length;
+
+  const waitingForYourReviewPRs = currentUser
+    ? prs.filter((pr) =>
+      !pr.isDraft &&
+      pr.author?.login !== currentUser &&
+      !reviewContext(pr, currentUser, now)
+    )
+    : [];
+  let oldestWaitingAge: string | undefined;
+  if (waitingForYourReviewPRs.length > 0) {
+    let oldest = waitingForYourReviewPRs[0].updatedAt;
+    for (let i = 1; i < waitingForYourReviewPRs.length; i++) {
+      if (waitingForYourReviewPRs[i].updatedAt < oldest) oldest = waitingForYourReviewPRs[i].updatedAt;
+    }
+    oldestWaitingAge = timeAgo(oldest, now);
+  }
+
+  const discussion = issues.filter((issue) => hasGovernanceLabel(issue.labels, "DISCUSSION")).length;
+  const voting = issues.filter((issue) =>
+    hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")
+  ).length;
+  const readyToImplement = issues.filter((issue) => hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")).length;
+
+  const prsOlderThan3Days = prs.filter((pr) => daysSince(pr.updatedAt, now) > 3).length;
+  const issuesStaleOver24h = issues.filter((issue) => daysSince(issue.updatedAt, now) >= 1).length;
+
+  return {
+    openPRs: {
+      total: prs.length,
+      mergeReady,
+      changesRequested,
+      draft,
+    },
+    reviewQueue: {
+      waitingForYourReview: waitingForYourReviewPRs.length,
+      oldestWaitingAge,
+    },
+    issuePipeline: {
+      discussion,
+      voting,
+      readyToImplement,
+    },
+    staleRisk: {
+      prsOlderThan3Days,
+      issuesStaleOver24h,
+    },
+  };
+}
+
+function buildPrioritySignals(
+  health: RepositoryHealth,
+  prs: GitHubPR[],
+): PrioritySignal[] {
+  const activeCandidates = prs.filter((pr) => hasGovernanceLabel(pr.labels, "IMPLEMENTATION")).length;
+  const implementationGap = Math.max(health.issuePipeline.readyToImplement - activeCandidates, 0);
+
+  const signals: PrioritySignal[] = [
+    {
+      kind: "review-queue",
+      score: health.reviewQueue.waitingForYourReview * 10 + (health.reviewQueue.oldestWaitingAge ? 1 : 0),
+      summary: health.reviewQueue.oldestWaitingAge
+        ? `${health.reviewQueue.waitingForYourReview} waiting, oldest ${health.reviewQueue.oldestWaitingAge}`
+        : `${health.reviewQueue.waitingForYourReview} waiting`,
+    },
+    {
+      kind: "implementation-gap",
+      score: implementationGap * 8,
+      summary: `${health.issuePipeline.readyToImplement} ready issues, ${activeCandidates} active candidates`,
+    },
+    {
+      kind: "stale-risk",
+      score: health.staleRisk.prsOlderThan3Days * 6 + health.staleRisk.issuesStaleOver24h * 2,
+      summary: `${health.staleRisk.prsOlderThan3Days} PRs >3d, ${health.staleRisk.issuesStaleOver24h} issues >24h stale`,
+    },
+  ];
+
+  return signals
+    .filter((signal) => signal.score > 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return a.kind.localeCompare(b.kind);
+    });
 }
 
 export function buildSummary(
@@ -326,6 +424,9 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
+  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, prs);
+
   return {
     repo,
     currentUser,
@@ -340,6 +441,8 @@ export function buildSummary(
     draftPRs,
     addressFeedback: filteredAddressFeedback,
     notifications: notificationRefs,
+    repositoryHealth,
+    prioritySignals,
     focus,
     notes: [],
   };
