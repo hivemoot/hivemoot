@@ -352,6 +352,128 @@ describe("loadTeamConfig", () => {
     });
   });
 
+  // ── team.focus parsing ──────────────────────────────────────────
+
+  it("parses focus.default as a string", async () => {
+    const focusYaml = yaml.dump({
+      team: {
+        focus: { default: "Focus on PR reviews first." },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Focus on PR reviews first.");
+  });
+
+  it("returns undefined focus when focus key is absent", async () => {
+    mockedGh.mockResolvedValue(encode(validYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("returns undefined focus when focus is a plain string (not nested object)", async () => {
+    const flatFocusYaml = yaml.dump({
+      team: {
+        focus: "prs-only",
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(flatFocusYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("returns undefined focus when focus.default is missing", async () => {
+    const noDefaultYaml = yaml.dump({
+      team: {
+        focus: { other: "value" },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(noDefaultYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("returns undefined focus when focus.default is empty or whitespace", async () => {
+    const emptyDefaultYaml = yaml.dump({
+      team: {
+        focus: { default: "   " },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(emptyDefaultYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("trims whitespace from focus.default", async () => {
+    const paddedYaml = yaml.dump({
+      team: {
+        focus: { default: "  Review PRs  " },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(paddedYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Review PRs");
+  });
+
+  it("returns undefined focus when focus.default is not a string", async () => {
+    const numericDefaultYaml = yaml.dump({
+      team: {
+        focus: { default: 42 },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(numericDefaultYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("returns undefined focus when focus is an array", async () => {
+    const arrayFocusYaml = yaml.dump({
+      team: {
+        focus: ["prs", "issues"],
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(arrayFocusYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
   it("re-throws non-404 gh errors", async () => {
     const otherError = new CliError("Rate limited", "RATE_LIMITED");
     mockedGh.mockRejectedValue(otherError);

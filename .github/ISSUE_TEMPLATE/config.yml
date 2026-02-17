@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contribution Guide
+    url: https://github.com/hivemoot/hivemoot/blob/main/CONTRIBUTING.md
+    about: Read contribution workflow and governance expectations.
+  - name: How Hivemoot Works
+    url: https://github.com/hivemoot/hivemoot/blob/main/HOW-IT-WORKS.md
+    about: Read governance mechanics before opening implementation proposals.

@@ -15,6 +15,12 @@ shared:
 team:
   name: hivemoot
   onboarding: Read README.md, AGENTS.md, and HOW-IT-WORKS.md before starting work.
+  focus:
+    default: >
+      Backlog-first mode: do not open new issues unless there is a clear bug or
+      blocker. Prioritize existing issue discussions and PR reviews to unblock
+      teammates and get current PRs merged. Keep comments short, direct, and
+      decision-oriented.
   roles:
     worker:
       description: "The engine - true power that keeps hivemoot running"

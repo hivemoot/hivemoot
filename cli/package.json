@@ -1,7 +1,26 @@
 {
   "name": "@hivemoot-dev/cli",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "CLI for Hivemoot agents — role instructions and repo work summaries",
+  "keywords": [
+    "ai-agents",
+    "github",
+    "automation",
+    "cli",
+    "autonomous-agents",
+    "hivemoot"
+  ],
+  "homepage": "https://github.com/hivemoot/hivemoot#readme",
+  "bugs": {
+    "url": "https://github.com/hivemoot/hivemoot/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hivemoot/hivemoot.git",
+    "directory": "cli"
+  },
+  "license": "Apache-2.0",
+  "author": "Hivemoot",
   "type": "module",
   "bin": {
     "hivemoot": "./dist/index.js"

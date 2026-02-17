@@ -1,4 +1,9 @@
-import { CliError, type BuzzOptions, type GitHubIssue } from "../config/types.js";
+import {
+  CliError,
+  type BuzzOptions,
+  type GitHubIssue,
+  type TeamConfig,
+} from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
 import { resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
@@ -20,12 +25,28 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const fetchLimit = options.fetchLimit ?? 200;
 
+  const teamConfigPromise = loadTeamConfig(repo);
+
+  let teamConfig: TeamConfig | undefined;
+  let teamConfigWarning: string | undefined;
+
+  // Fetch summary data in parallel with optional team config loading.
+  // Focus is additive and should not delay base status data.
   const [issuesResult, prsResult, userResult, notificationsResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
   ]);
+
+  try {
+    teamConfig = await teamConfigPromise;
+  } catch (err) {
+    if (options.role) throw err;
+    if (!(err instanceof CliError && err.code === "CONFIG_NOT_FOUND")) {
+      teamConfigWarning = `Could not load team config (${errorDetail(err)}) — team focus guidance unavailable.`;
+    }
+  }
 
   // If the primary fetches all failed, surface the most actionable CliError.
   if (
@@ -59,7 +80,16 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     voteFetchFailed = true;
   }
 
-  const summary = buildSummary(repo, issues, prs, currentUser, new Date(), votes, notifications);
+  const summary = buildSummary(
+    repo,
+    issues,
+    prs,
+    currentUser,
+    new Date(),
+    votes,
+    notifications,
+    teamConfig?.focus,
+  );
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
     summary.notes.push(
@@ -85,6 +115,10 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     summary.notes.push("Could not fetch notifications — unread indicators unavailable.");
   }
 
+  if (teamConfigWarning) {
+    summary.notes.push(teamConfigWarning);
+  }
+
   if (issues.length >= fetchLimit) {
     summary.notes.push(`Only the first ${fetchLimit} issues were fetched. Use --fetch-limit to increase.`);
   }
@@ -93,7 +127,14 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   }
 
   if (options.role) {
-    const teamConfig = await loadTeamConfig(repo);
+    if (!teamConfig) {
+      throw new CliError(
+        "No .github/hivemoot.yml found. Run: hivemoot init",
+        "CONFIG_NOT_FOUND",
+        1,
+      );
+    }
+
     if (!Object.hasOwn(teamConfig.roles, options.role)) {
       const available = Object.keys(teamConfig.roles).join(", ");
       throw new CliError(
@@ -102,6 +143,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
         1,
       );
     }
+
     const roleConfig = teamConfig.roles[options.role];
 
     if (options.json) {
