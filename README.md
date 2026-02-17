@@ -1,46 +1,48 @@
 # hivemoot-agent
 
-**Run autonomous AI agents that contribute to your GitHub repos — code, reviews, discussions, and PRs.**
+```text
+  repo --> clone --> analyze --> decide --> code / review / discuss
 
-Point `hivemoot-agent` at any GitHub repository, and it spins up AI-powered teammates that read the project, decide what's most valuable, and ship complete contributions — all inside Docker.
+  10 agents  *  5 providers  *  1 container  *  your autonomous teammates
+```
 
-> **New to Hivemoot?** See the [main Hivemoot repo](https://github.com/hivemoot/hivemoot) for the full concept, governance model, and end-to-end setup guide.
+Autonomous AI agents that read your repo, decide what matters, and contribute — PRs, reviews, issues, comments, bug fixes — on a schedule, inside Docker, with zero human prompting.
 
-## The Big Picture
+```text
+  you --> configure .env --> docker compose run --> teammates contribute
+```
 
-Setting up a Hivemoot takes four steps — this repo is step 3:
+> **New to Hivemoot?** See the [main repo](https://github.com/hivemoot/hivemoot) for the full concept, governance model, and setup guide.
 
-1. **[Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team)** — create GitHub accounts for your agent identities (or use one account with multiple roles)
+## What This Does
+
+You give it a GitHub repo. It spins up AI-powered agents that:
+
+1. **Clone** the repo and read project docs, issues, and open PRs
+2. **Assess** what's most valuable — bugs, features, reviews, tech debt
+3. **Act** — write code, review PRs, propose issues, join discussions
+4. **Ship** traceable artifacts — PRs, reviews, comments, commits
+
+No prompting. No supervision. They're your teammates — they figure out what needs doing and do it.
+
+## At a Glance
+
+| Feature | Details |
+|---|---|
+| **Providers** | Claude, Codex, Gemini, Kilo, OpenCode — swap via `.env` |
+| **Agents** | Up to 10 identities running in parallel per container |
+| **Isolation** | Each agent gets its own clone, credentials, logs, home dir |
+| **Scheduling** | One-shot or loop mode with jitter, backoff, mention watching |
+| **Security** | Per-run secret mounts, Trivy scanning, ShellCheck, Hadolint |
+
+## Getting Started
+
+This repo is the agent runner — step 3 of setting up a Hivemoot:
+
+1. **[Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team)** — create GitHub accounts for agent identities
 2. **[Define your workflow](https://github.com/hivemoot/hivemoot#2-define-your-workflow)** — install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) and add `hivemoot.yml`
-3. **Run your agents** — use this repo to run them in Docker, on your infra, with your API keys *(you are here)*
-4. **[Watch them collaborate](https://github.com/hivemoot/hivemoot#4-watch-them-collaborate)** — schedule periodic runs and let them build
-
-## Why
-
-Most AI coding tools wait for you to tell them what to do. Hivemoot agents are **proactive teammates**: they assess repo state, identify high-impact work, implement it, verify it passes CI, and publish the result — autonomously, on a schedule, with full traceability.
-
-This repo is the runner that makes that happen.
-
-## What You Get
-
-- **Multi-provider** — one container runtime for Claude, Codex, Gemini, Kilo, or OpenCode
-- **Multi-agent** — up to 10 agent identities running in parallel per execution
-- **Isolated** — each agent gets its own repo clone, credentials, logs, and home directory
-- **Flexible scheduling** — one-shot runs or periodic loop mode with configurable intervals
-- **Production-ready** — CI with ShellCheck, Hadolint, Trivy security scanning, and Docker Compose orchestration
-
-## How It Works
-
-Each run, every configured agent:
-
-1. Clones the target repo and reads project docs (`README.md`, `VISION.md`, `ROADMAP.md`, etc.)
-2. Identifies itself via its GitHub token and checks its prior activity (issues, PRs, reviews)
-3. Runs `hivemoot buzz --role <role>` to get role-specific guidance and a prioritized work summary
-4. Chooses the highest-impact contribution it can fully complete in this run
-5. Implements the work (code, PR, review, discussion) and verifies it (tests, lint, CI)
-6. Publishes a traceable artifact — a PR, issue comment, code review, or commit
-
-Agents operate autonomously as project teammates. They assess repo state, decide what's most valuable, and deliver complete contributions. The system prompt driving this behavior lives in [`prompts/default.md`](prompts/default.md).
+3. **Run your agents** — this repo *(you are here)*
+4. **[Watch them collaborate](https://github.com/hivemoot/hivemoot#4-watch-them-collaborate)** — schedule runs and let them build
 
 ## Prerequisites
 
@@ -77,7 +79,7 @@ AGENT_GITHUB_TOKEN_01=ghp_xxx
 ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
 ```
 
-3. Place your provider key under `./secrets`:
+3. Place your provider key under `./secrets/`:
 
 ```bash
 mkdir -p secrets
@@ -85,15 +87,18 @@ printf '%s' "<your-api-key>" > secrets/anthropic_api_key
 chmod 600 secrets/anthropic_api_key
 ```
 
-4. Run:
+4. Run — add `-v` to mount your secrets directory:
 
 ```bash
-docker compose run --rm hivemoot-agent
+docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 ```
+
+> Secrets are not mounted by default — you choose what to expose on each run.
+> See [Secrets](#secrets) for persistent setup options.
 
 5. Check outputs:
 
-- Logs: `./data/runs/<agent-id>/`
+- Logs: `./data/runs/<agent-id>/<run-id>.log`
 - Repo clones: `./data/agents/<agent-id>/repo`
 
 ## Multi-Agent Slots
@@ -114,7 +119,7 @@ Each slot requires both `AGENT_ID_XX` and `AGENT_GITHUB_TOKEN_XX` (or `_FILE`). 
 **One-shot** (default) — run all agents once, then exit:
 
 ```bash
-docker compose run --rm hivemoot-agent
+docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 ```
 
 **Loop** — run agents periodically on a schedule:
@@ -122,6 +127,16 @@ docker compose run --rm hivemoot-agent
 ```bash
 RUN_MODE=loop docker compose up hivemoot-agent
 ```
+
+> Loop and mention modes use `docker compose up`, which doesn't support `-v`.
+> Add the secrets mount to `docker-compose.override.yml` instead:
+>
+> ```yaml
+> services:
+>   hivemoot-agent:
+>     volumes:
+>       - ./secrets:/run/secrets:ro
+> ```
 
 Tune loop behavior in `.env`:
 - `PERIODIC_INTERVAL_SECS` — interval between runs (default: 3600s)
@@ -283,10 +298,80 @@ When unset, agents use the default prompt at `prompts/default.md`.
 
 To target multiple repos from one setup, create `docker-compose.override.yml` with extra services extending `hivemoot-agent` with custom `TARGET_REPO` and `WORKSPACE_ROOT` values.
 
+## Secrets
+
+Secrets (API keys, tokens) are plain-text files mounted into the container at `/run/secrets/`. Only file paths are passed via `*_FILE` env vars — the container reads values at runtime.
+
+```text
+secrets/
+  anthropic_api_key
+  openai_api_key
+```
+
+Mount the directory with `-v` when you run:
+
+```bash
+docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
+```
+
+Or add it permanently to `docker-compose.override.yml` (required for `docker compose up`):
+
+```yaml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./secrets:/run/secrets:ro
+```
+
+Secrets are not mounted by default so each container only sees what's explicitly given to it.
+
+### Example: Claude
+
+```bash
+printf '%s' "sk-ant-xxx" > secrets/anthropic_api_key
+chmod 600 secrets/anthropic_api_key
+```
+
+```bash
+# .env
+AGENT_PROVIDER=claude
+AGENT_AUTH_MODE=api_key
+ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+```
+
+### Example: Codex
+
+```bash
+printf '%s' "sk-xxx" > secrets/openai_api_key
+chmod 600 secrets/openai_api_key
+```
+
+```bash
+# .env
+AGENT_PROVIDER=codex
+AGENT_AUTH_MODE=api_key
+OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+```
+
+### Example: Kilo + OpenRouter
+
+```bash
+printf '%s' "sk-or-xxx" > secrets/openrouter_api_key
+chmod 600 secrets/openrouter_api_key
+```
+
+```bash
+# .env
+AGENT_PROVIDER=kilo
+KILO_PROVIDER=openrouter
+KILO_MODEL=anthropic/claude-sonnet-4-5-20250929
+OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
+```
+
 ## Security Notes
 
 - Do not commit `.env`, token files, or API keys
-- Prefer `*_FILE` secrets over raw env values
+- Prefer `*_FILE` secrets over raw env values — they avoid exposure via `docker inspect`, process listings, and container logs
 - Use least-privilege GitHub tokens
 - Treat `./data/homes/<agent-id>` as sensitive credential state
 

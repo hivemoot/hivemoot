@@ -20,7 +20,6 @@ x-agent-base: &agent-base
     - /tmp:size=2g,mode=1777
   volumes:
     - ./data:/workspace
-    - ./secrets:/run/secrets:ro
     - codex-home:/home/node/.codex
     - gemini-home:/home/node/.gemini
     - claude-home:/home/node/.claude
