@@ -72,6 +72,12 @@ seed_provider_auth() {
     done
   fi
 
+  # Kilo: config directory holds provider auth and permission settings
+  if [ -d "${source_home}/.config/kilo" ]; then
+    mkdir -p "${agent_home}/.config/kilo"
+    cp -R "${source_home}/.config/kilo"/. "${agent_home}/.config/kilo"/
+  fi
+
   # OpenCode: config directory holds provider auth and permission settings
   if [ -d "${source_home}/.config/opencode" ]; then
     mkdir -p "${agent_home}/.config/opencode"
@@ -310,6 +316,41 @@ preflight_check() {
         failures=$((failures + 1))
       fi
       ;;
+    kilo)
+      if [ -z "${KILOCODE_TOKEN:-}" ]; then
+        if [ -z "${KILO_PROVIDER:-}" ]; then
+          echo "Pre-flight: KILO_PROVIDER is required for kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
+          failures=$((failures + 1))
+        else
+          case "${KILO_PROVIDER}" in
+            anthropic)
+              if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "Pre-flight: ANTHROPIC_API_KEY missing for KILO_PROVIDER=anthropic." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            openai)
+              if [ -z "${OPENAI_API_KEY:-}" ]; then
+                echo "Pre-flight: OPENAI_API_KEY missing for KILO_PROVIDER=openai." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            google)
+              if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+                echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for KILO_PROVIDER=google." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+            openrouter)
+              if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+                echo "Pre-flight: OPENROUTER_API_KEY missing for KILO_PROVIDER=openrouter." >&2
+                failures=$((failures + 1))
+              fi
+              ;;
+          esac
+        fi
+      fi
+      ;;
     opencode)
       if [ -n "${OPENCODE_PROVIDER:-}" ]; then
         case "${OPENCODE_PROVIDER}" in
@@ -409,6 +450,7 @@ for index in "${!agent_ids[@]}"; do
   seed_provider_home "/home/node/.gemini" "$agent_home/.gemini"
   seed_provider_home "/home/node/.claude" "$agent_home/.claude"
   seed_provider_home "/home/node/.config/claude" "$agent_home/.config/claude"
+  seed_provider_home "/home/node/.config/kilo" "$agent_home/.config/kilo"
   seed_provider_home "/home/node/.config/opencode" "$agent_home/.config/opencode"
   seed_provider_home "/home/node/.local/share/opencode" "$agent_home/.local/share/opencode"
 

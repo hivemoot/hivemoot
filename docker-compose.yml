@@ -5,6 +5,7 @@ x-agent-base: &agent-base
     args:
       CODEX_VERSION: ${CODEX_VERSION:-latest}
       GEMINI_VERSION: ${GEMINI_VERSION:-latest}
+      KILO_VERSION: ${KILO_VERSION:-latest}
       OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
       CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
       HIVEMOOT_CLI_VERSION: ${HIVEMOOT_CLI_VERSION:-latest}
@@ -24,6 +25,7 @@ x-agent-base: &agent-base
     - gemini-home:/home/node/.gemini
     - claude-home:/home/node/.claude
     - claude-config:/home/node/.config/claude
+    - kilo-config:/home/node/.config/kilo
     - opencode-config:/home/node/.config/opencode
     - opencode-data:/home/node/.local/share/opencode
   stdin_open: true
@@ -74,6 +76,10 @@ x-agent-env: &agent-env
   GOOGLE_API_KEY_FILE: ${GOOGLE_API_KEY_FILE:-}
   GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
   ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
+  OPENROUTER_API_KEY_FILE: ${OPENROUTER_API_KEY_FILE:-}
+  KILO_PROVIDER: ${KILO_PROVIDER:-}
+  KILO_MODEL: ${KILO_MODEL:-}
+  KILOCODE_TOKEN_FILE: ${KILOCODE_TOKEN_FILE:-}
   ZAI_API_KEY_FILE: ${ZAI_API_KEY_FILE:-}
   OPENCODE_PROVIDER: ${OPENCODE_PROVIDER:-}
   OPENCODE_MODEL: ${OPENCODE_MODEL:-}
@@ -108,10 +114,15 @@ services:
     <<: *agent-base
     entrypoint: ["claude"]
 
+  auth-kilo:
+    <<: *agent-base
+    entrypoint: ["kilo", "auth", "login"]
+
 volumes:
   codex-home:
   gemini-home:
   claude-home:
   claude-config:
+  kilo-config:
   opencode-config:
   opencode-data:

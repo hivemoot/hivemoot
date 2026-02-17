@@ -111,6 +111,8 @@ for secret_var in \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
   ANTHROPIC_API_KEY \
+  OPENROUTER_API_KEY \
+  KILOCODE_TOKEN \
   ZAI_API_KEY
 do
   load_secret_from_file "$secret_var"
@@ -262,6 +264,12 @@ if [ -n "$job_home" ]; then
         cp "${HOME}/.gemini/$f" "$job_home/.gemini/$f"
       fi
     done
+  fi
+
+  # Kilo: seed config (provider auth, permissions) from ~/.config/kilo/
+  if [ -d "${HOME}/.config/kilo" ]; then
+    mkdir -p "$job_home/.config/kilo"
+    cp -R "${HOME}/.config/kilo"/. "$job_home/.config/kilo"/
   fi
 
   # OpenCode: seed config from ~/.config/opencode/
@@ -505,6 +513,61 @@ case "$provider" in
     run_in_repo=1
     ;;
 
+  kilo)
+    if ! command -v kilo >/dev/null 2>&1; then
+      echo "kilo CLI is not installed in the container." >&2
+      exit 1
+    fi
+    kilo_provider="${KILO_PROVIDER:-}"
+    kilocode_token="${KILOCODE_TOKEN:-}"
+
+    # Validate auth: KILOCODE_TOKEN (gateway) or KILO_PROVIDER + matching API key (BYOK).
+    if [ -z "$kilocode_token" ]; then
+      if [ -z "$kilo_provider" ]; then
+        echo "KILO_PROVIDER is required when AGENT_PROVIDER=kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
+        exit 1
+      fi
+      case "$kilo_provider" in
+        anthropic)
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ANTHROPIC_API_KEY is required when KILO_PROVIDER=anthropic." >&2
+            exit 1
+          fi
+          ;;
+        openai)
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY is required when KILO_PROVIDER=openai." >&2
+            exit 1
+          fi
+          ;;
+        google)
+          if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "GOOGLE_API_KEY (or GEMINI_API_KEY) is required when KILO_PROVIDER=google." >&2
+            exit 1
+          fi
+          ;;
+        openrouter)
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "OPENROUTER_API_KEY is required when KILO_PROVIDER=openrouter." >&2
+            exit 1
+          fi
+          ;;
+      esac
+      log "Kilo BYOK mode: provider=${kilo_provider}"
+    else
+      log "Kilo gateway mode (KILOCODE_TOKEN set)"
+    fi
+
+    cmd=(kilo run --auto)
+    kilo_model="${KILO_MODEL:-}"
+    if [ -n "$kilo_model" ]; then
+      cmd+=(-m "$kilo_model")
+      log "Kilo model override: ${kilo_model}"
+    fi
+    cmd+=("$prompt")
+    run_in_repo=1
+    ;;
+
   opencode)
     if ! command -v opencode >/dev/null 2>&1; then
       echo "opencode CLI is not installed in the container." >&2
@@ -541,7 +604,7 @@ case "$provider" in
     ;;
 
   *)
-    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude|opencode." >&2
+    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude|kilo|opencode." >&2
     exit 1
     ;;
 esac
