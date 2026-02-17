@@ -9,6 +9,7 @@ export interface TeamConfig {
   name?: string;
   onboarding?: string;
   roles: Record<string, RoleConfig>;
+  focus?: string;
 }
 
 export interface HivemootConfig {
@@ -141,6 +142,7 @@ export interface RepoSummary {
   draftPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
   notifications: NotificationRef[];
+  focus?: string;
   notes: string[];
 }
 

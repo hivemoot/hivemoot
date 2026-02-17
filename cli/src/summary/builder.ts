@@ -114,43 +114,37 @@ function classifyPR(
   pr: GitHubPR,
   now: Date,
 ): { bucket: "reviewPRs" | "draftPRs" | "addressFeedback"; item: SummaryItem } {
-  const age = timeAgo(pr.createdAt, now);
-  const tags = pr.labels.map((l) => l.name);
-  const author = pr.author?.login ?? "ghost";
-  const comments = pr.comments.length;
-  const ciFailing = hasCIFailure(pr);
-  const checks = compactChecks(checkStatus(pr));
-  const merge = compactMergeable(mergeStatus(pr));
   const changesRequested = changesRequestedCount(pr);
-  const review = {
-    approvals: approvalCount(pr),
-    changesRequested,
+  const base: SummaryItem = {
+    number: pr.number,
+    title: pr.title,
+    url: pr.url,
+    tags: pr.labels.map((l) => l.name),
+    author: pr.author?.login ?? "ghost",
+    comments: pr.comments.length,
+    age: timeAgo(pr.createdAt, now),
+    status: "pending",
+    checks: compactChecks(checkStatus(pr)),
+    mergeable: compactMergeable(mergeStatus(pr)),
+    review: { approvals: approvalCount(pr), changesRequested },
   };
 
   if (pr.isDraft) {
-    return {
-      bucket: "draftPRs",
-      item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status: "draft", checks, mergeable: merge, review },
-    };
+    return { bucket: "draftPRs", item: { ...base, status: "draft" } };
   }
 
-  if (ciFailing || pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0) {
-    let status: string;
-    if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0) status = "changes-requested";
-    else status = "pending";
-
-    return {
-      bucket: "addressFeedback",
-      item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status, checks, mergeable: merge, review },
-    };
+  if (hasCIFailure(pr) || pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0) {
+    const status = (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequested > 0)
+      ? "changes-requested"
+      : "pending";
+    return { bucket: "addressFeedback", item: { ...base, status } };
   }
 
-  const status = pr.reviewDecision === "APPROVED" ? "approved" : "pending";
+  if (pr.reviewDecision === "APPROVED") {
+    return { bucket: "reviewPRs", item: { ...base, status: "approved" } };
+  }
 
-  return {
-    bucket: "reviewPRs",
-    item: { number: pr.number, title: pr.title, url: pr.url, tags, author, comments, age, status, checks, mergeable: merge, review },
-  };
+  return { bucket: "reviewPRs", item: base };
 }
 
 function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, number> {
@@ -173,6 +167,7 @@ export function buildSummary(
   now: Date = new Date(),
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
+  focus?: string,
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -230,7 +225,10 @@ export function buildSummary(
   const driveImplementation: SummaryItem[] = [];
 
   const filteredDiscuss = discuss.filter((item) => {
-    if (item.author === currentUser) { driveDiscussion.push(item); return false; }
+    if (item.author === currentUser) {
+      driveDiscussion.push(item);
+      return false;
+    }
     return true;
   });
 
@@ -243,16 +241,21 @@ export function buildSummary(
   });
 
   const filteredReviewPRs = reviewPRs.filter((item) => {
-    if (item.author === currentUser) { driveImplementation.push(item); return false; }
+    if (item.author === currentUser) {
+      driveImplementation.push(item);
+      return false;
+    }
     return true;
   });
 
   const filteredAddressFeedback = addressFeedback.filter((item) => {
-    if (item.author === currentUser) { driveImplementation.push(item); return false; }
+    if (item.author === currentUser) {
+      driveImplementation.push(item);
+      return false;
+    }
     return true;
   });
 
-  // Annotate all items with unread notification status and collect notification refs
   const sectionEntries: [string, SummaryItem[]][] = [
     ["needsHuman", needsHuman],
     ["driveDiscussion", driveDiscussion],
@@ -265,6 +268,8 @@ export function buildSummary(
     ["draftPRs", draftPRs],
     ["addressFeedback", filteredAddressFeedback],
   ];
+
+  // Annotate all items with unread notification status and collect notification refs
   const notificationRefs: NotificationRef[] = [];
   const matchedNumbers = new Set<number>();
 
@@ -335,6 +340,7 @@ export function buildSummary(
     draftPRs,
     addressFeedback: filteredAddressFeedback,
     notifications: notificationRefs,
+    focus,
     notes: [],
   };
 }

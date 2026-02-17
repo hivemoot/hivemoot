@@ -1,12 +1,28 @@
 import yaml from "js-yaml";
 import { gh } from "../github/client.js";
-import type { HivemootConfig, TeamConfig, RepoRef, RoleConfig } from "./types.js";
+import type {
+  HivemootConfig,
+  TeamConfig,
+  RepoRef,
+  RoleConfig,
+} from "./types.js";
 import { CliError } from "./types.js";
 
 const ROLE_SLUG_RE = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 10_000;
 const MAX_ONBOARDING_LENGTH = 10_000;
+
+function parseTeamFocus(rawFocus: unknown): string | undefined {
+  if (!rawFocus || typeof rawFocus !== "object" || Array.isArray(rawFocus)) return undefined;
+
+  const focusObj = rawFocus as Record<string, unknown>;
+  const defaultValue = focusObj.default;
+  if (typeof defaultValue !== "string") return undefined;
+
+  const focusValue = defaultValue.trim();
+  return focusValue || undefined;
+}
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
   if (!raw.team) {
@@ -104,10 +120,13 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
+  const focus = parseTeamFocus(team.focus);
+
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
+    focus,
   };
 }
 

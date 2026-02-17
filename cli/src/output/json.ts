@@ -1,5 +1,25 @@
 import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 
+function summaryPayload(summary: RepoSummary): Record<string, unknown> {
+  return {
+    notifications: summary.notifications,
+    repo: `${summary.repo.owner}/${summary.repo.repo}`,
+    currentUser: summary.currentUser,
+    driveDiscussion: summary.driveDiscussion,
+    driveImplementation: summary.driveImplementation,
+    voteOn: summary.voteOn,
+    discuss: summary.discuss,
+    implement: summary.implement,
+    unclassified: summary.unclassified ?? [],
+    reviewPRs: summary.reviewPRs,
+    draftPRs: summary.draftPRs,
+    addressFeedback: summary.addressFeedback,
+    needsHuman: summary.needsHuman,
+    ...(summary.focus ? { focus: summary.focus } : {}),
+    notes: summary.notes,
+  };
+}
+
 export function jsonBuzz(
   roleName: string,
   role: RoleConfig,
@@ -14,22 +34,7 @@ export function jsonBuzz(
         description: role.description,
         instructions: role.instructions,
       },
-      summary: {
-        notifications: summary.notifications,
-        repo: `${summary.repo.owner}/${summary.repo.repo}`,
-        currentUser: summary.currentUser,
-        driveDiscussion: summary.driveDiscussion,
-        driveImplementation: summary.driveImplementation,
-        voteOn: summary.voteOn,
-        discuss: summary.discuss,
-        implement: summary.implement,
-        unclassified: summary.unclassified ?? [],
-        reviewPRs: summary.reviewPRs,
-        draftPRs: summary.draftPRs,
-        addressFeedback: summary.addressFeedback,
-        needsHuman: summary.needsHuman,
-        notes: summary.notes,
-      },
+      summary: summaryPayload(summary),
     },
     null,
     2,
@@ -37,26 +42,7 @@ export function jsonBuzz(
 }
 
 export function jsonStatus(summary: RepoSummary): string {
-  return JSON.stringify(
-    {
-      notifications: summary.notifications,
-      repo: `${summary.repo.owner}/${summary.repo.repo}`,
-      currentUser: summary.currentUser,
-      driveDiscussion: summary.driveDiscussion,
-      driveImplementation: summary.driveImplementation,
-      voteOn: summary.voteOn,
-      discuss: summary.discuss,
-      implement: summary.implement,
-      unclassified: summary.unclassified ?? [],
-      reviewPRs: summary.reviewPRs,
-      draftPRs: summary.draftPRs,
-      addressFeedback: summary.addressFeedback,
-      needsHuman: summary.needsHuman,
-      notes: summary.notes,
-    },
-    null,
-    2,
-  );
+  return JSON.stringify(summaryPayload(summary), null, 2);
 }
 
 export function jsonRoles(teamConfig: TeamConfig): string {

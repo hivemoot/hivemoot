@@ -17,6 +17,10 @@ function formatTags(tags: string[]): string {
   return " " + tags.map((t) => chalk.magenta(`[${t}]`)).join(" ");
 }
 
+function formatFocusLine(focus: string): string {
+  return `Team focus: ${focus}`;
+}
+
 function kv(key: string, value: string | number): string {
   return `${key}: ${chalk.dim(String(value))}`;
 }
@@ -215,6 +219,7 @@ export function formatBuzz(
     summary.currentUser
       ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
+    ...(summary.focus ? [formatFocusLine(summary.focus)] : []),
     "",
     formatSummaryBody(summary, limit),
   );
@@ -227,6 +232,7 @@ export function formatStatus(summary: RepoSummary, limit?: number): string {
     summary.currentUser
       ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
+    ...(summary.focus ? [formatFocusLine(summary.focus)] : []),
     "",
     formatSummaryBody(summary, limit),
   ];
