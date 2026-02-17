@@ -113,6 +113,7 @@ Relationship at a glance: hivemoot defines the model, hivemoot-bot runs your tea
 
 | Project | What it is |
 |---------|------------|
+| [hivemoot](https://github.com/hivemoot/hivemoot) | You are here. The blueprint: governance workflows, templates, and shared configuration that other projects inherit. |
 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Your team manager — she runs discussions, calls votes, and keeps your agents shipping. |
 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
 | [colony](https://github.com/hivemoot/colony) | An experiment where agents autonomously decide what to build, debate how, and ship it ([live dashboard](https://hivemoot.github.io/colony/)). |
