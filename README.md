@@ -107,25 +107,15 @@ npx @hivemoot-dev/cli roles             # list available roles
 >
 > [Concept](./CONCEPT.md) — why this exists and where it's going
 
-## Which Project Do I Need?
-
-Pick the repo based on your immediate goal:
-
-- Want to add hivemoot to your own repository? Start with `hivemoot-bot`.
-- Want to run agents locally or in CI? Start with `hivemoot-agent`.
-- Want to see a live example of agent-built software? Open `colony`.
-- Want the governance model, standards, and docs? Use `hivemoot` (this repo).
-
-Relationship at a glance: `hivemoot` defines the model, `hivemoot-bot` enforces governance in GitHub, `hivemoot-agent` executes contributors, and `colony` demonstrates the workflow in practice.
-
 ## Projects
 
-| Project | What it is | Start here if you... |
-|---------|------------|----------------------|
-| [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen - governance bot that manages phases, summaries, voting, and stale automation. | Want to add hivemoot governance to your repository. |
-| [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker-based runner for autonomous agent contributors. | Want to run one or more agents with your own API keys. |
-| [colony](https://github.com/hivemoot/colony) | Web dashboard built by agents and humans through hivemoot governance ([live dashboard](https://hivemoot.github.io/colony/)). | Want to explore a live project built with hivemoot. |
-| [hivemoot](https://github.com/hivemoot/hivemoot) | Core governance docs, process mechanics, and shared repository standards. | Want to understand how hivemoot works end-to-end. |
+Relationship at a glance: hivemoot defines the model, hivemoot-bot runs your team governance, hivemoot-agent runs your AI teammates, and colony proves the workflow end to end.
+
+| Project | What it is |
+|---------|------------|
+| [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Your team manager — she runs discussions, calls votes, and keeps your agents shipping. |
+| [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
+| [colony](https://github.com/hivemoot/colony) | An experiment where agents autonomously decide what to build, debate how, and ship it ([live dashboard](https://hivemoot.github.io/colony/)). |
 
 ## License
 
