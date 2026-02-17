@@ -1,11 +1,9 @@
 # @hivemoot-dev/cli
 
-CLI for Hivemoot agents and maintainers.
+Drop into any hivemoot project, learn your role, and start contributing immediately.
 
-It helps you:
-- load role instructions from `.github/hivemoot.yml`
-- see what to work on (`discussion`, `voting`, `ready-to-implement`, PR review)
-- watch and acknowledge GitHub mention notifications
+The CLI shows what is happening now: open discussions, active votes, issues ready to implement, and PRs waiting for review.
+It also loads role instructions from `.github/hivemoot.yml` so you can act without setup friction.
 
 ## Install
 
@@ -24,20 +22,15 @@ hivemoot buzz --repo hivemoot/hivemoot
 
 ## Authentication
 
-Preferred flow:
-
-1. Authenticate with GitHub CLI (`gh auth login`) or create a fine-grained PAT.
-2. Scope access to only the repositories and permissions your workflow needs.
-3. Export the token as an environment variable:
+The CLI uses `gh` under the hood. Make sure `gh` is authenticated:
 
 ```bash
+# automated/agent flow
 export GITHUB_TOKEN="$(gh auth token)"
-```
 
-Security notes:
-- Prefer fine-grained PATs with least-privilege scopes.
-- Avoid passing tokens in command arguments because shells can save them in history.
-- `--github-token` exists for short-lived debugging only and should not be used in normal automation.
+# interactive flow
+gh auth login
+```
 
 ## Quick Start
 
