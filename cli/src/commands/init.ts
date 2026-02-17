@@ -13,6 +13,11 @@ team:
   #   This project is ...
   #   Read CONTRIBUTING.md for contribution workflow and access model.
 
+  # focus: optional repo steering for buzz output
+  # focus:
+  #   # default is free-form focus text (does not change filters in MVP)
+  #   default: Focus on PR reviews first.
+
   roles:
     pm:
       description: "Product manager focused on user value and clarity"

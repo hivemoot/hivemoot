@@ -148,7 +148,7 @@ describe("buzzCommand", () => {
 
     expect(mockedFormatStatus).toHaveBeenCalledWith(testSummary, undefined);
     expect(mockedFormatBuzz).not.toHaveBeenCalled();
-    expect(mockedLoadTeamConfig).not.toHaveBeenCalled();
+    expect(mockedLoadTeamConfig).toHaveBeenCalledWith(testRepo);
     expect(console.log).toHaveBeenCalledWith("REPO SUMMARY — hivemoot/test\n...");
   });
 
@@ -160,7 +160,7 @@ describe("buzzCommand", () => {
     expect(mockedJsonStatus).toHaveBeenCalledWith(testSummary);
     expect(console.log).toHaveBeenCalledWith('{"repo":"hivemoot/test"}');
     expect(mockedJsonBuzz).not.toHaveBeenCalled();
-    expect(mockedLoadTeamConfig).not.toHaveBeenCalled();
+    expect(mockedLoadTeamConfig).toHaveBeenCalledWith(testRepo);
   });
 
   it("passes --limit to formatter", async () => {
@@ -303,7 +303,16 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo,
+      [],
+      [],
+      "testuser",
+      expect.any(Date),
+      expect.any(Map),
+      expect.any(Map),
+      undefined,
+    );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
   });
@@ -317,7 +326,16 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo,
+      [],
+      [],
+      "testuser",
+      expect.any(Date),
+      expect.any(Map),
+      expect.any(Map),
+      undefined,
+    );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
   });
@@ -331,7 +349,16 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "", expect.any(Date), expect.any(Map), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo,
+      [],
+      [],
+      "",
+      expect.any(Date),
+      expect.any(Map),
+      expect.any(Map),
+      undefined,
+    );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not determine GitHub user (auth failed) — drive sections, competition counts, and author highlighting are unavailable.",
@@ -365,7 +392,16 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedBuildSummary).toHaveBeenCalledWith(testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), expect.any(Map));
+    expect(mockedBuildSummary).toHaveBeenCalledWith(
+      testRepo,
+      [],
+      [],
+      "testuser",
+      expect.any(Date),
+      expect.any(Map),
+      expect.any(Map),
+      undefined,
+    );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
       "Could not fetch issues (boom) or pull requests (boom2) — showing limited summary.",
@@ -454,7 +490,14 @@ describe("buzzCommand", () => {
 
     // buildSummary should be called with the votes map and notification map
     expect(mockedBuildSummary).toHaveBeenCalledWith(
-      testRepo, [votingIssue], [], "testuser", expect.any(Date), voteMap, expect.any(Map),
+      testRepo,
+      [votingIssue],
+      [],
+      "testuser",
+      expect.any(Date),
+      voteMap,
+      expect.any(Map),
+      undefined,
     );
   });
 
@@ -505,6 +548,27 @@ describe("buzzCommand", () => {
     expect(mockedFetchNotifications).toHaveBeenCalledWith(testRepo);
   });
 
+  it("starts data fetches before team config resolves", async () => {
+    let resolveConfig!: (config: typeof testTeamConfig) => void;
+    const configPromise = new Promise<typeof testTeamConfig>((resolve) => {
+      resolveConfig = resolve;
+    });
+    mockedLoadTeamConfig.mockReturnValue(configPromise);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    const run = buzzCommand({});
+    await Promise.resolve();
+
+    expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo, 200);
+    expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo, 200);
+    expect(mockedFetchCurrentUser).toHaveBeenCalled();
+    expect(mockedFetchNotifications).toHaveBeenCalledWith(testRepo);
+
+    resolveConfig(testTeamConfig);
+    await run;
+  });
+
   it("passes notification map to buildSummary", async () => {
     const notificationMap = new Map([[42, {
       threadId: "T42",
@@ -521,7 +585,14 @@ describe("buzzCommand", () => {
     await buzzCommand({});
 
     expect(mockedBuildSummary).toHaveBeenCalledWith(
-      testRepo, [], [], "testuser", expect.any(Date), expect.any(Map), notificationMap,
+      testRepo,
+      [],
+      [],
+      "testuser",
+      expect.any(Date),
+      expect.any(Map),
+      notificationMap,
+      undefined,
     );
   });
 
@@ -555,5 +626,87 @@ describe("buzzCommand", () => {
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).not.toContain("Could not fetch notifications — unread indicators unavailable.");
+  });
+
+  // ── Team focus ────────────────────────────────────────────────────
+
+  it("passes focus from team config to buildSummary", async () => {
+    const teamWithFocus = {
+      ...testTeamConfig,
+      focus: "Focus on PR reviews first.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithFocus);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    expect(focusArg).toBe("Focus on PR reviews first.");
+  });
+
+  it("passes undefined focus when team config has no focus", async () => {
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    expect(focusArg).toBeUndefined();
+  });
+
+  it("passes focus to buildSummary when using --role", async () => {
+    const teamWithFocus = {
+      ...testTeamConfig,
+      focus: "Ship bug fixes this cycle.",
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithFocus);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatBuzz.mockReturnValue("output");
+
+    await buzzCommand({ role: "engineer" });
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    expect(focusArg).toBe("Ship bug fixes this cycle.");
+  });
+
+  // ── Config loading graceful degradation ───────────────────────────
+
+  it("silently ignores missing config when no role is provided", async () => {
+    mockedLoadTeamConfig.mockRejectedValue(new CliError("No .github/hivemoot.yml found", "CONFIG_NOT_FOUND"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(focusArg).toBeUndefined();
+    expect(summaryArg.notes).not.toContain(expect.stringContaining("Could not load team config"));
+    expect(console.log).toHaveBeenCalledWith("output");
+  });
+
+  it("adds a warning note for non-missing team config errors when no role is provided", async () => {
+    mockedLoadTeamConfig.mockRejectedValue(new CliError("Config error: invalid YAML", "INVALID_CONFIG"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(focusArg).toBeUndefined();
+    expect(summaryArg.notes).toContain(
+      "Could not load team config (Config error: invalid YAML) — team focus guidance unavailable.",
+    );
+  });
+
+  it("throws loadTeamConfig error when role is provided", async () => {
+    mockedLoadTeamConfig.mockRejectedValue(new CliError("No .github/hivemoot.yml found", "CONFIG_NOT_FOUND"));
+
+    await expect(buzzCommand({ role: "engineer" })).rejects.toThrow(CliError);
+    await expect(buzzCommand({ role: "engineer" })).rejects.toMatchObject({
+      code: "CONFIG_NOT_FOUND",
+    });
   });
 });

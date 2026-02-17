@@ -55,6 +55,15 @@ describe("formatBuzz()", () => {
     expect(output).toContain("alice");
   });
 
+  it("shows team focus in header when present", () => {
+    const withFocus: RepoSummary = {
+      ...summary,
+      focus: "Review PR backlog this week.",
+    };
+    const output = formatBuzz("engineer", role, withFocus);
+    expect(output).toContain("Team focus: Review PR backlog this week.");
+  });
+
   it("includes section dividers with counts", () => {
     const output = formatBuzz("engineer", role, summary);
     expect(output).toContain("VOTE ON ISSUES");
@@ -162,6 +171,15 @@ describe("formatStatus()", () => {
     const output = formatStatus(summary);
     expect(output).toContain("logged in as");
     expect(output).toContain("alice");
+  });
+
+  it("shows team focus in header when present", () => {
+    const withFocus: RepoSummary = {
+      ...summary,
+      focus: "Close critical bugs first.",
+    };
+    const output = formatStatus(withFocus);
+    expect(output).toContain("Team focus: Close critical bugs first.");
   });
 
   it("handles empty summary", () => {
