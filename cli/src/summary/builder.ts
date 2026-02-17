@@ -168,11 +168,22 @@ function buildRepositoryHealth(
   currentUser: string,
   now: Date,
 ): RepositoryHealth {
-  const draft = prs.filter((pr) => pr.isDraft).length;
-  const mergeReady = prs.filter((pr) => hasGovernanceLabel(pr.labels, "MERGE_READY")).length;
-  const changesRequested = prs.filter((pr) =>
-    pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0
-  ).length;
+  let draft = 0;
+  let changesRequested = 0;
+  let mergeReady = 0;
+  for (const pr of prs) {
+    if (pr.isDraft) {
+      draft += 1;
+      continue;
+    }
+    if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) {
+      changesRequested += 1;
+      continue;
+    }
+    if (hasGovernanceLabel(pr.labels, "MERGE_READY")) {
+      mergeReady += 1;
+    }
+  }
 
   const waitingForYourReviewPRs = currentUser
     ? prs.filter((pr) =>

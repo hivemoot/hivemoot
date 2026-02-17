@@ -1186,6 +1186,42 @@ describe("buildSummary()", () => {
     });
   });
 
+  it("uses mutually exclusive open PR buckets with deterministic precedence", () => {
+    const prs = [
+      makePR({
+        number: 320,
+        isDraft: true,
+        labels: [{ name: "hivemoot:merge-ready" }],
+        reviewDecision: "CHANGES_REQUESTED",
+      }),
+      makePR({
+        number: 321,
+        labels: [{ name: "hivemoot:merge-ready" }],
+        reviewDecision: "CHANGES_REQUESTED",
+      }),
+      makePR({
+        number: 322,
+        labels: [{ name: "hivemoot:merge-ready" }],
+      }),
+      makePR({
+        number: 323,
+      }),
+    ];
+
+    const summary = buildSummary(repo, [], prs, "testuser", now);
+    expect(summary.repositoryHealth?.openPRs).toEqual({
+      total: 4,
+      mergeReady: 1,
+      changesRequested: 1,
+      draft: 1,
+    });
+
+    const breakdown = summary.repositoryHealth!.openPRs;
+    expect(breakdown.mergeReady + breakdown.changesRequested + breakdown.draft).toBeLessThanOrEqual(
+      breakdown.total,
+    );
+  });
+
   it("ranks non-zero priority signals by score", () => {
     const issues = [
       makeIssue({ number: 211, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-14T11:00:00Z" }),
