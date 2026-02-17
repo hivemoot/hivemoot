@@ -1,25 +1,14 @@
-## Description
+## What
 
-<!-- Describe what this PR changes and why. -->
+<!-- What does this PR change and why? -->
 
-## Related Issue
+## Issue
 
 Fixes #<!-- issue number -->
 
-<!-- Use a closing keyword (Fixes/Closes/Resolves) so the PR links correctly. -->
+<!-- Closing keywords that create links: Fixes #N, Closes #N, Resolves #N -->
 
-## Security Note
+## Notes
 
-<!-- Do not disclose vulnerabilities, tokens, secrets, or exploit details publicly. Coordinate with maintainers for responsible disclosure. -->
-
-## Changes
-
-- [ ] Change 1
-- [ ] Change 2
-- [ ] Change 3
-
-## Validation
-
-- [ ] Tests added or updated (if applicable)
-- [ ] Local checks passed
-- [ ] Manual verification completed (if applicable)
+<!-- Reviewer context, migration notes, or risk details. -->
+<!-- Security: never post vulnerabilities, tokens, secrets, credentials, or exploit details publicly. -->
