@@ -158,6 +158,30 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
 }
 
 /**
+ * Fetch the issue/PR body and author from a subject API URL.
+ * Returns null if the URL is missing or the fetch fails.
+ */
+export async function fetchSubjectBody(subjectUrl: string): Promise<CommentDetail | null> {
+  if (!subjectUrl) return null;
+
+  try {
+    const raw = await gh([
+      "api",
+      subjectUrl,
+      "--jq", '{ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // "") }',
+    ]);
+    const parsed = JSON.parse(raw) as { body: string; author: string; htmlUrl: string };
+    return {
+      body: parsed.body,
+      author: parsed.author,
+      htmlUrl: parsed.htmlUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Check if the comment body contains an @mention of the given GitHub login.
  * Case-insensitive, boundary-safe on both sides:
  *   Left:  rejects email local-parts (foo@agent)

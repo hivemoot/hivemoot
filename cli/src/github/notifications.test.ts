@@ -10,6 +10,7 @@ import {
   fetchMentionNotifications,
   markNotificationRead,
   fetchCommentBody,
+  fetchSubjectBody,
   buildMentionEvent,
   parseSubjectNumber,
   isAgentMentioned,
@@ -334,6 +335,36 @@ describe("fetchCommentBody()", () => {
     mockedGh.mockRejectedValue(new Error("API error"));
 
     const result = await fetchCommentBody("https://api.github.com/repos/hivemoot/colony/issues/comments/999");
+    expect(result).toBeNull();
+  });
+});
+
+describe("fetchSubjectBody()", () => {
+  it("returns subject detail for a valid issue URL", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      body: "@hivemoot-worker please help",
+      author: "dmitry",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+    }));
+
+    const result = await fetchSubjectBody("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toEqual({
+      body: "@hivemoot-worker please help",
+      author: "dmitry",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+    });
+  });
+
+  it("returns null for empty URL", async () => {
+    const result = await fetchSubjectBody("");
+    expect(result).toBeNull();
+    expect(mockedGh).not.toHaveBeenCalled();
+  });
+
+  it("returns null when gh call fails", async () => {
+    mockedGh.mockRejectedValue(new Error("API error"));
+
+    const result = await fetchSubjectBody("https://api.github.com/repos/hivemoot/colony/issues/42");
     expect(result).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { fetchCurrentUser } from "../github/user.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
+  fetchSubjectBody,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -123,19 +124,37 @@ async function runPollLoop(
           continue;
         }
 
-        // -- Mention verification (only for reason="mention" with a comment body) --
-        // GitHub keeps reason="mention" on a thread even when the latest comment
-        // doesn't mention the agent (stale thread subscription). Verify the
-        // comment body actually contains @agent before triggering a run.
-        // When there's no comment body (no URL), skip the check — the mention
-        // may be in the issue/PR body itself, which we can't fetch here.
-        if (comment !== null && notification.reason === "mention" && !isAgentMentioned(comment.body, agent)) {
-          log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
-          state = addProcessedId(state, processedKey);
-          continue;
+        let eventSource = comment;
+
+        // -- Mention verification (strict for reason="mention") --
+        // Only emit events when we can prove the authenticated agent is
+        // explicitly mentioned in either:
+        //  1) latest comment body, or
+        //  2) issue/PR body (when latest_comment_url is absent).
+        // This prevents stale thread notifications from triggering other agents.
+        if (notification.reason === "mention") {
+          if (comment !== null) {
+            if (!isAgentMentioned(comment.body, agent)) {
+              log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
+              state = addProcessedId(state, processedKey);
+              continue;
+            }
+          } else {
+            const subject = await fetchSubjectBody(notification.subject.url);
+            if (subject === null) {
+              log(`Skipping ${notification.id}: subject fetch failed, will retry`);
+              continue;
+            }
+            if (!isAgentMentioned(subject.body, agent)) {
+              log(`Skipping ${notification.id}: agent not mentioned in issue/PR body (stale thread)`);
+              state = addProcessedId(state, processedKey);
+              continue;
+            }
+            eventSource = subject;
+          }
         }
 
-        const event = buildMentionEvent(notification, comment, agent);
+        const event = buildMentionEvent(notification, eventSource, agent);
         if (!event) {
           // Can't parse — skip silently. Unparseable events reappear next poll
           // but are harmless since all=false naturally drops them once the

@@ -11,6 +11,7 @@ vi.mock("../github/user.js", () => ({
 vi.mock("../github/notifications.js", () => ({
   fetchMentionNotifications: vi.fn(),
   fetchCommentBody: vi.fn(),
+  fetchSubjectBody: vi.fn(),
   buildMentionEvent: vi.fn(),
   isAgentMentioned: vi.fn(),
 }));
@@ -30,6 +31,7 @@ import { fetchCurrentUser } from "../github/user.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
+  fetchSubjectBody,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -38,6 +40,7 @@ import { loadState, saveState, mergeAckJournal } from "../watch/state.js";
 const mockedFetchUser = vi.mocked(fetchCurrentUser);
 const mockedFetchMentions = vi.mocked(fetchMentionNotifications);
 const mockedFetchComment = vi.mocked(fetchCommentBody);
+const mockedFetchSubject = vi.mocked(fetchSubjectBody);
 const mockedBuildEvent = vi.mocked(buildMentionEvent);
 const mockedIsAgentMentioned = vi.mocked(isAgentMentioned);
 const mockedLoadState = vi.mocked(loadState);
@@ -101,6 +104,11 @@ beforeEach(() => {
   mockedSaveState.mockResolvedValue(undefined);
   mockedFetchMentions.mockResolvedValue([]);
   mockedIsAgentMentioned.mockReturnValue(true);
+  mockedFetchSubject.mockResolvedValue({
+    body: "@test-agent issue body mention",
+    author: "owner",
+    htmlUrl: "https://github.com/owner/repo/issues/42",
+  });
   // mergeAckJournal returns the state unchanged by default
   mockedMergeAckJournal.mockImplementation(async (_path, state) => state);
 });
@@ -372,7 +380,7 @@ describe("watchCommand (--once mode)", () => {
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
   });
 
-  it("emits event when no comment URL exists (issue-body mention)", async () => {
+  it("emits event when no comment URL exists and issue body mentions agent", async () => {
     const notification = makeNotification({
       subject: {
         url: "https://api.github.com/repos/owner/repo/issues/42",
@@ -382,16 +390,79 @@ describe("watchCommand (--once mode)", () => {
       },
     });
     const event = makeEvent();
+    const subjectBody: CommentDetail = {
+      body: "@test-agent please check",
+      author: "owner",
+      htmlUrl: "https://github.com/owner/repo/issues/42",
+    };
 
     mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubject.mockResolvedValue(subjectBody);
+    mockedIsAgentMentioned.mockReturnValue(true);
     mockedBuildEvent.mockReturnValue(event);
 
     await watchCommand({ repo: "owner/repo", once: true });
 
     // No comment fetch when there's no URL
     expect(mockedFetchComment).not.toHaveBeenCalled();
-    // buildMentionEvent handles null comment — event should be emitted
-    expect(mockedBuildEvent).toHaveBeenCalledWith(notification, null, "test-agent");
+    expect(mockedFetchSubject).toHaveBeenCalledWith(notification.subject.url);
+    expect(mockedIsAgentMentioned).toHaveBeenCalledWith(subjectBody.body, "test-agent");
+    expect(mockedBuildEvent).toHaveBeenCalledWith(notification, subjectBody, "test-agent");
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
+  it("skips stale mention when no comment URL exists and issue body does not mention agent", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: null,
+      },
+    });
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubject.mockResolvedValue({
+      body: "@someone-else check this",
+      author: "owner",
+      htmlUrl: "https://github.com/owner/repo/issues/42",
+    });
+    mockedIsAgentMentioned.mockReturnValue(false);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    const eventWrites = (stdoutSpy.mock.calls as [string][])
+      .map(([s]) => s)
+      .filter((s) => s.includes('"agent"'));
+    expect(eventWrites).toHaveLength(0);
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"],
+      }),
+    );
+  });
+
+  it("retries when issue/PR body fetch fails for no-comment mention event", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: null,
+      },
+    });
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubject.mockResolvedValue(null);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: [],
+      }),
+    );
   });
 });
