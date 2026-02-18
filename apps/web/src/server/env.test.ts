@@ -1,31 +1,35 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { validateEnv } from "./env";
 
+// process.env typed as mutable for test manipulation
+type MutableEnv = Record<string, string | undefined>;
+
 describe("validateEnv", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
-    // Isolate env mutations per test
-    process.env = { ...originalEnv };
+    process.env = { ...originalEnv } as typeof process.env;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
+  const env = () => process.env as MutableEnv;
+
   describe("in development", () => {
     it("returns ok when no vars are set", () => {
-      delete process.env.NODE_ENV;
-      delete process.env.REDIS_URL;
-      delete process.env.GITHUB_APP_ID;
+      delete env().NODE_ENV;
+      delete env().REDIS_URL;
+      delete env().GITHUB_APP_ID;
 
       const result = validateEnv();
       expect(result.ok).toBe(true);
     });
 
     it("defaults siteUrl to localhost", () => {
-      delete process.env.NODE_ENV;
-      delete process.env.NEXT_PUBLIC_SITE_URL;
+      delete env().NODE_ENV;
+      delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
       expect(result.ok).toBe(true);
@@ -35,8 +39,8 @@ describe("validateEnv", () => {
     });
 
     it("uses NEXT_PUBLIC_SITE_URL when set", () => {
-      delete process.env.NODE_ENV;
-      process.env.NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
+      delete env().NODE_ENV;
+      env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
       expect(result.ok).toBe(true);
@@ -46,9 +50,9 @@ describe("validateEnv", () => {
     });
 
     it("passes through optional vars when present", () => {
-      delete process.env.NODE_ENV;
-      process.env.REDIS_URL = "redis://localhost:6379";
-      process.env.GITHUB_APP_ID = "12345";
+      delete env().NODE_ENV;
+      env().REDIS_URL = "redis://localhost:6379";
+      env().GITHUB_APP_ID = "12345";
 
       const result = validateEnv();
       expect(result.ok).toBe(true);
@@ -61,14 +65,14 @@ describe("validateEnv", () => {
 
   describe("in production", () => {
     beforeEach(() => {
-      process.env.NODE_ENV = "production";
+      env().NODE_ENV = "production";
     });
 
     it("fails when all required vars are missing", () => {
-      delete process.env.REDIS_URL;
-      delete process.env.GITHUB_APP_ID;
-      delete process.env.GITHUB_APP_PRIVATE_KEY;
-      delete process.env.ENCRYPTION_KEY;
+      delete env().REDIS_URL;
+      delete env().GITHUB_APP_ID;
+      delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().ENCRYPTION_KEY;
 
       const result = validateEnv();
       expect(result.ok).toBe(false);
@@ -83,10 +87,10 @@ describe("validateEnv", () => {
     });
 
     it("fails when some required vars are missing", () => {
-      process.env.REDIS_URL = "redis://prod:6379";
-      process.env.GITHUB_APP_ID = "99";
-      delete process.env.GITHUB_APP_PRIVATE_KEY;
-      delete process.env.ENCRYPTION_KEY;
+      env().REDIS_URL = "redis://prod:6379";
+      env().GITHUB_APP_ID = "99";
+      delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().ENCRYPTION_KEY;
 
       const result = validateEnv();
       expect(result.ok).toBe(false);
@@ -99,10 +103,10 @@ describe("validateEnv", () => {
     });
 
     it("succeeds when all required vars are present", () => {
-      process.env.REDIS_URL = "redis://prod:6379";
-      process.env.GITHUB_APP_ID = "99";
-      process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
-      process.env.ENCRYPTION_KEY = "a".repeat(64);
+      env().REDIS_URL = "redis://prod:6379";
+      env().GITHUB_APP_ID = "99";
+      env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().ENCRYPTION_KEY = "a".repeat(64);
 
       const result = validateEnv();
       expect(result.ok).toBe(true);

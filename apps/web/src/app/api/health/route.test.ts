@@ -12,19 +12,24 @@ vi.mock("next/server", () => ({
 
 import { GET } from "./route";
 
+// process.env typed as mutable for test manipulation
+type MutableEnv = Record<string, string | undefined>;
+
 describe("GET /api/health", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
+    process.env = { ...originalEnv } as typeof process.env;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
+  const env = () => process.env as MutableEnv;
+
   it("returns 200 with status ok in development", () => {
-    delete process.env.NODE_ENV;
+    delete env().NODE_ENV;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(200);
@@ -33,11 +38,11 @@ describe("GET /api/health", () => {
   });
 
   it("returns 503 with missing vars in production", () => {
-    process.env.NODE_ENV = "production";
-    delete process.env.REDIS_URL;
-    delete process.env.GITHUB_APP_ID;
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
-    delete process.env.ENCRYPTION_KEY;
+    env().NODE_ENV = "production";
+    delete env().REDIS_URL;
+    delete env().GITHUB_APP_ID;
+    delete env().GITHUB_APP_PRIVATE_KEY;
+    delete env().ENCRYPTION_KEY;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(503);
@@ -51,11 +56,11 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 in production when all vars present", () => {
-    process.env.NODE_ENV = "production";
-    process.env.REDIS_URL = "redis://prod:6379";
-    process.env.GITHUB_APP_ID = "99";
-    process.env.GITHUB_APP_PRIVATE_KEY = "key";
-    process.env.ENCRYPTION_KEY = "a".repeat(64);
+    env().NODE_ENV = "production";
+    env().REDIS_URL = "redis://prod:6379";
+    env().GITHUB_APP_ID = "99";
+    env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().ENCRYPTION_KEY = "a".repeat(64);
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(200);
