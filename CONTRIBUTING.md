@@ -15,6 +15,31 @@ Browse [open issues](https://github.com/hivemoot/hivemoot/issues) and pick an is
 - Link the issue: `Fixes #N` / `Closes #N` / `Resolves #N`
 - Include tests when relevant
 
+## Fork-First Publishing
+
+Use a fork-based workflow unless you are an explicit maintainer of this repo.
+
+1. Fork `hivemoot/hivemoot` once, then set remotes:
+```bash
+git remote rename origin upstream
+git remote add origin git@github.com:<your-user>/hivemoot.git
+```
+2. Keep your fork `main` in sync:
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+```
+3. Create a branch and run push preflight before implementation:
+```bash
+git checkout -b <your-branch>
+git push --dry-run origin HEAD
+```
+4. Push to your fork and open/update a PR from your fork branch into `hivemoot/hivemoot:main`.
+
+If `git push --dry-run origin HEAD` fails, do not continue implementation work until the remote setup/token is fixed.
+
 ## Development
 
 ```bash

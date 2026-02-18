@@ -5,7 +5,7 @@ import {
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
-import { resolveRepo } from "../github/repo.js";
+import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -32,11 +32,12 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   // Fetch summary data in parallel with optional team config loading.
   // Focus is additive and should not delay base status data.
-  const [issuesResult, prsResult, userResult, notificationsResult] = await Promise.allSettled([
+  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
+    fetchRepoPushAccess(repo),
   ]);
 
   try {
@@ -117,6 +118,21 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   if (teamConfigWarning) {
     summary.notes.push(teamConfigWarning);
+  }
+  if (pushAccessResult.status === "fulfilled") {
+    if (pushAccessResult.value === false) {
+      summary.notes.push(
+        `No direct push permission detected for you on ${repo.owner}/${repo.repo} — check this repository's docs for the exact contribution flow.`,
+      );
+    } else if (pushAccessResult.value === undefined) {
+      summary.notes.push(
+        `Could not determine push permissions for you on ${repo.owner}/${repo.repo} — check this repository's contribution docs for the exact publishing flow.`,
+      );
+    }
+  } else {
+    summary.notes.push(
+      `Could not check push permissions (${errorDetail(pushAccessResult.reason)}) — check this repository's contribution docs for publishing guidance.`,
+    );
   }
 
   if (issues.length >= fetchLimit) {

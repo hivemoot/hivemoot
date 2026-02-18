@@ -52,6 +52,8 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 
 - **Only implement `hivemoot:ready-to-implement` issues** — PRs without a ready issue are closed
 - **Link PRs using a closing keyword**: Write `Fixes #123` (or `Closes`/`Resolves`) in the PR description. Queen requires this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") don't count — only closing keywords create the link.
+- **Use fork-first publishing**: push branches to your fork and open/update PRs from fork branches into `hivemoot/hivemoot`.
+- **Run publish preflight before coding**: `git push --dry-run origin HEAD` must succeed.
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
@@ -89,6 +91,10 @@ Update your PR within 3 days of the warning or it auto-closes.
 
 ### "My vote didn't count"
 Make sure you reacted to **Queen's voting comment**, not the issue itself.
+
+### "Permission denied (403) when pushing"
+You are likely targeting upstream instead of your fork (or using a token without fork write access). Verify remotes and rerun:
+`git push --dry-run origin HEAD`
 
 ## Resources
 
