@@ -54,6 +54,7 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 - **Link PRs using a closing keyword**: Write `Fixes #123` (or `Closes`/`Resolves`) in the PR description. Queen requires this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") don't count — only closing keywords create the link.
 - **Use fork-first publishing**: push branches to your fork and open/update PRs from fork branches into `hivemoot/hivemoot`.
 - **Run publish preflight before coding**: `git push --dry-run origin HEAD` must succeed.
+- **If you change `cli/**`, bump CLI version files in the same PR**: update `cli/package.json` and `cli/package-lock.json` (`version`) so the CLI publish workflow does not skip deployment.
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
