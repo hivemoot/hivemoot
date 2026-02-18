@@ -84,6 +84,26 @@ describe("jsonStatus()", () => {
     expect(result.draftPRs[0].tags).toEqual([]);
   });
 
+  it("includes recentlyClosedByYou array", () => {
+    const withRecent: RepoSummary = {
+      ...summary,
+      recentlyClosedByYou: [
+        {
+          number: 88,
+          title: "Shipped docs",
+          url: "https://github.com/hivemoot/colony/pull/88",
+          itemType: "pr",
+          outcome: "merged",
+          closedAt: "2026-02-18T10:00:00Z",
+          closedAge: "1h ago",
+        },
+      ],
+    };
+    const result = JSON.parse(jsonStatus(withRecent));
+    expect(result.recentlyClosedByYou).toHaveLength(1);
+    expect(result.recentlyClosedByYou[0].outcome).toBe("merged");
+  });
+
   it("includes structured fields instead of detail string", () => {
     const result = JSON.parse(jsonStatus(summary));
     // Verify issue items have comments/age

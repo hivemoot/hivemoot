@@ -30,6 +30,10 @@ vi.mock("../github/notifications.js", () => ({
   fetchNotifications: vi.fn(),
 }));
 
+vi.mock("../github/recent.js", () => ({
+  fetchRecentClosedByAuthor: vi.fn(),
+}));
+
 vi.mock("../watch/state.js", () => ({
   loadState: vi.fn(),
   loadStateWithStatus: vi.fn(),
@@ -57,6 +61,7 @@ import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
 import { fetchNotifications } from "../github/notifications.js";
+import { fetchRecentClosedByAuthor } from "../github/recent.js";
 import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 import { buildSummary } from "../summary/builder.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
@@ -71,6 +76,7 @@ const mockedFetchPulls = vi.mocked(fetchPulls);
 const mockedFetchCurrentUser = vi.mocked(fetchCurrentUser);
 const mockedFetchVotes = vi.mocked(fetchVotes);
 const mockedFetchNotifications = vi.mocked(fetchNotifications);
+const mockedFetchRecentClosedByAuthor = vi.mocked(fetchRecentClosedByAuthor);
 const mockedLoadStateWithStatus = vi.mocked(loadStateWithStatus);
 const mockedMergeAckJournal = vi.mocked(mergeAckJournal);
 const mockedBuildSummary = vi.mocked(buildSummary);
@@ -94,6 +100,7 @@ const testSummary = {
   addressFeedback: [],
   notifications: [],
   unackedMentions: [],
+  recentlyClosedByYou: [],
   notes: [],
 };
 const testTeamConfig = {
@@ -116,6 +123,7 @@ beforeEach(() => {
   mockedFetchCurrentUser.mockResolvedValue("testuser");
   mockedFetchVotes.mockResolvedValue(new Map());
   mockedFetchNotifications.mockResolvedValue(new Map());
+  mockedFetchRecentClosedByAuthor.mockResolvedValue([]);
   mockedLoadStateWithStatus.mockResolvedValue({
     state: {
       lastChecked: "2026-02-17T00:00:00Z",
@@ -273,6 +281,43 @@ describe("buzzCommand", () => {
 
     expect(mockedFetchIssues).toHaveBeenCalledWith(testRepo, 200);
     expect(mockedFetchPulls).toHaveBeenCalledWith(testRepo, 200);
+  });
+
+  it("fetches recently closed authored activity when current user is known", async () => {
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedFetchRecentClosedByAuthor.mockResolvedValue([
+      {
+        number: 77,
+        title: "Closed thread",
+        url: "https://github.com/hivemoot/test/issues/77",
+        itemType: "issue",
+        outcome: "closed",
+        closedAt: "2026-02-18T09:00:00Z",
+      },
+    ]);
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchRecentClosedByAuthor).toHaveBeenCalledWith(
+      testRepo,
+      "testuser",
+      expect.any(Date),
+    );
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.recentlyClosedByYou).toHaveLength(1);
+    expect(summaryArg.recentlyClosedByYou[0].closedAge).toBeDefined();
+  });
+
+  it("adds a note when recently closed authored activity cannot be loaded", async () => {
+    mockedFetchCurrentUser.mockResolvedValue("testuser");
+    mockedFetchRecentClosedByAuthor.mockRejectedValue(new Error("boom"));
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain("Could not fetch recently closed authored activity.");
   });
 
   it("adds truncation note when issues hit fetchLimit", async () => {

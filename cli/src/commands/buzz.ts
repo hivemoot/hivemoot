@@ -3,6 +3,7 @@ import {
   type BuzzOptions,
   type GitHubIssue,
   type NotificationRef,
+  type RecentClosedItem,
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
@@ -13,6 +14,7 @@ import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
 import { fetchNotifications } from "../github/notifications.js";
 import type { NotificationMap } from "../github/notifications.js";
+import { fetchRecentClosedByAuthor } from "../github/recent.js";
 import { buildSummary } from "../summary/builder.js";
 import { isVotingIssue, timeAgo } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
@@ -135,10 +137,24 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   let votes = new Map<number, { reaction: string; createdAt: string }>();
   let voteFetchFailed = false;
+  let recentClosedFetchFailed = false;
+  let recentlyClosedByYou: RecentClosedItem[] = [];
   try {
     votes = await fetchVotes(repo, votingIssueNumbers, currentUser);
   } catch {
     voteFetchFailed = true;
+  }
+
+  if (currentUser) {
+    try {
+      const now = new Date();
+      recentlyClosedByYou = (await fetchRecentClosedByAuthor(repo, currentUser, now)).map((item) => ({
+        ...item,
+        closedAge: timeAgo(item.closedAt, now),
+      }));
+    } catch {
+      recentClosedFetchFailed = true;
+    }
   }
 
   const summary = buildSummary(
@@ -153,6 +169,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   );
   const processedThreadIds = await processedThreadIdsPromise;
   summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
+  summary.recentlyClosedByYou = recentlyClosedByYou;
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
     summary.notes.push(
@@ -172,6 +189,9 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   if (voteFetchFailed) {
     summary.notes.push("Could not fetch vote data — vote status unavailable.");
+  }
+  if (recentClosedFetchFailed) {
+    summary.notes.push("Could not fetch recently closed authored activity.");
   }
 
   if (notificationsResult.status === "rejected") {

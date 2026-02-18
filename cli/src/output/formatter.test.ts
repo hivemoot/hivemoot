@@ -173,6 +173,29 @@ describe("formatBuzz()", () => {
     expect(output).toContain("review:");
     expect(output).toContain("2 approved, 1 with feedback");
   });
+
+  it("renders RECENTLY CLOSED BY YOU section when available", () => {
+    const withRecent: RepoSummary = {
+      ...summary,
+      recentlyClosedByYou: [
+        {
+          number: 88,
+          title: "Shipped docs",
+          url: "https://github.com/hivemoot/colony/pull/88",
+          itemType: "pr",
+          outcome: "merged",
+          closedAt: "2026-02-18T10:00:00Z",
+          closedAge: "1h ago",
+        },
+      ],
+    };
+
+    const output = formatStatus(withRecent);
+    expect(output).toContain("RECENTLY CLOSED BY YOU");
+    expect(output).toContain("PR #88");
+    expect(output).toContain("merged");
+    expect(output).toContain("1h ago");
+  });
 });
 
 describe("formatStatus()", () => {
