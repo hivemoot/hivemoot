@@ -174,7 +174,7 @@ describe("formatBuzz()", () => {
     expect(output).toContain("2 approved, 1 with feedback");
   });
 
-  it("renders RECENTLY CLOSED BY YOU section when available", () => {
+  it("renders RECENTLY CLOSED (AUTHORED BY YOU) section when available", () => {
     const withRecent: RepoSummary = {
       ...summary,
       recentlyClosedByYou: [
@@ -191,7 +191,7 @@ describe("formatBuzz()", () => {
     };
 
     const output = formatStatus(withRecent);
-    expect(output).toContain("RECENTLY CLOSED BY YOU");
+    expect(output).toContain("RECENTLY CLOSED (AUTHORED BY YOU)");
     expect(output).toContain("PR #88");
     expect(output).toContain("merged");
     expect(output).toContain("1h ago");

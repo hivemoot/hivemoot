@@ -173,7 +173,7 @@ function formatRecentClosedSection(summary: RepoSummary, limit?: number): string
   if (items.length === 0) return "";
 
   const displayed = limit ? items.slice(0, limit) : items;
-  const header = sectionDivider("RECENTLY CLOSED BY YOU", items.length);
+  const header = sectionDivider("RECENTLY CLOSED (AUTHORED BY YOU)", items.length);
   const lines = displayed.map((item) => {
     const prefix = item.itemType === "pr" ? "PR" : "Issue";
     return `  ${chalk.cyan(`${prefix} #${item.number}`)} ${item.title}  ${chalk.dim(item.outcome)}  ${chalk.dim(item.closedAge ?? "")}`;
