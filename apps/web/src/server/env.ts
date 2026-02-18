@@ -27,13 +27,20 @@ const REQUIRED_IN_PRODUCTION = [
   "GITHUB_APP_PRIVATE_KEY",
   "ENCRYPTION_KEY",
 ] as const;
+const ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
+const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; missing: string[] } {
   const nodeEnv = process.env.NODE_ENV ?? "development";
   const isProduction = nodeEnv === "production";
 
   if (isProduction) {
-    const missing = REQUIRED_IN_PRODUCTION.filter((key) => !process.env[key]);
+    const missing: string[] = REQUIRED_IN_PRODUCTION.filter((key) => !process.env[key]);
+    const encryptionKey = process.env.ENCRYPTION_KEY;
+    if (encryptionKey && !ENCRYPTION_KEY_PATTERN.test(encryptionKey)) {
+      missing.push(ENCRYPTION_KEY_FORMAT_ERROR);
+    }
+
     if (missing.length > 0) {
       return { ok: false, missing };
     }

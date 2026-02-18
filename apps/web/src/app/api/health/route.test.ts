@@ -14,6 +14,7 @@ import { GET } from "./route";
 
 // process.env typed as mutable for test manipulation
 type MutableEnv = Record<string, string | undefined>;
+const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 describe("GET /api/health", () => {
   const originalEnv = process.env;
@@ -66,5 +67,18 @@ describe("GET /api/health", () => {
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("ok");
     expect(response.body.env).toBe("production");
+  });
+
+  it("returns 503 in production when ENCRYPTION_KEY is malformed", () => {
+    env().NODE_ENV = "production";
+    env().REDIS_URL = "redis://prod:6379";
+    env().GITHUB_APP_ID = "99";
+    env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().ENCRYPTION_KEY = "not-hex";
+
+    const response = GET() as unknown as { body: Record<string, unknown>; status: number };
+    expect(response.status).toBe(503);
+    expect(response.body.status).toBe("error");
+    expect(response.body.missing).toEqual([ENCRYPTION_KEY_FORMAT_ERROR]);
   });
 });

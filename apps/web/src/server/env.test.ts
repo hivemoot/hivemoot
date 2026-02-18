@@ -3,6 +3,7 @@ import { validateEnv } from "./env";
 
 // process.env typed as mutable for test manipulation
 type MutableEnv = Record<string, string | undefined>;
+const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 describe("validateEnv", () => {
   const originalEnv = process.env;
@@ -99,6 +100,19 @@ describe("validateEnv", () => {
           "GITHUB_APP_PRIVATE_KEY",
           "ENCRYPTION_KEY",
         ]);
+      }
+    });
+
+    it("fails when ENCRYPTION_KEY is not 64 hex chars", () => {
+      env().REDIS_URL = "redis://prod:6379";
+      env().GITHUB_APP_ID = "99";
+      env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().ENCRYPTION_KEY = "invalid-key";
+
+      const result = validateEnv();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.missing).toEqual([ENCRYPTION_KEY_FORMAT_ERROR]);
       }
     });
 
