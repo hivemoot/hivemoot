@@ -6,7 +6,7 @@ vi.mock("./client.js", () => ({
 }));
 
 import { gh } from "./client.js";
-import { resolveRepo } from "./repo.js";
+import { fetchRepoPushAccess, resolveRepo } from "./repo.js";
 
 const mockGh = gh as unknown as ReturnType<typeof vi.fn>;
 
@@ -121,6 +121,64 @@ describe("resolveRepo()", () => {
       await expect(resolveRepo()).rejects.toMatchObject({
         code: "GH_NOT_FOUND",
       });
+    });
+  });
+});
+
+describe("fetchRepoPushAccess()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns true when permissions.push is true", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ permissions: { push: true } }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(true);
+    expect(mockGh).toHaveBeenCalledWith(["api", "/repos/hivemoot/cli"]);
+  });
+
+  it("returns false when permissions.push is false", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ permissions: { push: false } }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(false);
+  });
+
+  it("returns true when viewer_permission is WRITE", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ viewer_permission: "WRITE" }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(true);
+  });
+
+  it("returns true when viewer_permission is MAINTAIN", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ viewer_permission: "MAINTAIN" }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(true);
+  });
+
+  it("returns true when viewer_permission is ADMIN", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ viewer_permission: "ADMIN" }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(true);
+  });
+
+  it("returns false when viewer_permission is READ", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ viewer_permission: "READ" }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBe(false);
+  });
+
+  it("returns undefined when push permission cannot be inferred", async () => {
+    mockGh.mockResolvedValue(JSON.stringify({ name: "cli" }));
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).resolves.toBeUndefined();
+  });
+
+  it("throws GH_ERROR when gh returns malformed JSON", async () => {
+    mockGh.mockResolvedValue("this is not json");
+
+    await expect(fetchRepoPushAccess({ owner: "hivemoot", repo: "cli" })).rejects.toMatchObject({
+      code: "GH_ERROR",
+      message: "Failed to parse repository permissions from gh CLI response.",
     });
   });
 });

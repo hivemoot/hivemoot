@@ -2,6 +2,7 @@ import { CliError, type RepoRef } from "../config/types.js";
 import { gh } from "./client.js";
 
 const GITHUB_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+const PUSH_VIEWER_PERMISSIONS = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
 
 export async function resolveRepo(repoFlag?: string): Promise<RepoRef> {
   if (repoFlag) {
@@ -59,4 +60,35 @@ export async function resolveRepo(repoFlag?: string): Promise<RepoRef> {
       2,
     );
   }
+}
+
+export async function fetchRepoPushAccess(repo: RepoRef): Promise<boolean | undefined> {
+  const raw = await gh(["api", `/repos/${repo.owner}/${repo.repo}`]);
+
+  let data: {
+    permissions?: { push?: boolean };
+    viewer_permission?: string;
+  };
+  try {
+    data = JSON.parse(raw) as {
+      permissions?: { push?: boolean };
+      viewer_permission?: string;
+    };
+  } catch {
+    throw new CliError(
+      "Failed to parse repository permissions from gh CLI response.",
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  if (typeof data.permissions?.push === "boolean") {
+    return data.permissions.push;
+  }
+
+  if (typeof data.viewer_permission === "string") {
+    return PUSH_VIEWER_PERMISSIONS.has(data.viewer_permission.toUpperCase());
+  }
+
+  return undefined;
 }

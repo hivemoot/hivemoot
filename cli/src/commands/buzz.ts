@@ -2,10 +2,11 @@ import {
   CliError,
   type BuzzOptions,
   type GitHubIssue,
+  type NotificationRef,
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
-import { resolveRepo } from "../github/repo.js";
+import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -13,30 +14,90 @@ import { fetchVotes } from "../github/votes.js";
 import { fetchNotifications } from "../github/notifications.js";
 import type { NotificationMap } from "../github/notifications.js";
 import { buildSummary } from "../summary/builder.js";
-import { isVotingIssue } from "../summary/utils.js";
+import { isVotingIssue, timeAgo } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
+import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 
 function errorDetail(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+function buildUnackedMentions(
+  notifications: NotificationMap,
+  processedThreadIds: Set<string>,
+  now: Date,
+): NotificationRef[] {
+  const mentions: NotificationRef[] = [];
+
+  for (const [number, n] of notifications.entries()) {
+    if (n.reason !== "mention") continue;
+
+    const ackKey = `${n.threadId}:${n.updatedAt}`;
+    if (processedThreadIds.has(ackKey)) continue;
+
+    mentions.push({
+      number,
+      title: n.title,
+      url: n.url,
+      itemType: n.itemType,
+      threadId: n.threadId,
+      reason: n.reason,
+      timestamp: n.updatedAt,
+      age: timeAgo(n.updatedAt, now),
+      ackKey,
+      section: "unackedMentions",
+    });
+  }
+
+  mentions.sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp > b.timestamp ? -1 : 1;
+    if (a.number !== b.number) return a.number - b.number;
+    return a.ackKey.localeCompare(b.ackKey);
+  });
+  return mentions;
+}
+
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const fetchLimit = options.fetchLimit ?? 200;
+  const stateFile = options.stateFile ?? ".hivemoot-watch.json";
 
   const teamConfigPromise = loadTeamConfig(repo);
 
   let teamConfig: TeamConfig | undefined;
   let teamConfigWarning: string | undefined;
+  let stateWarning: string | undefined;
+
+  const processedThreadIdsPromise = loadStateWithStatus(stateFile)
+    .then(async (loadResult) => {
+      let state = loadResult.state;
+      try {
+        state = await mergeAckJournal(stateFile, state);
+      } catch (err) {
+        stateWarning = `Could not merge watch ack journal (${errorDetail(err)}) from ${stateFile}.acks — UNACKED MENTIONS may be incomplete.`;
+      }
+
+      if (loadResult.degraded) {
+        const reason = loadResult.reason ? `: ${loadResult.reason}` : "";
+        stateWarning = `Could not fully load watch state${reason} from ${stateFile} — UNACKED MENTIONS may be incomplete.`;
+      }
+
+      return new Set(state.processedThreadIds);
+    })
+    .catch((err) => {
+      stateWarning = `Could not load watch state (${errorDetail(err)}) from ${stateFile} — UNACKED MENTIONS may be incomplete.`;
+      return new Set<string>();
+    });
 
   // Fetch summary data in parallel with optional team config loading.
   // Focus is additive and should not delay base status data.
-  const [issuesResult, prsResult, userResult, notificationsResult] = await Promise.allSettled([
+  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
+    fetchRepoPushAccess(repo),
   ]);
 
   try {
@@ -90,6 +151,8 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     notifications,
     teamConfig?.focus,
   );
+  const processedThreadIds = await processedThreadIdsPromise;
+  summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
     summary.notes.push(
@@ -117,6 +180,24 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   if (teamConfigWarning) {
     summary.notes.push(teamConfigWarning);
+  }
+  if (stateWarning) {
+    summary.notes.push(stateWarning);
+  }
+  if (pushAccessResult.status === "fulfilled") {
+    if (pushAccessResult.value === false) {
+      summary.notes.push(
+        `No direct push permission detected for you on ${repo.owner}/${repo.repo} — check this repository's docs for the exact contribution flow.`,
+      );
+    } else if (pushAccessResult.value === undefined) {
+      summary.notes.push(
+        `Could not determine push permissions for you on ${repo.owner}/${repo.repo} — check this repository's contribution docs for the exact publishing flow.`,
+      );
+    }
+  } else {
+    summary.notes.push(
+      `Could not check push permissions (${errorDetail(pushAccessResult.reason)}) — check this repository's contribution docs for publishing guidance.`,
+    );
   }
 
   if (issues.length >= fetchLimit) {

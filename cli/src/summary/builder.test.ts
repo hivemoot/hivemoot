@@ -164,8 +164,22 @@ describe("buildSummary()", () => {
     expect(summary.addressFeedback).toHaveLength(1);
     expect(summary.addressFeedback[0].number).toBe(150);
     expect(summary.addressFeedback[0].status).toBe("changes-requested");
-    expect(summary.addressFeedback[0].review).toEqual({ approvals: 1, changesRequested: 1 });
+    expect(summary.addressFeedback[0].review).toEqual({ approvals: 1, changesRequested: 1, commented: 0 });
     expect(summary.reviewPRs).toHaveLength(0);
+  });
+
+  it("counts COMMENTED reviews in aggregate feedback summary", () => {
+    const pr = makePR({
+      number: 151,
+      reviews: [
+        { state: "COMMENTED", author: { login: "reviewer-a" } },
+        { state: "APPROVED", author: { login: "reviewer-b" } },
+      ],
+    });
+
+    const summary = buildSummary(repo, [], [pr], "testuser", now);
+    expect(summary.reviewPRs).toHaveLength(1);
+    expect(summary.reviewPRs[0].review).toEqual({ approvals: 1, changesRequested: 0, commented: 1 });
   });
 
   it("includes all labels as tags on issues", () => {
@@ -518,7 +532,7 @@ describe("buildSummary()", () => {
     expect(item.status).toBe("approved");
     expect(item.checks).toBe("passing");
     expect(item.mergeable).toBe("clean");
-    expect(item.review).toEqual({ approvals: 1, changesRequested: 0 });
+    expect(item.review).toEqual({ approvals: 1, changesRequested: 0, commented: 0 });
   });
 
   it("populates null checks when no statusCheckRollup", () => {
@@ -686,6 +700,11 @@ describe("buildSummary()", () => {
   it("initializes notes as empty array", () => {
     const summary = buildSummary(repo, [], [], "testuser", now);
     expect(summary.notes).toEqual([]);
+  });
+
+  it("initializes unackedMentions as empty array", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.unackedMentions).toEqual([]);
   });
 
   // ── Review context fields ──────────────────────────────────────────
@@ -1136,6 +1155,7 @@ describe("buildSummary()", () => {
         number: 123,
         title: "Closed ticket still unread",
         url: "https://github.com/hivemoot/colony/issues/123",
+        itemType: "Issue",
         threadId: "T123",
         reason: "mention",
         timestamp: "2025-06-15T12:00:00Z",

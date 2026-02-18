@@ -14,7 +14,7 @@ const summary: RepoSummary = {
     { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days ago" },
     { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday" },
   ],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } }],
   draftPRs: [],
   addressFeedback: [],
   unclassified: [],
@@ -157,6 +157,22 @@ describe("formatBuzz()", () => {
     expect(output).toContain("0 approved");
     expect(output).not.toContain("changes-requested");
   });
+
+  it("renders review feedback count as 'with feedback' when present", () => {
+    const withFeedback: RepoSummary = {
+      ...summary,
+      reviewPRs: [
+        {
+          ...summary.reviewPRs[0],
+          review: { approvals: 2, changesRequested: 0, commented: 1 },
+        },
+      ],
+    };
+
+    const output = formatStatus(withFeedback);
+    expect(output).toContain("review:");
+    expect(output).toContain("2 approved, 1 with feedback");
+  });
 });
 
 describe("formatStatus()", () => {
@@ -225,7 +241,7 @@ describe("formatStatus()", () => {
     const withDrafts: RepoSummary = {
       ...summary,
       draftPRs: [
-        { number: 53, title: "WIP settings panel", tags: [], author: "bob", comments: 2, age: "yesterday", status: "draft", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+        { number: 53, title: "WIP settings panel", tags: [], author: "bob", comments: 2, age: "yesterday", status: "draft", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
       ],
     };
 
@@ -245,8 +261,8 @@ describe("DRIVE sections", () => {
       { number: 80, title: "My Discussion", tags: ["phase:discussion"], author: "alice", comments: 3, age: "2 days ago" },
     ],
     driveImplementation: [
-      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "yesterday", status: "draft", checks: null, mergeable: null, review: { approvals: 0, changesRequested: 0 } },
-      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "just now", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "yesterday", status: "draft", checks: null, mergeable: null, review: { approvals: 0, changesRequested: 0, commented: 0 } },
+      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "just now", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
     ],
     voteOn: [],
     discuss: [
@@ -256,7 +272,7 @@ describe("DRIVE sections", () => {
     reviewPRs: [],
     draftPRs: [],
     addressFeedback: [
-      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
     ],
     notifications: [],
     notes: [],
@@ -458,7 +474,7 @@ describe("unread notification indicator", () => {
     const unreadSummary: RepoSummary = {
       ...summary,
       reviewPRs: [
-        { number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+        { number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
       ],
     };
     const output = formatStatus(unreadSummary);
@@ -492,7 +508,7 @@ describe("unread notification indicator", () => {
     const unreadSummary: RepoSummary = {
       ...summary,
       reviewPRs: [
-        { number: 49, title: "Search", tags: [], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+        { number: 49, title: "Search", tags: [], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
       ],
     };
     const output = formatStatus(unreadSummary);
@@ -511,18 +527,18 @@ describe("NOTIFICATIONS section", () => {
     const notifSummary: RepoSummary = {
       ...summary,
       notifications: [
-        { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
-        { number: 49, title: "Add search", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
+        { number: 42, title: "Fix dashboard", itemType: "Issue", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+        { number: 49, title: "Add search", itemType: "PullRequest", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
       ],
     };
     const output = formatStatus(notifSummary);
     expect(output).toContain("NOTIFICATIONS");
     expect(output).toContain("(2)");
-    expect(output).toContain("#42");
+    expect(output).toContain("Issue #42");
     expect(output).toContain("Fix dashboard");
     expect(output).toContain("comment");
     expect(output).toContain("T42:2025-06-15T10:00:00Z");
-    expect(output).toContain("#49");
+    expect(output).toContain("PR #49");
     expect(output).toContain("review_requested");
     // NOTIFICATIONS should appear before other sections
     const notifIdx = output.indexOf("NOTIFICATIONS");
@@ -547,7 +563,7 @@ describe("NOTIFICATIONS section", () => {
     const output = formatStatus(notifSummary, 1);
     expect(output).toContain("#88");
     expect(output).not.toContain("#42");
-    expect(output).toContain("... and 1 more");
+    expect(output).toContain("... 1 more");
   });
 
   it("preserves pre-sorted newest-first order from builder", () => {
@@ -576,6 +592,43 @@ describe("NOTIFICATIONS section", () => {
     const notifIdx = output.indexOf("NOTIFICATIONS");
     const humanIdx = output.indexOf("NEEDS HUMAN");
     expect(notifIdx).toBeLessThan(humanIdx);
+  });
+});
+
+describe("UNACKED MENTIONS section", () => {
+  it("renders UNACKED MENTIONS section when unacked mentions exist", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", itemType: "Issue", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const output = formatStatus(withUnacked);
+    expect(output).toContain("UNACKED MENTIONS");
+    expect(output).toContain("Issue #18");
+    expect(output).toContain("mention");
+    expect(output).toContain("T18:2025-06-15T11:00:00Z");
+  });
+
+  it("hides UNACKED MENTIONS section when empty", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("UNACKED MENTIONS");
+  });
+
+  it("respects limit in UNACKED MENTIONS section", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 22, title: "Newer mention", itemType: "Issue", threadId: "T22", reason: "mention", timestamp: "2025-06-15T12:00:00Z", age: "30m ago", ackKey: "T22:2025-06-15T12:00:00Z", section: "unackedMentions" },
+        { number: 18, title: "Older mention", itemType: "Issue", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const output = formatStatus(withUnacked, 1);
+    expect(output).toContain("#22");
+    expect(output).not.toContain("#18");
+    expect(output).toContain("... 1 more");
   });
 });
 

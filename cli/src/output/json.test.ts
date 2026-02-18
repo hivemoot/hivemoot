@@ -12,9 +12,9 @@ const summary: RepoSummary = {
   discuss: [{ number: 52, title: "API versioning", tags: ["discuss"], author: "bob", comments: 5, age: "yesterday" }],
   implement: [{ number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago" }],
   unclassified: [],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
-  draftPRs: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0 } }],
-  addressFeedback: [{ number: 54, title: "Decision explorer fixups", tags: [], author: "frank", comments: 1, age: "1h ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 1 } }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } }],
+  draftPRs: [{ number: 53, title: "Design system", tags: [], author: "eve", comments: 0, age: "just now", status: "draft", checks: "failing", mergeable: null, review: { approvals: 0, changesRequested: 0, commented: 0 } }],
+  addressFeedback: [{ number: 54, title: "Decision explorer fixups", tags: [], author: "frank", comments: 1, age: "1h ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 1, commented: 0 } }],
   notifications: [],
   notes: [],
 };
@@ -95,7 +95,7 @@ describe("jsonStatus()", () => {
     expect(result.reviewPRs[0].status).toBe("pending");
     expect(result.reviewPRs[0].checks).toBe("passing");
     expect(result.reviewPRs[0].mergeable).toBe("clean");
-    expect(result.reviewPRs[0].review).toEqual({ approvals: 0, changesRequested: 0 });
+    expect(result.reviewPRs[0].review).toEqual({ approvals: 0, changesRequested: 0, commented: 0 });
     expect(result.reviewPRs[0]).not.toHaveProperty("detail");
 
     // Verify draftPRs items
@@ -104,6 +104,21 @@ describe("jsonStatus()", () => {
 
     // Verify addressFeedback items
     expect(result.addressFeedback[0].status).toBe("changes-requested");
+  });
+
+  it("preserves commented review count in JSON output", () => {
+    const withFeedback: RepoSummary = {
+      ...summary,
+      reviewPRs: [
+        {
+          ...summary.reviewPRs[0],
+          review: { approvals: 1, changesRequested: 0, commented: 2 },
+        },
+      ],
+    };
+
+    const result = JSON.parse(jsonStatus(withFeedback));
+    expect(result.reviewPRs[0].review.commented).toBe(2);
   });
 
   it("includes canonical item URLs when present", () => {
@@ -159,6 +174,7 @@ describe("notifications array in JSON", () => {
   it("includes notifications array first in jsonBuzz summary", () => {
     const result = JSON.parse(jsonBuzz("engineer", role, notifSummary));
     expect(result.summary.notifications).toHaveLength(2);
+    expect(result.summary.unackedMentions).toEqual([]);
     expect(result.summary.notifications[0].ackKey).toBe("T42:2025-06-15T10:00:00Z");
     expect(result.summary.notifications[1].section).toBe("reviewPRs");
     // notifications should be the first key in summary
@@ -169,6 +185,7 @@ describe("notifications array in JSON", () => {
   it("includes notifications array first in jsonStatus", () => {
     const result = JSON.parse(jsonStatus(notifSummary));
     expect(result.notifications).toHaveLength(2);
+    expect(result.unackedMentions).toEqual([]);
     expect(result.notifications[0].threadId).toBe("T42");
     const keys = Object.keys(result);
     expect(keys[0]).toBe("notifications");
@@ -177,11 +194,41 @@ describe("notifications array in JSON", () => {
   it("includes empty notifications array when no notifications", () => {
     const result = JSON.parse(jsonStatus(summary));
     expect(result.notifications).toEqual([]);
+    expect(result.unackedMentions).toEqual([]);
   });
 
   it("includes empty notifications array in jsonBuzz when no notifications", () => {
     const result = JSON.parse(jsonBuzz("engineer", role, summary));
     expect(result.summary.notifications).toEqual([]);
+    expect(result.summary.unackedMentions).toEqual([]);
+  });
+});
+
+describe("unackedMentions array in JSON", () => {
+  it("includes unackedMentions in jsonStatus", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const result = JSON.parse(jsonStatus(withUnacked));
+    expect(result.unackedMentions).toHaveLength(1);
+    expect(result.unackedMentions[0].number).toBe(18);
+  });
+
+  it("includes unackedMentions in jsonBuzz", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const result = JSON.parse(jsonBuzz("engineer", role, withUnacked));
+    expect(result.summary.unackedMentions).toHaveLength(1);
+    expect(result.summary.unackedMentions[0].ackKey).toBe("T18:2025-06-15T11:00:00Z");
   });
 });
 
@@ -192,7 +239,7 @@ describe("unread notification fields in JSON", () => {
       { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "carol", comments: 0, age: "3 days ago", unread: true, unreadReason: "comment", unreadAge: "2h ago" },
     ],
     reviewPRs: [
-      { number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+      { number: 49, title: "Search", tags: ["feature"], author: "dave", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
     ],
   };
 

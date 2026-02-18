@@ -42,6 +42,7 @@ program
   .option("--json", "Output as JSON")
   .option("--limit <n>", "Max items per section", parseLimit)
   .option("--fetch-limit <n>", "Max issues/PRs to fetch from GitHub (default: 200)", parseLimit)
+  .option("--state-file <path>", "Path to watch state file for unacked mentions", ".hivemoot-watch.json")
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
   .addHelpText(
     "after",
