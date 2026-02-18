@@ -86,6 +86,7 @@ function formatMeta(item: SummaryItem, sectionType: SectionType, currentUser: st
     if (item.review) {
       const segments = [`${item.review.approvals} approved`];
       if (item.review.changesRequested > 0) segments.push(chalk.red(`${item.review.changesRequested} changes-requested`));
+      if (item.review.commented > 0) segments.push(chalk.dim(`${item.review.commented} with feedback`));
       parts.push(kv("review", segments.join(", ")));
     }
     if (item.yourReview) {

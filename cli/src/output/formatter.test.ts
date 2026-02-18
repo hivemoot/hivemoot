@@ -14,7 +14,7 @@ const summary: RepoSummary = {
     { number: 45, title: "User Dashboard", tags: ["enhancement"], author: "bob", comments: 0, age: "3 days ago" },
     { number: 47, title: "Notifications", tags: [], author: "alice", comments: 0, age: "yesterday" },
   ],
-  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } }],
+  reviewPRs: [{ number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } }],
   draftPRs: [],
   addressFeedback: [],
   unclassified: [],
@@ -157,6 +157,22 @@ describe("formatBuzz()", () => {
     expect(output).toContain("0 approved");
     expect(output).not.toContain("changes-requested");
   });
+
+  it("renders review feedback count as 'with feedback' when present", () => {
+    const withFeedback: RepoSummary = {
+      ...summary,
+      reviewPRs: [
+        {
+          ...summary.reviewPRs[0],
+          review: { approvals: 2, changesRequested: 0, commented: 1 },
+        },
+      ],
+    };
+
+    const output = formatStatus(withFeedback);
+    expect(output).toContain("review:");
+    expect(output).toContain("2 approved, 1 with feedback");
+  });
 });
 
 describe("formatStatus()", () => {
@@ -225,7 +241,7 @@ describe("formatStatus()", () => {
     const withDrafts: RepoSummary = {
       ...summary,
       draftPRs: [
-        { number: 53, title: "WIP settings panel", tags: [], author: "bob", comments: 2, age: "yesterday", status: "draft", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+        { number: 53, title: "WIP settings panel", tags: [], author: "bob", comments: 2, age: "yesterday", status: "draft", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
       ],
     };
 
@@ -245,8 +261,8 @@ describe("DRIVE sections", () => {
       { number: 80, title: "My Discussion", tags: ["phase:discussion"], author: "alice", comments: 3, age: "2 days ago" },
     ],
     driveImplementation: [
-      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "yesterday", status: "draft", checks: null, mergeable: null, review: { approvals: 0, changesRequested: 0 } },
-      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "just now", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+      { number: 61, title: "Alice PR", tags: [], author: "alice", comments: 0, age: "yesterday", status: "draft", checks: null, mergeable: null, review: { approvals: 0, changesRequested: 0, commented: 0 } },
+      { number: 63, title: "Alice PR 2", tags: [], author: "alice", comments: 0, age: "just now", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
     ],
     voteOn: [],
     discuss: [
@@ -256,7 +272,7 @@ describe("DRIVE sections", () => {
     reviewPRs: [],
     draftPRs: [],
     addressFeedback: [
-      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 } },
+      { number: 60, title: "Bob PR", tags: [], author: "bob", comments: 0, age: "2 days ago", status: "changes-requested", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 } },
     ],
     notifications: [],
     notes: [],
@@ -458,7 +474,7 @@ describe("unread notification indicator", () => {
     const unreadSummary: RepoSummary = {
       ...summary,
       reviewPRs: [
-        { number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+        { number: 49, title: "Search", tags: ["feature"], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
       ],
     };
     const output = formatStatus(unreadSummary);
@@ -492,7 +508,7 @@ describe("unread notification indicator", () => {
     const unreadSummary: RepoSummary = {
       ...summary,
       reviewPRs: [
-        { number: 49, title: "Search", tags: [], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
+        { number: 49, title: "Search", tags: [], author: "carol", comments: 0, age: "2 days ago", status: "pending", checks: "passing", mergeable: "clean", review: { approvals: 0, changesRequested: 0, commented: 0 }, unread: true, unreadReason: "review_requested", unreadAge: "1h ago" },
       ],
     };
     const output = formatStatus(unreadSummary);

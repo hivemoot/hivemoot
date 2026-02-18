@@ -79,6 +79,7 @@ export interface RepoRef {
 export interface ReviewSummary {
   approvals: number;
   changesRequested: number;
+  commented: number;
 }
 
 export interface SummaryItem {
