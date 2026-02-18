@@ -7,6 +7,7 @@ vi.mock("../config/loader.js", () => ({
 
 vi.mock("../github/repo.js", () => ({
   resolveRepo: vi.fn(),
+  fetchRepoPushAccess: vi.fn(),
 }));
 
 vi.mock("../github/issues.js", () => ({
@@ -44,7 +45,7 @@ vi.mock("../output/json.js", () => ({
 }));
 
 import { loadTeamConfig } from "../config/loader.js";
-import { resolveRepo } from "../github/repo.js";
+import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -56,6 +57,7 @@ import { jsonBuzz, jsonStatus } from "../output/json.js";
 import { buzzCommand } from "./buzz.js";
 
 const mockedResolveRepo = vi.mocked(resolveRepo);
+const mockedFetchRepoPushAccess = vi.mocked(fetchRepoPushAccess);
 const mockedLoadTeamConfig = vi.mocked(loadTeamConfig);
 const mockedFetchIssues = vi.mocked(fetchIssues);
 const mockedFetchPulls = vi.mocked(fetchPulls);
@@ -97,6 +99,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, "log").mockImplementation(() => {});
   mockedResolveRepo.mockResolvedValue(testRepo);
+  mockedFetchRepoPushAccess.mockResolvedValue(true);
   mockedLoadTeamConfig.mockResolvedValue(testTeamConfig);
   mockedFetchIssues.mockResolvedValue([]);
   mockedFetchPulls.mockResolvedValue([]);
@@ -626,6 +629,69 @@ describe("buzzCommand", () => {
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).not.toContain("Could not fetch notifications — unread indicators unavailable.");
+  });
+
+  // ── Push permission hints ──────────────────────────────────────────
+
+  it("checks repository push permissions", async () => {
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedFetchRepoPushAccess).toHaveBeenCalledWith(testRepo);
+  });
+
+  it("adds publishing-flow guidance note when token cannot push", async () => {
+    mockedFetchRepoPushAccess.mockResolvedValue(false);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "No direct push permission detected for you on hivemoot/test — check this repository's docs for the exact contribution flow.",
+    );
+  });
+
+  it("does not add push-permission note when token has push access", async () => {
+    mockedFetchRepoPushAccess.mockResolvedValue(true);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toEqual(
+      expect.not.arrayContaining([expect.stringContaining("No direct push permission detected")]),
+    );
+  });
+
+  it("adds note when push permission check is inconclusive", async () => {
+    mockedFetchRepoPushAccess.mockResolvedValue(undefined);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not determine push permissions for you on hivemoot/test — check this repository's contribution docs for the exact publishing flow.",
+    );
+  });
+
+  it("adds note when permission check fails", async () => {
+    mockedFetchRepoPushAccess.mockRejectedValue(new Error("permission endpoint unavailable"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not check push permissions (permission endpoint unavailable) — check this repository's contribution docs for publishing guidance.",
+    );
   });
 
   // ── Team focus ────────────────────────────────────────────────────

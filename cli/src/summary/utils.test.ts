@@ -11,6 +11,7 @@ import {
   mergeStatus,
   approvalCount,
   changesRequestedCount,
+  commentCount,
   reviewContext,
   latestCommitAge,
   latestCommentAge,
@@ -471,6 +472,61 @@ describe("changesRequestedCount()", () => {
       ],
     });
     expect(changesRequestedCount(pr)).toBe(1);
+  });
+});
+
+describe("commentCount()", () => {
+  it("returns 0 for no reviews", () => {
+    const pr = makePR({ reviews: [] });
+    expect(commentCount(pr)).toBe(0);
+  });
+
+  it("counts latest COMMENTED review", () => {
+    const pr = makePR({
+      reviews: [{ state: "COMMENTED", author: { login: "alice" } }],
+    });
+    expect(commentCount(pr)).toBe(1);
+  });
+
+  it("returns 0 when COMMENTED is followed by APPROVED", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "COMMENTED", author: { login: "alice" } },
+        { state: "APPROVED", author: { login: "alice" } },
+      ],
+    });
+    expect(commentCount(pr)).toBe(0);
+  });
+
+  it("counts multiple reviewers with outstanding feedback", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "COMMENTED", author: { login: "alice" } },
+        { state: "COMMENTED", author: { login: "bob" } },
+      ],
+    });
+    expect(commentCount(pr)).toBe(2);
+  });
+
+  it("handles mixed states across multiple reviewers", () => {
+    const pr = makePR({
+      reviews: [
+        { state: "COMMENTED", author: { login: "alice" } },
+        { state: "APPROVED", author: { login: "bob" } },
+        { state: "CHANGES_REQUESTED", author: { login: "alice" } },
+        { state: "COMMENTED", author: { login: "bob" } },
+      ],
+    });
+    // alice: COMMENTED → CHANGES_REQUESTED (latest = CHANGES_REQUESTED, not counted)
+    // bob: APPROVED → COMMENTED (latest = COMMENTED, counted)
+    expect(commentCount(pr)).toBe(1);
+  });
+
+  it("handles null author reviews without crashing", () => {
+    const pr = makePR({
+      reviews: [{ state: "COMMENTED", author: null }],
+    });
+    expect(commentCount(pr)).toBe(1);
   });
 });
 
