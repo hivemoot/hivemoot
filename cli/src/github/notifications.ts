@@ -1,4 +1,5 @@
 import type { RepoRef, MentionEvent } from "../config/types.js";
+import { CliError } from "../config/types.js";
 import { gh } from "./client.js";
 
 export interface NotificationInfo {
@@ -32,6 +33,18 @@ export interface CommentDetail {
   body: string;
   author: string;
   htmlUrl: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface FetchDetailResult {
+  detail: CommentDetail | null;
+  permanentFailure: boolean;
+}
+
+export interface FetchCommentsResult {
+  comments: CommentDetail[] | null;
+  permanentFailure: boolean;
 }
 
 /** Extract issue/PR number from a GitHub API subject URL (last path segment). */
@@ -154,6 +167,203 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
     };
   } catch {
     return null;
+  }
+}
+
+interface SubjectApiRef {
+  owner: string;
+  repo: string;
+  number: string;
+}
+
+function parseSubjectApiRef(subjectUrl: string): SubjectApiRef | null {
+  if (!subjectUrl) return null;
+
+  let path = subjectUrl;
+  try {
+    path = new URL(subjectUrl).pathname;
+  } catch {
+    // Keep raw value; we support absolute URLs and /repos/... paths.
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length !== 5 || parts[0] !== "repos") return null;
+  if (parts[3] !== "issues" && parts[3] !== "pulls") return null;
+  if (!/^\d+$/.test(parts[4])) return null;
+
+  return {
+    owner: parts[1],
+    repo: parts[2],
+    number: parts[4],
+  };
+}
+
+function isPermanentFetchError(err: unknown): boolean {
+  if (err instanceof CliError || err instanceof Error) {
+    return /\bHTTP (403|404)\b/i.test(err.message);
+  }
+  return false;
+}
+
+async function fetchCommentsList(apiPath: string): Promise<CommentDetail[]> {
+  const raw = await gh([
+    "api",
+    apiPath,
+    "--jq", 'map({ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // ""), createdAt: (.created_at // ""), updatedAt: (.updated_at // "") })',
+  ]);
+  const parsed = JSON.parse(raw) as Array<{
+    body: string;
+    author: string;
+    htmlUrl: string;
+    createdAt?: string;
+    updatedAt?: string;
+  }>;
+
+  return parsed.map((comment) => {
+    const detail: CommentDetail = {
+      body: comment.body,
+      author: comment.author,
+      htmlUrl: comment.htmlUrl,
+    };
+    if (comment.createdAt) {
+      detail.createdAt = comment.createdAt;
+    }
+    if (comment.updatedAt) {
+      detail.updatedAt = comment.updatedAt;
+    }
+    return detail;
+  });
+}
+
+function parseIsoMillis(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function commentTimestamp(comment: CommentDetail): number | null {
+  return parseIsoMillis(comment.updatedAt) ?? parseIsoMillis(comment.createdAt);
+}
+
+function filterCommentsSince(
+  comments: CommentDetail[],
+  since?: string,
+): CommentDetail[] {
+  const sinceMs = parseIsoMillis(since);
+  if (sinceMs === null) {
+    return comments;
+  }
+
+  return comments.filter((comment) => {
+    const timestamp = commentTimestamp(comment);
+    return timestamp !== null && timestamp > sinceMs;
+  });
+}
+
+function buildCommentsPath(
+  path: string,
+  sort: "created" | "updated",
+  since?: string,
+): string {
+  const params = new URLSearchParams({
+    per_page: "100",
+    sort,
+    direction: "desc",
+  });
+  if (since) {
+    params.set("since", since);
+  }
+  return `${path}?${params.toString()}`;
+}
+
+/**
+ * Fetch recent issue/PR comments for mention routing.
+ * For PR subjects, merges issue comments and review comments.
+ */
+export async function fetchRecentSubjectComments(
+  subjectUrl: string,
+  subjectType: string,
+  since?: string,
+): Promise<FetchCommentsResult> {
+  const ref = parseSubjectApiRef(subjectUrl);
+  if (!ref) {
+    return { comments: null, permanentFailure: true };
+  }
+
+  try {
+    const issueCommentsPath = buildCommentsPath(
+      `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`,
+      "updated",
+      since,
+    );
+    const issueComments = await fetchCommentsList(issueCommentsPath);
+
+    if (subjectType !== "PullRequest") {
+      return {
+        comments: filterCommentsSince(issueComments, since),
+        permanentFailure: false,
+      };
+    }
+
+    const reviewCommentsPath = buildCommentsPath(
+      `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`,
+      "created",
+      since,
+    );
+    const reviewComments = await fetchCommentsList(reviewCommentsPath);
+
+    // De-duplicate by URL when the same comment appears in overlapping payloads.
+    const seen = new Set<string>();
+    const merged: CommentDetail[] = [];
+    for (const comment of [...issueComments, ...reviewComments]) {
+      const key = comment.htmlUrl || `${comment.author}:${comment.body}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(comment);
+    }
+    return {
+      comments: filterCommentsSince(merged, since),
+      permanentFailure: false,
+    };
+  } catch (err) {
+    return { comments: null, permanentFailure: isPermanentFetchError(err) };
+  }
+}
+
+/**
+ * Fetch the issue/PR body and author from a subject API URL.
+ * Returns null if the URL is missing or the fetch fails.
+ */
+export async function fetchSubjectBody(subjectUrl: string): Promise<CommentDetail | null> {
+  const result = await fetchSubjectBodyResult(subjectUrl);
+  return result.detail;
+}
+
+/**
+ * Fetch the issue/PR body and author and classify failures for retry strategy.
+ */
+export async function fetchSubjectBodyResult(subjectUrl: string): Promise<FetchDetailResult> {
+  if (!subjectUrl) {
+    return { detail: null, permanentFailure: true };
+  }
+
+  try {
+    const raw = await gh([
+      "api",
+      subjectUrl,
+      "--jq", '{ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // "") }',
+    ]);
+    const parsed = JSON.parse(raw) as { body: string; author: string; htmlUrl: string };
+    return {
+      detail: {
+        body: parsed.body,
+        author: parsed.author,
+        htmlUrl: parsed.htmlUrl,
+      },
+      permanentFailure: false,
+    };
+  } catch (err) {
+    return { detail: null, permanentFailure: isPermanentFetchError(err) };
   }
 }
 

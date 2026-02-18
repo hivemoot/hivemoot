@@ -2,7 +2,9 @@ import type {
   GitHubIssue,
   GitHubPR,
   NotificationRef,
+  PrioritySignal,
   RepoRef,
+  RepositoryHealth,
   RepoSummary,
   SummaryItem,
 } from "../config/types.js";
@@ -21,9 +23,46 @@ import {
   latestCommitAge,
   latestCommentAge,
   commentContext,
+  daysSince,
   hasGovernanceLabel,
   hasGovernanceLabelName,
 } from "./utils.js";
+
+interface IssuePipelineCounts {
+  discussion: number;
+  voting: number;
+  readyToImplement: number;
+}
+
+const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set([
+  "hivemoot:discussion",
+  "hivemoot:voting",
+  "hivemoot:extended-voting",
+  "hivemoot:ready-to-implement",
+]);
+
+const OMITTED_PIPELINE_NOTE =
+  "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.";
+
+function isMergeReadyPR(pr: GitHubPR): boolean {
+  if (pr.isDraft) return false;
+  if (pr.reviewDecision !== "APPROVED") return false;
+  if (pr.mergeable !== "MERGEABLE") return false;
+  if (hasCIFailure(pr)) return false;
+  if (changesRequestedCount(pr) > 0) return false;
+  return true;
+}
+
+function countActiveCandidateIssues(prs: GitHubPR[]): number {
+  const linkedIssueNumbers = new Set<number>();
+  for (const pr of prs) {
+    if (pr.closingIssuesReferences.length === 0) continue;
+    for (const ref of pr.closingIssuesReferences) {
+      linkedIssueNumbers.add(ref.number);
+    }
+  }
+  return linkedIssueNumbers.size;
+}
 
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
@@ -155,13 +194,119 @@ function classifyPR(
 function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, number> {
   const map = new Map<number, number>();
   for (const pr of prs) {
-    if (!hasGovernanceLabel(pr.labels, "IMPLEMENTATION")) continue;
+    if (pr.closingIssuesReferences.length === 0) continue;
     if (pr.author?.login === currentUser) continue;
     for (const ref of pr.closingIssuesReferences) {
       map.set(ref.number, (map.get(ref.number) ?? 0) + 1);
     }
   }
   return map;
+}
+
+function buildRepositoryHealth(
+  issues: GitHubIssue[],
+  prs: GitHubPR[],
+  currentUser: string,
+  now: Date,
+  issuePipeline?: IssuePipelineCounts,
+): RepositoryHealth {
+  let draft = 0;
+  let changesRequested = 0;
+  let mergeReady = 0;
+  for (const pr of prs) {
+    if (pr.isDraft) {
+      draft += 1;
+      continue;
+    }
+    if (pr.reviewDecision === "CHANGES_REQUESTED" || changesRequestedCount(pr) > 0) {
+      changesRequested += 1;
+      continue;
+    }
+    if (isMergeReadyPR(pr)) {
+      mergeReady += 1;
+    }
+  }
+
+  const waitingForYourReviewPRs = currentUser
+    ? prs.filter((pr) =>
+      !pr.isDraft &&
+      pr.author?.login !== currentUser &&
+      !reviewContext(pr, currentUser, now)
+    )
+    : [];
+  let oldestWaitingAge: string | undefined;
+  if (waitingForYourReviewPRs.length > 0) {
+    let oldest = waitingForYourReviewPRs[0].updatedAt;
+    for (let i = 1; i < waitingForYourReviewPRs.length; i++) {
+      if (waitingForYourReviewPRs[i].updatedAt < oldest) oldest = waitingForYourReviewPRs[i].updatedAt;
+    }
+    oldestWaitingAge = timeAgo(oldest, now);
+  }
+
+  const prsOlderThan3Days = prs.filter((pr) => daysSince(pr.updatedAt, now) > 3).length;
+  const issuesStaleOver24h = issues.filter((issue) => daysSince(issue.updatedAt, now) >= 1).length;
+
+  return {
+    openPRs: {
+      total: prs.length,
+      mergeReady,
+      changesRequested,
+      draft,
+    },
+    reviewQueue: {
+      waitingForYourReview: waitingForYourReviewPRs.length,
+      oldestWaitingAge,
+    },
+    ...(issuePipeline
+      ? {
+          issuePipeline: {
+            discussion: issuePipeline.discussion,
+            voting: issuePipeline.voting,
+            readyToImplement: issuePipeline.readyToImplement,
+          },
+        }
+      : {}),
+    staleRisk: {
+      prsOlderThan3Days,
+      issuesStaleOver24h,
+    },
+  };
+}
+
+function buildPrioritySignals(
+  health: RepositoryHealth,
+  activeCandidates: number,
+): PrioritySignal[] {
+  const signals: PrioritySignal[] = [
+    {
+      kind: "review-queue",
+      score: health.reviewQueue.waitingForYourReview * 10 + (health.reviewQueue.oldestWaitingAge ? 1 : 0),
+      summary: health.reviewQueue.oldestWaitingAge
+        ? `${health.reviewQueue.waitingForYourReview} waiting, oldest ${health.reviewQueue.oldestWaitingAge}`
+        : `${health.reviewQueue.waitingForYourReview} waiting`,
+    },
+    {
+      kind: "stale-risk",
+      score: health.staleRisk.prsOlderThan3Days * 6 + health.staleRisk.issuesStaleOver24h * 2,
+      summary: `${health.staleRisk.prsOlderThan3Days} PRs >3d, ${health.staleRisk.issuesStaleOver24h} issues >24h stale`,
+    },
+  ];
+
+  if (health.issuePipeline) {
+    const implementationGap = Math.max(health.issuePipeline.readyToImplement - activeCandidates, 0);
+    signals.push({
+      kind: "implementation-gap",
+      score: implementationGap * 8,
+      summary: `${health.issuePipeline.readyToImplement} ready issues, ${activeCandidates} active candidates`,
+    });
+  }
+
+  return signals
+    .filter((signal) => signal.score > 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return a.kind.localeCompare(b.kind);
+    });
 }
 
 export function buildSummary(
@@ -182,6 +327,7 @@ export function buildSummary(
   const reviewPRs: SummaryItem[] = [];
   const draftPRs: SummaryItem[] = [];
   const addressFeedback: SummaryItem[] = [];
+  const notes: string[] = [];
 
   for (const issue of issues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
@@ -333,6 +479,20 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
+  const hasDefaultPhaseLabels = issues.some((issue) =>
+    issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
+  );
+  const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
+    ? {
+        discussion: discuss.length,
+        voting: voteOn.length,
+        readyToImplement: implement.length,
+      }
+    : undefined;
+  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
+  if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
+
   return {
     repo,
     currentUser,
@@ -348,7 +508,9 @@ export function buildSummary(
     draftPRs,
     addressFeedback: filteredAddressFeedback,
     notifications: notificationRefs,
+    repositoryHealth,
+    prioritySignals,
     focus,
-    notes: [],
+    notes,
   };
 }
