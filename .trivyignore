@@ -1,16 +1,11 @@
-# Transitive dependencies in third-party globally-installed npm packages.
-# We cannot patch these directly; they live inside @google/gemini-cli,
-# @openai/codex, @anthropic-ai/claude-code, and @hivemoot-dev/cli.
-# Re-evaluate on every CLI version bump — remove entries once the
-# upstream fix has landed in the pinned version.
+# Transitive dependencies in bundled third-party tooling (npm and gh).
+# We cannot patch these directly without an upstream release that includes
+# fixed dependencies. Re-evaluate regularly and remove entries once fixed.
 
-# tar 6.2.1 — arbitrary file creation via hardlink path traversal (fixed in 7.5.7)
-# exp:2026-03-01 - verify transitive tar version after upstream CLI bumps
-CVE-2026-24842
-
-# @isaacs/brace-expansion 5.0.0 — DoS via crafted patterns (fixed in 5.0.1)
-# exp:2026-03-01 - verify transitive brace-expansion version after upstream CLI bumps
-CVE-2026-25547
+# tar 7.5.7 bundled in npm (node:24-slim) — arbitrary file read/write via
+# hardlink target escape through symlink chains (fixed in 7.5.8)
+# exp:2026-03-15 - remove once npm ships tar >= 7.5.8 in the base image
+CVE-2026-26960
 
 # Go stdlib in gh CLI binary — we install gh from GitHub's apt repo and
 # cannot control the Go toolchain version it was compiled with.

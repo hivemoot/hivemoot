@@ -1,6 +1,7 @@
 FROM node:24-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG NPM_VERSION=11.10.0
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
 ARG KILO_VERSION=latest
@@ -30,6 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && apt-get purge -y gpg && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
+
+# Keep the base npm installation patched before switching to a custom global
+# prefix; this removes vulnerable tar transitive dependencies from npm itself.
+RUN env -u NPM_CONFIG_PREFIX npm install -g "npm@${NPM_VERSION}" \
+  && env -u NPM_CONFIG_PREFIX npm cache clean --force
 
 RUN mkdir -p /usr/local/share/npm-global \
   && chown -R node:node /usr/local/share/npm-global
