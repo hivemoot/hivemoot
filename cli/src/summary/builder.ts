@@ -441,6 +441,7 @@ export function buildSummary(
           number: item.number,
           title: item.title,
           url: item.url,
+          itemType: n.itemType,
           threadId: n.threadId,
           reason: n.reason,
           timestamp: n.updatedAt,
@@ -462,6 +463,7 @@ export function buildSummary(
       number,
       title: n.title,
       url: n.url,
+      itemType: n.itemType,
       threadId: n.threadId,
       reason: n.reason,
       timestamp: n.updatedAt,
@@ -494,6 +496,7 @@ export function buildSummary(
   return {
     repo,
     currentUser,
+    unackedMentions: [],
     needsHuman,
     driveDiscussion,
     driveImplementation,

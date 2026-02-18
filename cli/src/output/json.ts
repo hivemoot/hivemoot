@@ -3,6 +3,7 @@ import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 function summaryPayload(summary: RepoSummary): Record<string, unknown> {
   return {
     notifications: summary.notifications,
+    unackedMentions: summary.unackedMentions ?? [],
     repo: `${summary.repo.owner}/${summary.repo.repo}`,
     currentUser: summary.currentUser,
     driveDiscussion: summary.driveDiscussion,
