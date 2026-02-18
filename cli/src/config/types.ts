@@ -140,7 +140,7 @@ export interface RepositoryHealth {
     waitingForYourReview: number;
     oldestWaitingAge?: string;
   };
-  issuePipeline: {
+  issuePipeline?: {
     discussion: number;
     voting: number;
     readyToImplement: number;

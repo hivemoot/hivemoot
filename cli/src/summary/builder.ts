@@ -34,6 +34,16 @@ interface IssuePipelineCounts {
   readyToImplement: number;
 }
 
+const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set([
+  "hivemoot:discussion",
+  "hivemoot:voting",
+  "hivemoot:extended-voting",
+  "hivemoot:ready-to-implement",
+]);
+
+const OMITTED_PIPELINE_NOTE =
+  "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.";
+
 function isMergeReadyPR(pr: GitHubPR): boolean {
   if (pr.isDraft) return false;
   if (pr.reviewDecision !== "APPROVED") return false;
@@ -198,7 +208,7 @@ function buildRepositoryHealth(
   prs: GitHubPR[],
   currentUser: string,
   now: Date,
-  issuePipeline: IssuePipelineCounts,
+  issuePipeline?: IssuePipelineCounts,
 ): RepositoryHealth {
   let draft = 0;
   let changesRequested = 0;
@@ -247,11 +257,15 @@ function buildRepositoryHealth(
       waitingForYourReview: waitingForYourReviewPRs.length,
       oldestWaitingAge,
     },
-    issuePipeline: {
-      discussion: issuePipeline.discussion,
-      voting: issuePipeline.voting,
-      readyToImplement: issuePipeline.readyToImplement,
-    },
+    ...(issuePipeline
+      ? {
+          issuePipeline: {
+            discussion: issuePipeline.discussion,
+            voting: issuePipeline.voting,
+            readyToImplement: issuePipeline.readyToImplement,
+          },
+        }
+      : {}),
     staleRisk: {
       prsOlderThan3Days,
       issuesStaleOver24h,
@@ -263,8 +277,6 @@ function buildPrioritySignals(
   health: RepositoryHealth,
   activeCandidates: number,
 ): PrioritySignal[] {
-  const implementationGap = Math.max(health.issuePipeline.readyToImplement - activeCandidates, 0);
-
   const signals: PrioritySignal[] = [
     {
       kind: "review-queue",
@@ -274,16 +286,20 @@ function buildPrioritySignals(
         : `${health.reviewQueue.waitingForYourReview} waiting`,
     },
     {
-      kind: "implementation-gap",
-      score: implementationGap * 8,
-      summary: `${health.issuePipeline.readyToImplement} ready issues, ${activeCandidates} active candidates`,
-    },
-    {
       kind: "stale-risk",
       score: health.staleRisk.prsOlderThan3Days * 6 + health.staleRisk.issuesStaleOver24h * 2,
       summary: `${health.staleRisk.prsOlderThan3Days} PRs >3d, ${health.staleRisk.issuesStaleOver24h} issues >24h stale`,
     },
   ];
+
+  if (health.issuePipeline) {
+    const implementationGap = Math.max(health.issuePipeline.readyToImplement - activeCandidates, 0);
+    signals.push({
+      kind: "implementation-gap",
+      score: implementationGap * 8,
+      summary: `${health.issuePipeline.readyToImplement} ready issues, ${activeCandidates} active candidates`,
+    });
+  }
 
   return signals
     .filter((signal) => signal.score > 0)
@@ -311,6 +327,7 @@ export function buildSummary(
   const reviewPRs: SummaryItem[] = [];
   const draftPRs: SummaryItem[] = [];
   const addressFeedback: SummaryItem[] = [];
+  const notes: string[] = [];
 
   for (const issue of issues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
@@ -460,13 +477,19 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
-  const issuePipeline: IssuePipelineCounts = {
-    discussion: discuss.length,
-    voting: voteOn.length,
-    readyToImplement: implement.length,
-  };
+  const hasDefaultPhaseLabels = issues.some((issue) =>
+    issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
+  );
+  const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
+    ? {
+        discussion: discuss.length,
+        voting: voteOn.length,
+        readyToImplement: implement.length,
+      }
+    : undefined;
   const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
   const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
+  if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
 
   return {
     repo,
@@ -485,6 +508,6 @@ export function buildSummary(
     repositoryHealth,
     prioritySignals,
     focus,
-    notes: [],
+    notes,
   };
 }

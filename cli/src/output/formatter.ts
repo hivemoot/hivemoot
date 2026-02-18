@@ -170,13 +170,19 @@ function formatNotificationsSection(refs: NotificationRef[], limit?: number): st
 function formatRepositoryHealth(summary: RepoSummary): string {
   if (!summary.repositoryHealth) return "";
   const health = summary.repositoryHealth;
-  const lines = [
+  const lines: string[] = [
     sectionDivider("REPOSITORY HEALTH", 1),
     `  Open PRs: ${health.openPRs.total} (${health.openPRs.mergeReady} merge-ready, ${health.openPRs.changesRequested} changes-requested, ${health.openPRs.draft} draft)`,
     `  Review queue: ${health.reviewQueue.waitingForYourReview} waiting for your review${health.reviewQueue.oldestWaitingAge ? ` (oldest ${health.reviewQueue.oldestWaitingAge})` : ""}`,
-    `  Issue pipeline: ${health.issuePipeline.discussion} discussion, ${health.issuePipeline.voting} voting, ${health.issuePipeline.readyToImplement} ready-to-implement`,
     `  Stale risk: ${health.staleRisk.prsOlderThan3Days} PRs older than 3 days, ${health.staleRisk.issuesStaleOver24h} issues with no update >24h`,
   ];
+  if (health.issuePipeline) {
+    lines.splice(
+      3,
+      0,
+      `  Issue pipeline: ${health.issuePipeline.discussion} discussion, ${health.issuePipeline.voting} voting, ${health.issuePipeline.readyToImplement} ready-to-implement`,
+    );
+  }
   return lines.join("\n");
 }
 

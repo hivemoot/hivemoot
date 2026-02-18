@@ -698,7 +698,13 @@ describe("buildSummary()", () => {
   // ── Notes field ───────────────────────────────────────────────────
 
   it("initializes notes as empty array", () => {
-    const summary = buildSummary(repo, [], [], "testuser", now);
+    const summary = buildSummary(
+      repo,
+      [makeIssue({ labels: [{ name: "hivemoot:discussion" }] })],
+      [],
+      "testuser",
+      now,
+    );
     expect(summary.notes).toEqual([]);
   });
 
@@ -1258,5 +1264,26 @@ describe("buildSummary()", () => {
       "stale-risk",
     ]);
     expect(summary.prioritySignals?.[0].summary).toContain("1 waiting");
+  });
+
+  it("omits issue pipeline and implementation-gap without default hivemoot phase labels", () => {
+    const issues = [
+      makeIssue({ number: 401, labels: [{ name: "phase:ready-to-implement" }] }),
+      makeIssue({ number: 402, labels: [{ name: "phase:discussion" }] }),
+    ];
+    const prs = [
+      makePR({
+        number: 501,
+        author: { login: "other" },
+        closingIssuesReferences: [{ number: 401 }],
+      }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.repositoryHealth?.issuePipeline).toBeUndefined();
+    expect(summary.prioritySignals?.some((signal) => signal.kind === "implementation-gap")).toBe(false);
+    expect(summary.notes).toContain(
+      "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+    );
   });
 });
