@@ -32,6 +32,14 @@ export interface CommentDetail {
   body: string;
   author: string;
   htmlUrl: string;
+  createdAt?: string;
+}
+
+export interface SubjectDetail {
+  body: string;
+  author: string;
+  htmlUrl: string;
+  updatedAt?: string;
 }
 
 /** Extract issue/PR number from a GitHub API subject URL (last path segment). */
@@ -152,6 +160,102 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
       author: parsed.author,
       htmlUrl: parsed.htmlUrl,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch issue/PR subject body (issue body for both Issue and PullRequest subjects).
+ * Returns null when the fetch fails.
+ */
+export async function fetchSubjectBody(subjectUrl: string): Promise<SubjectDetail | null> {
+  if (!subjectUrl) return null;
+
+  try {
+    const raw = await gh([
+      "api",
+      subjectUrl,
+      "--jq", '{ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: .html_url, updatedAt: .updated_at }',
+    ]);
+    const parsed = JSON.parse(raw) as SubjectDetail;
+    return {
+      body: parsed.body ?? "",
+      author: parsed.author ?? "unknown",
+      htmlUrl: parsed.htmlUrl ?? "",
+      updatedAt: parsed.updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function withSinceQuery(url: string, since?: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("per_page", "100");
+  if (since) {
+    parsed.searchParams.set("since", since);
+  }
+  return parsed.toString();
+}
+
+async function fetchCommentsList(url: string): Promise<CommentDetail[]> {
+  const raw = await gh([
+    "api",
+    url,
+  ]);
+
+  const parsed = JSON.parse(raw) as Array<{
+    body?: string;
+    user?: { login?: string };
+    author?: { login?: string };
+    html_url?: string;
+    created_at?: string;
+  }>;
+
+  return parsed.map((item) => ({
+    body: item.body ?? "",
+    author: item.user?.login ?? item.author?.login ?? "unknown",
+    htmlUrl: item.html_url ?? "",
+    createdAt: item.created_at,
+  }));
+}
+
+/**
+ * Fetch recent thread comments for fallback mention matching.
+ * For pull requests this includes both issue comments and review comments.
+ * Returns null when any API fetch fails.
+ */
+export async function fetchRecentSubjectComments(
+  notification: RawNotification,
+  since?: string,
+): Promise<CommentDetail[] | null> {
+  const subjectUrl = notification.subject.url;
+  if (!subjectUrl) return [];
+
+  try {
+    if (notification.subject.type === "Issue") {
+      const commentsUrl = withSinceQuery(`${subjectUrl}/comments`, since);
+      return await fetchCommentsList(commentsUrl);
+    }
+
+    if (notification.subject.type === "PullRequest") {
+      const issueUrl = subjectUrl.replace("/pulls/", "/issues/");
+      const issueCommentsUrl = withSinceQuery(`${issueUrl}/comments`, since);
+      const reviewCommentsUrl = withSinceQuery(`${subjectUrl}/comments`, since);
+      const [issueComments, reviewComments] = await Promise.all([
+        fetchCommentsList(issueCommentsUrl),
+        fetchCommentsList(reviewCommentsUrl),
+      ]);
+
+      return [...issueComments, ...reviewComments].sort((a, b) => {
+        const aTime = a.createdAt ?? "";
+        const bTime = b.createdAt ?? "";
+        return bTime.localeCompare(aTime);
+      });
+    }
+
+    return [];
   } catch {
     return null;
   }

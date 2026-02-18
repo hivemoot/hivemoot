@@ -10,6 +10,8 @@ import {
   fetchMentionNotifications,
   markNotificationRead,
   fetchCommentBody,
+  fetchSubjectBody,
+  fetchRecentSubjectComments,
   buildMentionEvent,
   parseSubjectNumber,
   isAgentMentioned,
@@ -334,6 +336,146 @@ describe("fetchCommentBody()", () => {
     mockedGh.mockRejectedValue(new Error("API error"));
 
     const result = await fetchCommentBody("https://api.github.com/repos/hivemoot/colony/issues/comments/999");
+    expect(result).toBeNull();
+  });
+});
+
+describe("fetchSubjectBody()", () => {
+  it("returns subject detail when fetch succeeds", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      body: "@hivemoot-worker please handle",
+      author: "owner",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+      updatedAt: "2026-02-12T15:30:00Z",
+    }));
+
+    const result = await fetchSubjectBody("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toEqual({
+      body: "@hivemoot-worker please handle",
+      author: "owner",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+      updatedAt: "2026-02-12T15:30:00Z",
+    });
+  });
+
+  it("returns null when subject fetch fails", async () => {
+    mockedGh.mockRejectedValue(new Error("API error"));
+
+    const result = await fetchSubjectBody("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toBeNull();
+  });
+});
+
+describe("fetchRecentSubjectComments()", () => {
+  it("fetches issue comments with since window", async () => {
+    const notification = makeNotification({
+      reason: "mention",
+      subject: {
+        url: "https://api.github.com/repos/hivemoot/colony/issues/42",
+        type: "Issue",
+        title: "Fix layout",
+        latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/999",
+      },
+    }) as RawNotification;
+
+    mockedGh.mockResolvedValue(JSON.stringify([
+      {
+        body: "@hivemoot-worker ping",
+        user: { login: "owner" },
+        html_url: "https://github.com/hivemoot/colony/issues/42#issuecomment-1",
+        created_at: "2026-02-12T15:00:00Z",
+      },
+    ]));
+
+    const result = await fetchRecentSubjectComments(notification, "2026-02-12T14:00:00Z");
+
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "https://api.github.com/repos/hivemoot/colony/issues/42/comments?per_page=100&since=2026-02-12T14%3A00%3A00Z",
+    ]);
+    expect(result).toEqual([
+      {
+        body: "@hivemoot-worker ping",
+        author: "owner",
+        htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-1",
+        createdAt: "2026-02-12T15:00:00Z",
+      },
+    ]);
+  });
+
+  it("fetches and merges PR issue + review comments", async () => {
+    const notification = makeNotification({
+      reason: "mention",
+      subject: {
+        url: "https://api.github.com/repos/hivemoot/colony/pulls/99",
+        type: "PullRequest",
+        title: "Fix routing",
+        latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/100",
+      },
+    }) as RawNotification;
+
+    mockedGh
+      .mockResolvedValueOnce(JSON.stringify([
+        {
+          body: "@hivemoot-worker from issue comment",
+          user: { login: "owner" },
+          html_url: "https://github.com/hivemoot/colony/pull/99#issuecomment-1",
+          created_at: "2026-02-12T15:00:00Z",
+        },
+      ]))
+      .mockResolvedValueOnce(JSON.stringify([
+        {
+          body: "@hivemoot-worker from review comment",
+          user: { login: "reviewer" },
+          html_url: "https://github.com/hivemoot/colony/pull/99#discussion_r1",
+          created_at: "2026-02-12T15:10:00Z",
+        },
+      ]));
+
+    const result = await fetchRecentSubjectComments(notification, "2026-02-12T14:00:00Z");
+
+    expect(mockedGh).toHaveBeenNthCalledWith(
+      1,
+      [
+        "api",
+        "https://api.github.com/repos/hivemoot/colony/issues/99/comments?per_page=100&since=2026-02-12T14%3A00%3A00Z",
+      ],
+    );
+    expect(mockedGh).toHaveBeenNthCalledWith(
+      2,
+      [
+        "api",
+        "https://api.github.com/repos/hivemoot/colony/pulls/99/comments?per_page=100&since=2026-02-12T14%3A00%3A00Z",
+      ],
+    );
+    expect(result).toEqual([
+      {
+        body: "@hivemoot-worker from review comment",
+        author: "reviewer",
+        htmlUrl: "https://github.com/hivemoot/colony/pull/99#discussion_r1",
+        createdAt: "2026-02-12T15:10:00Z",
+      },
+      {
+        body: "@hivemoot-worker from issue comment",
+        author: "owner",
+        htmlUrl: "https://github.com/hivemoot/colony/pull/99#issuecomment-1",
+        createdAt: "2026-02-12T15:00:00Z",
+      },
+    ]);
+  });
+
+  it("returns null when fallback fetch fails", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/hivemoot/colony/issues/42",
+        type: "Issue",
+        title: "Fix layout",
+        latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/999",
+      },
+    }) as RawNotification;
+    mockedGh.mockRejectedValue(new Error("timeout"));
+
+    const result = await fetchRecentSubjectComments(notification, "2026-02-12T14:00:00Z");
     expect(result).toBeNull();
   });
 });

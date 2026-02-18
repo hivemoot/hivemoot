@@ -4,6 +4,8 @@ import { fetchCurrentUser } from "../github/user.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
+  fetchRecentSubjectComments,
+  fetchSubjectBody,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -109,33 +111,57 @@ async function runPollLoop(
         const processedKey = `${notification.id}:${notification.updated_at}`;
         if (state.processedThreadIds.includes(processedKey)) continue;
 
-        // Fetch the comment that triggered this notification
-        const comment = notification.subject.latest_comment_url
+        let eventSourceComment = notification.subject.latest_comment_url
           ? await fetchCommentBody(notification.subject.latest_comment_url)
           : null;
 
-        // -- Null-comment gate: transient API failure --
-        // URL existed but fetch returned null → skip and retry next poll.
-        // No URL at all (e.g. issue-body mention) → fall through to
-        // buildMentionEvent which handles null comments gracefully.
-        if (comment === null && notification.subject.latest_comment_url) {
+        if (notification.subject.latest_comment_url && eventSourceComment === null) {
           log(`Skipping ${notification.id}: comment fetch failed, will retry`);
           continue;
         }
 
-        // -- Mention verification (only for reason="mention" with a comment body) --
-        // GitHub keeps reason="mention" on a thread even when the latest comment
-        // doesn't mention the agent (stale thread subscription). Verify the
-        // comment body actually contains @agent before triggering a run.
-        // When there's no comment body (no URL), skip the check — the mention
-        // may be in the issue/PR body itself, which we can't fetch here.
-        if (comment !== null && notification.reason === "mention" && !isAgentMentioned(comment.body, agent)) {
-          log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
-          state = addProcessedId(state, processedKey);
-          continue;
+        if (notification.reason === "mention") {
+          if (eventSourceComment !== null) {
+            if (!isAgentMentioned(eventSourceComment.body, agent)) {
+              const recentComments = await fetchRecentSubjectComments(notification, state.lastChecked);
+              if (recentComments === null) {
+                log(`Skipping ${notification.id}: fallback comment scan failed, will retry`);
+                continue;
+              }
+
+              const matchingComment = recentComments.find((c) => isAgentMentioned(c.body, agent));
+              if (!matchingComment) {
+                log(`Skipping ${notification.id}: agent not mentioned in notification window`);
+                state = addProcessedId(state, processedKey);
+                continue;
+              }
+
+              eventSourceComment = matchingComment;
+            }
+          } else {
+            // No latest comment URL: verify explicit mention in issue/PR body.
+            const subject = await fetchSubjectBody(notification.subject.url);
+            if (subject === null) {
+              log(`Skipping ${notification.id}: subject fetch failed, will retry`);
+              continue;
+            }
+
+            if (!isAgentMentioned(subject.body, agent)) {
+              log(`Skipping ${notification.id}: agent not mentioned in subject body`);
+              state = addProcessedId(state, processedKey);
+              continue;
+            }
+
+            eventSourceComment = {
+              body: subject.body,
+              author: subject.author,
+              htmlUrl: subject.htmlUrl,
+              createdAt: subject.updatedAt,
+            };
+          }
         }
 
-        const event = buildMentionEvent(notification, comment, agent);
+        const event = buildMentionEvent(notification, eventSourceComment, agent);
         if (!event) {
           // Can't parse — skip silently. Unparseable events reappear next poll
           // but are harmless since all=false naturally drops them once the

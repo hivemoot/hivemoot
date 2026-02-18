@@ -11,6 +11,8 @@ vi.mock("../github/user.js", () => ({
 vi.mock("../github/notifications.js", () => ({
   fetchMentionNotifications: vi.fn(),
   fetchCommentBody: vi.fn(),
+  fetchRecentSubjectComments: vi.fn(),
+  fetchSubjectBody: vi.fn(),
   buildMentionEvent: vi.fn(),
   isAgentMentioned: vi.fn(),
 }));
@@ -30,6 +32,8 @@ import { fetchCurrentUser } from "../github/user.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
+  fetchRecentSubjectComments,
+  fetchSubjectBody,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -38,6 +42,8 @@ import { loadState, saveState, mergeAckJournal } from "../watch/state.js";
 const mockedFetchUser = vi.mocked(fetchCurrentUser);
 const mockedFetchMentions = vi.mocked(fetchMentionNotifications);
 const mockedFetchComment = vi.mocked(fetchCommentBody);
+const mockedFetchRecentComments = vi.mocked(fetchRecentSubjectComments);
+const mockedFetchSubjectBody = vi.mocked(fetchSubjectBody);
 const mockedBuildEvent = vi.mocked(buildMentionEvent);
 const mockedIsAgentMentioned = vi.mocked(isAgentMentioned);
 const mockedLoadState = vi.mocked(loadState);
@@ -100,6 +106,13 @@ beforeEach(() => {
   mockedLoadState.mockResolvedValue(defaultState());
   mockedSaveState.mockResolvedValue(undefined);
   mockedFetchMentions.mockResolvedValue([]);
+  mockedFetchRecentComments.mockResolvedValue([]);
+  mockedFetchSubjectBody.mockResolvedValue({
+    body: "",
+    author: "unknown",
+    htmlUrl: "https://github.com/owner/repo/issues/42",
+    updatedAt: "2026-02-01T11:30:00.000Z",
+  });
   mockedIsAgentMentioned.mockReturnValue(true);
   // mergeAckJournal returns the state unchanged by default
   mockedMergeAckJournal.mockImplementation(async (_path, state) => state);
@@ -312,6 +325,7 @@ describe("watchCommand (--once mode)", () => {
     mockedFetchMentions.mockResolvedValue([notification]);
     mockedFetchComment.mockResolvedValue(comment);
     mockedIsAgentMentioned.mockReturnValue(false);
+    mockedFetchRecentComments.mockResolvedValue([]);
 
     await watchCommand({ repo: "owner/repo", once: true });
 
@@ -327,6 +341,64 @@ describe("watchCommand (--once mode)", () => {
       expect.any(String),
       expect.objectContaining({
         processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"],
+      }),
+    );
+  });
+
+  it("falls back to recent notification-window comments when latest comment mismatches", async () => {
+    const notification = makeNotification({ reason: "mention" });
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue({
+      body: "@other-agent please take this",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-latest",
+      createdAt: "2026-02-01T11:30:00.000Z",
+    });
+    mockedFetchRecentComments.mockResolvedValue([
+      {
+        body: "@test-agent please handle",
+        author: "owner",
+        htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-older",
+        createdAt: "2026-02-01T11:20:00.000Z",
+      },
+    ]);
+    mockedIsAgentMentioned.mockImplementation((body) => body.includes("@test-agent"));
+    mockedBuildEvent.mockReturnValue(makeEvent());
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedFetchRecentComments).toHaveBeenCalledWith(
+      notification,
+      "2026-02-01T10:00:00.000Z",
+    );
+    expect(mockedBuildEvent).toHaveBeenCalledWith(
+      notification,
+      expect.objectContaining({
+        body: "@test-agent please handle",
+      }),
+      "test-agent",
+    );
+  });
+
+  it("retries when fallback recent-comment scan fails", async () => {
+    const notification = makeNotification({ reason: "mention" });
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue({
+      body: "@someone else",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-latest",
+      createdAt: "2026-02-01T11:30:00.000Z",
+    });
+    mockedIsAgentMentioned.mockReturnValue(false);
+    mockedFetchRecentComments.mockResolvedValue(null);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: [],
       }),
     );
   });
@@ -384,14 +456,83 @@ describe("watchCommand (--once mode)", () => {
     const event = makeEvent();
 
     mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubjectBody.mockResolvedValue({
+      body: "@test-agent please take this",
+      author: "owner",
+      htmlUrl: "https://github.com/owner/repo/issues/42",
+      updatedAt: "2026-02-01T11:30:00.000Z",
+    });
+    mockedIsAgentMentioned.mockReturnValue(true);
     mockedBuildEvent.mockReturnValue(event);
 
     await watchCommand({ repo: "owner/repo", once: true });
 
     // No comment fetch when there's no URL
     expect(mockedFetchComment).not.toHaveBeenCalled();
-    // buildMentionEvent handles null comment — event should be emitted
-    expect(mockedBuildEvent).toHaveBeenCalledWith(notification, null, "test-agent");
+    expect(mockedFetchSubjectBody).toHaveBeenCalledWith(notification.subject.url);
+    expect(mockedBuildEvent).toHaveBeenCalledWith(
+      notification,
+      expect.objectContaining({
+        body: "@test-agent please take this",
+      }),
+      "test-agent",
+    );
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
+  it("skips and marks processed when subject body does not mention agent", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: null,
+      },
+      reason: "mention",
+    });
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubjectBody.mockResolvedValue({
+      body: "@another-agent please handle",
+      author: "owner",
+      htmlUrl: "https://github.com/owner/repo/issues/42",
+      updatedAt: "2026-02-01T11:30:00.000Z",
+    });
+    mockedIsAgentMentioned.mockReturnValue(false);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"],
+      }),
+    );
+  });
+
+  it("retries when subject body fetch fails", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: null,
+      },
+      reason: "mention",
+    });
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubjectBody.mockResolvedValue(null);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: [],
+      }),
+    );
   });
 });
