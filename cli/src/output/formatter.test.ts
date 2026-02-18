@@ -563,7 +563,7 @@ describe("NOTIFICATIONS section", () => {
     const output = formatStatus(notifSummary, 1);
     expect(output).toContain("#88");
     expect(output).not.toContain("#42");
-    expect(output).toContain("... and 1 more");
+    expect(output).toContain("... 1 more");
   });
 
   it("preserves pre-sorted newest-first order from builder", () => {
@@ -614,6 +614,21 @@ describe("UNACKED MENTIONS section", () => {
   it("hides UNACKED MENTIONS section when empty", () => {
     const output = formatStatus(summary);
     expect(output).not.toContain("UNACKED MENTIONS");
+  });
+
+  it("respects limit in UNACKED MENTIONS section", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 22, title: "Newer mention", itemType: "Issue", threadId: "T22", reason: "mention", timestamp: "2025-06-15T12:00:00Z", age: "30m ago", ackKey: "T22:2025-06-15T12:00:00Z", section: "unackedMentions" },
+        { number: 18, title: "Older mention", itemType: "Issue", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const output = formatStatus(withUnacked, 1);
+    expect(output).toContain("#22");
+    expect(output).not.toContain("#18");
+    expect(output).toContain("... 1 more");
   });
 });
 

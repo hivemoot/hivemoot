@@ -162,7 +162,7 @@ function formatNotificationsSection(title: string, refs: NotificationRef[], limi
 
   const parts = [header, ...lines];
   if (limit && refs.length > limit) {
-    parts.push(chalk.dim(`  ... and ${refs.length - limit} more`));
+    parts.push(chalk.dim(`  ... ${refs.length - limit} more`));
   }
 
   return parts.join("\n");
