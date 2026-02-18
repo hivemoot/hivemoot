@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify TARGET_REPO validation behavior
         run: bash scripts/test-target-repo-validation.sh
+      - name: Verify Trivy ignore validation behavior
+        run: bash scripts/test-trivyignore-check.sh
 
   hadolint:
     name: Hadolint
