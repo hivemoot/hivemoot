@@ -89,15 +89,21 @@ Or trigger from cron, CI, or any scheduler.
 
 ## Web Deploy (Push Model)
 
-The web app (`apps/web`) can deploy automatically on every successful push to `main`.
+The web app (`apps/web`) can deploy automatically on every successful push to `main`, with the build executed in GitHub Actions and deployed to Vercel as a prebuilt artifact.
 
-1. Create a deploy hook in your hosting provider (Vercel, Netlify, Render, etc.).
-2. Add the hook URL as a GitHub Actions secret named `WEB_DEPLOY_HOOK_URL`.
+1. Add repository secrets:
+   - `VERCEL_TOKEN`
+   - `VERCEL_ORG_ID`
+   - `VERCEL_PROJECT_ID`
+2. Configure production runtime env vars in Vercel (see `apps/web/.env.example`).
 3. Merge or push changes that touch `apps/web/**` into `main`.
 
 Flow:
 - `Web` workflow runs typecheck/lint/test/build.
-- If `Web` passes on a `main` push, `Web Deploy` triggers your provider hook.
+- If `Web` passes on a `main` push, `Web Deploy` runs:
+  - `vercel pull`
+  - `vercel build --prod`
+  - `vercel deploy --prebuilt --prod`
 
 You can also trigger deployment manually from the Actions tab via `Web Deploy`.
 

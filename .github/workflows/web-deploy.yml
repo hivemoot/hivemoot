@@ -25,26 +25,42 @@ jobs:
         github.event.workflow_run.repository.full_name == github.repository
       )
     runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    defaults:
+      run:
+        working-directory: apps/web
 
     steps:
-      - name: Verify deploy hook secret
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify Vercel secrets
         env:
-          WEB_DEPLOY_HOOK_URL: ${{ secrets.WEB_DEPLOY_HOOK_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          if [ -z "$WEB_DEPLOY_HOOK_URL" ]; then
-            echo "::error::Missing WEB_DEPLOY_HOOK_URL secret."
-            echo "Add a deploy hook URL from your provider (Vercel/Netlify/Render/etc)."
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Missing one or more required Vercel secrets."
+            echo "Required: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID"
             exit 1
           fi
 
-      - name: Trigger deploy hook
-        env:
-          WEB_DEPLOY_HOOK_URL: ${{ secrets.WEB_DEPLOY_HOOK_URL }}
-        run: |
-          curl --fail --show-error --silent \
-            --location \
-            --request POST \
-            --retry 3 \
-            --retry-delay 2 \
-            "$WEB_DEPLOY_HOOK_URL"
-          echo "Deploy hook triggered."
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build prebuilt artifact
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy prebuilt artifact
+        run: vercel deploy --prebuilt --prod --archive=tgz --token=${{ secrets.VERCEL_TOKEN }}
