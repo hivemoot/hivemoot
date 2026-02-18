@@ -466,6 +466,48 @@ describe("fetchRecentSubjectComments()", () => {
     expect(mockedGh).toHaveBeenCalledTimes(2);
   });
 
+  it("applies a lower-bound timestamp when provided", async () => {
+    mockedGh.mockResolvedValueOnce(JSON.stringify([
+      {
+        body: "@hivemoot-worker old mention",
+        author: "dmitry",
+        htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-1",
+        createdAt: "2026-02-01T10:00:00.000Z",
+        updatedAt: "2026-02-01T10:00:00.000Z",
+      },
+      {
+        body: "@hivemoot-worker new mention",
+        author: "dmitry",
+        htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-2",
+        createdAt: "2026-02-01T12:00:00.000Z",
+        updatedAt: "2026-02-01T12:00:00.000Z",
+      },
+    ]));
+
+    const since = "2026-02-01T11:00:00.000Z";
+    const result = await fetchRecentSubjectComments(
+      "https://api.github.com/repos/hivemoot/colony/issues/42",
+      "Issue",
+      since,
+    );
+
+    expect(result).toEqual({
+      comments: [
+        {
+          body: "@hivemoot-worker new mention",
+          author: "dmitry",
+          htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-2",
+          createdAt: "2026-02-01T12:00:00.000Z",
+          updatedAt: "2026-02-01T12:00:00.000Z",
+        },
+      ],
+      permanentFailure: false,
+    });
+
+    const firstCall = mockedGh.mock.calls[0]?.[0] ?? [];
+    expect(firstCall[1]).toContain("since=2026-02-01T11%3A00%3A00.000Z");
+  });
+
   it("returns permanent failure for invalid subject URL", async () => {
     const result = await fetchRecentSubjectComments("not-a-url", "Issue");
     expect(result).toEqual({

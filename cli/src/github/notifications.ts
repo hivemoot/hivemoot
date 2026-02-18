@@ -33,6 +33,8 @@ export interface CommentDetail {
   body: string;
   author: string;
   htmlUrl: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface FetchDetailResult {
@@ -207,14 +209,71 @@ async function fetchCommentsList(apiPath: string): Promise<CommentDetail[]> {
   const raw = await gh([
     "api",
     apiPath,
-    "--jq", 'map({ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // "") })',
+    "--jq", 'map({ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // ""), createdAt: (.created_at // ""), updatedAt: (.updated_at // "") })',
   ]);
-  const parsed = JSON.parse(raw) as Array<{ body: string; author: string; htmlUrl: string }>;
-  return parsed.map((comment) => ({
-    body: comment.body,
-    author: comment.author,
-    htmlUrl: comment.htmlUrl,
-  }));
+  const parsed = JSON.parse(raw) as Array<{
+    body: string;
+    author: string;
+    htmlUrl: string;
+    createdAt?: string;
+    updatedAt?: string;
+  }>;
+
+  return parsed.map((comment) => {
+    const detail: CommentDetail = {
+      body: comment.body,
+      author: comment.author,
+      htmlUrl: comment.htmlUrl,
+    };
+    if (comment.createdAt) {
+      detail.createdAt = comment.createdAt;
+    }
+    if (comment.updatedAt) {
+      detail.updatedAt = comment.updatedAt;
+    }
+    return detail;
+  });
+}
+
+function parseIsoMillis(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function commentTimestamp(comment: CommentDetail): number | null {
+  return parseIsoMillis(comment.updatedAt) ?? parseIsoMillis(comment.createdAt);
+}
+
+function filterCommentsSince(
+  comments: CommentDetail[],
+  since?: string,
+): CommentDetail[] {
+  const sinceMs = parseIsoMillis(since);
+  if (sinceMs === null) {
+    return comments;
+  }
+
+  return comments.filter((comment) => {
+    const timestamp = commentTimestamp(comment);
+    return timestamp !== null && timestamp > sinceMs;
+  });
+}
+
+function buildCommentsPath(
+  path: string,
+  sort: "created" | "updated",
+  since?: string,
+): string {
+  const params = new URLSearchParams({
+    per_page: "100",
+    sort,
+    direction: "desc",
+  });
+  if (since) {
+    params.set("since", since);
+  }
+  return `${path}?${params.toString()}`;
 }
 
 /**
@@ -224,6 +283,7 @@ async function fetchCommentsList(apiPath: string): Promise<CommentDetail[]> {
 export async function fetchRecentSubjectComments(
   subjectUrl: string,
   subjectType: string,
+  since?: string,
 ): Promise<FetchCommentsResult> {
   const ref = parseSubjectApiRef(subjectUrl);
   if (!ref) {
@@ -231,14 +291,25 @@ export async function fetchRecentSubjectComments(
   }
 
   try {
-    const issueCommentsPath = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=100&sort=updated&direction=desc`;
+    const issueCommentsPath = buildCommentsPath(
+      `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`,
+      "updated",
+      since,
+    );
     const issueComments = await fetchCommentsList(issueCommentsPath);
 
     if (subjectType !== "PullRequest") {
-      return { comments: issueComments, permanentFailure: false };
+      return {
+        comments: filterCommentsSince(issueComments, since),
+        permanentFailure: false,
+      };
     }
 
-    const reviewCommentsPath = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100&sort=created&direction=desc`;
+    const reviewCommentsPath = buildCommentsPath(
+      `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`,
+      "created",
+      since,
+    );
     const reviewComments = await fetchCommentsList(reviewCommentsPath);
 
     // De-duplicate by URL when the same comment appears in overlapping payloads.
@@ -250,7 +321,10 @@ export async function fetchRecentSubjectComments(
       seen.add(key);
       merged.push(comment);
     }
-    return { comments: merged, permanentFailure: false };
+    return {
+      comments: filterCommentsSince(merged, since),
+      permanentFailure: false,
+    };
   } catch (err) {
     return { comments: null, permanentFailure: isPermanentFetchError(err) };
   }

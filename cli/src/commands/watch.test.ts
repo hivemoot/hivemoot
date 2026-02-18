@@ -418,9 +418,50 @@ describe("watchCommand (--once mode)", () => {
     expect(mockedFetchRecentComments).toHaveBeenCalledWith(
       notification.subject.url,
       notification.subject.type,
+      undefined,
     );
     expect(mockedBuildEvent).toHaveBeenCalledWith(notification, matchingComment, "test-agent");
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
+  it("bounds fallback scan using the last processed timestamp for the thread", async () => {
+    mockedLoadState.mockResolvedValue(
+      defaultState({ processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"] }),
+    );
+
+    const notification = makeNotification({ updated_at: "2026-02-01T12:30:00.000Z" });
+    const latestComment: CommentDetail = {
+      body: "@agent-b do this",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/issues/42#issuecomment-1000",
+    };
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchComment.mockResolvedValue(latestComment);
+    // Simulates fetchRecentSubjectComments filtering out older historical mentions.
+    mockedFetchRecentComments.mockResolvedValue({
+      comments: [],
+      permanentFailure: false,
+    });
+    mockedIsAgentMentioned.mockImplementation((body, agent) => body.includes(`@${agent}`));
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    expect(mockedFetchRecentComments).toHaveBeenCalledWith(
+      notification.subject.url,
+      notification.subject.type,
+      "2026-02-01T11:30:00.000Z",
+    );
+    expect(mockedBuildEvent).not.toHaveBeenCalled();
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: [
+          "1001:2026-02-01T11:30:00.000Z",
+          "1001:2026-02-01T12:30:00.000Z",
+        ],
+      }),
+    );
   });
 
   it("emits event when no comment URL exists and issue body mentions agent", async () => {
