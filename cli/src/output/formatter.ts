@@ -168,6 +168,38 @@ function formatNotificationsSection(title: string, refs: NotificationRef[], limi
   return parts.join("\n");
 }
 
+function formatRepositoryHealth(summary: RepoSummary): string {
+  if (!summary.repositoryHealth) return "";
+  const health = summary.repositoryHealth;
+  const lines: string[] = [
+    sectionDivider("REPOSITORY HEALTH", 1),
+    `  Open PRs: ${health.openPRs.total} (${health.openPRs.mergeReady} merge-ready, ${health.openPRs.changesRequested} changes-requested, ${health.openPRs.draft} draft)`,
+    `  Review queue: ${health.reviewQueue.waitingForYourReview} waiting for your review${health.reviewQueue.oldestWaitingAge ? ` (oldest ${health.reviewQueue.oldestWaitingAge})` : ""}`,
+    `  Stale risk: ${health.staleRisk.prsOlderThan3Days} PRs older than 3 days, ${health.staleRisk.issuesStaleOver24h} issues with no update >24h`,
+  ];
+  if (health.issuePipeline) {
+    lines.splice(
+      3,
+      0,
+      `  Issue pipeline: ${health.issuePipeline.discussion} discussion, ${health.issuePipeline.voting} voting, ${health.issuePipeline.readyToImplement} ready-to-implement`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function formatPrioritySignals(summary: RepoSummary): string {
+  const signals = summary.prioritySignals ?? [];
+  if (signals.length === 0) return "";
+  const lines = [sectionDivider("PRIORITY SIGNALS", signals.length)];
+
+  for (let i = 0; i < signals.length; i++) {
+    const prefix = i === 0 ? "Highest pressure" : i === 1 ? "Next pressure" : `Signal ${i + 1}`;
+    lines.push(`  ${prefix}: ${signals[i].kind} (${signals[i].summary})`);
+  }
+
+  return lines.join("\n");
+}
+
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
   const sections: string[] = [];
@@ -176,6 +208,8 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
     ...[
       formatNotificationsSection("NOTIFICATIONS", summary.notifications, limit),
       formatNotificationsSection("UNACKED MENTIONS", summary.unackedMentions ?? [], limit),
+      formatRepositoryHealth(summary),
+      formatPrioritySignals(summary),
       formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
       formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
       formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),

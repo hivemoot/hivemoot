@@ -250,6 +250,49 @@ describe("formatStatus()", () => {
     expect(output).toContain("#53");
     expect(output).toContain("WIP settings panel");
   });
+
+  it("renders REPOSITORY HEALTH and PRIORITY SIGNALS sections when present", () => {
+    const withHealth: RepoSummary = {
+      ...summary,
+      repositoryHealth: {
+        openPRs: { total: 5, mergeReady: 2, changesRequested: 2, draft: 1 },
+        reviewQueue: { waitingForYourReview: 2, oldestWaitingAge: "6h ago" },
+        issuePipeline: { discussion: 4, voting: 1, readyToImplement: 3 },
+        staleRisk: { prsOlderThan3Days: 1, issuesStaleOver24h: 2 },
+      },
+      prioritySignals: [
+        { kind: "review-queue", score: 21, summary: "2 waiting, oldest 6h ago" },
+        { kind: "implementation-gap", score: 16, summary: "3 ready issues, 1 active candidates" },
+      ],
+    };
+
+    const output = formatStatus(withHealth);
+    expect(output).toContain("REPOSITORY HEALTH");
+    expect(output).toContain("Open PRs: 5 (2 merge-ready, 2 changes-requested, 1 draft)");
+    expect(output).toContain("PRIORITY SIGNALS");
+    expect(output).toContain("Highest pressure: review-queue (2 waiting, oldest 6h ago)");
+    expect(output).toContain("Next pressure: implementation-gap (3 ready issues, 1 active candidates)");
+  });
+
+  it("omits Issue pipeline line when pipeline metrics are unavailable", () => {
+    const withPartialHealth: RepoSummary = {
+      ...summary,
+      repositoryHealth: {
+        openPRs: { total: 5, mergeReady: 2, changesRequested: 2, draft: 1 },
+        reviewQueue: { waitingForYourReview: 2, oldestWaitingAge: "6h ago" },
+        staleRisk: { prsOlderThan3Days: 1, issuesStaleOver24h: 2 },
+      },
+      prioritySignals: [{ kind: "review-queue", score: 21, summary: "2 waiting, oldest 6h ago" }],
+      notes: [
+        "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+      ],
+    };
+
+    const output = formatStatus(withPartialHealth);
+    expect(output).toContain("REPOSITORY HEALTH");
+    expect(output).not.toContain("Issue pipeline:");
+    expect(output).toContain("Issue pipeline and implementation-gap metrics are omitted");
+  });
 });
 
 describe("DRIVE sections", () => {

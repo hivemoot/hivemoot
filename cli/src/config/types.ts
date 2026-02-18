@@ -130,6 +130,34 @@ export interface NotificationRef {
   section: string;       // bucket: "implement", "reviewPRs", ... or "other" if not in fetched summary
 }
 
+export interface RepositoryHealth {
+  openPRs: {
+    total: number;
+    mergeReady: number;
+    changesRequested: number;
+    draft: number;
+  };
+  reviewQueue: {
+    waitingForYourReview: number;
+    oldestWaitingAge?: string;
+  };
+  issuePipeline?: {
+    discussion: number;
+    voting: number;
+    readyToImplement: number;
+  };
+  staleRisk: {
+    prsOlderThan3Days: number;
+    issuesStaleOver24h: number;
+  };
+}
+
+export interface PrioritySignal {
+  kind: "review-queue" | "implementation-gap" | "stale-risk";
+  score: number;
+  summary: string;
+}
+
 export interface RepoSummary {
   repo: RepoRef;
   currentUser: string;
@@ -145,6 +173,8 @@ export interface RepoSummary {
   draftPRs: SummaryItem[];
   addressFeedback: SummaryItem[];
   notifications: NotificationRef[];
+  repositoryHealth?: RepositoryHealth;
+  prioritySignals?: PrioritySignal[];
   focus?: string;
   notes: string[];
 }

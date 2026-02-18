@@ -483,7 +483,7 @@ describe("buildSummary()", () => {
     expect(summary.implement[0].competingPRs).toBeUndefined();
   });
 
-  it("ignores PRs without implementation label for competition count", () => {
+  it("counts competing PRs via linked issue references regardless of labels", () => {
     const issue = makeIssue({ number: 45, title: "User Dashboard" });
     const pr = makePR({
       number: 100,
@@ -492,7 +492,7 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [issue], [pr], "testuser", now);
-    expect(summary.implement[0].competingPRs).toBeUndefined();
+    expect(summary.implement[0].competingPRs).toBe(1);
   });
 
   it("counts competition independently per issue", () => {
@@ -698,7 +698,13 @@ describe("buildSummary()", () => {
   // ── Notes field ───────────────────────────────────────────────────
 
   it("initializes notes as empty array", () => {
-    const summary = buildSummary(repo, [], [], "testuser", now);
+    const summary = buildSummary(
+      repo,
+      [makeIssue({ labels: [{ name: "hivemoot:discussion" }] })],
+      [],
+      "testuser",
+      now,
+    );
     expect(summary.notes).toEqual([]);
   });
 
@@ -1164,5 +1170,126 @@ describe("buildSummary()", () => {
         section: "other",
       },
     ]);
+  });
+
+  it("computes repository health metrics from fetched issues and PRs", () => {
+    const issues = [
+      makeIssue({ number: 201, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:30:00Z" }),
+      makeIssue({ number: 202, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-14T11:00:00Z" }),
+      makeIssue({ number: 203, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:00:00Z" }),
+      makeIssue({ number: 204, labels: [{ name: "hivemoot:discussion" }], updatedAt: "2025-06-15T10:00:00Z" }),
+      makeIssue({ number: 205, labels: [{ name: "hivemoot:voting" }], updatedAt: "2025-06-15T09:00:00Z" }),
+    ];
+
+    const prs = [
+      makePR({ number: 301, reviewDecision: "APPROVED", updatedAt: "2025-06-14T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 302, reviewDecision: "CHANGES_REQUESTED", updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 303, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z" }),
+      makePR({ number: 304, updatedAt: "2025-06-10T10:00:00Z", author: { login: "testuser" } }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.repositoryHealth).toEqual({
+      openPRs: {
+        total: 4,
+        mergeReady: 1,
+        changesRequested: 1,
+        draft: 1,
+      },
+      reviewQueue: {
+        waitingForYourReview: 2,
+        oldestWaitingAge: "yesterday",
+      },
+      issuePipeline: {
+        discussion: 1,
+        voting: 1,
+        readyToImplement: 3,
+      },
+      staleRisk: {
+        prsOlderThan3Days: 1,
+        issuesStaleOver24h: 1,
+      },
+    });
+  });
+
+  it("uses mutually exclusive open PR buckets with deterministic precedence", () => {
+    const prs = [
+      makePR({
+        number: 320,
+        isDraft: true,
+        labels: [{ name: "hivemoot:merge-ready" }],
+        reviewDecision: "CHANGES_REQUESTED",
+      }),
+      makePR({
+        number: 321,
+        labels: [{ name: "hivemoot:merge-ready" }],
+        reviewDecision: "CHANGES_REQUESTED",
+      }),
+      makePR({
+        number: 322,
+        reviewDecision: "APPROVED",
+      }),
+      makePR({
+        number: 323,
+      }),
+    ];
+
+    const summary = buildSummary(repo, [], prs, "testuser", now);
+    expect(summary.repositoryHealth?.openPRs).toEqual({
+      total: 4,
+      mergeReady: 1,
+      changesRequested: 1,
+      draft: 1,
+    });
+
+    const breakdown = summary.repositoryHealth!.openPRs;
+    expect(breakdown.mergeReady + breakdown.changesRequested + breakdown.draft).toBeLessThanOrEqual(
+      breakdown.total,
+    );
+  });
+
+  it("ranks non-zero priority signals by score", () => {
+    const issues = [
+      makeIssue({ number: 211, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-14T11:00:00Z" }),
+      makeIssue({ number: 212, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:00:00Z" }),
+    ];
+    const prs = [
+      makePR({
+        number: 311,
+        updatedAt: "2025-06-15T10:00:00Z",
+        author: { login: "other" },
+        closingIssuesReferences: [{ number: 211 }],
+      }),
+      makePR({ number: 312, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.prioritySignals?.map((signal) => signal.kind)).toEqual([
+      "review-queue",
+      "implementation-gap",
+      "stale-risk",
+    ]);
+    expect(summary.prioritySignals?.[0].summary).toContain("1 waiting");
+  });
+
+  it("omits issue pipeline and implementation-gap without default hivemoot phase labels", () => {
+    const issues = [
+      makeIssue({ number: 401, labels: [{ name: "phase:ready-to-implement" }] }),
+      makeIssue({ number: 402, labels: [{ name: "phase:discussion" }] }),
+    ];
+    const prs = [
+      makePR({
+        number: 501,
+        author: { login: "other" },
+        closingIssuesReferences: [{ number: 401 }],
+      }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.repositoryHealth?.issuePipeline).toBeUndefined();
+    expect(summary.prioritySignals?.some((signal) => signal.kind === "implementation-gap")).toBe(false);
+    expect(summary.notes).toContain(
+      "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+    );
   });
 });

@@ -84,6 +84,47 @@ describe("jsonStatus()", () => {
     expect(result.draftPRs[0].tags).toEqual([]);
   });
 
+  it("includes repository health and priority signals in JSON output", () => {
+    const withHealth: RepoSummary = {
+      ...summary,
+      repositoryHealth: {
+        openPRs: { total: 5, mergeReady: 2, changesRequested: 2, draft: 1 },
+        reviewQueue: { waitingForYourReview: 2, oldestWaitingAge: "6h ago" },
+        issuePipeline: { discussion: 4, voting: 1, readyToImplement: 3 },
+        staleRisk: { prsOlderThan3Days: 1, issuesStaleOver24h: 2 },
+      },
+      prioritySignals: [
+        { kind: "review-queue", score: 21, summary: "2 waiting, oldest 6h ago" },
+      ],
+    };
+    const result = JSON.parse(jsonStatus(withHealth));
+    expect(result.repositoryHealth.openPRs.total).toBe(5);
+    expect(result.repositoryHealth.reviewQueue.oldestWaitingAge).toBe("6h ago");
+    expect(result.prioritySignals).toHaveLength(1);
+    expect(result.prioritySignals[0].kind).toBe("review-queue");
+  });
+
+  it("supports repository health payloads without issue pipeline metrics", () => {
+    const withPartialHealth: RepoSummary = {
+      ...summary,
+      repositoryHealth: {
+        openPRs: { total: 5, mergeReady: 2, changesRequested: 2, draft: 1 },
+        reviewQueue: { waitingForYourReview: 2, oldestWaitingAge: "6h ago" },
+        staleRisk: { prsOlderThan3Days: 1, issuesStaleOver24h: 2 },
+      },
+      prioritySignals: [{ kind: "review-queue", score: 21, summary: "2 waiting, oldest 6h ago" }],
+      notes: [
+        "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+      ],
+    };
+
+    const result = JSON.parse(jsonStatus(withPartialHealth));
+    expect(result.repositoryHealth).not.toHaveProperty("issuePipeline");
+    expect(result.prioritySignals).toEqual([
+      { kind: "review-queue", score: 21, summary: "2 waiting, oldest 6h ago" },
+    ]);
+  });
+
   it("includes structured fields instead of detail string", () => {
     const result = JSON.parse(jsonStatus(summary));
     // Verify issue items have comments/age
