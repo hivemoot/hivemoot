@@ -1,9 +1,12 @@
 import type { WatchOptions } from "../config/types.js";
 import { CliError } from "../config/types.js";
 import { fetchCurrentUser } from "../github/user.js";
+import type { CommentDetail } from "../github/notifications.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
+  fetchRecentSubjectComments,
+  fetchSubjectBodyResult,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -29,6 +32,49 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function parseIsoMillis(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function buildLatestProcessedByThread(processedKeys: string[]): Map<string, string> {
+  const byThread = new Map<string, string>();
+
+  for (const key of processedKeys) {
+    const separatorIndex = key.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === key.length - 1) continue;
+
+    const threadId = key.slice(0, separatorIndex);
+    const updatedAt = key.slice(separatorIndex + 1);
+    if (parseIsoMillis(updatedAt) === null) continue;
+
+    const existing = byThread.get(threadId);
+    if (!existing || updatedAt > existing) {
+      byThread.set(threadId, updatedAt);
+    }
+  }
+
+  return byThread;
+}
+
+function isCommentAtOrBeforeNotification(
+  comment: CommentDetail,
+  notificationUpdatedAt: string,
+): boolean {
+  const notificationMs = parseIsoMillis(notificationUpdatedAt);
+  if (notificationMs === null) {
+    return true;
+  }
+
+  const commentMs = parseIsoMillis(comment.updatedAt) ?? parseIsoMillis(comment.createdAt);
+  if (commentMs === null) {
+    return true;
+  }
+
+  return commentMs <= notificationMs;
 }
 
 export async function watchCommand(options: WatchOptions): Promise<void> {
@@ -95,6 +141,7 @@ async function runPollLoop(
 
     // Merge keys acked since last poll into processedThreadIds
     state = await mergeAckJournal(stateFile, state);
+    const latestProcessedByThread = buildLatestProcessedByThread(state.processedThreadIds);
 
     try {
       // Capture time before fetch (informational — no longer used as fetch cursor)
@@ -107,6 +154,7 @@ async function runPollLoop(
         // Key on threadId + updated_at so new activity on the same thread
         // is recognized as a distinct event (thread IDs are reused by GitHub)
         const processedKey = `${notification.id}:${notification.updated_at}`;
+        const previousProcessedAt = latestProcessedByThread.get(notification.id);
         if (state.processedThreadIds.includes(processedKey)) continue;
 
         // Fetch the comment that triggered this notification
@@ -123,19 +171,72 @@ async function runPollLoop(
           continue;
         }
 
-        // -- Mention verification (only for reason="mention" with a comment body) --
-        // GitHub keeps reason="mention" on a thread even when the latest comment
-        // doesn't mention the agent (stale thread subscription). Verify the
-        // comment body actually contains @agent before triggering a run.
-        // When there's no comment body (no URL), skip the check — the mention
-        // may be in the issue/PR body itself, which we can't fetch here.
-        if (comment !== null && notification.reason === "mention" && !isAgentMentioned(comment.body, agent)) {
-          log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
-          state = addProcessedId(state, processedKey);
-          continue;
+        let eventSource = comment;
+
+        // -- Mention verification (strict for reason="mention") --
+        // Only emit events when we can prove the authenticated agent is
+        // explicitly mentioned in either:
+        //  1) recent thread comments (anchored by latest comment), or
+        //  2) issue/PR body (when latest_comment_url is absent).
+        // This prevents stale thread notifications from triggering other agents.
+        if (notification.reason === "mention") {
+          if (comment !== null) {
+            if (isAgentMentioned(comment.body, agent)) {
+              eventSource = comment;
+            } else {
+              const recent = await fetchRecentSubjectComments(
+                notification.subject.url,
+                notification.subject.type,
+                previousProcessedAt,
+              );
+
+              if (recent.comments === null) {
+                if (recent.permanentFailure) {
+                  log(`Skipping ${notification.id}: cannot fetch thread comments (permanent), marking processed`);
+                  state = addProcessedId(state, processedKey);
+                  latestProcessedByThread.set(notification.id, notification.updated_at);
+                } else {
+                  log(`Skipping ${notification.id}: thread comment scan failed, will retry`);
+                }
+                continue;
+              }
+
+              const matchingComment = recent.comments.find(
+                (c) => isCommentAtOrBeforeNotification(c, notification.updated_at)
+                  && isAgentMentioned(c.body, agent),
+              );
+              if (!matchingComment) {
+                log(`Skipping ${notification.id}: agent not mentioned in recent thread comments (stale thread)`);
+                state = addProcessedId(state, processedKey);
+                latestProcessedByThread.set(notification.id, notification.updated_at);
+                continue;
+              }
+
+              eventSource = matchingComment;
+            }
+          } else {
+            const subject = await fetchSubjectBodyResult(notification.subject.url);
+            if (subject.detail === null) {
+              if (subject.permanentFailure) {
+                log(`Skipping ${notification.id}: subject fetch failed permanently, marking processed`);
+                state = addProcessedId(state, processedKey);
+                latestProcessedByThread.set(notification.id, notification.updated_at);
+              } else {
+                log(`Skipping ${notification.id}: subject fetch failed, will retry`);
+              }
+              continue;
+            }
+            if (!isAgentMentioned(subject.detail.body, agent)) {
+              log(`Skipping ${notification.id}: agent not mentioned in issue/PR body (stale thread)`);
+              state = addProcessedId(state, processedKey);
+              latestProcessedByThread.set(notification.id, notification.updated_at);
+              continue;
+            }
+            eventSource = subject.detail;
+          }
         }
 
-        const event = buildMentionEvent(notification, comment, agent);
+        const event = buildMentionEvent(notification, eventSource, agent);
         if (!event) {
           // Can't parse — skip silently. Unparseable events reappear next poll
           // but are harmless since all=false naturally drops them once the
