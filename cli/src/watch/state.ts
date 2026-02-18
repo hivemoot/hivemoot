@@ -9,29 +9,68 @@ export interface WatchState {
   processedThreadIds: string[];  // rolling window of thread IDs already handled
 }
 
+export interface LoadStateResult {
+  state: WatchState;
+  degraded: boolean;
+  reason?: string;
+}
+
 /** Load state from disk, or return a default initial state (since = 1 hour ago). */
 export async function loadState(filePath: string): Promise<WatchState> {
+  const result = await loadStateWithStatus(filePath);
+  return result.state;
+}
+
+/** Load state with degradation signal for callers that need explicit warnings. */
+export async function loadStateWithStatus(filePath: string): Promise<LoadStateResult> {
   if (!existsSync(filePath)) {
-    return defaultState();
+    return { state: defaultState(), degraded: false };
   }
 
   try {
     const raw = await readFile(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<WatchState>;
+    let parsed: Partial<WatchState>;
 
-    if (typeof parsed.lastChecked !== "string" || !parsed.lastChecked) {
-      return defaultState();
+    try {
+      parsed = JSON.parse(raw) as Partial<WatchState>;
+    } catch {
+      return {
+        state: defaultState(),
+        degraded: true,
+        reason: "invalid JSON",
+      };
     }
 
+    if (typeof parsed.lastChecked !== "string" || !parsed.lastChecked) {
+      return {
+        state: defaultState(),
+        degraded: true,
+        reason: "missing required fields",
+      };
+    }
+
+    if (!Array.isArray(parsed.processedThreadIds)) {
+      return {
+        state: defaultState(),
+        degraded: true,
+        reason: "missing required fields",
+      };
+    }
+
+    const processedThreadIds = parsed.processedThreadIds.filter((id): id is string => typeof id === "string");
     return {
-      lastChecked: parsed.lastChecked,
-      processedThreadIds: Array.isArray(parsed.processedThreadIds)
-        ? parsed.processedThreadIds.filter((id): id is string => typeof id === "string")
-        : [],
+      state: {
+        lastChecked: parsed.lastChecked,
+        processedThreadIds,
+      },
+      degraded: false,
     };
   } catch {
-    // Corrupted file — start fresh
-    return defaultState();
+    return {
+      state: defaultState(),
+      degraded: true,
+      reason: "read error",
+    };
   }
 }
 

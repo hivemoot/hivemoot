@@ -174,6 +174,7 @@ describe("notifications array in JSON", () => {
   it("includes notifications array first in jsonBuzz summary", () => {
     const result = JSON.parse(jsonBuzz("engineer", role, notifSummary));
     expect(result.summary.notifications).toHaveLength(2);
+    expect(result.summary.unackedMentions).toEqual([]);
     expect(result.summary.notifications[0].ackKey).toBe("T42:2025-06-15T10:00:00Z");
     expect(result.summary.notifications[1].section).toBe("reviewPRs");
     // notifications should be the first key in summary
@@ -184,6 +185,7 @@ describe("notifications array in JSON", () => {
   it("includes notifications array first in jsonStatus", () => {
     const result = JSON.parse(jsonStatus(notifSummary));
     expect(result.notifications).toHaveLength(2);
+    expect(result.unackedMentions).toEqual([]);
     expect(result.notifications[0].threadId).toBe("T42");
     const keys = Object.keys(result);
     expect(keys[0]).toBe("notifications");
@@ -192,11 +194,41 @@ describe("notifications array in JSON", () => {
   it("includes empty notifications array when no notifications", () => {
     const result = JSON.parse(jsonStatus(summary));
     expect(result.notifications).toEqual([]);
+    expect(result.unackedMentions).toEqual([]);
   });
 
   it("includes empty notifications array in jsonBuzz when no notifications", () => {
     const result = JSON.parse(jsonBuzz("engineer", role, summary));
     expect(result.summary.notifications).toEqual([]);
+    expect(result.summary.unackedMentions).toEqual([]);
+  });
+});
+
+describe("unackedMentions array in JSON", () => {
+  it("includes unackedMentions in jsonStatus", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const result = JSON.parse(jsonStatus(withUnacked));
+    expect(result.unackedMentions).toHaveLength(1);
+    expect(result.unackedMentions[0].number).toBe(18);
+  });
+
+  it("includes unackedMentions in jsonBuzz", () => {
+    const withUnacked: RepoSummary = {
+      ...summary,
+      unackedMentions: [
+        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+      ],
+    };
+
+    const result = JSON.parse(jsonBuzz("engineer", role, withUnacked));
+    expect(result.summary.unackedMentions).toHaveLength(1);
+    expect(result.summary.unackedMentions[0].ackKey).toBe("T18:2025-06-15T11:00:00Z");
   });
 });
 

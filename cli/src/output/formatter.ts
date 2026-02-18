@@ -148,20 +148,21 @@ function formatSection(
   return parts.join("\n\n");
 }
 
-function formatNotificationsSection(refs: NotificationRef[], limit?: number): string {
+function formatNotificationsSection(title: string, refs: NotificationRef[], limit?: number): string {
   if (refs.length === 0) return "";
 
   // refs arrive pre-sorted newest-first from buildSummary()
   const displayed = limit ? refs.slice(0, limit) : refs;
-  const header = sectionDivider("NOTIFICATIONS", refs.length);
+  const header = sectionDivider(title, refs.length);
   const lines = displayed.map((r) => {
-    const num = chalk.cyan(`#${r.number}`);
+    const prefix = r.itemType === "Issue" ? "Issue " : r.itemType === "PullRequest" ? "PR " : "";
+    const num = chalk.cyan(`${prefix}#${r.number}`);
     return `  ${num} ${r.title}  ${chalk.dim(r.reason)}  ${chalk.dim(r.age)}  ${kv("ack", r.ackKey)}`;
   });
 
   const parts = [header, ...lines];
   if (limit && refs.length > limit) {
-    parts.push(chalk.dim(`  ... and ${refs.length - limit} more`));
+    parts.push(chalk.dim(`  ... ${refs.length - limit} more`));
   }
 
   return parts.join("\n");
@@ -173,7 +174,8 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
 
   sections.push(
     ...[
-      formatNotificationsSection(summary.notifications, limit),
+      formatNotificationsSection("NOTIFICATIONS", summary.notifications, limit),
+      formatNotificationsSection("UNACKED MENTIONS", summary.unackedMentions ?? [], limit),
       formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
       formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
       formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),

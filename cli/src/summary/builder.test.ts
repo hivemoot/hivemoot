@@ -702,6 +702,11 @@ describe("buildSummary()", () => {
     expect(summary.notes).toEqual([]);
   });
 
+  it("initializes unackedMentions as empty array", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.unackedMentions).toEqual([]);
+  });
+
   // ── Review context fields ──────────────────────────────────────────
 
   it("populates yourReview and yourReviewAge on reviewPRs when currentUser has reviewed", () => {
@@ -1150,6 +1155,7 @@ describe("buildSummary()", () => {
         number: 123,
         title: "Closed ticket still unread",
         url: "https://github.com/hivemoot/colony/issues/123",
+        itemType: "Issue",
         threadId: "T123",
         reason: "mention",
         timestamp: "2025-06-15T12:00:00Z",

@@ -121,6 +121,7 @@ export interface NotificationRef {
   number: number;
   title: string;
   url?: string;
+  itemType?: "Issue" | "PullRequest";
   threadId: string;
   reason: string;
   timestamp: string;
@@ -132,6 +133,7 @@ export interface NotificationRef {
 export interface RepoSummary {
   repo: RepoRef;
   currentUser: string;
+  unackedMentions?: NotificationRef[];
   needsHuman: SummaryItem[];
   driveDiscussion: SummaryItem[];
   driveImplementation: SummaryItem[];
@@ -154,6 +156,7 @@ export interface BuzzOptions {
   json?: boolean;
   limit?: number;
   fetchLimit?: number;
+  stateFile?: string;
   repo?: string;
 }
 

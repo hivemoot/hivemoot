@@ -30,6 +30,12 @@ vi.mock("../github/notifications.js", () => ({
   fetchNotifications: vi.fn(),
 }));
 
+vi.mock("../watch/state.js", () => ({
+  loadState: vi.fn(),
+  loadStateWithStatus: vi.fn(),
+  mergeAckJournal: vi.fn(),
+}));
+
 vi.mock("../summary/builder.js", () => ({
   buildSummary: vi.fn(),
 }));
@@ -51,6 +57,7 @@ import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
 import { fetchNotifications } from "../github/notifications.js";
+import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 import { buildSummary } from "../summary/builder.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
@@ -64,6 +71,8 @@ const mockedFetchPulls = vi.mocked(fetchPulls);
 const mockedFetchCurrentUser = vi.mocked(fetchCurrentUser);
 const mockedFetchVotes = vi.mocked(fetchVotes);
 const mockedFetchNotifications = vi.mocked(fetchNotifications);
+const mockedLoadStateWithStatus = vi.mocked(loadStateWithStatus);
+const mockedMergeAckJournal = vi.mocked(mergeAckJournal);
 const mockedBuildSummary = vi.mocked(buildSummary);
 const mockedFormatBuzz = vi.mocked(formatBuzz);
 const mockedFormatStatus = vi.mocked(formatStatus);
@@ -84,6 +93,7 @@ const testSummary = {
   draftPRs: [],
   addressFeedback: [],
   notifications: [],
+  unackedMentions: [],
   notes: [],
 };
 const testTeamConfig = {
@@ -106,7 +116,15 @@ beforeEach(() => {
   mockedFetchCurrentUser.mockResolvedValue("testuser");
   mockedFetchVotes.mockResolvedValue(new Map());
   mockedFetchNotifications.mockResolvedValue(new Map());
-  mockedBuildSummary.mockReturnValue(testSummary);
+  mockedLoadStateWithStatus.mockResolvedValue({
+    state: {
+      lastChecked: "2026-02-17T00:00:00Z",
+      processedThreadIds: [],
+    },
+    degraded: false,
+  });
+  mockedMergeAckJournal.mockImplementation(async (_stateFile, state) => state);
+  mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
 });
 
 describe("buzzCommand", () => {
@@ -629,6 +647,165 @@ describe("buzzCommand", () => {
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).not.toContain("Could not fetch notifications — unread indicators unavailable.");
+  });
+
+  it("builds unackedMentions from unread mention notifications not in processedThreadIds", async () => {
+    const notificationMap = new Map([[42, {
+      threadId: "T42",
+      reason: "mention",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/test/issues/42",
+      itemType: "Issue" as const,
+    }]]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions).toEqual([
+      expect.objectContaining({
+        number: 42,
+        reason: "mention",
+        ackKey: "T42:2025-06-15T10:00:00Z",
+      }),
+    ]);
+  });
+
+  it("filters already-acked mentions out of unackedMentions", async () => {
+    const notificationMap = new Map([[42, {
+      threadId: "T42",
+      reason: "mention",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/test/issues/42",
+      itemType: "Issue" as const,
+    }]]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedLoadStateWithStatus.mockResolvedValue({
+      state: {
+        lastChecked: "2026-02-17T00:00:00Z",
+        processedThreadIds: ["T42:2025-06-15T10:00:00Z"],
+      },
+      degraded: false,
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions).toEqual([]);
+  });
+
+  it("merges pending ack journal entries before unacked mention filtering", async () => {
+    const notificationMap = new Map([[42, {
+      threadId: "T42",
+      reason: "mention",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/test/issues/42",
+      itemType: "Issue" as const,
+    }]]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedMergeAckJournal.mockResolvedValue({
+      lastChecked: "2026-02-17T00:00:00Z",
+      processedThreadIds: ["T42:2025-06-15T10:00:00Z"],
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    expect(mockedMergeAckJournal).toHaveBeenCalledWith(".hivemoot-watch.json", {
+      lastChecked: "2026-02-17T00:00:00Z",
+      processedThreadIds: [],
+    });
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions).toEqual([]);
+  });
+
+  it("ignores non-mention notifications in unackedMentions", async () => {
+    const notificationMap = new Map([[49, {
+      threadId: "T49",
+      reason: "comment",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Add search",
+      url: "https://github.com/hivemoot/test/pull/49",
+      itemType: "PullRequest" as const,
+    }]]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions).toEqual([]);
+  });
+
+  it("sorts unackedMentions deterministically when timestamps match", async () => {
+    const notificationMap = new Map([
+      [18, {
+        threadId: "TB",
+        reason: "mention",
+        updatedAt: "2025-06-15T10:00:00Z",
+        title: "B",
+        url: "https://github.com/hivemoot/test/issues/18",
+        itemType: "Issue" as const,
+      }],
+      [17, {
+        threadId: "TA",
+        reason: "mention",
+        updatedAt: "2025-06-15T10:00:00Z",
+        title: "A",
+        url: "https://github.com/hivemoot/test/issues/17",
+        itemType: "Issue" as const,
+      }],
+    ]);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions.map((n: { number: number }) => n.number)).toEqual([17, 18]);
+  });
+
+  it("adds warning note when watch state cannot be loaded", async () => {
+    mockedLoadStateWithStatus.mockRejectedValue(new Error("EACCES"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not load watch state (EACCES) from .hivemoot-watch.json — UNACKED MENTIONS may be incomplete.",
+    );
+  });
+
+  it("adds warning note when watch state degrades to defaults", async () => {
+    mockedLoadStateWithStatus.mockResolvedValue({
+      state: {
+        lastChecked: "2026-02-17T00:00:00Z",
+        processedThreadIds: [],
+      },
+      degraded: true,
+      reason: "invalid JSON",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not fully load watch state: invalid JSON from .hivemoot-watch.json — UNACKED MENTIONS may be incomplete.",
+    );
   });
 
   // ── Push permission hints ──────────────────────────────────────────
