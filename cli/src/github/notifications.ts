@@ -1,4 +1,5 @@
 import type { RepoRef, MentionEvent } from "../config/types.js";
+import { CliError } from "../config/types.js";
 import { gh } from "./client.js";
 
 export interface NotificationInfo {
@@ -32,6 +33,16 @@ export interface CommentDetail {
   body: string;
   author: string;
   htmlUrl: string;
+}
+
+export interface FetchDetailResult {
+  detail: CommentDetail | null;
+  permanentFailure: boolean;
+}
+
+export interface FetchCommentsResult {
+  comments: CommentDetail[] | null;
+  permanentFailure: boolean;
 }
 
 /** Extract issue/PR number from a GitHub API subject URL (last path segment). */
@@ -157,12 +168,110 @@ export async function fetchCommentBody(commentUrl: string): Promise<CommentDetai
   }
 }
 
+interface SubjectApiRef {
+  owner: string;
+  repo: string;
+  number: string;
+}
+
+function parseSubjectApiRef(subjectUrl: string): SubjectApiRef | null {
+  if (!subjectUrl) return null;
+
+  let path = subjectUrl;
+  try {
+    path = new URL(subjectUrl).pathname;
+  } catch {
+    // Keep raw value; we support absolute URLs and /repos/... paths.
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length !== 5 || parts[0] !== "repos") return null;
+  if (parts[3] !== "issues" && parts[3] !== "pulls") return null;
+  if (!/^\d+$/.test(parts[4])) return null;
+
+  return {
+    owner: parts[1],
+    repo: parts[2],
+    number: parts[4],
+  };
+}
+
+function isPermanentFetchError(err: unknown): boolean {
+  if (err instanceof CliError || err instanceof Error) {
+    return /\bHTTP (403|404)\b/i.test(err.message);
+  }
+  return false;
+}
+
+async function fetchCommentsList(apiPath: string): Promise<CommentDetail[]> {
+  const raw = await gh([
+    "api",
+    apiPath,
+    "--jq", 'map({ body: (.body // ""), author: (.user.login // .author.login // "unknown"), htmlUrl: (.html_url // "") })',
+  ]);
+  const parsed = JSON.parse(raw) as Array<{ body: string; author: string; htmlUrl: string }>;
+  return parsed.map((comment) => ({
+    body: comment.body,
+    author: comment.author,
+    htmlUrl: comment.htmlUrl,
+  }));
+}
+
+/**
+ * Fetch recent issue/PR comments for mention routing.
+ * For PR subjects, merges issue comments and review comments.
+ */
+export async function fetchRecentSubjectComments(
+  subjectUrl: string,
+  subjectType: string,
+): Promise<FetchCommentsResult> {
+  const ref = parseSubjectApiRef(subjectUrl);
+  if (!ref) {
+    return { comments: null, permanentFailure: true };
+  }
+
+  try {
+    const issueCommentsPath = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=100&sort=updated&direction=desc`;
+    const issueComments = await fetchCommentsList(issueCommentsPath);
+
+    if (subjectType !== "PullRequest") {
+      return { comments: issueComments, permanentFailure: false };
+    }
+
+    const reviewCommentsPath = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100&sort=created&direction=desc`;
+    const reviewComments = await fetchCommentsList(reviewCommentsPath);
+
+    // De-duplicate by URL when the same comment appears in overlapping payloads.
+    const seen = new Set<string>();
+    const merged: CommentDetail[] = [];
+    for (const comment of [...issueComments, ...reviewComments]) {
+      const key = comment.htmlUrl || `${comment.author}:${comment.body}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(comment);
+    }
+    return { comments: merged, permanentFailure: false };
+  } catch (err) {
+    return { comments: null, permanentFailure: isPermanentFetchError(err) };
+  }
+}
+
 /**
  * Fetch the issue/PR body and author from a subject API URL.
  * Returns null if the URL is missing or the fetch fails.
  */
 export async function fetchSubjectBody(subjectUrl: string): Promise<CommentDetail | null> {
-  if (!subjectUrl) return null;
+  const result = await fetchSubjectBodyResult(subjectUrl);
+  return result.detail;
+}
+
+/**
+ * Fetch the issue/PR body and author and classify failures for retry strategy.
+ */
+export async function fetchSubjectBodyResult(subjectUrl: string): Promise<FetchDetailResult> {
+  if (!subjectUrl) {
+    return { detail: null, permanentFailure: true };
+  }
 
   try {
     const raw = await gh([
@@ -172,12 +281,15 @@ export async function fetchSubjectBody(subjectUrl: string): Promise<CommentDetai
     ]);
     const parsed = JSON.parse(raw) as { body: string; author: string; htmlUrl: string };
     return {
-      body: parsed.body,
-      author: parsed.author,
-      htmlUrl: parsed.htmlUrl,
+      detail: {
+        body: parsed.body,
+        author: parsed.author,
+        htmlUrl: parsed.htmlUrl,
+      },
+      permanentFailure: false,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return { detail: null, permanentFailure: isPermanentFetchError(err) };
   }
 }
 

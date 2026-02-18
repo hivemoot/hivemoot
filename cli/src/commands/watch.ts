@@ -4,7 +4,8 @@ import { fetchCurrentUser } from "../github/user.js";
 import {
   fetchMentionNotifications,
   fetchCommentBody,
-  fetchSubjectBody,
+  fetchRecentSubjectComments,
+  fetchSubjectBodyResult,
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
@@ -129,28 +130,55 @@ async function runPollLoop(
         // -- Mention verification (strict for reason="mention") --
         // Only emit events when we can prove the authenticated agent is
         // explicitly mentioned in either:
-        //  1) latest comment body, or
+        //  1) recent thread comments (anchored by latest comment), or
         //  2) issue/PR body (when latest_comment_url is absent).
         // This prevents stale thread notifications from triggering other agents.
         if (notification.reason === "mention") {
           if (comment !== null) {
-            if (!isAgentMentioned(comment.body, agent)) {
-              log(`Skipping ${notification.id}: agent not mentioned in comment body (stale thread)`);
-              state = addProcessedId(state, processedKey);
-              continue;
+            if (isAgentMentioned(comment.body, agent)) {
+              eventSource = comment;
+            } else {
+              const recent = await fetchRecentSubjectComments(
+                notification.subject.url,
+                notification.subject.type,
+              );
+
+              if (recent.comments === null) {
+                if (recent.permanentFailure) {
+                  log(`Skipping ${notification.id}: cannot fetch thread comments (permanent), marking processed`);
+                  state = addProcessedId(state, processedKey);
+                } else {
+                  log(`Skipping ${notification.id}: thread comment scan failed, will retry`);
+                }
+                continue;
+              }
+
+              const matchingComment = recent.comments.find((c) => isAgentMentioned(c.body, agent));
+              if (!matchingComment) {
+                log(`Skipping ${notification.id}: agent not mentioned in recent thread comments (stale thread)`);
+                state = addProcessedId(state, processedKey);
+                continue;
+              }
+
+              eventSource = matchingComment;
             }
           } else {
-            const subject = await fetchSubjectBody(notification.subject.url);
-            if (subject === null) {
-              log(`Skipping ${notification.id}: subject fetch failed, will retry`);
+            const subject = await fetchSubjectBodyResult(notification.subject.url);
+            if (subject.detail === null) {
+              if (subject.permanentFailure) {
+                log(`Skipping ${notification.id}: subject fetch failed permanently, marking processed`);
+                state = addProcessedId(state, processedKey);
+              } else {
+                log(`Skipping ${notification.id}: subject fetch failed, will retry`);
+              }
               continue;
             }
-            if (!isAgentMentioned(subject.body, agent)) {
+            if (!isAgentMentioned(subject.detail.body, agent)) {
               log(`Skipping ${notification.id}: agent not mentioned in issue/PR body (stale thread)`);
               state = addProcessedId(state, processedKey);
               continue;
             }
-            eventSource = subject;
+            eventSource = subject.detail;
           }
         }
 

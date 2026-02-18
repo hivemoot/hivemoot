@@ -10,12 +10,15 @@ import {
   fetchMentionNotifications,
   markNotificationRead,
   fetchCommentBody,
+  fetchRecentSubjectComments,
   fetchSubjectBody,
+  fetchSubjectBodyResult,
   buildMentionEvent,
   parseSubjectNumber,
   isAgentMentioned,
 } from "./notifications.js";
 import type { RawNotification, CommentDetail } from "./notifications.js";
+import { CliError } from "../config/types.js";
 
 const mockedGh = vi.mocked(gh);
 const repo = { owner: "hivemoot", repo: "colony" };
@@ -366,6 +369,124 @@ describe("fetchSubjectBody()", () => {
 
     const result = await fetchSubjectBody("https://api.github.com/repos/hivemoot/colony/issues/42");
     expect(result).toBeNull();
+  });
+});
+
+describe("fetchSubjectBodyResult()", () => {
+  it("returns detail and non-permanent status for success", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      body: "@hivemoot-worker please help",
+      author: "dmitry",
+      htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+    }));
+
+    const result = await fetchSubjectBodyResult("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toEqual({
+      detail: {
+        body: "@hivemoot-worker please help",
+        author: "dmitry",
+        htmlUrl: "https://github.com/hivemoot/colony/issues/42",
+      },
+      permanentFailure: false,
+    });
+  });
+
+  it("classifies 404 as permanent", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Not Found (HTTP 404)", "GH_ERROR", 1));
+
+    const result = await fetchSubjectBodyResult("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toEqual({
+      detail: null,
+      permanentFailure: true,
+    });
+  });
+
+  it("classifies non-HTTP errors as retryable", async () => {
+    mockedGh.mockRejectedValue(new Error("network timeout"));
+
+    const result = await fetchSubjectBodyResult("https://api.github.com/repos/hivemoot/colony/issues/42");
+    expect(result).toEqual({
+      detail: null,
+      permanentFailure: false,
+    });
+  });
+});
+
+describe("fetchRecentSubjectComments()", () => {
+  it("fetches recent issue comments for issues", async () => {
+    mockedGh.mockResolvedValueOnce(JSON.stringify([
+      {
+        body: "@hivemoot-worker one",
+        author: "dmitry",
+        htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-1",
+      },
+    ]));
+
+    const result = await fetchRecentSubjectComments(
+      "https://api.github.com/repos/hivemoot/colony/issues/42",
+      "Issue",
+    );
+
+    expect(result).toEqual({
+      comments: [
+        {
+          body: "@hivemoot-worker one",
+          author: "dmitry",
+          htmlUrl: "https://github.com/hivemoot/colony/issues/42#issuecomment-1",
+        },
+      ],
+      permanentFailure: false,
+    });
+    expect(mockedGh).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches and merges issue + review comments for pull requests", async () => {
+    mockedGh.mockResolvedValueOnce(JSON.stringify([
+      {
+        body: "@hivemoot-worker issue comment",
+        author: "dmitry",
+        htmlUrl: "https://github.com/hivemoot/colony/pull/42#issuecomment-1",
+      },
+    ]));
+    mockedGh.mockResolvedValueOnce(JSON.stringify([
+      {
+        body: "@hivemoot-worker review comment",
+        author: "alice",
+        htmlUrl: "https://github.com/hivemoot/colony/pull/42#discussion_r1",
+      },
+    ]));
+
+    const result = await fetchRecentSubjectComments(
+      "https://api.github.com/repos/hivemoot/colony/pulls/42",
+      "PullRequest",
+    );
+
+    expect(result.comments).toHaveLength(2);
+    expect(result.permanentFailure).toBe(false);
+    expect(mockedGh).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns permanent failure for invalid subject URL", async () => {
+    const result = await fetchRecentSubjectComments("not-a-url", "Issue");
+    expect(result).toEqual({
+      comments: null,
+      permanentFailure: true,
+    });
+    expect(mockedGh).not.toHaveBeenCalled();
+  });
+
+  it("classifies 403 as permanent failure", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Forbidden (HTTP 403)", "GH_ERROR", 1));
+
+    const result = await fetchRecentSubjectComments(
+      "https://api.github.com/repos/hivemoot/colony/issues/42",
+      "Issue",
+    );
+
+    expect(result).toEqual({
+      comments: null,
+      permanentFailure: true,
+    });
   });
 });
 
