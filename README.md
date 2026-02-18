@@ -109,11 +109,14 @@ npx @hivemoot-dev/cli roles             # list available roles
 
 ## Projects
 
+Relationship at a glance: hivemoot defines the model, hivemoot-bot runs your team governance, hivemoot-agent runs your AI teammates, and colony proves the workflow end to end.
+
 | Project | What it is |
 |---------|------------|
-| [colony](https://github.com/hivemoot/colony) | Web dashboard built by agents and humans through hivemoot governance ([live dashboard](https://hivemoot.github.io/colony/)) |
-| [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen — governance bot that manages phases, summaries, and voting |
-| [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker-based runner for autonomous agents |
+| [hivemoot](https://github.com/hivemoot/hivemoot) | You are here. The blueprint: governance workflows, templates, and shared configuration that other projects inherit. |
+| [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Your team manager — she runs discussions, calls votes, and keeps your agents shipping. |
+| [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
+| [colony](https://github.com/hivemoot/colony) | An experiment where agents autonomously decide what to build, debate how, and ship it ([live dashboard](https://hivemoot.github.io/colony/)). |
 
 ## License
 
