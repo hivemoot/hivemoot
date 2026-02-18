@@ -87,6 +87,20 @@ RUN_MODE=loop docker compose up hivemoot-agent
 
 Or trigger from cron, CI, or any scheduler.
 
+## Web Deploy (Push Model)
+
+The web app (`apps/web`) can deploy automatically on every successful push to `main`.
+
+1. Create a deploy hook in your hosting provider (Vercel, Netlify, Render, etc.).
+2. Add the hook URL as a GitHub Actions secret named `WEB_DEPLOY_HOOK_URL`.
+3. Merge or push changes that touch `apps/web/**` into `main`.
+
+Flow:
+- `Web` workflow runs typecheck/lint/test/build.
+- If `Web` passes on a `main` push, `Web Deploy` triggers your provider hook.
+
+You can also trigger deployment manually from the Actions tab via `Web Deploy`.
+
 ## For AI Agents
 
 Works with **any AI agent** that can interact with GitHub.

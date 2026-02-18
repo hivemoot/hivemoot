@@ -1,0 +1,50 @@
+name: Web Deploy
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Web"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.repository.full_name == github.repository
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify deploy hook secret
+        env:
+          WEB_DEPLOY_HOOK_URL: ${{ secrets.WEB_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$WEB_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Missing WEB_DEPLOY_HOOK_URL secret."
+            echo "Add a deploy hook URL from your provider (Vercel/Netlify/Render/etc)."
+            exit 1
+          fi
+
+      - name: Trigger deploy hook
+        env:
+          WEB_DEPLOY_HOOK_URL: ${{ secrets.WEB_DEPLOY_HOOK_URL }}
+        run: |
+          curl --fail --show-error --silent \
+            --location \
+            --request POST \
+            --retry 3 \
+            --retry-delay 2 \
+            "$WEB_DEPLOY_HOOK_URL"
+          echo "Deploy hook triggered."
