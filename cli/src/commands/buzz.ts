@@ -17,7 +17,7 @@ import { buildSummary } from "../summary/builder.js";
 import { isVotingIssue, timeAgo } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
-import { loadState } from "../watch/state.js";
+import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 
 function errorDetail(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -40,6 +40,7 @@ function buildUnackedMentions(
       number,
       title: n.title,
       url: n.url,
+      itemType: n.itemType,
       threadId: n.threadId,
       reason: n.reason,
       timestamp: n.updatedAt,
@@ -49,7 +50,11 @@ function buildUnackedMentions(
     });
   }
 
-  mentions.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  mentions.sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp > b.timestamp ? -1 : 1;
+    if (a.number !== b.number) return a.number - b.number;
+    return a.ackKey.localeCompare(b.ackKey);
+  });
   return mentions;
 }
 
@@ -64,8 +69,22 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   let teamConfigWarning: string | undefined;
   let stateWarning: string | undefined;
 
-  const processedThreadIdsPromise = loadState(stateFile)
-    .then((state) => new Set(state.processedThreadIds))
+  const processedThreadIdsPromise = loadStateWithStatus(stateFile)
+    .then(async (loadResult) => {
+      let state = loadResult.state;
+      try {
+        state = await mergeAckJournal(stateFile, state);
+      } catch (err) {
+        stateWarning = `Could not merge watch ack journal (${errorDetail(err)}) from ${stateFile}.acks — UNACKED MENTIONS may be incomplete.`;
+      }
+
+      if (loadResult.degraded) {
+        const reason = loadResult.reason ? `: ${loadResult.reason}` : "";
+        stateWarning = `Could not fully load watch state${reason} from ${stateFile} — UNACKED MENTIONS may be incomplete.`;
+      }
+
+      return new Set(state.processedThreadIds);
+    })
     .catch((err) => {
       stateWarning = `Could not load watch state (${errorDetail(err)}) from ${stateFile} — UNACKED MENTIONS may be incomplete.`;
       return new Set<string>();

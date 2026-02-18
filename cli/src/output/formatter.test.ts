@@ -527,18 +527,18 @@ describe("NOTIFICATIONS section", () => {
     const notifSummary: RepoSummary = {
       ...summary,
       notifications: [
-        { number: 42, title: "Fix dashboard", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
-        { number: 49, title: "Add search", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
+        { number: 42, title: "Fix dashboard", itemType: "Issue", threadId: "T42", reason: "comment", timestamp: "2025-06-15T10:00:00Z", age: "2h ago", ackKey: "T42:2025-06-15T10:00:00Z", section: "implement" },
+        { number: 49, title: "Add search", itemType: "PullRequest", threadId: "T49", reason: "review_requested", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T49:2025-06-15T11:00:00Z", section: "reviewPRs" },
       ],
     };
     const output = formatStatus(notifSummary);
     expect(output).toContain("NOTIFICATIONS");
     expect(output).toContain("(2)");
-    expect(output).toContain("#42");
+    expect(output).toContain("Issue #42");
     expect(output).toContain("Fix dashboard");
     expect(output).toContain("comment");
     expect(output).toContain("T42:2025-06-15T10:00:00Z");
-    expect(output).toContain("#49");
+    expect(output).toContain("PR #49");
     expect(output).toContain("review_requested");
     // NOTIFICATIONS should appear before other sections
     const notifIdx = output.indexOf("NOTIFICATIONS");
@@ -600,13 +600,13 @@ describe("UNACKED MENTIONS section", () => {
     const withUnacked: RepoSummary = {
       ...summary,
       unackedMentions: [
-        { number: 18, title: "Agents don't always follow up", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
+        { number: 18, title: "Agents don't always follow up", itemType: "Issue", threadId: "T18", reason: "mention", timestamp: "2025-06-15T11:00:00Z", age: "1h ago", ackKey: "T18:2025-06-15T11:00:00Z", section: "unackedMentions" },
       ],
     };
 
     const output = formatStatus(withUnacked);
     expect(output).toContain("UNACKED MENTIONS");
-    expect(output).toContain("#18");
+    expect(output).toContain("Issue #18");
     expect(output).toContain("mention");
     expect(output).toContain("T18:2025-06-15T11:00:00Z");
   });

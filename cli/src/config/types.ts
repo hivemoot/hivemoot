@@ -121,6 +121,7 @@ export interface NotificationRef {
   number: number;
   title: string;
   url?: string;
+  itemType?: "Issue" | "PullRequest";
   threadId: string;
   reason: string;
   timestamp: string;

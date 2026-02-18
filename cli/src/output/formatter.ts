@@ -155,7 +155,8 @@ function formatNotificationsSection(title: string, refs: NotificationRef[], limi
   const displayed = limit ? refs.slice(0, limit) : refs;
   const header = sectionDivider(title, refs.length);
   const lines = displayed.map((r) => {
-    const num = chalk.cyan(`#${r.number}`);
+    const prefix = r.itemType === "Issue" ? "Issue " : r.itemType === "PullRequest" ? "PR " : "";
+    const num = chalk.cyan(`${prefix}#${r.number}`);
     return `  ${num} ${r.title}  ${chalk.dim(r.reason)}  ${chalk.dim(r.age)}  ${kv("ack", r.ackKey)}`;
   });
 
