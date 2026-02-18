@@ -27,6 +27,32 @@ import {
   hasGovernanceLabelName,
 } from "./utils.js";
 
+interface IssuePipelineCounts {
+  discussion: number;
+  voting: number;
+  readyToImplement: number;
+}
+
+function isMergeReadyPR(pr: GitHubPR): boolean {
+  if (pr.isDraft) return false;
+  if (pr.reviewDecision !== "APPROVED") return false;
+  if (pr.mergeable !== "MERGEABLE") return false;
+  if (hasCIFailure(pr)) return false;
+  if (changesRequestedCount(pr) > 0) return false;
+  return true;
+}
+
+function countActiveCandidateIssues(prs: GitHubPR[]): number {
+  const linkedIssueNumbers = new Set<number>();
+  for (const pr of prs) {
+    if (pr.closingIssuesReferences.length === 0) continue;
+    for (const ref of pr.closingIssuesReferences) {
+      linkedIssueNumbers.add(ref.number);
+    }
+  }
+  return linkedIssueNumbers.size;
+}
+
 /** Map verbose check labels to compact values for structured output. */
 function compactChecks(raw: string | null): string | null {
   if (raw === null) return null;
@@ -153,7 +179,7 @@ function classifyPR(
 function buildCompetitionMap(prs: GitHubPR[], currentUser: string): Map<number, number> {
   const map = new Map<number, number>();
   for (const pr of prs) {
-    if (!hasGovernanceLabel(pr.labels, "IMPLEMENTATION")) continue;
+    if (pr.closingIssuesReferences.length === 0) continue;
     if (pr.author?.login === currentUser) continue;
     for (const ref of pr.closingIssuesReferences) {
       map.set(ref.number, (map.get(ref.number) ?? 0) + 1);
@@ -167,6 +193,7 @@ function buildRepositoryHealth(
   prs: GitHubPR[],
   currentUser: string,
   now: Date,
+  issuePipeline: IssuePipelineCounts,
 ): RepositoryHealth {
   let draft = 0;
   let changesRequested = 0;
@@ -180,7 +207,7 @@ function buildRepositoryHealth(
       changesRequested += 1;
       continue;
     }
-    if (hasGovernanceLabel(pr.labels, "MERGE_READY")) {
+    if (isMergeReadyPR(pr)) {
       mergeReady += 1;
     }
   }
@@ -201,12 +228,6 @@ function buildRepositoryHealth(
     oldestWaitingAge = timeAgo(oldest, now);
   }
 
-  const discussion = issues.filter((issue) => hasGovernanceLabel(issue.labels, "DISCUSSION")).length;
-  const voting = issues.filter((issue) =>
-    hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")
-  ).length;
-  const readyToImplement = issues.filter((issue) => hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")).length;
-
   const prsOlderThan3Days = prs.filter((pr) => daysSince(pr.updatedAt, now) > 3).length;
   const issuesStaleOver24h = issues.filter((issue) => daysSince(issue.updatedAt, now) >= 1).length;
 
@@ -222,9 +243,9 @@ function buildRepositoryHealth(
       oldestWaitingAge,
     },
     issuePipeline: {
-      discussion,
-      voting,
-      readyToImplement,
+      discussion: issuePipeline.discussion,
+      voting: issuePipeline.voting,
+      readyToImplement: issuePipeline.readyToImplement,
     },
     staleRisk: {
       prsOlderThan3Days,
@@ -235,9 +256,8 @@ function buildRepositoryHealth(
 
 function buildPrioritySignals(
   health: RepositoryHealth,
-  prs: GitHubPR[],
+  activeCandidates: number,
 ): PrioritySignal[] {
-  const activeCandidates = prs.filter((pr) => hasGovernanceLabel(pr.labels, "IMPLEMENTATION")).length;
   const implementationGap = Math.max(health.issuePipeline.readyToImplement - activeCandidates, 0);
 
   const signals: PrioritySignal[] = [
@@ -435,8 +455,13 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
-  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now);
-  const prioritySignals = buildPrioritySignals(repositoryHealth, prs);
+  const issuePipeline: IssuePipelineCounts = {
+    discussion: discuss.length,
+    voting: voteOn.length,
+    readyToImplement: implement.length,
+  };
+  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
 
   return {
     repo,

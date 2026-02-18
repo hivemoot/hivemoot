@@ -469,7 +469,7 @@ describe("buildSummary()", () => {
     expect(summary.implement[0].competingPRs).toBeUndefined();
   });
 
-  it("ignores PRs without implementation label for competition count", () => {
+  it("counts competing PRs via linked issue references regardless of labels", () => {
     const issue = makeIssue({ number: 45, title: "User Dashboard" });
     const pr = makePR({
       number: 100,
@@ -478,7 +478,7 @@ describe("buildSummary()", () => {
     });
 
     const summary = buildSummary(repo, [issue], [pr], "testuser", now);
-    expect(summary.implement[0].competingPRs).toBeUndefined();
+    expect(summary.implement[0].competingPRs).toBe(1);
   });
 
   it("counts competition independently per issue", () => {
@@ -1156,7 +1156,7 @@ describe("buildSummary()", () => {
     ];
 
     const prs = [
-      makePR({ number: 301, labels: [{ name: "hivemoot:merge-ready" }], updatedAt: "2025-06-14T10:00:00Z", author: { login: "other" } }),
+      makePR({ number: 301, reviewDecision: "APPROVED", updatedAt: "2025-06-14T10:00:00Z", author: { login: "other" } }),
       makePR({ number: 302, reviewDecision: "CHANGES_REQUESTED", updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
       makePR({ number: 303, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z" }),
       makePR({ number: 304, updatedAt: "2025-06-10T10:00:00Z", author: { login: "testuser" } }),
@@ -1201,7 +1201,7 @@ describe("buildSummary()", () => {
       }),
       makePR({
         number: 322,
-        labels: [{ name: "hivemoot:merge-ready" }],
+        reviewDecision: "APPROVED",
       }),
       makePR({
         number: 323,
@@ -1228,7 +1228,12 @@ describe("buildSummary()", () => {
       makeIssue({ number: 212, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: "2025-06-15T11:00:00Z" }),
     ];
     const prs = [
-      makePR({ number: 311, updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
+      makePR({
+        number: 311,
+        updatedAt: "2025-06-15T10:00:00Z",
+        author: { login: "other" },
+        closingIssuesReferences: [{ number: 211 }],
+      }),
       makePR({ number: 312, isDraft: true, labels: [{ name: "hivemoot:candidate" }], updatedAt: "2025-06-15T10:00:00Z", author: { login: "other" } }),
     ];
 
