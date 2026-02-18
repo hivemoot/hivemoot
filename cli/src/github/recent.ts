@@ -46,7 +46,10 @@ export async function fetchRecentClosedByAuthor(
   maxItems = 10,
   lookbackDays = 7,
 ): Promise<RecentClosedItem[]> {
-  const fetchLimit = Math.max(maxItems * 3, 30);
+  const fetchLimit = Math.max(maxItems * 5, 100);
+  const cutoffMs = now.getTime() - lookbackDays * 24 * 60 * 60 * 1000;
+  const cutoffDate = new Date(cutoffMs).toISOString().slice(0, 10);
+  const searchQuery = `closed:>=${cutoffDate} sort:updated-desc`;
 
   const [issuesJson, prsJson] = await Promise.all([
     gh([
@@ -58,6 +61,8 @@ export async function fetchRecentClosedByAuthor(
       author,
       "--state",
       "closed",
+      "--search",
+      searchQuery,
       "--json",
       "number,title,url,labels,closedAt",
       "--limit",
@@ -72,6 +77,8 @@ export async function fetchRecentClosedByAuthor(
       author,
       "--state",
       "closed",
+      "--search",
+      searchQuery,
       "--json",
       "number,title,url,labels,state,mergedAt,closedAt",
       "--limit",
@@ -89,8 +96,6 @@ export async function fetchRecentClosedByAuthor(
     "Failed to parse closed pull requests response from gh CLI",
     "Unexpected closed pull requests response format from gh CLI",
   );
-
-  const cutoffMs = now.getTime() - lookbackDays * 24 * 60 * 60 * 1000;
 
   const issueItems: RecentClosedItem[] = issues
     .filter((issue) => issue.closedAt)

@@ -32,10 +32,12 @@ describe("fetchRecentClosedByAuthor", () => {
       "hivemoot-worker",
       "--state",
       "closed",
+      "--search",
+      "closed:>=2026-02-11 sort:updated-desc",
       "--json",
       "number,title,url,labels,closedAt",
       "--limit",
-      "30",
+      "100",
     ]);
 
     expect(mockGh).toHaveBeenNthCalledWith(2, [
@@ -47,10 +49,12 @@ describe("fetchRecentClosedByAuthor", () => {
       "hivemoot-worker",
       "--state",
       "closed",
+      "--search",
+      "closed:>=2026-02-11 sort:updated-desc",
       "--json",
       "number,title,url,labels,state,mergedAt,closedAt",
       "--limit",
-      "30",
+      "100",
     ]);
   });
 
@@ -161,6 +165,59 @@ describe("fetchRecentClosedByAuthor", () => {
     const result = await fetchRecentClosedByAuthor(repo, "hivemoot-worker", now, 2, 7);
 
     expect(result).toHaveLength(2);
+  });
+
+  it("keeps newest closures when returned data is not ordered by closedAt", async () => {
+    mockGh
+      .mockResolvedValueOnce(
+        JSON.stringify([
+          {
+            number: 71,
+            title: "Older closed issue",
+            url: "https://github.com/hivemoot/hivemoot/issues/71",
+            labels: [],
+            closedAt: "2026-02-16T06:00:00Z",
+          },
+          {
+            number: 72,
+            title: "Newest closed issue",
+            url: "https://github.com/hivemoot/hivemoot/issues/72",
+            labels: [],
+            closedAt: "2026-02-18T09:00:00Z",
+          },
+          {
+            number: 73,
+            title: "Mid closed issue",
+            url: "https://github.com/hivemoot/hivemoot/issues/73",
+            labels: [],
+            closedAt: "2026-02-17T12:00:00Z",
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify([
+          {
+            number: 81,
+            title: "Older PR",
+            url: "https://github.com/hivemoot/hivemoot/pull/81",
+            labels: [],
+            mergedAt: null,
+            closedAt: "2026-02-16T01:00:00Z",
+          },
+          {
+            number: 82,
+            title: "Second newest PR",
+            url: "https://github.com/hivemoot/hivemoot/pull/82",
+            labels: [],
+            mergedAt: "2026-02-18T08:30:00Z",
+            closedAt: "2026-02-18T08:30:00Z",
+          },
+        ]),
+      );
+
+    const result = await fetchRecentClosedByAuthor(repo, "hivemoot-worker", now, 3, 7);
+
+    expect(result.map((item) => item.number)).toEqual([72, 82, 73]);
   });
 
   it("throws CliError for malformed issue JSON", async () => {
