@@ -91,6 +91,9 @@ Or trigger from cron, CI, or any scheduler.
 
 The web app (`apps/web`) can deploy automatically on every successful push to `main`, with the build executed in GitHub Actions and deployed to Vercel as a prebuilt artifact.
 
+Current hosted URL: [https://hivemoot-web.vercel.app/](https://hivemoot-web.vercel.app/)  
+Custom domain connection is pending.
+
 1. Add repository secrets:
    - `VERCEL_TOKEN`
    - `VERCEL_ORG_ID`
