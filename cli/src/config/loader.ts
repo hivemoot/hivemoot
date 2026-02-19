@@ -12,7 +12,10 @@ const ROLE_SLUG_RE = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 10_000;
 const MAX_ONBOARDING_LENGTH = 10_000;
-const YAML_MAX_ALIAS_COUNT = 0;
+// Guard against YAML alias-based DoS ("billion laughs" / CWE-776).
+// js-yaml and npm yaml v2 both default to 100; SnakeYAML defaults to 50.
+// 100 matches the js-yaml default while bounding resource consumption.
+const YAML_MAX_ALIAS_COUNT = 100;
 const YAML_MAX_DEPTH = 40;
 
 function createYamlSecurityGuard(

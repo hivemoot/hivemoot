@@ -376,7 +376,7 @@ describe("loadTeamConfig", () => {
     loadSpy.mockRestore();
   });
 
-  it("rejects YAML aliases", async () => {
+  it("allows a small number of YAML aliases", async () => {
     const aliasYaml = `
 shared: &shared
   description: Engineer
@@ -385,6 +385,23 @@ team:
   roles:
     engineer: *shared
 `;
+    mockedGh.mockResolvedValue(encode(aliasYaml));
+
+    const config = await loadTeamConfig(repo);
+    expect(config.roles.engineer).toEqual({
+      description: "Engineer",
+      instructions: "Build things.",
+    });
+  });
+
+  it("rejects excessive YAML aliases (over 100)", async () => {
+    const anchors = Array.from({ length: 101 }, (_, i) =>
+      `a${i}: &a${i}\n  description: Role ${i}\n  instructions: Do things.`,
+    ).join("\n");
+    const refs = Array.from({ length: 101 }, (_, i) =>
+      `role${i}: *a${i}`,
+    ).join("\n    ");
+    const aliasYaml = `${anchors}\nteam:\n  roles:\n    ${refs}\n`;
     mockedGh.mockResolvedValue(encode(aliasYaml));
 
     await expect(loadTeamConfig(repo)).rejects.toMatchObject({
