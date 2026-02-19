@@ -376,7 +376,7 @@ describe("loadTeamConfig", () => {
     loadSpy.mockRestore();
   });
 
-  it("allows a small number of YAML aliases", async () => {
+  it("allows YAML aliases with a low anchor count", async () => {
     const aliasYaml = `
 shared: &shared
   description: Engineer
@@ -394,7 +394,7 @@ team:
     });
   });
 
-  it("rejects excessive YAML aliases (over 100)", async () => {
+  it("rejects excessive YAML anchors (over 100)", async () => {
     const anchors = Array.from({ length: 101 }, (_, i) =>
       `a${i}: &a${i}\n  description: Role ${i}\n  instructions: Do things.`,
     ).join("\n");
@@ -406,7 +406,7 @@ team:
 
     await expect(loadTeamConfig(repo)).rejects.toMatchObject({
       code: "INVALID_CONFIG",
-      message: expect.stringContaining("invalid YAML"),
+      message: expect.stringContaining("YAML anchors exceed maxAnchorCount (100)"),
     });
   });
 
