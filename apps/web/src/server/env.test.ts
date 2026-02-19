@@ -73,6 +73,8 @@ describe("validateEnv", () => {
       delete env().REDIS_URL;
       delete env().GITHUB_APP_ID;
       delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().GITHUB_CLIENT_ID;
+      delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
 
       const result = validateEnv();
@@ -82,6 +84,8 @@ describe("validateEnv", () => {
           "REDIS_URL",
           "GITHUB_APP_ID",
           "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
         ]);
       }
@@ -91,6 +95,8 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().GITHUB_CLIENT_ID;
+      delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
 
       const result = validateEnv();
@@ -98,6 +104,8 @@ describe("validateEnv", () => {
       if (!result.ok) {
         expect(result.missing).toEqual([
           "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
         ]);
       }
@@ -107,6 +115,8 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().GITHUB_CLIENT_ID = "Iv1.test";
+      env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "invalid-key";
 
       const result = validateEnv();
@@ -120,6 +130,8 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().GITHUB_CLIENT_ID = "Iv1.test";
+      env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "a".repeat(64);
 
       const result = validateEnv();
@@ -127,6 +139,7 @@ describe("validateEnv", () => {
       if (result.ok) {
         expect(result.config.nodeEnv).toBe("production");
         expect(result.config.redisUrl).toBe("redis://prod:6379");
+        expect(result.config.githubClientId).toBe("Iv1.test");
       }
     });
   });

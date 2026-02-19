@@ -1,0 +1,167 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type Redis from "ioredis";
+
+// ---------------------------------------------------------------------------
+// Minimal Redis mock — covers the methods used by setup-session.ts
+// ---------------------------------------------------------------------------
+function makeMockRedis() {
+  const store = new Map<string, string>();
+  const expiryMs = new Map<string, number>();
+
+  const client = {
+    set: vi.fn(async (key: string, value: string, _exArg?: string, ttl?: number) => {
+      store.set(key, value);
+      if (ttl) expiryMs.set(key, Date.now() + ttl * 1000);
+      return "OK";
+    }),
+    get: vi.fn(async (key: string) => {
+      const exp = expiryMs.get(key);
+      if (exp && Date.now() > exp) {
+        store.delete(key);
+        expiryMs.delete(key);
+        return null;
+      }
+      return store.get(key) ?? null;
+    }),
+    del: vi.fn(async (key: string) => {
+      const existed = store.has(key);
+      store.delete(key);
+      expiryMs.delete(key);
+      return existed ? 1 : 0;
+    }),
+    pipeline: vi.fn(() => {
+      const ops: Array<[string, string]> = [];
+      const pipe = {
+        get: (key: string) => { ops.push(["get", key]); return pipe; },
+        del: (key: string) => { ops.push(["del", key]); return pipe; },
+        exec: async () => {
+          return ops.map(([op, key]) => {
+            if (op === "get") {
+              const exp = expiryMs.get(key);
+              if (exp && Date.now() > exp) { store.delete(key); expiryMs.delete(key); return [null, null]; }
+              return [null, store.get(key) ?? null];
+            }
+            if (op === "del") {
+              const existed = store.has(key);
+              store.delete(key); expiryMs.delete(key);
+              return [null, existed ? 1 : 0];
+            }
+            return [null, null];
+          });
+        },
+      };
+      return pipe;
+    }),
+    _store: store,
+  };
+  return client as unknown as Redis & { _store: Map<string, string> };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+import {
+  createOAuthState,
+  validateOAuthState,
+  createSetupSession,
+  getSetupSession,
+} from "./setup-session";
+
+describe("createOAuthState", () => {
+  it("returns a 64-char hex state string", async () => {
+    const redis = makeMockRedis();
+    const state = await createOAuthState("123", redis);
+    expect(state).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("stores installationId in Redis under the state key", async () => {
+    const redis = makeMockRedis();
+    const state = await createOAuthState("456", redis);
+    expect(await redis.get(`oauth-state:${state}`)).toBe("456");
+  });
+});
+
+describe("validateOAuthState", () => {
+  it("returns installationId for a valid state", async () => {
+    const redis = makeMockRedis();
+    const state = await createOAuthState("789", redis);
+    const result = await validateOAuthState(state, redis);
+    expect(result).toBe("789");
+  });
+
+  it("returns null for an unknown state (CSRF protection)", async () => {
+    const redis = makeMockRedis();
+    const result = await validateOAuthState("a".repeat(64), redis);
+    expect(result).toBeNull();
+  });
+
+  it("deletes the state on first use (one-time nonce)", async () => {
+    const redis = makeMockRedis();
+    const state = await createOAuthState("101", redis);
+    await validateOAuthState(state, redis);
+    // Second call must return null
+    const second = await validateOAuthState(state, redis);
+    expect(second).toBeNull();
+  });
+});
+
+describe("createSetupSession", () => {
+  it("returns a 64-char hex token", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "1", userId: 42, userLogin: "alice" },
+      redis,
+    );
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("stores the payload in Redis", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "2", userId: 99, userLogin: "bob" },
+      redis,
+    );
+    const raw = await redis.get(`setup-session:${token}`);
+    expect(raw).not.toBeNull();
+    const data = JSON.parse(raw!);
+    expect(data.installationId).toBe("2");
+    expect(data.userId).toBe(99);
+    expect(data.userLogin).toBe("bob");
+  });
+});
+
+describe("getSetupSession", () => {
+  it("returns the session payload for a valid token", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "3", userId: 7, userLogin: "carol" },
+      redis,
+    );
+    const session = await getSetupSession(token, redis);
+    expect(session).toEqual({ installationId: "3", userId: 7, userLogin: "carol" });
+  });
+
+  it("returns null for an unknown token", async () => {
+    const redis = makeMockRedis();
+    const session = await getSetupSession("x".repeat(64), redis);
+    expect(session).toBeNull();
+  });
+
+  it("returns null for an expired session", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "4", userId: 8, userLogin: "dave" },
+      redis,
+    );
+
+    // Manually corrupt the exp to be in the past
+    const key = `setup-session:${token}`;
+    const raw = await redis.get(key);
+    const data = JSON.parse(raw!);
+    data.exp = Date.now() - 1000; // 1 second in the past
+    await redis.set(key, JSON.stringify(data));
+
+    const session = await getSetupSession(token, redis);
+    expect(session).toBeNull();
+  });
+});

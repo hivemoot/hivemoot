@@ -43,6 +43,8 @@ describe("GET /api/health", () => {
     delete env().REDIS_URL;
     delete env().GITHUB_APP_ID;
     delete env().GITHUB_APP_PRIVATE_KEY;
+    delete env().GITHUB_CLIENT_ID;
+    delete env().GITHUB_CLIENT_SECRET;
     delete env().ENCRYPTION_KEY;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -52,6 +54,8 @@ describe("GET /api/health", () => {
       "REDIS_URL",
       "GITHUB_APP_ID",
       "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
       "ENCRYPTION_KEY",
     ]);
   });
@@ -61,6 +65,8 @@ describe("GET /api/health", () => {
     env().REDIS_URL = "redis://prod:6379";
     env().GITHUB_APP_ID = "99";
     env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().GITHUB_CLIENT_ID = "Iv1.test";
+    env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "a".repeat(64);
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -74,6 +80,8 @@ describe("GET /api/health", () => {
     env().REDIS_URL = "redis://prod:6379";
     env().GITHUB_APP_ID = "99";
     env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().GITHUB_CLIENT_ID = "Iv1.test";
+    env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "not-hex";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
