@@ -13,6 +13,10 @@ interface EnvConfig {
   githubAppId: string | undefined;
   /** GitHub App private key (PEM) */
   githubAppPrivateKey: string | undefined;
+  /** GitHub App OAuth Client ID (Iv1.xxx) — for user OAuth flow */
+  githubClientId: string | undefined;
+  /** GitHub App OAuth Client Secret — for code exchange */
+  githubClientSecret: string | undefined;
   /** 32-byte hex string for AES-256-GCM envelope encryption */
   encryptionKey: string | undefined;
   /** Public-facing site URL */
@@ -25,7 +29,10 @@ const REQUIRED_IN_PRODUCTION = [
   "REDIS_URL",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
   "ENCRYPTION_KEY",
+  "NEXT_PUBLIC_SITE_URL",
 ] as const;
 const ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
@@ -52,6 +59,8 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
       redisUrl: process.env.REDIS_URL,
       githubAppId: process.env.GITHUB_APP_ID,
       githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY,
+      githubClientId: process.env.GITHUB_CLIENT_ID,
+      githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
       encryptionKey: process.env.ENCRYPTION_KEY,
       siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
       nodeEnv,

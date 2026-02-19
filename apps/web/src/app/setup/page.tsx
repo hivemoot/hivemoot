@@ -66,11 +66,13 @@ interface Step {
   status: StepStatus;
 }
 
-const STEPS: Step[] = [
-  { number: 1, label: "Authenticate with GitHub", status: "active" },
-  { number: 2, label: "Configure your API key", status: "upcoming" },
-  { number: 3, label: "Activate governance", status: "upcoming" },
-];
+function buildSteps(isAuthorized: boolean): Step[] {
+  return [
+    { number: 1, label: "Authenticate with GitHub", status: isAuthorized ? "complete" : "active" },
+    { number: 2, label: "Configure your API key", status: isAuthorized ? "active" : "upcoming" },
+    { number: 3, label: "Launch your agent team", status: "upcoming" },
+  ];
+}
 
 function StepIndicator({ step }: { step: Step }) {
   const isActive = step.status === "active";
@@ -137,7 +139,63 @@ function StepConnector({ fromStatus }: { fromStatus: StepStatus }) {
   );
 }
 
-export default function SetupPage() {
+interface SearchParams {
+  installation_id?: string;
+  auth?: string;
+  reason?: string;
+}
+
+/** Banner shown after the OAuth callback resolves. */
+function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
+  if (auth === "ok") {
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-green-500/20 bg-green-500/5 px-4 py-3">
+        <svg className="h-4 w-4 shrink-0 text-green-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
+        </svg>
+        <p className="text-sm text-green-400">GitHub authorization successful. Continue to Step 2.</p>
+      </div>
+    );
+  }
+  if (auth === "denied") {
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-zinc-500/20 bg-zinc-500/5 px-4 py-3">
+        <p className="text-sm text-zinc-400">Authorization was cancelled. Click the button below to try again.</p>
+      </div>
+    );
+  }
+  if (auth === "forbidden") {
+    const message =
+      reason === "not_org_admin"
+        ? "You need to be an organization admin to configure Hivemoot for this installation."
+        : reason === "user_mismatch"
+          ? "The GitHub account you authorized does not match this installation."
+          : "You are not authorized to configure this installation.";
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+        <svg className="h-4 w-4 shrink-0 text-red-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <line x1="4" y1="4" x2="12" y2="12" />
+          <line x1="12" y1="4" x2="4" y2="12" />
+        </svg>
+        <p className="text-sm text-red-400">{message}</p>
+      </div>
+    );
+  }
+  return null;
+}
+
+export default async function SetupPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const params = await searchParams;
+  const installationId = params.installation_id;
+  const auth = params.auth;
+  const reason = params.reason;
+  const isAuthorized = auth === "ok";
+  const STEPS = buildSteps(isAuthorized);
+
   return (
     <div className="relative min-h-screen overflow-hidden">
       {/* --- Background decorations --- */}
@@ -202,6 +260,9 @@ export default function SetupPage() {
           {/* Step 1 content card */}
           <section className="flex-1">
             <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
+              {/* Auth status banner — shown after OAuth callback */}
+              {auth && <AuthStatusBanner auth={auth} reason={reason} />}
+
               {/* Card heading with inline hex icon */}
               <div className="flex items-start gap-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
@@ -250,34 +311,63 @@ export default function SetupPage() {
                 </p>
               </div>
 
-              {/* CTA button (placeholder/disabled) */}
-              <button
-                type="button"
-                disabled
-                className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] opacity-50 cursor-not-allowed transition-colors"
-                aria-label="Authorize with GitHub (coming soon)"
-              >
-                {/* Lock icon indicating not-yet-available */}
-                <svg
-                  className="h-4 w-4"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+              {/* CTA — active link when installation_id is present, disabled otherwise */}
+              {installationId && !isAuthorized ? (
+                <Link
+                  href={`/api/auth/github/start?installation_id=${installationId}`}
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
                 >
-                  <rect x="3" y="7" width="10" height="7" rx="1.5" />
-                  <path d="M5 7V5a3 3 0 0 1 6 0v2" />
-                </svg>
-                Authorize with GitHub
-              </button>
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M8 2C4.686 2 2 4.686 2 8c0 2.651 1.719 4.9 4.105 5.693.3.056.41-.13.41-.289 0-.142-.006-.617-.006-1.12-1.503.274-1.878-.366-1.995-.701-.067-.172-.356-.701-.61-.842-.208-.112-.506-.387-.006-.394.469-.006.804.432.916.61.536.898 1.39.645 1.733.49.053-.387.21-.645.381-.794-1.328-.149-2.716-.664-2.716-2.95 0-.652.232-1.19.61-1.61-.06-.149-.266-.762.06-1.585 0 0 .498-.156 1.636.61a5.52 5.52 0 0 1 1.487-.2c.506 0 1.01.067 1.487.2 1.138-.773 1.636-.61 1.636-.61.326.823.12 1.436.06 1.585.378.42.61.951.61 1.61 0 2.294-1.395 2.801-2.723 2.95.216.187.405.547.405 1.108 0 .795-.007 1.436-.007 1.636 0 .159.11.35.41.29C12.282 12.9 14 10.644 14 8c0-3.314-2.686-6-6-6Z" />
+                  </svg>
+                  Authorize with GitHub
+                </Link>
+              ) : isAuthorized ? (
+                <div className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-5 py-2.5 text-sm font-semibold text-green-400">
+                  <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
+                  </svg>
+                  GitHub connected
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] opacity-50 cursor-not-allowed transition-colors"
+                  aria-label="Authorize with GitHub — open via the installation redirect link"
+                >
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="7" width="10" height="7" rx="1.5" />
+                    <path d="M5 7V5a3 3 0 0 1 6 0v2" />
+                  </svg>
+                  Authorize with GitHub
+                </button>
+              )}
 
-              {/* Development notice */}
-              <p className="mt-4 text-center text-xs text-zinc-600">
-                Coming soon -- BYOK onboarding is under development
-              </p>
+              {/* Contextual hint */}
+              {!installationId && (
+                <p className="mt-4 text-center text-xs text-zinc-600">
+                  Open this page via the GitHub App installation link to activate setup
+                </p>
+              )}
             </div>
           </section>
         </div>
