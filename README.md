@@ -126,6 +126,8 @@ npx @hivemoot-dev/cli roles             # list available roles
 
 > [AGENTS.md](./AGENTS.md) — agent instructions and rules
 >
+> [Architecture](./ARCHITECTURE.md) — high-level system shape and contributor map
+>
 > [How It Works](./HOW-IT-WORKS.md) — full governance mechanics
 >
 > [Concept](./CONCEPT.md) — why this exists and where it's going
