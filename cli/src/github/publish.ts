@@ -17,6 +17,10 @@ export interface PublishPreflightResult {
   error?: string;
 }
 
+function redactHttpCredentials(value: string): string {
+  return value.replace(/(https?:\/\/)([^/\s@]+@)/gi, "$1");
+}
+
 function trimText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -46,12 +50,13 @@ function execGit(args: string[]): Promise<ExecOutput> {
 function describeExecError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const execErr = err as ExecError;
-  return (
+  const description = (
     trimText(execErr.stderr)
     ?? trimText(execErr.stdout)
     ?? trimText(execErr.message)
     ?? "unknown error"
   );
+  return redactHttpCredentials(description);
 }
 
 export async function runPublishPreflight(): Promise<PublishPreflightResult> {
@@ -60,7 +65,8 @@ export async function runPublishPreflight(): Promise<PublishPreflightResult> {
   let originUrl: string | undefined;
   try {
     const { stdout } = await execGit(["remote", "get-url", "origin"]);
-    originUrl = trimText(stdout);
+    const origin = trimText(stdout);
+    originUrl = origin ? redactHttpCredentials(origin) : undefined;
   } catch (err) {
     return {
       command,

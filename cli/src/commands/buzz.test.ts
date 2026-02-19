@@ -898,6 +898,25 @@ describe("buzzCommand", () => {
     expect(summaryArg.notes).toContain("Rerun before implementation: git push --dry-run origin HEAD");
   });
 
+  it("redacts credentialed origin diagnostics in preflight notes", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://token:x-oauth-basic@github.com/hivemoot/test.git",
+      error: "fatal: unable to access 'https://token:x-oauth-basic@github.com/hivemoot/test.git/': The requested URL returned error: 403",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    const preflightNote = summaryArg.notes.find((note: string) => note.startsWith("Publish preflight failed"));
+    expect(preflightNote).toContain("(origin: https://github.com/hivemoot/test.git)");
+    expect(preflightNote).toContain("https://github.com/hivemoot/test.git/");
+    expect(preflightNote).not.toContain("token:x-oauth-basic@");
+  });
+
   it("adds fallback note when publish preflight execution fails", async () => {
     mockedRunPublishPreflight.mockRejectedValue(new Error("spawn git ENOENT"));
     mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });

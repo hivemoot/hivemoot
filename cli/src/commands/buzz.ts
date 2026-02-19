@@ -27,6 +27,10 @@ function errorDetail(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+function redactHttpCredentials(value: string): string {
+  return value.replace(/(https?:\/\/)([^/\s@]+@)/gi, "$1");
+}
+
 function normalizeRemoteUrl(remoteUrl: string): string {
   return remoteUrl.trim().toLowerCase().replace(/\.git$/, "");
 }
@@ -244,12 +248,14 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   if (publishPreflightResult.status === "fulfilled") {
     const preflight = publishPreflightResult.value;
     if (!preflight.ok) {
-      const originSuffix = preflight.originUrl ? ` (origin: ${preflight.originUrl})` : "";
+      const redactedOrigin = preflight.originUrl ? redactHttpCredentials(preflight.originUrl) : undefined;
+      const redactedError = preflight.error ? redactHttpCredentials(preflight.error) : undefined;
+      const originSuffix = redactedOrigin ? ` (origin: ${redactedOrigin})` : "";
       summary.notes.push(
-        `Publish preflight failed (${preflight.command})${originSuffix}: ${preflight.error ?? "unknown error"}.`,
+        `Publish preflight failed (${preflight.command})${originSuffix}: ${redactedError ?? "unknown error"}.`,
       );
 
-      if (preflight.originUrl && originTargetsUpstream(preflight.originUrl, repo)) {
+      if (redactedOrigin && originTargetsUpstream(redactedOrigin, repo)) {
         const forkOwner = currentUser || "<your-user>";
         summary.notes.push(
           `Fork-first fix: git remote rename origin upstream && git remote add origin https://github.com/${forkOwner}/${repo.repo}.git`,

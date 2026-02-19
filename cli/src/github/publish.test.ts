@@ -71,6 +71,19 @@ describe("runPublishPreflight()", () => {
     );
   });
 
+  it("redacts credentials from origin URL", async () => {
+    mockExecSuccess("https://token:x-oauth-basic@github.com/hivemoot-guard/hivemoot.git\n");
+    mockExecSuccess("");
+
+    const result = await runPublishPreflight();
+
+    expect(result).toEqual({
+      command: "git push --dry-run origin HEAD",
+      ok: true,
+      originUrl: "https://github.com/hivemoot-guard/hivemoot.git",
+    });
+  });
+
   it("returns a structured failure when origin remote cannot be resolved", async () => {
     mockExecFailure("fatal: not a git repository", "fatal: not a git repository");
 
@@ -97,5 +110,19 @@ describe("runPublishPreflight()", () => {
       originUrl: "https://github.com/hivemoot/hivemoot.git",
       error: "remote: Permission to hivemoot/hivemoot.git denied to hivemoot-guard.",
     });
+  });
+
+  it("redacts credentials from preflight error output", async () => {
+    mockExecSuccess("https://github.com/hivemoot/hivemoot.git\n");
+    mockExecFailure(
+      "push failed",
+      "fatal: unable to access 'https://token:x-oauth-basic@github.com/hivemoot/hivemoot.git/': The requested URL returned error: 403",
+    );
+
+    const result = await runPublishPreflight();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("https://github.com/hivemoot/hivemoot.git/");
+    expect(result.error).not.toContain("token:x-oauth-basic@");
   });
 });
