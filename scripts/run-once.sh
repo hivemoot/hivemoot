@@ -76,6 +76,15 @@ process.stdout.write(parts.join("\n\n"));
   printf '%s' "$role_prompt_block"
 }
 
+_cleanup_files=()
+# shellcheck disable=SC2317,SC2329  # invoked via trap
+cleanup_once() {
+  for f in "${_cleanup_files[@]-}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+trap cleanup_once EXIT
+
 required_cmds=(git gh)
 for cmd in "${required_cmds[@]}"; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -503,6 +512,7 @@ ${user_message}"
 clone_repo() {
   local askpass
   askpass="$(mktemp)"
+  _cleanup_files+=("$askpass")
   cat > "$askpass" <<'EOF'
 #!/usr/bin/env sh
 case "$1" in
@@ -848,6 +858,7 @@ run_selected_command() {
   local attempt_log_file=""
 
   ec_file="$(mktemp)"
+  _cleanup_files+=("$ec_file")
   # `log_file` is the full merged run log across attempts.
   # `attempt_log_file` is only this attempt; `last_command_log` points to
   # the most recent attempt so session-id extraction is attempt-scoped.
