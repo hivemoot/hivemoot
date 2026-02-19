@@ -6,3 +6,8 @@
 # hardlink target escape through symlink chains (fixed in 7.5.8)
 # exp:2026-03-15 - remove once npm ships tar >= 7.5.8 in the base image
 CVE-2026-26960
+
+# minimatch 9.0.5/10.1.2 in @hivemoot-dev/cli, @kilocode/cli — ReDoS via
+# repeated wildcards with non-matching literal in pattern (fixed in 10.2.1)
+# exp:2026-03-15 - remove once upstream packages bump minimatch >= 10.2.1
+CVE-2026-26996
