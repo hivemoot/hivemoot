@@ -36,6 +36,8 @@ const VALID_CONFIG = {
   githubAppId: "99",
   githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----",
   encryptionKey: "a".repeat(64),
+  byokActiveKeyVersion: "v1",
+  byokMasterKeysJson: '{"v1":"' + "a".repeat(64) + '"}',
   redisClient: {} as ReturnType<typeof getRedisClient>,
 };
 

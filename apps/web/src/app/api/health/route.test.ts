@@ -46,6 +46,8 @@ describe("GET /api/health", () => {
     delete env().GITHUB_CLIENT_ID;
     delete env().GITHUB_CLIENT_SECRET;
     delete env().ENCRYPTION_KEY;
+    delete env().BYOK_ACTIVE_KEY_VERSION;
+    delete env().BYOK_MASTER_KEYS;
     delete env().NEXT_PUBLIC_SITE_URL;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -58,6 +60,8 @@ describe("GET /api/health", () => {
       "GITHUB_CLIENT_ID",
       "GITHUB_CLIENT_SECRET",
       "ENCRYPTION_KEY",
+      "BYOK_ACTIVE_KEY_VERSION",
+      "BYOK_MASTER_KEYS",
       "NEXT_PUBLIC_SITE_URL",
     ]);
   });
@@ -70,6 +74,8 @@ describe("GET /api/health", () => {
     env().GITHUB_CLIENT_ID = "Iv1.test";
     env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "a".repeat(64);
+    env().BYOK_ACTIVE_KEY_VERSION = "v1";
+    env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
     env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -86,6 +92,8 @@ describe("GET /api/health", () => {
     env().GITHUB_CLIENT_ID = "Iv1.test";
     env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "not-hex";
+    env().BYOK_ACTIVE_KEY_VERSION = "v1";
+    env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
     env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };

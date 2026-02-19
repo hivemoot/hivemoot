@@ -76,6 +76,8 @@ describe("validateEnv", () => {
       delete env().GITHUB_CLIENT_ID;
       delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
+      delete env().BYOK_ACTIVE_KEY_VERSION;
+      delete env().BYOK_MASTER_KEYS;
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -88,6 +90,8 @@ describe("validateEnv", () => {
           "GITHUB_CLIENT_ID",
           "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
+          "BYOK_ACTIVE_KEY_VERSION",
+          "BYOK_MASTER_KEYS",
           "NEXT_PUBLIC_SITE_URL",
         ]);
       }
@@ -100,6 +104,8 @@ describe("validateEnv", () => {
       delete env().GITHUB_CLIENT_ID;
       delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
+      delete env().BYOK_ACTIVE_KEY_VERSION;
+      delete env().BYOK_MASTER_KEYS;
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -110,6 +116,8 @@ describe("validateEnv", () => {
           "GITHUB_CLIENT_ID",
           "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
+          "BYOK_ACTIVE_KEY_VERSION",
+          "BYOK_MASTER_KEYS",
           "NEXT_PUBLIC_SITE_URL",
         ]);
       }
@@ -122,6 +130,8 @@ describe("validateEnv", () => {
       env().GITHUB_CLIENT_ID = "Iv1.test";
       env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "a".repeat(64);
+      env().BYOK_ACTIVE_KEY_VERSION = "v1";
+      env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -138,6 +148,8 @@ describe("validateEnv", () => {
       env().GITHUB_CLIENT_ID = "Iv1.test";
       env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "invalid-key";
+      env().BYOK_ACTIVE_KEY_VERSION = "v1";
+      env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
       env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
@@ -154,6 +166,8 @@ describe("validateEnv", () => {
       env().GITHUB_CLIENT_ID = "Iv1.test";
       env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "a".repeat(64);
+      env().BYOK_ACTIVE_KEY_VERSION = "v1";
+      env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
       env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();

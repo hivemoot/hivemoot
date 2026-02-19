@@ -19,6 +19,10 @@ interface EnvConfig {
   githubClientSecret: string | undefined;
   /** 32-byte hex string for AES-256-GCM envelope encryption */
   encryptionKey: string | undefined;
+  /** Active master key version for new BYOK encryptions (e.g. "v1") */
+  byokActiveKeyVersion: string | undefined;
+  /** JSON keyring mapping version → 64-char hex key (e.g. {"v1":"abcd..."}) */
+  byokMasterKeysJson: string | undefined;
   /** Public-facing site URL */
   siteUrl: string;
   /** Current environment */
@@ -32,6 +36,8 @@ const REQUIRED_IN_PRODUCTION = [
   "GITHUB_CLIENT_ID",
   "GITHUB_CLIENT_SECRET",
   "ENCRYPTION_KEY",
+  "BYOK_ACTIVE_KEY_VERSION",
+  "BYOK_MASTER_KEYS",
   "NEXT_PUBLIC_SITE_URL",
 ] as const;
 const ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
@@ -62,6 +68,8 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
       githubClientId: process.env.GITHUB_CLIENT_ID,
       githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
       encryptionKey: process.env.ENCRYPTION_KEY,
+      byokActiveKeyVersion: process.env.BYOK_ACTIVE_KEY_VERSION,
+      byokMasterKeysJson: process.env.BYOK_MASTER_KEYS,
       siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
       nodeEnv,
     },
