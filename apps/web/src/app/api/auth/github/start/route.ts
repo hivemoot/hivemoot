@@ -17,6 +17,7 @@ import { getRedisClient } from "@/server/redis";
 import { createOAuthState } from "@/server/setup-session";
 
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -50,7 +51,16 @@ export async function GET(request: NextRequest) {
   }
 
   const redis = getRedisClient(redisUrl);
-  const state = await createOAuthState(installationId, redis);
+
+  let state: string;
+  try {
+    state = await createOAuthState(installationId, redis);
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to store OAuth state", code: OAUTH_STATE_STORE_FAILED_CODE },
+      { status: 503 },
+    );
+  }
 
   const callbackUrl = `${siteUrl}/api/auth/github/callback`;
   const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);

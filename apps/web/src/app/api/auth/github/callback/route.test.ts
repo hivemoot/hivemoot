@@ -119,6 +119,17 @@ describe("GET /api/auth/github/callback — rejections", () => {
     expect(body.error).toMatch(/state/i);
   });
 
+  it("returns 503 with a stable code when OAuth state lookup fails", async () => {
+    vi.mocked(validateOAuthState).mockRejectedValue(new Error("redis unavailable"));
+
+    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const res = await GET(req);
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("oauth_state_read_failed");
+  });
+
   it("returns 400 when code or state are missing", async () => {
     const req = makeRequest({});
     const res = await GET(req);
@@ -186,5 +197,18 @@ describe("GET /api/auth/github/callback — rejections", () => {
     const req = makeRequest({ code: "bad-code", state: "valid-state" });
     const res = await GET(req);
     expect(res.status).toBe(502);
+  });
+
+  it("returns 503 with a stable code when setup session creation fails", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+    vi.mocked(createSetupSession).mockRejectedValue(new Error("redis unavailable"));
+
+    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const res = await GET(req);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("setup_session_create_failed");
   });
 });

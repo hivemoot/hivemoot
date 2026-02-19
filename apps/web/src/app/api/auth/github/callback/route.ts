@@ -32,6 +32,8 @@ export const SETUP_SESSION_COOKIE = "setup_session";
 
 /** How long the session cookie lives in the browser (matches Redis TTL) */
 const SESSION_COOKIE_MAX_AGE = 600; // 10 minutes
+const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
+const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -72,7 +74,15 @@ export async function GET(request: NextRequest) {
   const redis = getRedisClient(redisUrl);
 
   // --- Step 1: Validate state (CSRF check) ---
-  const installationId = await validateOAuthState(state, redis);
+  let installationId: string | null;
+  try {
+    installationId = await validateOAuthState(state, redis);
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to read OAuth state", code: OAUTH_STATE_READ_FAILED_CODE },
+      { status: 503 },
+    );
+  }
   if (!installationId) {
     return NextResponse.json(
       { error: "Invalid or expired OAuth state" },
@@ -129,10 +139,18 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Step 6: Issue setup session token ---
-  const token = await createSetupSession(
-    { installationId, userId: user.id, userLogin: user.login },
-    redis,
-  );
+  let token: string;
+  try {
+    token = await createSetupSession(
+      { installationId, userId: user.id, userLogin: user.login },
+      redis,
+    );
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to create setup session", code: SETUP_SESSION_CREATE_FAILED_CODE },
+      { status: 503 },
+    );
+  }
 
   // --- Step 7: Redirect to setup page with session cookie ---
   const redirectUrl = `${siteUrl}/setup?installation_id=${installationId}&auth=ok`;

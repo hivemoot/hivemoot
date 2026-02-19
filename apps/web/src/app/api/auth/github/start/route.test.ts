@@ -107,6 +107,16 @@ describe("GET /api/auth/github/start", () => {
     expect(res.status).toBe(503);
   });
 
+  it("returns 503 with a stable code when OAuth state storage fails", async () => {
+    vi.mocked(createOAuthState).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
+    const res = await GET(req);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("oauth_state_store_failed");
+  });
+
   it("includes the callback redirect_uri scoped to siteUrl", async () => {
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=99");
     const res = await GET(req);

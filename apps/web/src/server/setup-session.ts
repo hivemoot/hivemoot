@@ -38,12 +38,9 @@ export async function validateOAuthState(
   state: string,
   redis: Redis,
 ): Promise<string | null> {
-  const key = `${STATE_KEY_PREFIX}${state}`;
-  const [installationId] = await redis.pipeline().get(key).del(key).exec() as [
-    [null, string | null],
-    [null, number],
-  ];
-  return installationId[1] ?? null;
+  // GETDEL is a single atomic command (Redis 6.2+) — guarantees strict one-time
+  // nonce semantics even under concurrent callbacks.
+  return (await redis.getdel(`${STATE_KEY_PREFIX}${state}`)) ?? null;
 }
 
 export interface SetupSessionPayload {

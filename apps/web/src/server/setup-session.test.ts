@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type Redis from "ioredis";
 
 // ---------------------------------------------------------------------------
@@ -29,28 +29,17 @@ function makeMockRedis() {
       expiryMs.delete(key);
       return existed ? 1 : 0;
     }),
-    pipeline: vi.fn(() => {
-      const ops: Array<[string, string]> = [];
-      const pipe = {
-        get: (key: string) => { ops.push(["get", key]); return pipe; },
-        del: (key: string) => { ops.push(["del", key]); return pipe; },
-        exec: async () => {
-          return ops.map(([op, key]) => {
-            if (op === "get") {
-              const exp = expiryMs.get(key);
-              if (exp && Date.now() > exp) { store.delete(key); expiryMs.delete(key); return [null, null]; }
-              return [null, store.get(key) ?? null];
-            }
-            if (op === "del") {
-              const existed = store.has(key);
-              store.delete(key); expiryMs.delete(key);
-              return [null, existed ? 1 : 0];
-            }
-            return [null, null];
-          });
-        },
-      };
-      return pipe;
+    getdel: vi.fn(async (key: string) => {
+      const exp = expiryMs.get(key);
+      if (exp && Date.now() > exp) {
+        store.delete(key);
+        expiryMs.delete(key);
+        return null;
+      }
+      const value = store.get(key) ?? null;
+      store.delete(key);
+      expiryMs.delete(key);
+      return value;
     }),
     _store: store,
   };
@@ -102,6 +91,22 @@ describe("validateOAuthState", () => {
     // Second call must return null
     const second = await validateOAuthState(state, redis);
     expect(second).toBeNull();
+  });
+
+  it("only one concurrent callback can consume a given state (GETDEL atomicity)", async () => {
+    const redis = makeMockRedis();
+    const state = await createOAuthState("install-concurrent", redis);
+
+    // Both calls race for the same state nonce
+    const [a, b] = await Promise.all([
+      validateOAuthState(state, redis),
+      validateOAuthState(state, redis),
+    ]);
+
+    // Exactly one should return the installationId; the other must get null
+    const successes = [a, b].filter((v) => v !== null);
+    expect(successes).toHaveLength(1);
+    expect(successes[0]).toBe("install-concurrent");
   });
 });
 
