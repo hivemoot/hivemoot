@@ -12,6 +12,41 @@ const ROLE_SLUG_RE = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 10_000;
 const MAX_ONBOARDING_LENGTH = 10_000;
+const YAML_MAX_ALIAS_COUNT = 0;
+const YAML_MAX_DEPTH = 40;
+
+function createYamlSecurityGuard(
+  maxDepth: number,
+  maxAliasCount: number,
+): (eventType: "open" | "close", state: unknown) => void {
+  let depth = 0;
+  let anchorCount = 0;
+
+  return (eventType, state) => {
+    if (eventType === "open") {
+      depth += 1;
+      if (depth > maxDepth) {
+        throw new Error(`YAML nesting exceeds max depth (${maxDepth})`);
+      }
+      return;
+    }
+
+    if (eventType === "close") {
+      depth = Math.max(0, depth - 1);
+
+      const anchor = typeof state === "object" && state !== null
+        ? (state as { anchor?: unknown }).anchor
+        : undefined;
+
+      if (typeof anchor === "string" && anchor.length > 0) {
+        anchorCount += 1;
+        if (anchorCount > maxAliasCount) {
+          throw new Error(`YAML aliases and anchors exceed maxAliasCount (${maxAliasCount})`);
+        }
+      }
+    }
+  };
+}
 
 function parseTeamFocus(rawFocus: unknown): string | undefined {
   if (!rawFocus || typeof rawFocus !== "object" || Array.isArray(rawFocus)) return undefined;
@@ -164,7 +199,10 @@ export async function loadTeamConfig(repo: RepoRef): Promise<TeamConfig> {
 
   let config: HivemootConfig;
   try {
-    config = yaml.load(content, { schema: yaml.JSON_SCHEMA }) as HivemootConfig;
+    config = yaml.load(content, {
+      schema: yaml.JSON_SCHEMA,
+      listener: createYamlSecurityGuard(YAML_MAX_DEPTH, YAML_MAX_ALIAS_COUNT),
+    }) as HivemootConfig;
   } catch (err) {
     const detail = err instanceof Error ? `: ${err.message}` : "";
     throw new CliError(
