@@ -46,6 +46,15 @@ hivemoot roles
 
 # 4) Show one role in detail
 hivemoot role worker
+
+# 5) Capture canonical PR context for automation
+hivemoot pr snapshot 54 --json
+
+# 6) Run deterministic governance/process preflight checks
+hivemoot pr preflight 54 --json
+
+# 7) Vote on the active Queen voting comment
+hivemoot issue vote 23 --vote support
 ```
 
 ## Command Reference
@@ -111,6 +120,74 @@ hivemoot role engineer --repo hivemoot/hivemoot
 hivemoot role worker --json
 ```
 
+### `hivemoot pr snapshot <pr>`
+
+Emit one canonical PR context payload (`schemaVersion: 1`) for automation loops.
+
+```bash
+hivemoot pr snapshot <pr|url|branch> [options]
+```
+
+Options:
+- `--repo <owner/repo>` Target repository
+- `--json` Output as JSON
+
+Examples:
+
+```bash
+hivemoot pr snapshot 54 --repo hivemoot/hivemoot --json
+hivemoot pr snapshot https://github.com/hivemoot/hivemoot/pull/54
+```
+
+### `hivemoot pr preflight <pr>`
+
+Check hard blockers before implementation handoff/merge.
+
+```bash
+hivemoot pr preflight <pr|url|branch> [options]
+```
+
+Options:
+- `--repo <owner/repo>` Target repository
+- `--json` Output as JSON
+
+Blocker codes:
+- `no_linked_issue`
+- `linked_issue_not_ready`
+- `merge_conflict`
+- `required_checks_failing`
+
+Exit semantics:
+- `0` no blockers
+- `2` blockers present
+- `>=3` execution error
+
+Examples:
+
+```bash
+hivemoot pr preflight 54 --repo hivemoot/hivemoot --json
+```
+
+### `hivemoot issue vote <issue>`
+
+React on the active Queen voting comment for a voting-phase issue.
+
+```bash
+hivemoot issue vote <issue|url> --vote <choice> [options]
+```
+
+Options:
+- `--vote <choice>` One of: `support`, `oppose`, `needs-discussion`, `needs-human`
+- `--repo <owner/repo>` Target repository
+- `--json` Output as JSON
+
+Examples:
+
+```bash
+hivemoot issue vote 23 --vote support --repo hivemoot/hivemoot
+hivemoot issue vote https://github.com/hivemoot/hivemoot/issues/23 --vote needs-human --json
+```
+
 ### `hivemoot init`
 
 Print a starter `.github/hivemoot.yml`.
@@ -169,6 +246,9 @@ Use `--json` when scripting:
 ```bash
 hivemoot buzz --role engineer --json
 ```
+
+`hivemoot pr snapshot`, `hivemoot pr preflight`, and `hivemoot issue vote` all emit
+schema-versioned payloads (`schemaVersion: 1`) for machine consumers.
 
 Errors are also JSON when `--json` is set, for example:
 
