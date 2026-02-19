@@ -23,6 +23,27 @@ function trimText(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function redactHttpUrlCredentials(urlText: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlText);
+  } catch {
+    return urlText;
+  }
+
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || (!parsed.username && !parsed.password)) {
+    return urlText;
+  }
+
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.toString();
+}
+
+function sanitizeHttpUrlsInText(value: string): string {
+  return value.replace(/https?:\/\/[^\s'"]+/gi, (candidate) => redactHttpUrlCredentials(candidate));
+}
+
 function execGit(args: string[]): Promise<ExecOutput> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -46,12 +67,12 @@ function execGit(args: string[]): Promise<ExecOutput> {
 function describeExecError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const execErr = err as ExecError;
-  return (
+  const detail = (
     trimText(execErr.stderr)
     ?? trimText(execErr.stdout)
     ?? trimText(execErr.message)
-    ?? "unknown error"
   );
+  return detail ? sanitizeHttpUrlsInText(detail) : "unknown error";
 }
 
 export async function runPublishPreflight(): Promise<PublishPreflightResult> {
@@ -60,7 +81,8 @@ export async function runPublishPreflight(): Promise<PublishPreflightResult> {
   let originUrl: string | undefined;
   try {
     const { stdout } = await execGit(["remote", "get-url", "origin"]);
-    originUrl = trimText(stdout);
+    const rawOriginUrl = trimText(stdout);
+    originUrl = rawOriginUrl ? sanitizeHttpUrlsInText(rawOriginUrl) : undefined;
   } catch (err) {
     return {
       command,
