@@ -197,4 +197,17 @@ describe("getSetupSession", () => {
     const session = await getSetupSession("a".repeat(64), redis);
     expect(session).toBeNull();
   });
+
+  it("returns null when Redis contains invalid JSON (corrupted data)", async () => {
+    const redis = makeMockRedis();
+    const key = "setup-session:" + "b".repeat(64);
+    await redis.set(key, "not-valid-json{{{");
+
+    const session = await getSetupSession("b".repeat(64), redis);
+    expect(session).toBeNull();
+
+    // Corrupted key should be cleaned up
+    const remaining = await redis.get(key);
+    expect(remaining).toBeNull();
+  });
 });

@@ -111,12 +111,18 @@ export async function getSetupSession(
   const raw = await redis.get(`${SESSION_KEY_PREFIX}${token}`);
   if (!raw) return null;
 
-  const data = JSON.parse(raw) as SetupSessionPayload & { exp: number };
+  try {
+    const data = JSON.parse(raw) as SetupSessionPayload & { exp: number };
 
-  if (typeof data.exp !== "number" || Date.now() > data.exp) {
+    if (typeof data.exp !== "number" || Date.now() > data.exp) {
+      await redis.del(`${SESSION_KEY_PREFIX}${token}`);
+      return null;
+    }
+
+    return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
+  } catch {
+    // Corrupted JSON in Redis — treat as invalid session and clean up.
     await redis.del(`${SESSION_KEY_PREFIX}${token}`);
     return null;
   }
-
-  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
 }
