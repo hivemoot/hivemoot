@@ -533,6 +533,53 @@ describe("watchCommand (--once mode)", () => {
     );
   });
 
+  it("finds mention in thread comment when latest_comment_url is null and body does not mention agent", async () => {
+    const notification = makeNotification({
+      subject: {
+        url: "https://api.github.com/repos/owner/repo/pulls/67",
+        type: "PullRequest",
+        title: "Test PR",
+        latest_comment_url: null,
+      },
+    });
+    const matchingComment: CommentDetail = {
+      body: "@test-agent deep research and review",
+      author: "someone",
+      htmlUrl: "https://github.com/owner/repo/pull/67#issuecomment-999",
+      createdAt: "2026-02-01T11:29:00.000Z",
+      updatedAt: "2026-02-01T11:29:00.000Z",
+    };
+    const event = makeEvent({ body: matchingComment.body, url: matchingComment.htmlUrl });
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedFetchSubjectResult.mockResolvedValue({
+      detail: {
+        body: "PR description without any mention",
+        author: "owner",
+        htmlUrl: "https://github.com/owner/repo/pull/67",
+      },
+      permanentFailure: false,
+    });
+    mockedIsAgentMentioned.mockImplementation((body, agent) => body.includes(`@${agent}`));
+    mockedFetchRecentComments.mockResolvedValue({
+      comments: [matchingComment],
+      permanentFailure: false,
+    });
+    mockedBuildEvent.mockReturnValue(event);
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    // Should fall through body check → scan thread comments → find mention
+    expect(mockedFetchSubjectResult).toHaveBeenCalledWith(notification.subject.url);
+    expect(mockedFetchRecentComments).toHaveBeenCalledWith(
+      notification.subject.url,
+      notification.subject.type,
+      undefined,
+    );
+    expect(mockedBuildEvent).toHaveBeenCalledWith(notification, matchingComment, "test-agent");
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
+  });
+
   it("retries when issue/PR body fetch fails for no-comment mention event", async () => {
     const notification = makeNotification({
       subject: {

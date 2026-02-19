@@ -73,7 +73,10 @@ describe("validateEnv", () => {
       delete env().REDIS_URL;
       delete env().GITHUB_APP_ID;
       delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().GITHUB_CLIENT_ID;
+      delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
+      delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
       expect(result.ok).toBe(false);
@@ -82,7 +85,10 @@ describe("validateEnv", () => {
           "REDIS_URL",
           "GITHUB_APP_ID",
           "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
+          "NEXT_PUBLIC_SITE_URL",
         ]);
       }
     });
@@ -91,15 +97,37 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       delete env().GITHUB_APP_PRIVATE_KEY;
+      delete env().GITHUB_CLIENT_ID;
+      delete env().GITHUB_CLIENT_SECRET;
       delete env().ENCRYPTION_KEY;
+      delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.missing).toEqual([
           "GITHUB_APP_PRIVATE_KEY",
+          "GITHUB_CLIENT_ID",
+          "GITHUB_CLIENT_SECRET",
           "ENCRYPTION_KEY",
+          "NEXT_PUBLIC_SITE_URL",
         ]);
+      }
+    });
+
+    it("fails when NEXT_PUBLIC_SITE_URL is missing in production", () => {
+      env().REDIS_URL = "redis://prod:6379";
+      env().GITHUB_APP_ID = "99";
+      env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().GITHUB_CLIENT_ID = "Iv1.test";
+      env().GITHUB_CLIENT_SECRET = "secret";
+      env().ENCRYPTION_KEY = "a".repeat(64);
+      delete env().NEXT_PUBLIC_SITE_URL;
+
+      const result = validateEnv();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.missing).toContain("NEXT_PUBLIC_SITE_URL");
       }
     });
 
@@ -107,7 +135,10 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().GITHUB_CLIENT_ID = "Iv1.test";
+      env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "invalid-key";
+      env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
       expect(result.ok).toBe(false);
@@ -120,13 +151,18 @@ describe("validateEnv", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
+      env().GITHUB_CLIENT_ID = "Iv1.test";
+      env().GITHUB_CLIENT_SECRET = "secret";
       env().ENCRYPTION_KEY = "a".repeat(64);
+      env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.config.nodeEnv).toBe("production");
         expect(result.config.redisUrl).toBe("redis://prod:6379");
+        expect(result.config.githubClientId).toBe("Iv1.test");
+        expect(result.config.siteUrl).toBe("https://hivemoot.dev");
       }
     });
   });
