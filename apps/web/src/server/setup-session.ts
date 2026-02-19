@@ -113,7 +113,7 @@ export async function getSetupSession(
 
   const data = JSON.parse(raw) as SetupSessionPayload & { exp: number };
 
-  if (Date.now() > data.exp) {
+  if (typeof data.exp !== "number" || Date.now() > data.exp) {
     await redis.del(`${SESSION_KEY_PREFIX}${token}`);
     return null;
   }

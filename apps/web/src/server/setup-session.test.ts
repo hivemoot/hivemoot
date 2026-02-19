@@ -188,4 +188,13 @@ describe("getSetupSession", () => {
     const session = await getSetupSession(token, redis);
     expect(session).toBeNull();
   });
+
+  it("returns null when exp field is missing (corrupted payload)", async () => {
+    const redis = makeMockRedis();
+    const key = "setup-session:" + "a".repeat(64);
+    await redis.set(key, JSON.stringify({ installationId: "5", userId: 9, userLogin: "eve" }));
+
+    const session = await getSetupSession("a".repeat(64), redis);
+    expect(session).toBeNull();
+  });
 });

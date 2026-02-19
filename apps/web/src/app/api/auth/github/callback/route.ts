@@ -158,18 +158,22 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Failed to check org membership" }, { status: 502 });
     }
     if (!isAdmin) {
-      const response = NextResponse.redirect(
-        `${siteUrl}/setup?installation_id=${installationId}&auth=forbidden&reason=not_org_admin`,
-      );
+      const forbiddenUrl = new URL(`${siteUrl}/setup`);
+      forbiddenUrl.searchParams.set("installation_id", installationId);
+      forbiddenUrl.searchParams.set("auth", "forbidden");
+      forbiddenUrl.searchParams.set("reason", "not_org_admin");
+      const response = NextResponse.redirect(forbiddenUrl.toString());
       clearOAuthStateBindingCookie(response);
       return response;
     }
   } else {
     // User installation: authenticated user must be the installer
     if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
-      const response = NextResponse.redirect(
-        `${siteUrl}/setup?installation_id=${installationId}&auth=forbidden&reason=user_mismatch`,
-      );
+      const forbiddenUrl = new URL(`${siteUrl}/setup`);
+      forbiddenUrl.searchParams.set("installation_id", installationId);
+      forbiddenUrl.searchParams.set("auth", "forbidden");
+      forbiddenUrl.searchParams.set("reason", "user_mismatch");
+      const response = NextResponse.redirect(forbiddenUrl.toString());
       clearOAuthStateBindingCookie(response);
       return response;
     }
@@ -190,8 +194,10 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Step 7: Redirect to setup page with session cookie ---
-  const redirectUrl = `${siteUrl}/setup?installation_id=${installationId}&auth=ok`;
-  const response = NextResponse.redirect(redirectUrl);
+  const successUrl = new URL(`${siteUrl}/setup`);
+  successUrl.searchParams.set("installation_id", installationId);
+  successUrl.searchParams.set("auth", "ok");
+  const response = NextResponse.redirect(successUrl.toString());
 
   response.cookies.set(SETUP_SESSION_COOKIE, token, {
     httpOnly: true,
