@@ -4,10 +4,12 @@ import {
   type GitHubIssue,
   type NotificationRef,
   type RecentClosedItem,
+  type RepoRef,
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
 import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
+import { runPublishPreflight } from "../github/publish.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -23,6 +25,17 @@ import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 
 function errorDetail(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function normalizeRemoteUrl(remoteUrl: string): string {
+  return remoteUrl.trim().toLowerCase().replace(/\.git$/, "");
+}
+
+function originTargetsUpstream(originUrl: string, repo: RepoRef): boolean {
+  const normalized = normalizeRemoteUrl(originUrl);
+  const owner = repo.owner.toLowerCase();
+  const name = repo.repo.toLowerCase();
+  return normalized.includes(`github.com/${owner}/${name}`) || normalized.includes(`github.com:${owner}/${name}`);
 }
 
 function buildUnackedMentions(
@@ -94,12 +107,20 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   // Fetch summary data in parallel with optional team config loading.
   // Focus is additive and should not delay base status data.
-  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult] = await Promise.allSettled([
+  const [
+    issuesResult,
+    prsResult,
+    userResult,
+    notificationsResult,
+    pushAccessResult,
+    publishPreflightResult,
+  ] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
     fetchRepoPushAccess(repo),
+    runPublishPreflight(),
   ]);
 
   try {
@@ -217,6 +238,29 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   } else {
     summary.notes.push(
       `Could not check push permissions (${errorDetail(pushAccessResult.reason)}) — check this repository's contribution docs for publishing guidance.`,
+    );
+  }
+
+  if (publishPreflightResult.status === "fulfilled") {
+    const preflight = publishPreflightResult.value;
+    if (!preflight.ok) {
+      const originSuffix = preflight.originUrl ? ` (origin: ${preflight.originUrl})` : "";
+      summary.notes.push(
+        `Publish preflight failed (${preflight.command})${originSuffix}: ${preflight.error ?? "unknown error"}.`,
+      );
+
+      if (preflight.originUrl && originTargetsUpstream(preflight.originUrl, repo)) {
+        const forkOwner = currentUser || "<your-user>";
+        summary.notes.push(
+          `Fork-first fix: git remote rename origin upstream && git remote add origin https://github.com/${forkOwner}/${repo.repo}.git`,
+        );
+      }
+
+      summary.notes.push(`Rerun before implementation: ${preflight.command}`);
+    }
+  } else {
+    summary.notes.push(
+      `Could not run publish preflight (${errorDetail(publishPreflightResult.reason)}) — run git push --dry-run origin HEAD before implementation.`,
     );
   }
 

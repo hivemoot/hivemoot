@@ -10,6 +10,10 @@ vi.mock("../github/repo.js", () => ({
   fetchRepoPushAccess: vi.fn(),
 }));
 
+vi.mock("../github/publish.js", () => ({
+  runPublishPreflight: vi.fn(),
+}));
+
 vi.mock("../github/issues.js", () => ({
   fetchIssues: vi.fn(),
 }));
@@ -56,6 +60,7 @@ vi.mock("../output/json.js", () => ({
 
 import { loadTeamConfig } from "../config/loader.js";
 import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
+import { runPublishPreflight } from "../github/publish.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -70,6 +75,7 @@ import { buzzCommand } from "./buzz.js";
 
 const mockedResolveRepo = vi.mocked(resolveRepo);
 const mockedFetchRepoPushAccess = vi.mocked(fetchRepoPushAccess);
+const mockedRunPublishPreflight = vi.mocked(runPublishPreflight);
 const mockedLoadTeamConfig = vi.mocked(loadTeamConfig);
 const mockedFetchIssues = vi.mocked(fetchIssues);
 const mockedFetchPulls = vi.mocked(fetchPulls);
@@ -117,6 +123,11 @@ beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
   mockedResolveRepo.mockResolvedValue(testRepo);
   mockedFetchRepoPushAccess.mockResolvedValue(true);
+  mockedRunPublishPreflight.mockResolvedValue({
+    command: "git push --dry-run origin HEAD",
+    ok: true,
+    originUrl: "https://github.com/hivemoot-guard/hivemoot.git",
+  });
   mockedLoadTeamConfig.mockResolvedValue(testTeamConfig);
   mockedFetchIssues.mockResolvedValue([]);
   mockedFetchPulls.mockResolvedValue([]);
@@ -862,6 +873,42 @@ describe("buzzCommand", () => {
     await buzzCommand({});
 
     expect(mockedFetchRepoPushAccess).toHaveBeenCalledWith(testRepo);
+    expect(mockedRunPublishPreflight).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds blocking note when publish preflight fails", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://github.com/hivemoot/test.git",
+      error: "remote: Permission denied (403)",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Publish preflight failed (git push --dry-run origin HEAD) (origin: https://github.com/hivemoot/test.git): remote: Permission denied (403).",
+    );
+    expect(summaryArg.notes).toContain(
+      "Fork-first fix: git remote rename origin upstream && git remote add origin https://github.com/testuser/test.git",
+    );
+    expect(summaryArg.notes).toContain("Rerun before implementation: git push --dry-run origin HEAD");
+  });
+
+  it("adds fallback note when publish preflight execution fails", async () => {
+    mockedRunPublishPreflight.mockRejectedValue(new Error("spawn git ENOENT"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes).toContain(
+      "Could not run publish preflight (spawn git ENOENT) — run git push --dry-run origin HEAD before implementation.",
+    );
   });
 
   it("adds publishing-flow guidance note when token cannot push", async () => {
