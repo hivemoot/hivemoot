@@ -343,16 +343,10 @@ for index in "${!agent_ids[@]}"; do
 
     # Preserve per-agent isolation while allowing subscription auth reuse:
     # copy shared provider home state once into each agent home.
-    seed_provider_home "/home/node/.codex" "$agent_home/.codex"
-    seed_provider_home "/home/node/.gemini" "$agent_home/.gemini"
-    seed_provider_home "/home/node/.claude" "$agent_home/.claude"
-    seed_provider_home "/home/node/.config/claude" "$agent_home/.config/claude"
-    seed_provider_home "/home/node/.config/kilo" "$agent_home/.config/kilo"
-    seed_provider_home "/home/node/.config/opencode" "$agent_home/.config/opencode"
-    seed_provider_home "/home/node/.local/share/opencode" "$agent_home/.local/share/opencode"
+    seed_shared_provider_state "$agent_home"
 
     # Generate OpenCode auth.json if missing (API key stored in auth.json,
-    # not in config provider options). Must run after seed_provider_home so
+    # not in config provider options). Must run after shared-state seeding so
     # the bind-mounted config is already in place.
     generate_opencode_config "$agent_home"
 

@@ -120,6 +120,22 @@ seed_provider_home() {
   fi
 }
 
+# Managed-mode seeding: copy shared provider state into each isolated
+# agent home. This intentionally mirrors directory-level provider data.
+seed_shared_provider_state() {
+  local agent_home="$1"
+  local source_home="${2:-/home/node}"
+
+  seed_provider_home "${source_home}/.codex" "${agent_home}/.codex"
+  seed_provider_home "${source_home}/.gemini" "${agent_home}/.gemini"
+  seed_provider_home "${source_home}/.claude" "${agent_home}/.claude"
+  seed_provider_home "${source_home}/.claude.json" "${agent_home}/.claude.json"
+  seed_provider_home "${source_home}/.config/claude" "${agent_home}/.config/claude"
+  seed_provider_home "${source_home}/.config/kilo" "${agent_home}/.config/kilo"
+  seed_provider_home "${source_home}/.config/opencode" "${agent_home}/.config/opencode"
+  seed_provider_home "${source_home}/.local/share/opencode" "${agent_home}/.local/share/opencode"
+}
+
 # Selective auth seeding: copy only credential files for a provider,
 # skipping conversation caches and session state. Use this instead of
 # seed_provider_home when JOB_ID isolation is active.
@@ -137,6 +153,9 @@ seed_provider_auth() {
   if [ -f "${source_home}/.claude/.credentials.json" ]; then
     mkdir -p "${agent_home}/.claude"
     cp "${source_home}/.claude/.credentials.json" "${agent_home}/.claude/.credentials.json"
+  fi
+  if [ -f "${source_home}/.claude.json" ]; then
+    cp "${source_home}/.claude.json" "${agent_home}/.claude.json"
   fi
 
   # Codex: only auth.json

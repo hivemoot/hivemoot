@@ -80,6 +80,8 @@ x-agent-env: &agent-env
   GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
   ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
   OPENROUTER_API_KEY_FILE: ${OPENROUTER_API_KEY_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN_FILE: ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
   KILO_PROVIDER: ${KILO_PROVIDER:-}
   KILO_MODEL: ${KILO_MODEL:-}
   KILOCODE_TOKEN_FILE: ${KILOCODE_TOKEN_FILE:-}
@@ -116,6 +118,18 @@ services:
   auth-claude:
     <<: *agent-base
     entrypoint: ["claude"]
+
+  auth-claude-setup-token:
+    <<: *agent-base
+    entrypoint: ["bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        claude setup-token
+        cat > "${HOME}/.claude.json" <<'JSON'
+        {"hasCompletedOnboarding": true}
+        JSON
+        echo "Token setup complete. Persist ${HOME}/.claude/.credentials.json and ${HOME}/.claude.json."
 
   auth-kilo:
     <<: *agent-base

@@ -15,11 +15,26 @@ for secret_var in \
   GEMINI_API_KEY \
   ANTHROPIC_API_KEY \
   OPENROUTER_API_KEY \
+  CLAUDE_CODE_OAUTH_TOKEN \
   KILOCODE_TOKEN \
   ZAI_API_KEY
 do
   load_secret_from_file "$secret_var"
 done
+
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  mkdir -p "${HOME}/.claude"
+  # Use a far-future local expiry so Claude Code treats the bootstrap token
+  # as non-expired; actual token lifetime is enforced server-side.
+  cat > "${HOME}/.claude/.credentials.json" <<CREDS
+{"claudeAiOauth":{"accessToken":"${CLAUDE_CODE_OAUTH_TOKEN}","expiresAt":4102444800000}}
+CREDS
+  cat > "${HOME}/.claude.json" <<'JSON'
+{"hasCompletedOnboarding":true}
+JSON
+  chmod 600 "${HOME}/.claude/.credentials.json"
+  chmod 600 "${HOME}/.claude.json"
+fi
 
 mode="${RUN_MODE:-once}"
 case "$mode" in

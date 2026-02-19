@@ -104,6 +104,7 @@ for secret_var in \
   GEMINI_API_KEY \
   ANTHROPIC_API_KEY \
   OPENROUTER_API_KEY \
+  CLAUDE_CODE_OAUTH_TOKEN \
   KILOCODE_TOKEN \
   ZAI_API_KEY
 do
@@ -393,6 +394,9 @@ if [ -n "$job_home" ]; then
   if [ -f "${HOME}/.claude/.credentials.json" ]; then
     mkdir -p "$job_home/.claude"
     cp "${HOME}/.claude/.credentials.json" "$job_home/.claude/.credentials.json"
+  fi
+  if [ -f "${HOME}/.claude.json" ]; then
+    cp "${HOME}/.claude.json" "$job_home/.claude.json"
   fi
 
   # Codex: auth.json is the credential file
@@ -736,11 +740,14 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
 
     if [ "$claude_auth_mode" = "subscription" ]; then
-      if [ ! -d "${HOME}/.claude" ] && [ ! -d "${HOME}/.config/claude" ]; then
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        log "Using Claude long-lived OAuth token"
+      elif [ ! -d "${HOME}/.claude" ] && [ ! -d "${HOME}/.config/claude" ]; then
         echo "Claude subscription credentials not found. Run: docker compose run --rm auth-claude" >&2
         exit 1
+      else
+        log "Using Claude subscription/cached auth (no API key required)"
       fi
-      log "Using Claude subscription/cached auth (no API key required)"
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 

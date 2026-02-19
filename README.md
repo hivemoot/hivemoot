@@ -167,12 +167,22 @@ For subscription mode (no API key needed), authenticate once per provider:
 
 ```bash
 docker compose run --rm auth-claude
+docker compose run --rm auth-claude-setup-token
 docker compose run --rm auth-codex
 docker compose run --rm auth-gemini
 docker compose run --rm auth-kilo
 ```
 
 Then set `AGENT_AUTH_MODE=subscription` in `.env`.
+
+For Claude headless automation, `auth-claude-setup-token` is recommended. It runs
+`claude setup-token` and writes `~/.claude.json` with
+`{"hasCompletedOnboarding": true}` so isolated agent homes can skip interactive onboarding.
+Store the token in a secret file and set:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude_oauth_token
+```
 
 ## Kilo Provider Comparison
 
@@ -343,6 +353,20 @@ chmod 600 secrets/anthropic_api_key
 AGENT_PROVIDER=claude
 AGENT_AUTH_MODE=api_key
 ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+```
+
+### Example: Claude subscription token
+
+```bash
+printf '%s' "sk-ant-oat01-xxx" > secrets/claude_oauth_token
+chmod 600 secrets/claude_oauth_token
+```
+
+```bash
+# .env
+AGENT_PROVIDER=claude
+AGENT_AUTH_MODE=subscription
+CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude_oauth_token
 ```
 
 ### Example: Codex
