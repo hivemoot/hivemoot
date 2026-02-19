@@ -23,13 +23,13 @@ x-agent-base: &agent-base
   <<: *agent-base-common
   tmpfs:
     - /tmp:size=2g,mode=1777
-    - /home/node/.codex
-    - /home/node/.gemini
-    - /home/node/.claude
-    - /home/node/.config/claude
-    - /home/node/.config/kilo
-    - /home/node/.config/opencode
-    - /home/node/.local/share/opencode
+    - /home/node/.codex:uid=1000,gid=1000,mode=0700
+    - /home/node/.gemini:uid=1000,gid=1000,mode=0700
+    - /home/node/.claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/kilo:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/opencode:uid=1000,gid=1000,mode=0700
+    - /home/node/.local/share/opencode:uid=1000,gid=1000,mode=0700
   volumes:
     - ./data:/workspace
 
