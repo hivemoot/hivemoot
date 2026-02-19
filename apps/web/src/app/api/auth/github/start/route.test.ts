@@ -15,11 +15,12 @@ vi.mock("@/server/redis", () => ({
 
 vi.mock("@/server/setup-session", () => ({
   createOAuthState: vi.fn(),
+  OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
 }));
 
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { createOAuthState } from "@/server/setup-session";
+import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
 import { GET } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(validateEnv).mockReturnValue({ ok: true, config: { ...VALID_CONFIG } });
   vi.mocked(getRedisClient).mockReturnValue({} as ReturnType<typeof getRedisClient>);
-  vi.mocked(createOAuthState).mockResolvedValue("deadbeef".repeat(8));
+  vi.mocked(createOAuthState).mockResolvedValue({
+    state: "deadbeef".repeat(8),
+    stateBinding: "cafebabe".repeat(8),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -64,6 +68,10 @@ describe("GET /api/auth/github/start", () => {
     expect(location).toContain("client_id=Iv1.test");
     expect(location).toContain("state=deadbeef");
     expect(location).toContain("scope=read%3Aorg");
+
+    const setCookie = res.headers.get("set-cookie")!;
+    expect(setCookie).toContain(`${OAUTH_STATE_BINDING_COOKIE}=`);
+    expect(setCookie).toContain("HttpOnly");
   });
 
   it("returns 400 when installation_id is missing", async () => {

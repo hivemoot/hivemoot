@@ -20,27 +20,68 @@ const SESSION_TTL_SECONDS = 600;
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
 
+/**
+ * Browser binding cookie for OAuth state.
+ *
+ * The callback must present both:
+ * - URL `state`
+ * - this cookie value
+ * and they must match the server-side state record.
+ */
+export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
+
+interface OAuthStatePayload {
+  installationId: string;
+  stateBinding: string;
+}
+
+export interface OAuthStateRecord {
+  state: string;
+  stateBinding: string;
+}
+
 export async function createOAuthState(
   installationId: string,
   redis: Redis,
-): Promise<string> {
+): Promise<OAuthStateRecord> {
   const state = randomBytes(32).toString("hex");
+  const stateBinding = randomBytes(32).toString("hex");
+  const payload: OAuthStatePayload = { installationId, stateBinding };
   await redis.set(
     `${STATE_KEY_PREFIX}${state}`,
-    installationId,
+    JSON.stringify(payload),
     "EX",
     STATE_TTL_SECONDS,
   );
-  return state;
+  return { state, stateBinding };
 }
 
 export async function validateOAuthState(
   state: string,
+  stateBinding: string | undefined,
   redis: Redis,
 ): Promise<string | null> {
+  if (!stateBinding) return null;
+
   // GETDEL is a single atomic command (Redis 6.2+) — guarantees strict one-time
   // nonce semantics even under concurrent callbacks.
-  return (await redis.getdel(`${STATE_KEY_PREFIX}${state}`)) ?? null;
+  const raw = await redis.getdel(`${STATE_KEY_PREFIX}${state}`);
+  if (!raw) return null;
+
+  try {
+    const payload = JSON.parse(raw) as Partial<OAuthStatePayload>;
+    if (
+      typeof payload.installationId !== "string"
+      || typeof payload.stateBinding !== "string"
+    ) {
+      return null;
+    }
+
+    if (payload.stateBinding !== stateBinding) return null;
+    return payload.installationId;
+  } catch {
+    return null;
+  }
 }
 
 export interface SetupSessionPayload {

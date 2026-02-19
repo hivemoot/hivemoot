@@ -57,56 +57,75 @@ import {
 } from "./setup-session";
 
 describe("createOAuthState", () => {
-  it("returns a 64-char hex state string", async () => {
+  it("returns a 64-char hex state string and state-binding nonce", async () => {
     const redis = makeMockRedis();
-    const state = await createOAuthState("123", redis);
-    expect(state).toMatch(/^[0-9a-f]{64}$/);
+    const record = await createOAuthState("123", redis);
+    expect(record.state).toMatch(/^[0-9a-f]{64}$/);
+    expect(record.stateBinding).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("stores installationId in Redis under the state key", async () => {
+  it("stores installationId and binding in Redis under the state key", async () => {
     const redis = makeMockRedis();
-    const state = await createOAuthState("456", redis);
-    expect(await redis.get(`oauth-state:${state}`)).toBe("456");
+    const record = await createOAuthState("456", redis);
+    const raw = await redis.get(`oauth-state:${record.state}`);
+    expect(raw).not.toBeNull();
+    const payload = JSON.parse(raw!);
+    expect(payload.installationId).toBe("456");
+    expect(payload.stateBinding).toBe(record.stateBinding);
   });
 });
 
 describe("validateOAuthState", () => {
   it("returns installationId for a valid state", async () => {
     const redis = makeMockRedis();
-    const state = await createOAuthState("789", redis);
-    const result = await validateOAuthState(state, redis);
+    const record = await createOAuthState("789", redis);
+    const result = await validateOAuthState(record.state, record.stateBinding, redis);
     expect(result).toBe("789");
   });
 
   it("returns null for an unknown state (CSRF protection)", async () => {
     const redis = makeMockRedis();
-    const result = await validateOAuthState("a".repeat(64), redis);
+    const result = await validateOAuthState("a".repeat(64), "b".repeat(64), redis);
     expect(result).toBeNull();
   });
 
   it("deletes the state on first use (one-time nonce)", async () => {
     const redis = makeMockRedis();
-    const state = await createOAuthState("101", redis);
-    await validateOAuthState(state, redis);
+    const record = await createOAuthState("101", redis);
+    await validateOAuthState(record.state, record.stateBinding, redis);
     // Second call must return null
-    const second = await validateOAuthState(state, redis);
+    const second = await validateOAuthState(record.state, record.stateBinding, redis);
     expect(second).toBeNull();
   });
 
   it("only one concurrent callback can consume a given state (GETDEL atomicity)", async () => {
     const redis = makeMockRedis();
-    const state = await createOAuthState("install-concurrent", redis);
+    const record = await createOAuthState("install-concurrent", redis);
 
     // Both calls race for the same state nonce
     const [a, b] = await Promise.all([
-      validateOAuthState(state, redis),
-      validateOAuthState(state, redis),
+      validateOAuthState(record.state, record.stateBinding, redis),
+      validateOAuthState(record.state, record.stateBinding, redis),
     ]);
 
     // Exactly one should return the installationId; the other must get null
     const successes = [a, b].filter((v) => v !== null);
     expect(successes).toHaveLength(1);
     expect(successes[0]).toBe("install-concurrent");
+  });
+
+  it("rejects when state-binding cookie does not match", async () => {
+    const redis = makeMockRedis();
+    const record = await createOAuthState("install-1", redis);
+    const result = await validateOAuthState(record.state, "f".repeat(64), redis);
+    expect(result).toBeNull();
+  });
+
+  it("rejects when state-binding cookie is missing", async () => {
+    const redis = makeMockRedis();
+    const record = await createOAuthState("install-2", redis);
+    const result = await validateOAuthState(record.state, undefined, redis);
+    expect(result).toBeNull();
   });
 });
 

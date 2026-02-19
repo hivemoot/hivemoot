@@ -14,10 +14,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { createOAuthState } from "@/server/setup-session";
+import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
 
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
+const OAUTH_STATE_COOKIE_MAX_AGE = 600; // 10 minutes, aligned with Redis state TTL
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -52,9 +53,9 @@ export async function GET(request: NextRequest) {
 
   const redis = getRedisClient(redisUrl);
 
-  let state: string;
+  let stateRecord: { state: string; stateBinding: string };
   try {
-    state = await createOAuthState(installationId, redis);
+    stateRecord = await createOAuthState(installationId, redis);
   } catch {
     return NextResponse.json(
       { error: "Failed to store OAuth state", code: OAUTH_STATE_STORE_FAILED_CODE },
@@ -66,9 +67,17 @@ export async function GET(request: NextRequest) {
   const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);
   authorizeUrl.searchParams.set("client_id", githubClientId);
   authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
-  authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("state", stateRecord.state);
   // Request minimum scopes: we only need to read org membership
   authorizeUrl.searchParams.set("scope", "read:org");
 
-  return NextResponse.redirect(authorizeUrl.toString());
+  const response = NextResponse.redirect(authorizeUrl.toString());
+  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
+    path: "/",
+  });
+  return response;
 }

@@ -17,6 +17,7 @@ vi.mock("@/server/github-auth", () => ({
 vi.mock("@/server/setup-session", () => ({
   validateOAuthState: vi.fn(),
   createSetupSession: vi.fn(),
+  OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
 }));
 
 import { validateEnv } from "@/server/env";
@@ -28,7 +29,11 @@ import {
   getInstallation,
   checkOrgAdmin,
 } from "@/server/github-auth";
-import { validateOAuthState, createSetupSession } from "@/server/setup-session";
+import {
+  validateOAuthState,
+  createSetupSession,
+  OAUTH_STATE_BINDING_COOKIE,
+} from "@/server/setup-session";
 import { GET, SETUP_SESSION_COOKIE } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +57,19 @@ function makeRequest(params: Record<string, string>) {
   return new NextRequest(url.toString());
 }
 
+function makeRequestWithCookie(
+  params: Record<string, string>,
+  cookieValue?: string,
+) {
+  const url = new URL("https://example.com/api/auth/github/callback");
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const headers = new Headers();
+  if (cookieValue) {
+    headers.set("cookie", `${OAUTH_STATE_BINDING_COOKIE}=${cookieValue}`);
+  }
+  return new NextRequest(url.toString(), { headers });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(validateEnv).mockReturnValue({ ok: true, config: { ...VALID_CONFIG } });
@@ -59,7 +77,9 @@ beforeEach(() => {
   vi.mocked(generateAppJwt).mockReturnValue("app-jwt");
   vi.mocked(exchangeOAuthCode).mockResolvedValue("user-token");
   vi.mocked(getAuthenticatedUser).mockResolvedValue({ login: "alice", id: 1 });
-  vi.mocked(validateOAuthState).mockResolvedValue("12345");
+  vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+    stateBinding === "binding-cookie" ? "12345" : null
+  ));
   vi.mocked(createSetupSession).mockResolvedValue("session-token-abc");
 });
 
@@ -73,7 +93,10 @@ describe("GET /api/auth/github/callback — happy paths", () => {
       account: { login: "alice", type: "User" },
     });
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(307);
@@ -94,7 +117,10 @@ describe("GET /api/auth/github/callback — happy paths", () => {
     });
     vi.mocked(checkOrgAdmin).mockResolvedValue(true);
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(307);
@@ -111,7 +137,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
   it("returns 400 on state mismatch (CSRF protection)", async () => {
     vi.mocked(validateOAuthState).mockResolvedValue(null);
 
-    const req = makeRequest({ code: "gh-code", state: "tampered-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "tampered-state" },
+      "bad-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(400);
@@ -122,7 +151,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
   it("returns 503 with a stable code when OAuth state lookup fails", async () => {
     vi.mocked(validateOAuthState).mockRejectedValue(new Error("redis unavailable"));
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(503);
@@ -142,7 +174,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
     });
     vi.mocked(checkOrgAdmin).mockResolvedValue(false);
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(307);
@@ -157,7 +192,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
       account: { login: "alice", type: "User" },
     });
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
 
     expect(res.status).toBe(307);
@@ -174,7 +212,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
       account: { login: "alice", type: "User" },
     });
 
-    const req = makeRequest({ code: "gh-code", state: "legit-state", installation_id: "ATTACKER" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "legit-state", installation_id: "ATTACKER" },
+      "binding-cookie",
+    );
     await GET(req);
 
     // Session must be created with the installationId FROM REDIS, not from the URL
@@ -185,16 +226,31 @@ describe("GET /api/auth/github/callback — rejections", () => {
   });
 
   it("redirects with auth=denied when GitHub returns error param", async () => {
-    const req = makeRequest({ error: "access_denied" });
+    const req = makeRequestWithCookie(
+      { error: "access_denied", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("auth=denied");
+    expect(res.headers.get("location")).toContain("installation_id=12345");
+  });
+
+  it("keeps plain denied redirect when callback error has no valid state binding", async () => {
+    const req = makeRequest({ error: "access_denied", state: "valid-state" });
+    const res = await GET(req);
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("auth=denied");
+    expect(res.headers.get("location")).not.toContain("installation_id=");
   });
 
   it("returns 502 when code exchange fails", async () => {
     vi.mocked(exchangeOAuthCode).mockRejectedValue(new Error("bad_verification_code"));
 
-    const req = makeRequest({ code: "bad-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "bad-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
     expect(res.status).toBe(502);
   });
@@ -205,10 +261,32 @@ describe("GET /api/auth/github/callback — rejections", () => {
     });
     vi.mocked(createSetupSession).mockRejectedValue(new Error("redis unavailable"));
 
-    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
     const res = await GET(req);
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.code).toBe("setup_session_create_failed");
+  });
+
+  it("rejects callback when state-binding cookie is missing", async () => {
+    const req = makeRequest({ code: "gh-code", state: "valid-state" });
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/state/i);
+  });
+
+  it("rejects callback when state-binding cookie is mismatched", async () => {
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "wrong-binding",
+    );
+    const res = await GET(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/state/i);
   });
 });

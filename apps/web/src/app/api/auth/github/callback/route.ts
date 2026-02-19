@@ -25,7 +25,11 @@ import {
   getInstallation,
   checkOrgAdmin,
 } from "@/server/github-auth";
-import { validateOAuthState, createSetupSession } from "@/server/setup-session";
+import {
+  validateOAuthState,
+  createSetupSession,
+  OAUTH_STATE_BINDING_COOKIE,
+} from "@/server/setup-session";
 
 /** Cookie name for the short-lived setup session token */
 export const SETUP_SESSION_COOKIE = "setup_session";
@@ -34,6 +38,16 @@ export const SETUP_SESSION_COOKIE = "setup_session";
 const SESSION_COOKIE_MAX_AGE = 600; // 10 minutes
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
+
+function clearOAuthStateBindingCookie(response: NextResponse) {
+  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 0,
+    path: "/",
+  });
+}
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -61,22 +75,39 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get("code");
   const state = searchParams.get("state");
   const errorParam = searchParams.get("error");
+  const oauthStateBinding = request.cookies.get(OAUTH_STATE_BINDING_COOKIE)?.value;
+  const redis = getRedisClient(redisUrl);
 
   // GitHub sends `error=access_denied` when the user cancels
   if (errorParam) {
-    return NextResponse.redirect(`${siteUrl}/setup?auth=denied`);
+    const deniedUrl = new URL(`${siteUrl}/setup`);
+    deniedUrl.searchParams.set("auth", "denied");
+
+    // Preserve installation context for retry CTA when state+cookie validate.
+    if (state) {
+      try {
+        const deniedInstallationId = await validateOAuthState(state, oauthStateBinding, redis);
+        if (deniedInstallationId) {
+          deniedUrl.searchParams.set("installation_id", deniedInstallationId);
+        }
+      } catch {
+        // Fall back to a plain denied redirect if state storage is unavailable.
+      }
+    }
+
+    const deniedResponse = NextResponse.redirect(deniedUrl.toString());
+    clearOAuthStateBindingCookie(deniedResponse);
+    return deniedResponse;
   }
 
   if (!code || !state) {
     return NextResponse.json({ error: "Missing code or state" }, { status: 400 });
   }
 
-  const redis = getRedisClient(redisUrl);
-
   // --- Step 1: Validate state (CSRF check) ---
   let installationId: string | null;
   try {
-    installationId = await validateOAuthState(state, redis);
+    installationId = await validateOAuthState(state, oauthStateBinding, redis);
   } catch {
     return NextResponse.json(
       { error: "Failed to read OAuth state", code: OAUTH_STATE_READ_FAILED_CODE },
@@ -84,10 +115,12 @@ export async function GET(request: NextRequest) {
     );
   }
   if (!installationId) {
-    return NextResponse.json(
+    const response = NextResponse.json(
       { error: "Invalid or expired OAuth state" },
       { status: 400 },
     );
+    clearOAuthStateBindingCookie(response);
+    return response;
   }
 
   let userToken: string;
@@ -125,16 +158,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Failed to check org membership" }, { status: 502 });
     }
     if (!isAdmin) {
-      return NextResponse.redirect(
+      const response = NextResponse.redirect(
         `${siteUrl}/setup?installation_id=${installationId}&auth=forbidden&reason=not_org_admin`,
       );
+      clearOAuthStateBindingCookie(response);
+      return response;
     }
   } else {
     // User installation: authenticated user must be the installer
     if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
-      return NextResponse.redirect(
+      const response = NextResponse.redirect(
         `${siteUrl}/setup?installation_id=${installationId}&auth=forbidden&reason=user_mismatch`,
       );
+      clearOAuthStateBindingCookie(response);
+      return response;
     }
   }
 
@@ -163,6 +200,7 @@ export async function GET(request: NextRequest) {
     maxAge: SESSION_COOKIE_MAX_AGE,
     path: "/",
   });
+  clearOAuthStateBindingCookie(response);
 
   return response;
 }
