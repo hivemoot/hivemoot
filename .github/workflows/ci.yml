@@ -26,6 +26,8 @@ jobs:
         run: bash scripts/test-target-repo-validation.sh
       - name: Verify Trivy ignore validation behavior
         run: bash scripts/test-trivyignore-check.sh
+      - name: Verify session resume lifecycle behavior
+        run: bash scripts/test-session-resume-lifecycle.sh
 
   hadolint:
     name: Hadolint

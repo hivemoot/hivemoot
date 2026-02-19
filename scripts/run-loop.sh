@@ -372,7 +372,7 @@ trap handle_shutdown TERM INT
 # Returns ${agent_run_busy_exit} when the agent was busy (lock not acquired).
 # Returns non-zero/non-3 on actual run-once.sh failure.
 #
-# Args: agent_id extra_prompt [ack_key state_file]
+# Args: agent_id extra_prompt [ack_key state_file session_key]
 # When ack_key + state_file are provided and the run succeeds (exit 0),
 # calls `hivemoot ack` to mark the mention as read. On failure the mention
 # stays unread so the next poll cycle retries it.
@@ -381,6 +381,7 @@ try_run_agent() {
   local extra_prompt="$2"
   local ack_key="${3:-}"
   local state_file="${4:-}"
+  local session_key="${5:-}"
   local lock_file="${lock_dir}/${agent_id}.lock"
   local token_file="${agent_token_files[$agent_id]}"
   local agent_workspace="${workspace_root}/agents/${agent_id}"
@@ -404,6 +405,7 @@ try_run_agent() {
     export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$extra_prompt"
+    export AGENT_SESSION_KEY="$session_key"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
 
@@ -530,11 +532,18 @@ Then read the full thread, research the topic, and take appropriate action with 
           ack_key="${thread_id}:${timestamp}"
         fi
 
+        local mention_session_key=""
+        if [ -n "$thread_id" ]; then
+          mention_session_key="mention-thread:${thread_id}"
+        elif [ -n "$number" ]; then
+          mention_session_key="mention-number:${number}"
+        fi
+
         # Try to acquire agent lock and run; pass ack info for deferred mark-read.
         # Redirect stdin from /dev/null so the backgrounded child doesn't inherit
         # the pipe fd — inherited pipe fds can flip to O_NONBLOCK and cause the
         # parent while-read loop to fail with EAGAIN, killing the watcher.
-        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" </dev/null &
+        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" "$mention_session_key" </dev/null &
 
       done || true  # Don't let pipefail+errexit kill the restart loop
 

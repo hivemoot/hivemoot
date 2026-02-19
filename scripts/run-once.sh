@@ -104,6 +104,141 @@ done
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
 
+is_valid_uuid() {
+  local value="$1"
+  printf '%s' "$value" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+}
+
+is_non_negative_integer() {
+  local value="${1:-}"
+  printf '%s' "$value" | grep -Eq '^[0-9]+$'
+}
+
+is_positive_integer() {
+  local value="${1:-}"
+  printf '%s' "$value" | grep -Eq '^[1-9][0-9]*$'
+}
+
+load_session_record_for_key() {
+  local map_file="$1"
+  local session_key="$2"
+
+  if [ ! -f "$map_file" ] || [ -z "$session_key" ]; then
+    return 0
+  fi
+
+  awk -F '\t' -v key="$session_key" '
+    $1 == key {
+      sid = $2
+      created = $3
+      last_used = $4
+    }
+    END {
+      if (sid != "") {
+        print sid "\t" created "\t" last_used
+      }
+    }
+  ' "$map_file"
+}
+
+save_session_record_for_key() {
+  local map_file="$1"
+  local session_key="$2"
+  local session_id="$3"
+  local created_epoch="${4:-}"
+  local last_used_epoch="${5:-}"
+  local map_dir=""
+  local tmp_file=""
+  local now_epoch=""
+
+  if [ -z "$session_key" ] || [ -z "$session_id" ]; then
+    return 0
+  fi
+
+  now_epoch="$(date +%s)"
+  if ! is_non_negative_integer "$created_epoch"; then
+    created_epoch="$now_epoch"
+  fi
+  if ! is_non_negative_integer "$last_used_epoch"; then
+    last_used_epoch="$now_epoch"
+  fi
+
+  map_dir="$(dirname "$map_file")"
+  mkdir -p "$map_dir"
+  tmp_file="$(mktemp "${map_dir}/session-map.XXXXXX")"
+
+  if [ -f "$map_file" ]; then
+    awk -F '\t' -v key="$session_key" '$1 != key { print $0 }' "$map_file" > "$tmp_file"
+  fi
+
+  printf '%s\t%s\t%s\t%s\n' "$session_key" "$session_id" "$created_epoch" "$last_used_epoch" >> "$tmp_file"
+  mv "$tmp_file" "$map_file"
+  chmod 600 "$map_file" 2>/dev/null || true
+}
+
+extract_codex_session_id_from_log() {
+  local path="$1"
+
+  if [ ! -f "$path" ]; then
+    return 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$path" | head -n 1
+    return 0
+  fi
+
+  sed -nE 's/.*"type":"thread\.started".*"thread_id":"([0-9a-fA-F-]{36})".*/\1/p' "$path" | head -n 1
+}
+
+build_scoped_session_key() {
+  local base_key="$1"
+  local repo_full_name="$2"
+  local provider_name="$3"
+  local model_name="$4"
+  local tool_options_json="$5"
+  local options_hash=""
+  local resolved_model=""
+
+  if [ -z "$base_key" ]; then
+    return 0
+  fi
+
+  options_hash="$(printf '%s' "$tool_options_json" | cksum | awk '{print $1}')"
+  resolved_model="${model_name:-default}"
+
+  printf 'repo=%s|provider=%s|model=%s|toolopts=%s|key=%s' \
+    "$repo_full_name" "$provider_name" "$resolved_model" "$options_hash" "$base_key"
+}
+
+should_resume_session() {
+  local created_epoch="$1"
+  local last_used_epoch="$2"
+  local now_epoch="$3"
+  local max_idle_hours="$4"
+  local max_age_hours="$5"
+  local idle_age=""
+  local total_age=""
+
+  if ! is_non_negative_integer "$created_epoch" \
+    || ! is_non_negative_integer "$last_used_epoch" \
+    || ! is_non_negative_integer "$now_epoch" \
+    || ! is_positive_integer "$max_idle_hours" \
+    || ! is_positive_integer "$max_age_hours"; then
+    return 1
+  fi
+
+  idle_age=$((now_epoch - last_used_epoch))
+  total_age=$((now_epoch - created_epoch))
+
+  if [ "$idle_age" -lt 0 ] || [ "$total_age" -lt 0 ]; then
+    return 1
+  fi
+
+  [ "$idle_age" -le $((max_idle_hours * 3600)) ] \
+    && [ "$total_age" -le $((max_age_hours * 3600)) ]
+}
+
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
@@ -115,8 +250,30 @@ extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
 timeout_secs="${AGENT_TIMEOUT_SECONDS:-1800}"
+session_resume="${SESSION_RESUME:-${SESSION_RESUME_ENABLED:-1}}"
+session_resume_max_idle_hours="${SESSION_RESUME_MAX_IDLE_HOURS:-12}"
+session_resume_max_age_hours="${SESSION_RESUME_MAX_AGE_HOURS:-24}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
+agent_session_key="${AGENT_SESSION_KEY:-}"
+
+case "$session_resume" in
+  0|1) ;;
+  *)
+    echo "Unsupported SESSION_RESUME: ${session_resume}. Use 0|1." >&2
+    exit 1
+    ;;
+esac
+
+if ! is_positive_integer "$session_resume_max_idle_hours"; then
+  echo "Unsupported SESSION_RESUME_MAX_IDLE_HOURS: ${session_resume_max_idle_hours}. Use a positive integer." >&2
+  exit 1
+fi
+
+if ! is_positive_integer "$session_resume_max_age_hours"; then
+  echo "Unsupported SESSION_RESUME_MAX_AGE_HOURS: ${session_resume_max_age_hours}. Use a positive integer." >&2
+  exit 1
+fi
 
 # When REPO_DIR/LOG_DIR are set externally (run-multi.sh, run-loop.sh),
 # isolation is handled by the caller. Otherwise, generate a JOB_ID to
@@ -141,6 +298,10 @@ else
   log_dir="${LOG_DIR:-${workspace_root}/runs}"
   job_home=""
 fi
+
+codex_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
+provider_session_map_dir="${workspace_root}/sessions/${provider}"
+provider_session_map_file="${provider_session_map_dir}/tool-session-map.tsv"
 
 case "$auth_mode" in
   auto|api_key|subscription) ;;
@@ -325,6 +486,13 @@ Local repository path: ${repo_dir}
 "
 fi
 
+if [ -n "$agent_session_key" ]; then
+  system_prompt="${system_prompt}
+
+Continuation context key: ${agent_session_key}
+If prior context is available for this key, continue incrementally and avoid repeating unchanged repository discovery."
+fi
+
 # User message: mention context / extra instructions when present,
 # otherwise a default directive.
 default_user_message="Make meaningful contributions to the repository according to your role instructions."
@@ -384,6 +552,11 @@ log_file="${log_dir}/${run_id}.log"
 
 cmd=()
 run_in_repo=0
+codex_active_session_id=""
+codex_active_session_created_epoch=""
+codex_used_resume=0
+codex_fresh_cmd=()
+codex_resume_supported=0
 case "$provider" in
   codex)
     if ! command -v codex >/dev/null 2>&1; then
@@ -442,15 +615,65 @@ case "$provider" in
       esac
     fi
 
-    cmd=(codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$repo_dir" --json)
+    codex_cmd_common=(--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json)
     if [ -n "$agent_model" ]; then
-      cmd+=(--model "$agent_model")
+      codex_cmd_common+=(--model "$agent_model")
     fi
     if [ -n "$codex_reasoning_effort" ]; then
-      cmd+=(--config "model_reasoning_effort=\"${codex_reasoning_effort}\"")
+      codex_cmd_common+=(--config "model_reasoning_effort=\"${codex_reasoning_effort}\"")
       log "Codex reasoning effort: ${codex_reasoning_effort}"
     fi
-    cmd+=("$prompt")
+    codex_fresh_cmd=(codex exec "${codex_cmd_common[@]}" "$prompt")
+
+    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+      # Probe resume support defensively: some CLI builds may expose
+      # `resume` but handle `resume --help` inconsistently.
+      if codex exec resume --help >/dev/null 2>&1 \
+        || codex exec --help 2>&1 | grep -Eq '(^|[[:space:]])resume([[:space:]]|$)'; then
+        codex_resume_supported=1
+      else
+        log "Codex resume unavailable; starting fresh session for key=${agent_session_key}"
+      fi
+    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+      log "Codex session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
+    fi
+
+    codex_resume_now_epoch="$(date +%s)"
+    if [ "$codex_resume_supported" -eq 1 ]; then
+      codex_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      if [ -n "$codex_session_record" ]; then
+        IFS=$'\t' read -r codex_record_session_id codex_record_created_epoch codex_record_last_used_epoch <<< "$codex_session_record"
+      else
+        codex_record_session_id=""
+        codex_record_created_epoch=""
+        codex_record_last_used_epoch=""
+      fi
+
+      if [ -n "$codex_record_session_id" ] && ! is_valid_uuid "$codex_record_session_id"; then
+        log "Codex session resume: ignoring invalid session id for key=${agent_session_key}"
+        codex_active_session_id=""
+      elif [ -n "$codex_record_session_id" ] && ! should_resume_session \
+        "$codex_record_created_epoch" "$codex_record_last_used_epoch" "$codex_resume_now_epoch" \
+        "$session_resume_max_idle_hours" "$session_resume_max_age_hours"; then
+        log "Codex session resume: policy reset for key=${agent_session_key} (max_idle=${session_resume_max_idle_hours}h max_age=${session_resume_max_age_hours}h)"
+        codex_active_session_id=""
+      else
+        codex_active_session_id="$codex_record_session_id"
+        codex_active_session_created_epoch="$codex_record_created_epoch"
+      fi
+    fi
+
+    if [ -n "$codex_active_session_id" ]; then
+      codex_used_resume=1
+      log "Codex session resume: key=${agent_session_key} session=${codex_active_session_id}"
+      cmd=(codex exec resume "${codex_cmd_common[@]}" "$codex_active_session_id" "$prompt")
+    else
+      if [ -n "$codex_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
+        log "Codex session resume: no saved session for key=${agent_session_key}; starting fresh"
+      fi
+      cmd=("${codex_fresh_cmd[@]}")
+    fi
+    run_in_repo=1
     ;;
 
   gemini)
@@ -623,27 +846,81 @@ esac
 log "Starting provider=${provider} auth_mode=${auth_mode} repo=${target_repo}"
 # Capture exit code via temp file instead of PIPESTATUS so the tee pipe
 # cannot silently swallow the command's real exit code.
-_ec_file="$(mktemp)"
-set +e
-if [ "$run_in_repo" = "1" ]; then
-  if command -v timeout >/dev/null 2>&1; then
-    (cd "$repo_dir" && timeout "$timeout_secs" "${cmd[@]}"; printf '%d' "$?" > "$_ec_file") 2>&1 | tee "$log_file"
-  else
-    (cd "$repo_dir" && "${cmd[@]}"; printf '%d' "$?" > "$_ec_file") 2>&1 | tee "$log_file"
+exit_code=0
+run_selected_command() {
+  local ec_file=""
+  local attempt_log_file=""
+
+  ec_file="$(mktemp)"
+  # `log_file` is the full merged run log across attempts.
+  # `attempt_log_file` is only this attempt; `last_command_log` points to
+  # the most recent attempt so session-id extraction is attempt-scoped.
+  attempt_log_file="$(mktemp "${log_dir}/${run_id}.attempt.XXXXXX.log")"
+  if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then
+    rm -f "$last_command_log"
   fi
-else
-  if command -v timeout >/dev/null 2>&1; then
-    (timeout "$timeout_secs" "${cmd[@]}"; printf '%d' "$?" > "$_ec_file") 2>&1 | tee "$log_file"
+  set +e
+  if [ "$run_in_repo" = "1" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      (cd "$repo_dir" && timeout "$timeout_secs" "${cmd[@]}"; printf '%d' "$?" > "$ec_file") 2>&1 | tee -a "$log_file" | tee "$attempt_log_file"
+    else
+      (cd "$repo_dir" && "${cmd[@]}"; printf '%d' "$?" > "$ec_file") 2>&1 | tee -a "$log_file" | tee "$attempt_log_file"
+    fi
   else
-    ("${cmd[@]}"; printf '%d' "$?" > "$_ec_file") 2>&1 | tee "$log_file"
+    if command -v timeout >/dev/null 2>&1; then
+      (timeout "$timeout_secs" "${cmd[@]}"; printf '%d' "$?" > "$ec_file") 2>&1 | tee -a "$log_file" | tee "$attempt_log_file"
+    else
+      ("${cmd[@]}"; printf '%d' "$?" > "$ec_file") 2>&1 | tee -a "$log_file" | tee "$attempt_log_file"
+    fi
+  fi
+  exit_code="$(cat "$ec_file")"
+  rm -f "$ec_file"
+  last_command_log="$attempt_log_file"
+  set -e
+}
+
+# Keep a persistent merged log for operator debugging across retries.
+: > "$log_file"
+# Start with merged log sentinel; run_selected_command updates this to the
+# per-attempt file after each run.
+last_command_log="$log_file"
+run_selected_command
+
+# Strict policy: at most one resume failure before forcing fresh.
+if [ "$provider" = "codex" ] && [ "$codex_used_resume" -eq 1 ] && [ "$exit_code" -ne 0 ]; then
+  log "Codex session resume failed once; retrying with a fresh session"
+  cmd=("${codex_fresh_cmd[@]}")
+  codex_used_resume=0
+  codex_active_session_id=""
+  codex_active_session_created_epoch=""
+  run_selected_command
+fi
+
+if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+  codex_session_from_log="$(extract_codex_session_id_from_log "$last_command_log")"
+  if is_valid_uuid "$codex_session_from_log"; then
+    codex_saved_at_epoch="$(date +%s)"
+    codex_created_to_store="$codex_saved_at_epoch"
+    if [ "$codex_used_resume" -eq 1 ] \
+      && [ -n "$codex_active_session_id" ] \
+      && [ "$codex_session_from_log" = "$codex_active_session_id" ] \
+      && is_non_negative_integer "$codex_active_session_created_epoch"; then
+      codex_created_to_store="$codex_active_session_created_epoch"
+    fi
+    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+      "$codex_session_from_log" "$codex_created_to_store" "$codex_saved_at_epoch"
+    log "Codex session saved: key=${agent_session_key} session=${codex_session_from_log}"
+  else
+    log "Codex session id not found in log for key=${agent_session_key}"
   fi
 fi
-exit_code="$(cat "$_ec_file")"
-rm -f "$_ec_file"
-set -e
 
 if [ "$exit_code" -eq 124 ]; then
   log "Run timed out after ${timeout_secs}s"
+fi
+
+if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then
+  rm -f "$last_command_log"
 fi
 
 log "Run finished with exit_code=${exit_code}. Log: ${log_file}"
