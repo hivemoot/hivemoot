@@ -10,6 +10,20 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+
+for secret_var in \
+  OPENAI_API_KEY \
+  GOOGLE_API_KEY \
+  GEMINI_API_KEY \
+  ANTHROPIC_API_KEY \
+  OPENROUTER_API_KEY \
+  CLAUDE_CODE_OAUTH_TOKEN \
+  KILOCODE_TOKEN \
+  ZAI_API_KEY
+do
+  load_secret_from_file "$secret_var"
+done
+
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
 
@@ -19,6 +33,9 @@ workspace_root="${WORKSPACE_ROOT:-/workspace}"
 email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
+provider="${AGENT_PROVIDER:-claude}"
+auth_mode="${AGENT_AUTH_MODE:-auto}"
+effective_auth_mode=""
 max_agents=10
 token_tmp_root="/tmp/hivemoot-agent-token-files"
 lock_dir="/tmp/agent-locks"
@@ -35,6 +52,19 @@ agent_failure_backoff_jitter_pct="${PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT:-1
 # Mention watching (opt-in)
 watch_mentions="${WATCH_MENTIONS:-}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
+
+case "$auth_mode" in
+  auto|api_key|subscription) ;;
+  *)
+    echo "Unsupported AGENT_AUTH_MODE: ${auth_mode}. Use auto|api_key|subscription." >&2
+    exit 1
+    ;;
+esac
+
+if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode")"; then
+  echo "Unsupported auth mode/provider combination: provider=${provider} auth_mode=${auth_mode}" >&2
+  exit 1
+fi
 
 # Validate numeric settings
 for var_name in periodic_interval periodic_jitter max_failures \
@@ -300,7 +330,7 @@ prepare_hivemoot_cli
 
 for index in "${!agent_ids[@]}"; do
   aid="${agent_ids[$index]}"
-  agent_home="${workspace_root}/homes/${aid}"
+  agent_home="$(resolve_managed_agent_home "$workspace_root" "$aid" "$effective_auth_mode")"
 
   mkdir -p \
     "$agent_home/.config" \
@@ -377,7 +407,9 @@ try_run_agent() {
   local agent_workspace="${workspace_root}/agents/${agent_id}"
   local agent_repo="${agent_workspace}/repo"
   local agent_log_dir="${workspace_root}/runs/${agent_id}"
-  local agent_home="${workspace_root}/homes/${agent_id}"
+  local agent_home=""
+
+  agent_home="$(resolve_managed_agent_home "$workspace_root" "$agent_id" "$effective_auth_mode")"
 
   mkdir -p "$agent_workspace" "$agent_log_dir" "$agent_home"
 

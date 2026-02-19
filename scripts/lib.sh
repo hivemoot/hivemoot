@@ -19,6 +19,88 @@ trim() {
   printf '%s' "$value"
 }
 
+resolve_effective_auth_mode() {
+  local provider="$1"
+  local configured_auth_mode="${2:-auto}"
+
+  case "$configured_auth_mode" in
+    api_key|subscription)
+      printf '%s' "$configured_auth_mode"
+      return 0
+      ;;
+    auto|'')
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  case "$provider" in
+    codex)
+      if [ -n "${OPENAI_API_KEY:-}" ]; then
+        printf 'api_key'
+      else
+        printf 'subscription'
+      fi
+      ;;
+    gemini)
+      if [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+        printf 'api_key'
+      else
+        printf 'subscription'
+      fi
+      ;;
+    claude)
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf 'api_key'
+      else
+        printf 'subscription'
+      fi
+      ;;
+    kilo)
+      if [ -n "${KILOCODE_TOKEN:-}" ] || [ -n "${KILO_PROVIDER:-}" ]; then
+        printf 'api_key'
+      else
+        printf 'subscription'
+      fi
+      ;;
+    opencode)
+      if [ -n "${OPENCODE_PROVIDER:-}" ]; then
+        printf 'api_key'
+      else
+        printf 'subscription'
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_managed_agent_home() {
+  local workspace_root="$1"
+  local agent_id="$2"
+  local effective_auth_mode="${3:-api_key}"
+
+  if [ "$effective_auth_mode" = "subscription" ]; then
+    printf '%s/homes/%s' "$workspace_root" "$agent_id"
+  else
+    printf '/tmp/hivemoot-agent-home/agents/%s' "$agent_id"
+  fi
+}
+
+resolve_job_home() {
+  local workspace_root="$1"
+  local job_id="$2"
+  local effective_auth_mode="${3:-api_key}"
+
+  if [ "$effective_auth_mode" = "subscription" ]; then
+    printf '%s/%s/home' "$workspace_root" "$job_id"
+  else
+    printf '/tmp/hivemoot-agent-home/jobs/%s' "$job_id"
+  fi
+}
+
 load_secret_from_file() {
   local var_name="$1"
   local file_var_name="${var_name}_FILE"
@@ -164,7 +246,7 @@ seed_shared_provider_state() {
 # seed_provider_home when JOB_ID isolation is active.
 seed_provider_auth() {
   local agent_home="$1"
-  local source_home="/home/node"
+  local source_home="${2:-/home/node}"
 
   # Claude Code: auth tokens in ~/.config/claude/
   if [ -d "${source_home}/.config/claude" ]; then

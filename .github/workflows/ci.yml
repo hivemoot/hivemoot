@@ -26,6 +26,10 @@ jobs:
         run: bash scripts/test-target-repo-validation.sh
       - name: Verify Claude token bootstrap behavior
         run: bash scripts/test-claude-token-bootstrap.sh
+      - name: Verify credential storage mode behavior
+        run: bash scripts/test-credential-storage-mode.sh
+      - name: Verify auto auth mode with file-based secrets
+        run: bash scripts/test-auto-auth-file-secrets.sh
       - name: Verify WORKSPACE_ROOT and AGENT_ID path validation behavior
         run: bash scripts/test-path-input-validation.sh
       - name: Verify Trivy ignore validation behavior

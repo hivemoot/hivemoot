@@ -1,4 +1,4 @@
-x-agent-base: &agent-base
+x-agent-base-common: &agent-base-common
   build:
     context: .
     dockerfile: Dockerfile
@@ -16,19 +16,22 @@ x-agent-base: &agent-base
         memory: ${AGENT_MEMORY_LIMIT:-16g}
         cpus: "${AGENT_CPU_LIMIT:-4.0}"
         pids: ${AGENT_PIDS_LIMIT:-512}
-  tmpfs:
-    - /tmp:size=2g,mode=1777
-  volumes:
-    - ./data:/workspace
-    - codex-home:/home/node/.codex
-    - gemini-home:/home/node/.gemini
-    - claude-home:/home/node/.claude
-    - claude-config:/home/node/.config/claude
-    - kilo-config:/home/node/.config/kilo
-    - opencode-config:/home/node/.config/opencode
-    - opencode-data:/home/node/.local/share/opencode
   stdin_open: true
   tty: true
+
+x-agent-base: &agent-base
+  <<: *agent-base-common
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+    - /home/node/.codex
+    - /home/node/.gemini
+    - /home/node/.claude
+    - /home/node/.config/claude
+    - /home/node/.config/kilo
+    - /home/node/.config/opencode
+    - /home/node/.local/share/opencode
+  volumes:
+    - ./data:/workspace
 
 x-agent-env: &agent-env
   RUN_MODE: ${RUN_MODE:-once}
@@ -106,40 +109,3 @@ services:
       <<: *agent-env
       TARGET_REPO: ${TARGET_REPO:-}
       WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}
-
-  auth-codex:
-    <<: *agent-base
-    entrypoint: ["codex", "login", "--device-auth"]
-
-  auth-gemini:
-    <<: *agent-base
-    entrypoint: ["gemini"]
-
-  auth-claude:
-    <<: *agent-base
-    entrypoint: ["claude"]
-
-  auth-claude-setup-token:
-    <<: *agent-base
-    entrypoint: ["bash", "-lc"]
-    command:
-      - |
-        set -euo pipefail
-        claude setup-token
-        cat > "${HOME}/.claude.json" <<'JSON'
-        {"hasCompletedOnboarding": true}
-        JSON
-        echo "Token setup complete. Persist ${HOME}/.claude/.credentials.json and ${HOME}/.claude.json."
-
-  auth-kilo:
-    <<: *agent-base
-    entrypoint: ["kilo", "auth", "login"]
-
-volumes:
-  codex-home:
-  gemini-home:
-  claude-home:
-  claude-config:
-  kilo-config:
-  opencode-config:
-  opencode-data:
