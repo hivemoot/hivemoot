@@ -15,6 +15,24 @@ function encode(yamlContent: string): string {
   return JSON.stringify({ content: Buffer.from(yamlContent).toString("base64") });
 }
 
+function deepNestingYaml(levels: number): string {
+  const lines = [
+    "team:",
+    "  roles:",
+    "    engineer:",
+    "      description: Engineer",
+    "      instructions: Build things.",
+    "  extra:",
+  ];
+
+  for (let i = 0; i < levels; i += 1) {
+    lines.push(`${"  ".repeat(i + 2)}layer${i}:`);
+  }
+  lines.push(`${"  ".repeat(levels + 2)}leaf: value`);
+
+  return `${lines.join("\n")}\n`;
+}
+
 const validYaml = yaml.dump({
   team: {
     roles: {
@@ -339,6 +357,48 @@ describe("loadTeamConfig", () => {
     await expect(loadTeamConfig(repo)).rejects.toThrow(CliError);
     await expect(loadTeamConfig(repo)).rejects.toMatchObject({
       code: "INVALID_CONFIG",
+    });
+  });
+
+  it("uses hardened YAML parser options", async () => {
+    mockedGh.mockResolvedValue(encode(validYaml));
+    const loadSpy = vi.spyOn(yaml, "load");
+
+    await loadTeamConfig(repo);
+
+    expect(loadSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        schema: yaml.JSON_SCHEMA,
+        listener: expect.any(Function),
+      }),
+    );
+    loadSpy.mockRestore();
+  });
+
+  it("rejects YAML aliases", async () => {
+    const aliasYaml = `
+shared: &shared
+  description: Engineer
+  instructions: Build things.
+team:
+  roles:
+    engineer: *shared
+`;
+    mockedGh.mockResolvedValue(encode(aliasYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("invalid YAML"),
+    });
+  });
+
+  it("rejects overly nested YAML", async () => {
+    mockedGh.mockResolvedValue(encode(deepNestingYaml(45)));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("invalid YAML"),
     });
   });
 

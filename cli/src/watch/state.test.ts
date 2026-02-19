@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,17 @@ describe("loadState()", () => {
     const state = await loadState(stateFile);
     expect(state.processedThreadIds).toEqual(["100", "200"]);
   });
+
+  it("rejects state paths that traverse symlink directories", async () => {
+    if (process.platform === "win32") return;
+
+    const realDir = join(tmpDir, "real");
+    const linkDir = join(tmpDir, "symlink");
+    await mkdir(realDir);
+    await symlink(realDir, linkDir);
+
+    await expect(loadState(join(linkDir, "watch-state.json"))).rejects.toThrow(/symbolic links/i);
+  });
 });
 
 describe("saveState()", () => {
@@ -113,6 +124,47 @@ describe("saveState()", () => {
     const raw = await readFile(stateFile, "utf-8");
     const loaded = JSON.parse(raw) as WatchState;
     expect(loaded.processedThreadIds).toEqual(["new"]);
+  });
+
+  it("creates parent directories for nested state-file paths", async () => {
+    const nestedStateFile = join(tmpDir, "nested", "dir", "watch-state.json");
+
+    await saveState(nestedStateFile, {
+      lastChecked: "2026-01-15T12:00:00Z",
+      processedThreadIds: ["nested"],
+    });
+
+    expect(existsSync(nestedStateFile)).toBe(true);
+  });
+
+  it("rejects nested state-file paths that traverse symlink directories", async () => {
+    if (process.platform === "win32") return;
+
+    const realDir = join(tmpDir, "real-parent");
+    const linkDir = join(tmpDir, "link-parent");
+    await mkdir(realDir);
+    await symlink(realDir, linkDir);
+
+    await expect(saveState(join(linkDir, "watch-state.json"), {
+      lastChecked: "2026-01-15T12:00:00Z",
+      processedThreadIds: [],
+    })).rejects.toThrow(/symbolic links/i);
+  });
+
+  it("fails when the state-file parent directory is not writable", async () => {
+    if (process.platform === "win32") return;
+
+    const lockedDir = join(tmpDir, "locked");
+    await mkdir(lockedDir, { mode: 0o500 });
+
+    try {
+      await expect(saveState(join(lockedDir, "watch-state.json"), {
+        lastChecked: "2026-01-15T12:00:00Z",
+        processedThreadIds: [],
+      })).rejects.toThrow(/readable\/writable/i);
+    } finally {
+      await chmod(lockedDir, 0o700);
+    }
   });
 });
 
@@ -255,5 +307,26 @@ describe("appendAck()", () => {
 
     const content = await readFile(journalPath, "utf-8");
     expect(content).toBe("key-1\nkey-2\nkey-3\n");
+  });
+
+  it("creates parent directories for nested state-file paths", async () => {
+    const nestedStateFile = join(tmpDir, "nested", "ack", "watch-state.json");
+    const nestedJournalPath = `${nestedStateFile}.acks`;
+
+    await appendAck(nestedStateFile, "key-1");
+
+    const content = await readFile(nestedJournalPath, "utf-8");
+    expect(content).toBe("key-1\n");
+  });
+
+  it("rejects ack paths that traverse symlink directories", async () => {
+    if (process.platform === "win32") return;
+
+    const realDir = join(tmpDir, "ack-real");
+    const linkDir = join(tmpDir, "ack-link");
+    await mkdir(realDir);
+    await symlink(realDir, linkDir);
+
+    await expect(appendAck(join(linkDir, "watch-state.json"), "key-1")).rejects.toThrow(/symbolic links/i);
   });
 });
