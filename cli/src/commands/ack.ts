@@ -1,4 +1,4 @@
-import type { AckOptions } from "../config/types.js";
+import { CliError, type AckOptions } from "../config/types.js";
 import { markNotificationRead } from "../github/notifications.js";
 import { appendAck } from "../watch/state.js";
 
@@ -9,7 +9,11 @@ function log(message: string): void {
 export async function ackCommand(key: string, options: AckOptions): Promise<void> {
   const colonIndex = key.indexOf(":");
   if (colonIndex < 1) {
-    throw new Error(`Invalid key format: expected "threadId:updatedAt", got "${key}"`);
+    throw new CliError(
+      `Invalid key format: expected "threadId:updatedAt", got "${key}"`,
+      "GH_ERROR",
+      1,
+    );
   }
 
   const threadId = key.substring(0, colonIndex);
