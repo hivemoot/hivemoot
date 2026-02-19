@@ -12,12 +12,14 @@ const ROLE_SLUG_RE = /^[a-z][a-z0-9_]{0,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_INSTRUCTIONS_LENGTH = 10_000;
 const MAX_ONBOARDING_LENGTH = 10_000;
-const YAML_MAX_ALIAS_COUNT = 0;
+// Bound YAML anchor declarations to avoid pathological config complexity.
+// Aliases are resolved by reference in js-yaml, so this guard tracks anchors.
+const YAML_MAX_ANCHOR_COUNT = 100;
 const YAML_MAX_DEPTH = 40;
 
 function createYamlSecurityGuard(
   maxDepth: number,
-  maxAliasCount: number,
+  maxAnchorCount: number,
 ): (eventType: "open" | "close", state: unknown) => void {
   let depth = 0;
   let anchorCount = 0;
@@ -40,8 +42,8 @@ function createYamlSecurityGuard(
 
       if (typeof anchor === "string" && anchor.length > 0) {
         anchorCount += 1;
-        if (anchorCount > maxAliasCount) {
-          throw new Error(`YAML aliases and anchors exceed maxAliasCount (${maxAliasCount})`);
+        if (anchorCount > maxAnchorCount) {
+          throw new Error(`YAML anchors exceed maxAnchorCount (${maxAnchorCount})`);
         }
       }
     }
@@ -201,7 +203,7 @@ export async function loadTeamConfig(repo: RepoRef): Promise<TeamConfig> {
   try {
     config = yaml.load(content, {
       schema: yaml.JSON_SCHEMA,
-      listener: createYamlSecurityGuard(YAML_MAX_DEPTH, YAML_MAX_ALIAS_COUNT),
+      listener: createYamlSecurityGuard(YAML_MAX_DEPTH, YAML_MAX_ANCHOR_COUNT),
     }) as HivemootConfig;
   } catch (err) {
     const detail = err instanceof Error ? `: ${err.message}` : "";
