@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
+type ExecOptions = {
+  encoding: string;
+  timeout?: number;
+  env?: NodeJS.ProcessEnv;
+};
+type MockExecError = Error & {
+  killed?: boolean;
+  signal?: NodeJS.Signals | null;
+};
 
 const { mockedExecFile } = vi.hoisted(() => ({
   mockedExecFile: vi.fn(),
@@ -17,7 +26,7 @@ function mockExecSuccess(stdout: string, stderr = ""): void {
     (
       _cmd: string,
       _args: string[],
-      _options: { encoding: string },
+      _options: ExecOptions,
       callback: ExecCallback,
     ) => {
       callback(null, stdout, stderr);
@@ -25,15 +34,23 @@ function mockExecSuccess(stdout: string, stderr = ""): void {
   );
 }
 
-function mockExecFailure(message: string, stderr = "", stdout = ""): void {
+function mockExecFailure(
+  message: string,
+  stderr = "",
+  stdout = "",
+  override?: Partial<MockExecError>,
+): void {
   mockedExecFile.mockImplementationOnce(
     (
       _cmd: string,
       _args: string[],
-      _options: { encoding: string },
+      _options: ExecOptions,
       callback: ExecCallback,
     ) => {
-      callback(new Error(message), stdout, stderr);
+      const err = new Error(message) as MockExecError;
+      if (override?.killed !== undefined) err.killed = override.killed;
+      if (override?.signal !== undefined) err.signal = override.signal;
+      callback(err, stdout, stderr);
     },
   );
 }
@@ -59,14 +76,26 @@ describe("runPublishPreflight()", () => {
       1,
       "git",
       ["remote", "get-url", "origin"],
-      { encoding: "utf8" },
+      expect.objectContaining({
+        encoding: "utf8",
+        timeout: 15_000,
+        env: expect.objectContaining({
+          GIT_TERMINAL_PROMPT: "0",
+        }),
+      }),
       expect.any(Function),
     );
     expect(mockedExecFile).toHaveBeenNthCalledWith(
       2,
       "git",
       ["push", "--dry-run", "origin", "HEAD"],
-      { encoding: "utf8" },
+      expect.objectContaining({
+        encoding: "utf8",
+        timeout: 15_000,
+        env: expect.objectContaining({
+          GIT_TERMINAL_PROMPT: "0",
+        }),
+      }),
       expect.any(Function),
     );
   });
@@ -124,6 +153,37 @@ describe("runPublishPreflight()", () => {
     expect(result.ok).toBe(false);
     expect(result.originUrl).toBe("https://github.com/hivemoot/hivemoot.git");
     expect(result.error).toContain("https://github.com/hivemoot/hivemoot.git/");
+    expect(result.error).not.toContain("ghp_secret");
+    expect(result.error).not.toContain("x-access-token");
+  });
+
+  it("returns deterministic timeout errors", async () => {
+    mockExecSuccess("https://github.com/hivemoot/hivemoot.git\n");
+    mockExecFailure(
+      "Command timed out",
+      "",
+      "",
+      { killed: true, signal: "SIGTERM" },
+    );
+
+    const result = await runPublishPreflight();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("git command timed out after 15000ms");
+  });
+
+  it("returns prompt-disabled errors without leaking credentials", async () => {
+    mockExecSuccess("https://github.com/hivemoot/hivemoot.git\n");
+    mockExecFailure(
+      "push failed",
+      "fatal: could not read Username for 'https://x-access-token:ghp_secret@github.com/hivemoot/hivemoot.git': terminal prompts disabled",
+    );
+
+    const result = await runPublishPreflight();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("git authentication prompt blocked (GIT_TERMINAL_PROMPT=0):");
+    expect(result.error).toContain("https://github.com/hivemoot/hivemoot.git");
     expect(result.error).not.toContain("ghp_secret");
     expect(result.error).not.toContain("x-access-token");
   });

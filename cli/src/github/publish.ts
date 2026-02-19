@@ -8,7 +8,11 @@ type ExecOutput = {
 type ExecError = Error & {
   stdout?: string;
   stderr?: string;
+  signal?: NodeJS.Signals | null;
+  killed?: boolean;
 };
+
+const GIT_EXEC_TIMEOUT_MS = 15_000;
 
 export interface PublishPreflightResult {
   command: "git push --dry-run origin HEAD";
@@ -49,7 +53,14 @@ function execGit(args: string[]): Promise<ExecOutput> {
     execFile(
       "git",
       args,
-      { encoding: "utf8" },
+      {
+        encoding: "utf8",
+        timeout: GIT_EXEC_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+        },
+      },
       (error, stdout, stderr) => {
         if (error) {
           const enriched = error as ExecError;
@@ -64,6 +75,14 @@ function execGit(args: string[]): Promise<ExecOutput> {
   });
 }
 
+function isPromptDisabledError(value: string | undefined): boolean {
+  return typeof value === "string" && /terminal prompts disabled/i.test(value);
+}
+
+function isTimeoutError(err: ExecError): boolean {
+  return err.killed === true || (typeof err.message === "string" && /timed out/i.test(err.message));
+}
+
 function describeExecError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const execErr = err as ExecError;
@@ -72,7 +91,15 @@ function describeExecError(err: unknown): string {
     ?? trimText(execErr.stdout)
     ?? trimText(execErr.message)
   );
-  return detail ? sanitizeHttpUrlsInText(detail) : "unknown error";
+  if (!detail) return "unknown error";
+  const sanitized = sanitizeHttpUrlsInText(detail);
+  if (isTimeoutError(execErr)) {
+    return `git command timed out after ${GIT_EXEC_TIMEOUT_MS}ms`;
+  }
+  if (isPromptDisabledError(detail)) {
+    return `git authentication prompt blocked (GIT_TERMINAL_PROMPT=0): ${sanitized}`;
+  }
+  return sanitized;
 }
 
 export async function runPublishPreflight(): Promise<PublishPreflightResult> {
