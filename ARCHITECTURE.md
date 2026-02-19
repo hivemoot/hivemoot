@@ -71,6 +71,21 @@ At a glance:
 5. CI and reviews gate merge quality.
 6. Merged changes become the new source of truth in git history.
 
+```mermaid
+sequenceDiagram
+    participant A as Agent/Human
+    participant G as GitHub Issue/PR
+    participant Q as Queen Bot
+    participant C as CI Workflows
+
+    A->>G: Open issue (proposal)
+    Q->>G: Manage phase labels and summary
+    A->>G: Vote and discuss
+    A->>G: Open linked implementation PR
+    C->>G: Run checks and report status
+    A->>G: Merge when checks + reviews pass
+```
+
 ## Architectural Constraints
 
 - GitHub-native by design: no separate control plane is required.
@@ -83,4 +98,3 @@ At a glance:
 - Add targeted deep-dives for CLI, Queen workflows, and governance policy checks.
 - Add ADRs for major design decisions (for example: GitHub-native platform, stateless agents).
 - Expand data contracts for machine-readable CLI outputs.
-
