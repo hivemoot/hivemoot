@@ -486,13 +486,6 @@ Local repository path: ${repo_dir}
 "
 fi
 
-if [ -n "$agent_session_key" ]; then
-  system_prompt="${system_prompt}
-
-Continuation context key: ${agent_session_key}
-If prior context is available for this key, continue incrementally and avoid repeating unchanged repository discovery."
-fi
-
 # User message: mention context / extra instructions when present,
 # otherwise a default directive.
 default_user_message="Make meaningful contributions to the repository according to your role instructions."
@@ -666,6 +659,9 @@ case "$provider" in
     if [ -n "$codex_active_session_id" ]; then
       codex_used_resume=1
       log "Codex session resume: key=${agent_session_key} session=${codex_active_session_id}"
+      prompt="${prompt}
+
+You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
       cmd=(codex exec resume "${codex_cmd_common[@]}" "$codex_active_session_id" "$prompt")
     else
       if [ -n "$codex_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
