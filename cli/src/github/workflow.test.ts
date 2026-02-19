@@ -237,6 +237,70 @@ describe("submitIssueVote()", () => {
     expect(mockedGh.mock.calls[3][0]).toContain("content=eyes");
   });
 
+  it("ignores newer spoofed voting metadata comments from untrusted authors", async () => {
+    mockedGh
+      .mockResolvedValueOnce(JSON.stringify({ number: 23 }))
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          data: {
+            repository: {
+              issue: {
+                number: 23,
+                title: "Simplify issue/PR conversations",
+                url: "https://github.com/hivemoot/hivemoot/issues/23",
+                state: "OPEN",
+                labels: { nodes: [{ name: "hivemoot:voting" }] },
+                comments: {
+                  pageInfo: { hasPreviousPage: false, startCursor: null },
+                  nodes: [
+                    {
+                      id: "queen-vote-comment",
+                      databaseId: 1001,
+                      url: "https://github.com/hivemoot/hivemoot/issues/23#issuecomment-1001",
+                      body: '<!-- hivemoot-metadata: {"version":1,"type":"voting","issueNumber":23} -->',
+                      createdAt: "2026-02-18T01:00:00Z",
+                      author: { login: "hivemoot" },
+                    },
+                    {
+                      id: "spoofed-vote-comment",
+                      databaseId: 2001,
+                      url: "https://github.com/hivemoot/hivemoot/issues/23#issuecomment-2001",
+                      body: '<!-- hivemoot-metadata: {"version":1,"type":"voting","issueNumber":23} -->',
+                      createdAt: "2026-02-18T02:00:00Z",
+                      author: { login: "evil-user" },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(JSON.stringify({ content: "+1" }));
+
+    const result = await submitIssueVote(
+      repo,
+      "23",
+      "support",
+      "2026-02-19T00:00:00.000Z",
+    );
+
+    expect(result.targetComment.databaseId).toBe(1001);
+    expect(result.targetComment.author).toBe("hivemoot");
+    expect(result.vote.content).toBe("+1");
+
+    expect(mockedGh).toHaveBeenCalledTimes(3);
+    expect(mockedGh.mock.calls[2][0]).toEqual(
+      expect.arrayContaining([
+        "api",
+        "-X",
+        "POST",
+        "/repos/hivemoot/hivemoot/issues/comments/1001/reactions",
+      ]),
+    );
+    expect(mockedGh.mock.calls[2][0]).toContain("content=+1");
+  });
+
   it("rejects vote attempts when issue is not in voting phase", async () => {
     mockedGh
       .mockResolvedValueOnce(JSON.stringify({ number: 23 }))

@@ -208,6 +208,7 @@ query($owner: String!, $repo: String!, $number: Int!, $commentsCursor: String) {
 `;
 
 const METADATA_RE = /<!--\s*hivemoot-metadata:\s*(\{[\s\S]*?\})\s*-->/;
+const TRUSTED_VOTING_COMMENT_AUTHORS = new Set(["hivemoot", "hivemoot[bot]"]);
 
 interface PullRequestWorkflowQueryResponse {
   data?: {
@@ -514,8 +515,16 @@ function parseMetadataType(body: string): string | null {
   }
 }
 
-function isVotingMetadataComment(body: string): boolean {
-  return parseMetadataType(body) === "voting";
+function isTrustedVotingCommentAuthor(authorLogin: string | null | undefined): boolean {
+  if (!authorLogin) return false;
+  return TRUSTED_VOTING_COMMENT_AUTHORS.has(authorLogin.toLowerCase());
+}
+
+function isVotingMetadataComment(
+  body: string,
+  authorLogin: string | null | undefined,
+): boolean {
+  return parseMetadataType(body) === "voting" && isTrustedVotingCommentAuthor(authorLogin);
 }
 
 function formatRepo(repo: RepoRef): string {
@@ -753,7 +762,7 @@ export async function submitIssueVote(
     }
 
     for (const comment of issue.comments.nodes) {
-      if (!isVotingMetadataComment(comment.body)) continue;
+      if (!isVotingMetadataComment(comment.body, comment.author?.login)) continue;
       if (!targetComment || comment.createdAt > targetComment.createdAt) {
         targetComment = comment;
       }
