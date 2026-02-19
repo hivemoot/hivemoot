@@ -43,7 +43,10 @@ describe("GET /api/health", () => {
     delete env().REDIS_URL;
     delete env().GITHUB_APP_ID;
     delete env().GITHUB_APP_PRIVATE_KEY;
+    delete env().GITHUB_CLIENT_ID;
+    delete env().GITHUB_CLIENT_SECRET;
     delete env().ENCRYPTION_KEY;
+    delete env().NEXT_PUBLIC_SITE_URL;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(503);
@@ -52,7 +55,10 @@ describe("GET /api/health", () => {
       "REDIS_URL",
       "GITHUB_APP_ID",
       "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
       "ENCRYPTION_KEY",
+      "NEXT_PUBLIC_SITE_URL",
     ]);
   });
 
@@ -61,7 +67,10 @@ describe("GET /api/health", () => {
     env().REDIS_URL = "redis://prod:6379";
     env().GITHUB_APP_ID = "99";
     env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().GITHUB_CLIENT_ID = "Iv1.test";
+    env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "a".repeat(64);
+    env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(200);
@@ -74,7 +83,10 @@ describe("GET /api/health", () => {
     env().REDIS_URL = "redis://prod:6379";
     env().GITHUB_APP_ID = "99";
     env().GITHUB_APP_PRIVATE_KEY = "key";
+    env().GITHUB_CLIENT_ID = "Iv1.test";
+    env().GITHUB_CLIENT_SECRET = "secret";
     env().ENCRYPTION_KEY = "not-hex";
+    env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(503);
