@@ -308,6 +308,9 @@ services:
       - ./my-prompt.md:/opt/hivemoot-agent/prompts/custom.md:ro
 ```
 
+Custom prompts must preserve the non-overridable security guardrails from
+`prompts/default.md` (or an equivalent section with the same protections).
+
 When unset, agents use the default prompt at `prompts/default.md`.
 
 ## Optional Override Services
