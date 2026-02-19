@@ -26,68 +26,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Write classifier script
-        run: |
-          cat > /tmp/classify.py << 'EOF'
-          import json, fnmatch, sys, os
-
-          ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
-          DENIED  = [".github/**", "package.json", "package-lock.json", "*.lock"]
-          MAX_FILES = 5
-          MAX_LINES = 80
-
-          def matches(path, globs):
-              return any(
-                  fnmatch.fnmatch(path, g) or fnmatch.fnmatch(path, g.lstrip("**/"))
-                  for g in globs
-              )
-
-          def write_output(eligible, reason):
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write(f"ELIGIBLE={str(eligible).lower()}\n")
-                  f.write(f"REASON={reason}\n")
-
-          try:
-              files = json.load(sys.stdin)
-              file_count = len(files)
-              total_lines = sum(f["additions"] + f["deletions"] for f in files)
-
-              if file_count > MAX_FILES:
-                  write_output(False, f"too many files ({file_count} > {MAX_FILES})")
-                  sys.exit(0)
-              if total_lines > MAX_LINES:
-                  write_output(False, f"too many changed lines ({total_lines} > {MAX_LINES})")
-                  sys.exit(0)
-
-              for f in files:
-                  p = f["path"]
-                  if matches(p, DENIED):
-                      write_output(False, f"denied path: {p}")
-                      sys.exit(0)
-                  if not matches(p, ALLOWED):
-                      write_output(False, f"non-allowlisted path: {p}")
-                      sys.exit(0)
-
-              write_output(True, "all checks passed")
-
-          except Exception as e:
-              write_output(False, f"classifier error (fail-closed): {e}")
-          EOF
-
       - name: Evaluate fast-track eligibility
         id: classify
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
+          PR_FILES_URL: ${{ github.event.pull_request.url }}/files
         run: |
-          # Fail closed: on any unhandled error, mark ineligible.
-          FILES_JSON=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json files --jq '[.files[] | {path: .path, additions: .additions, deletions: .deletions}]') \
-            || { echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"; echo "REASON=failed to fetch PR files (fail-closed)" >> "$GITHUB_OUTPUT"; exit 0; }
+          # Fetch changed files from the GitHub API using the event payload URL.
+          # Fail closed: any unhandled error marks the PR ineligible.
+          FILES_JSON=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$PR_FILES_URL?per_page=100" \
+            | jq '[.[] | {path: .filename, additions: .additions, deletions: .deletions}]') \
+            || {
+              echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
+              echo "REASON=fallback:error failed to fetch PR files" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
 
-          echo "$FILES_JSON" | python3 /tmp/classify.py \
-            || { echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"; echo "REASON=classifier error (fail-closed)" >> "$GITHUB_OUTPUT"; exit 0; }
+          echo "$FILES_JSON" \
+            | python3 .github/scripts/classify-fast-track.py \
+            || {
+              echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
+              echo "REASON=fallback:error classifier exited non-zero" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
 
       - name: Apply fast-track label
         if: steps.classify.outputs.ELIGIBLE == 'true'
@@ -97,7 +62,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "hivemoot:fast-track" || true
-          echo "Labeled as fast-track."
+          echo "Labeled as fast-track. Reason: ${{ steps.classify.outputs.REASON }}"
 
       - name: Remove stale fast-track label
         if: steps.classify.outputs.ELIGIBLE == 'false'
@@ -110,7 +75,7 @@ jobs:
           LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
           if echo "$LABELS" | grep -q "hivemoot:fast-track"; then
             gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "hivemoot:fast-track" || true
-            echo "Removed fast-track label: $REASON"
+            echo "Removed fast-track label. Reason: $REASON"
           else
-            echo "Not eligible: $REASON"
+            echo "Not eligible. Reason: $REASON"
           fi
