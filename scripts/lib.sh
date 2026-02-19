@@ -54,6 +54,29 @@ validate_target_repo() {
   fi
 }
 
+validate_workspace_root() {
+  local workspace_root="$1"
+
+  case "$workspace_root" in
+    /*) ;;
+    *)
+      echo "WORKSPACE_ROOT must be an absolute path" >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_agent_id() {
+  local agent_id="$1"
+
+  case "$agent_id" in
+    ''|*[!a-zA-Z0-9_-]*)
+      echo "Invalid agent id: ${agent_id}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 load_slot_token() {
   local suffix="$1"
   local token_var="AGENT_GITHUB_TOKEN_${suffix}"

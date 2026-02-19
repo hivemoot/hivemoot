@@ -26,6 +26,8 @@ jobs:
         run: bash scripts/test-target-repo-validation.sh
       - name: Verify Claude token bootstrap behavior
         run: bash scripts/test-claude-token-bootstrap.sh
+      - name: Verify WORKSPACE_ROOT and AGENT_ID path validation behavior
+        run: bash scripts/test-path-input-validation.sh
       - name: Verify Trivy ignore validation behavior
         run: bash scripts/test-trivyignore-check.sh
       - name: Verify prompt security guardrails

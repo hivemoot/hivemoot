@@ -31,6 +31,7 @@ if [ "$launch_jitter_max" -lt "$launch_jitter_min" ]; then
   exit 1
 fi
 
+validate_workspace_root "$workspace_root"
 validate_target_repo "$target_repo"
 
 declare -a temp_token_files=()
@@ -103,12 +104,7 @@ for slot in $(seq 1 "$max_agents"); do
     exit 1
   fi
 
-  case "$agent_id" in
-    ''|*[!a-zA-Z0-9._-]*)
-      echo "Invalid agent id: ${agent_id}" >&2
-      exit 1
-      ;;
-  esac
+  validate_agent_id "$agent_id"
 
   if [ -n "${seen_agents[$agent_id]:-}" ]; then
     echo "Duplicate agent id detected: ${agent_id}" >&2
