@@ -8,6 +8,7 @@ vi.mock("../watch/state.js", () => ({
   appendAck: vi.fn(),
 }));
 
+import { CliError } from "../config/types.js";
 import { ackCommand } from "./ack.js";
 import { markNotificationRead } from "../github/notifications.js";
 import { appendAck } from "../watch/state.js";
@@ -61,13 +62,16 @@ describe("ackCommand", () => {
   it("rejects key without colon separator", async () => {
     await expect(
       ackCommand("invalid-key", { stateFile: "/tmp/state.json" }),
-    ).rejects.toThrow("Invalid key format");
+    ).rejects.toThrow(CliError);
+    await expect(
+      ackCommand("invalid-key", { stateFile: "/tmp/state.json" }),
+    ).rejects.toMatchObject({ code: "GH_ERROR", message: expect.stringContaining("Invalid key format") });
   });
 
   it("rejects key with colon at position 0", async () => {
     await expect(
       ackCommand(":2026-02-01T11:30:00.000Z", { stateFile: "/tmp/state.json" }),
-    ).rejects.toThrow("Invalid key format");
+    ).rejects.toThrow(CliError);
   });
 
   it("extracts thread ID correctly when timestamp contains colons", async () => {
