@@ -11,6 +11,8 @@ name: Fast Track Classifier
 #   maxChangedLines: 80
 #
 # Python 3.12 is required for PurePosixPath.match() ** wildcard support.
+# The classifier script uses underscores (classify_fast_track.py) for valid
+# Python module naming, which allows the test file to import it directly.
 
 on:
   pull_request:
@@ -61,7 +63,7 @@ jobs:
             }
 
           echo "$FILES_JSON" \
-            | python .github/scripts/classify-fast-track.py \
+            | python .github/scripts/classify_fast_track.py \
             || {
               echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
               echo "REASON=fallback:error classifier exited non-zero" >> "$GITHUB_OUTPUT"
