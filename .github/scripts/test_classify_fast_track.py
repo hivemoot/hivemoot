@@ -1,14 +1,8 @@
 """
 Tests for the fast-track classifier.
-Run with: python3 -m pytest .github/scripts/test_classify_fast_track.py -v
-
-Requires Python 3.12+ (PurePosixPath.match with ** support).
+Run with: python -m pytest test_classify_fast_track.py -v
+(from the .github/scripts/ directory, or use the workflow which sets working-directory)
 """
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(__file__))
-
 from classify_fast_track import classify, matches, ALLOWED, DENIED
 
 # --- matches() tests ---
