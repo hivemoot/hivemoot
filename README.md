@@ -198,6 +198,39 @@ Requires `TARGET_REPO` and user tokens (not installation tokens). Additional set
 
 Both `codex` and `claude` providers support mention-triggered session resume. Each provider keeps one session per GitHub notification thread and resumes follow-up mentions with the saved session UUID. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
+## Host Controller (Phase 2 MVP)
+
+`scripts/controller.sh` runs on the host and spawns one isolated worker container per job (`RUN_MODE=once`), instead of running all agents as background processes in a shared container.
+
+What it does:
+- Uses `spawn_worker()` as the container-launch seam for future backend swaps.
+- Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
+- Enforces per-repo mutual exclusion with `flock` plus a global max worker cap (locks default under `/tmp/hivemoot-controller-locks`).
+- Writes per-job artifacts:
+  - `jobs/<job-id>/job.json` (job spec)
+  - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
+- Requires Bash 4+ on the host (`declare -A` is used). macOS users should run a newer bash (for example Homebrew bash) explicitly.
+- Provider `*_FILE` values passed through the controller must be absolute host paths so Docker bind mounts succeed.
+
+Run one periodic cycle:
+
+```bash
+TARGET_REPO=owner/repo \
+AGENT_ID_01=worker \
+AGENT_GITHUB_TOKEN_01=ghp_xxx \
+CONTROLLER_WORKSPACE_ROOT="$PWD/data/controller" \
+WORKER_IMAGE=hivemoot-agent:local \
+bash scripts/controller.sh
+```
+
+Run continuously:
+
+```bash
+CONTROLLER_RUN_MODE=loop bash scripts/controller.sh
+```
+
+Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
+
 ## Credential Storage (Default)
 
 The default `hivemoot-agent` service is hardened for `api_key` mode:

@@ -38,6 +38,8 @@ jobs:
         run: bash scripts/test-prompt-guardrails.sh
       - name: Verify session resume lifecycle behavior
         run: bash scripts/test-session-resume-lifecycle.sh
+      - name: Verify controller behavior
+        run: bash scripts/test-controller.sh
 
   hadolint:
     name: Hadolint
