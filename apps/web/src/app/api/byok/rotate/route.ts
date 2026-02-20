@@ -11,6 +11,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt } from "@/server/crypto";
 import { setByokEnvelope } from "@/server/byok-store";
 import { validateProviderKey } from "@/server/provider-validation";
+import { BYOK_ERROR, byokError } from "@/server/byok-error";
 import type { ByokEnvelope } from "@/server/byok-store";
 
 interface RotateRequestBody {
@@ -28,30 +29,33 @@ export async function POST(request: NextRequest) {
   try {
     body = (await request.json()) as RotateRequestBody;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return byokError(BYOK_ERROR.INVALID_JSON, "Invalid JSON body", 400);
   }
 
   const { installationId, provider, model, apiKey } = body;
 
   if (!installationId || !provider || !model || !apiKey) {
-    return NextResponse.json(
-      { error: "Missing required fields: installationId, provider, model, apiKey" },
-      { status: 400 },
+    return byokError(
+      BYOK_ERROR.MISSING_FIELDS,
+      "Missing required fields: installationId, provider, model, apiKey",
+      400,
     );
   }
 
   if (auth.session.installationId !== installationId) {
-    return NextResponse.json(
-      { error: "Installation ID does not match session" },
-      { status: 403 },
+    return byokError(
+      BYOK_ERROR.INSTALLATION_MISMATCH,
+      "Installation ID does not match session",
+      403,
     );
   }
 
   const validation = await validateProviderKey(provider, apiKey, model);
   if (!validation.valid) {
-    return NextResponse.json(
-      { code: "byok_provider_invalid", reason: validation.reason },
-      { status: 400 },
+    return byokError(
+      BYOK_ERROR.PROVIDER_INVALID,
+      validation.reason ?? "Provider rejected API key",
+      400,
     );
   }
 
@@ -66,7 +70,7 @@ export async function POST(request: NextRequest) {
     status: "active",
     updatedAt: new Date().toISOString(),
     updatedBy: auth.session.userLogin,
-    fingerprintLast4: apiKey.slice(-4),
+    fingerprint: apiKey.slice(-4),
   };
 
   await setByokEnvelope(installationId, envelope, auth.redis);
@@ -75,7 +79,7 @@ export async function POST(request: NextRequest) {
     status: "active",
     provider,
     model,
-    fingerprintLast4: envelope.fingerprintLast4,
+    fingerprint: envelope.fingerprint,
     updatedAt: envelope.updatedAt,
   });
 }

@@ -60,7 +60,7 @@ const OLD_ENVELOPE = {
   status: "active" as const,
   updatedAt: "2026-02-19T12:00:00Z",
   updatedBy: "alice",
-  fingerprintLast4: "1234",
+  fingerprint: "1234",
 };
 
 function makeRequest(body?: unknown) {
@@ -83,7 +83,7 @@ beforeEach(() => {
     keyVersion: "v2",
   });
   vi.mocked(setByokEnvelope).mockResolvedValue(undefined);
-  vi.mocked(listByokInstallationIds).mockResolvedValue(["123"]);
+  vi.mocked(listByokInstallationIds).mockResolvedValue(["123", "999"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -156,6 +156,20 @@ describe("POST /api/byok/re-encrypt", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.reEncrypted).toBe(1);
+    expect(body.skipped).toBe(0);
+  });
+
+  it("batch mode does not scan other tenant installations", async () => {
+    vi.mocked(listByokInstallationIds).mockResolvedValue(["123", "456", "789"]);
+
+    const req = makeRequest({});
+    const res = await POST(req);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.reEncrypted).toBe(1);
+    expect(body.skipped).toBe(0);
+    expect(listByokInstallationIds).not.toHaveBeenCalled();
   });
 
   it("records failed installations without aborting", async () => {

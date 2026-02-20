@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { getByokEnvelope } from "@/server/byok-store";
+import { BYOK_ERROR, byokError } from "@/server/byok-error";
 
 export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
@@ -17,24 +18,42 @@ export async function GET(request: NextRequest) {
   const installationId = searchParams.get("installationId");
 
   if (!installationId) {
-    return NextResponse.json(
-      { error: "Missing required query parameter: installationId" },
-      { status: 400 },
+    return byokError(
+      BYOK_ERROR.MISSING_FIELD,
+      "Missing required query parameter: installationId",
+      400,
     );
   }
 
   if (auth.session.installationId !== installationId) {
-    return NextResponse.json(
-      { error: "Installation ID does not match session" },
-      { status: 403 },
+    return byokError(
+      BYOK_ERROR.INSTALLATION_MISMATCH,
+      "Installation ID does not match session",
+      403,
     );
   }
 
   const envelope = await getByokEnvelope(installationId, auth.redis);
   if (!envelope) {
-    return NextResponse.json(
-      { code: "byok_not_configured" },
-      { status: 404 },
+    return byokError(
+      BYOK_ERROR.NOT_CONFIGURED,
+      "BYOK is not configured",
+      404,
+    );
+  }
+
+  if (envelope.status === "revoked") {
+    return byokError(
+      BYOK_ERROR.REVOKED,
+      "BYOK configuration has been revoked",
+      409,
+      {
+        status: envelope.status,
+        provider: envelope.provider,
+        model: envelope.model,
+        fingerprint: envelope.fingerprint,
+        updatedAt: envelope.updatedAt,
+      },
     );
   }
 
@@ -42,7 +61,7 @@ export async function GET(request: NextRequest) {
     status: envelope.status,
     provider: envelope.provider,
     model: envelope.model,
-    fingerprintLast4: envelope.fingerprintLast4,
+    fingerprint: envelope.fingerprint,
     updatedAt: envelope.updatedAt,
   });
 }

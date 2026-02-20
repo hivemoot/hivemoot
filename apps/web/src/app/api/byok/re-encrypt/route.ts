@@ -4,18 +4,16 @@
  * Re-encrypts BYOK envelopes with the current active master key version.
  * Used after master key rotation to migrate old envelopes forward.
  *
- * Accepts either a single installationId or no body for batch mode
- * (processes all installations the session has access to).
+ * Accepts either a single installationId or no body.
+ * No-body mode is still installation-scoped: only the session installation
+ * is processed by this user-facing endpoint.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt, decrypt } from "@/server/crypto";
-import {
-  getByokEnvelope,
-  setByokEnvelope,
-  listByokInstallationIds,
-} from "@/server/byok-store";
+import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
+import { BYOK_ERROR, byokError } from "@/server/byok-error";
 
 interface ReEncryptRequestBody {
   installationId?: string;
@@ -30,7 +28,7 @@ export async function POST(request: NextRequest) {
     const text = await request.text();
     if (text) body = JSON.parse(text) as ReEncryptRequestBody;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return byokError(BYOK_ERROR.INVALID_JSON, "Invalid JSON body", 400);
   }
 
   let installationIds: string[];
@@ -38,9 +36,10 @@ export async function POST(request: NextRequest) {
   if (body.installationId) {
     // Single mode — verify cross-installation isolation
     if (auth.session.installationId !== body.installationId) {
-      return NextResponse.json(
-        { error: "Installation ID does not match session" },
-        { status: 403 },
+      return byokError(
+        BYOK_ERROR.INSTALLATION_MISMATCH,
+        "Installation ID does not match session",
+        403,
       );
     }
     installationIds = [body.installationId];
@@ -86,37 +85,23 @@ export async function POST(request: NextRequest) {
 
       const reEncryptedEnvelope = encrypt(plaintext, auth.activeKeyVersion, auth.keyring);
 
-      await setByokEnvelope(id, {
-        ...envelope,
-        ciphertext: reEncryptedEnvelope.ciphertext,
-        iv: reEncryptedEnvelope.iv,
-        tag: reEncryptedEnvelope.tag,
-        keyVersion: reEncryptedEnvelope.keyVersion,
-        updatedAt: new Date().toISOString(),
-        updatedBy: auth.session.userLogin,
-      }, auth.redis);
+      await setByokEnvelope(
+        id,
+        {
+          ...envelope,
+          ciphertext: reEncryptedEnvelope.ciphertext,
+          iv: reEncryptedEnvelope.iv,
+          tag: reEncryptedEnvelope.tag,
+          keyVersion: reEncryptedEnvelope.keyVersion,
+          updatedAt: new Date().toISOString(),
+          updatedBy: auth.session.userLogin,
+        },
+        auth.redis,
+      );
 
       reEncrypted++;
     } catch {
       failed.push(id);
-    }
-  }
-
-  // Also batch-scan all installations if the caller is doing a full migration
-  // This only applies when no specific installationId was given and we want
-  // to handle orphaned envelopes. For security, we list all IDs but only
-  // process them if they match the session's installation.
-  if (!body.installationId) {
-    try {
-      const allIds = await listByokInstallationIds(auth.redis);
-      for (const id of allIds) {
-        // Only process installations we haven't already handled
-        if (installationIds.includes(id)) continue;
-        // In single-session scope, skip other installations
-        skipped++;
-      }
-    } catch {
-      // SCAN failure is non-fatal for the core operation
     }
   }
 

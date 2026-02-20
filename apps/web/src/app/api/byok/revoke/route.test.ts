@@ -47,7 +47,7 @@ const MOCK_ENVELOPE = {
   status: "active" as const,
   updatedAt: "2026-02-19T12:00:00Z",
   updatedBy: "alice",
-  fingerprintLast4: "1234",
+  fingerprint: "1234",
 };
 
 function makeRequest(body: unknown) {
@@ -99,6 +99,7 @@ describe("POST /api/byok/revoke", () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe("byok_not_configured");
+    expect(body.message).toBe("BYOK is not configured");
   });
 
   it("returns 403 on cross-installation attempt", async () => {

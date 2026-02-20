@@ -46,10 +46,10 @@ function mockAuthSuccess() {
   });
 }
 
-function mockAuthFailure(status: number, error: string) {
+function mockAuthFailure(status: number, code: string, message: string) {
   vi.mocked(authenticateByokRequest).mockResolvedValue({
     ok: false,
-    response: NextResponse.json({ error }, { status }),
+    response: NextResponse.json({ code, message }, { status }),
   });
 }
 
@@ -92,7 +92,7 @@ describe("POST /api/byok/config", () => {
     const body = await res.json();
     expect(body.status).toBe("active");
     expect(body.provider).toBe("anthropic");
-    expect(body.fingerprintLast4).toBe("1234");
+    expect(body.fingerprint).toBe("1234");
     expect(setByokEnvelope).toHaveBeenCalledWith(
       "123",
       expect.objectContaining({ status: "active", provider: "anthropic" }),
@@ -101,7 +101,7 @@ describe("POST /api/byok/config", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    mockAuthFailure(401, "Not authenticated");
+    mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const req = makeRequest({ installationId: "123" });
     const res = await POST(req);
     expect(res.status).toBe(401);
@@ -150,7 +150,7 @@ describe("POST /api/byok/config", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("byok_provider_invalid");
-    expect(body.reason).toBe("Invalid API key");
+    expect(body.message).toBe("Invalid API key");
   });
 
   it("does not include API key in error responses", async () => {

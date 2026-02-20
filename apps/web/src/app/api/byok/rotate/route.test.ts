@@ -82,7 +82,7 @@ describe("POST /api/byok/rotate", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("active");
-    expect(body.fingerprintLast4).toBe("5678");
+    expect(body.fingerprint).toBe("5678");
     expect(setByokEnvelope).toHaveBeenCalled();
   });
 
@@ -113,6 +113,7 @@ describe("POST /api/byok/rotate", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("byok_provider_invalid");
+    expect(body.message).toBe("Invalid API key");
   });
 
   it("returns 400 when required fields are missing", async () => {

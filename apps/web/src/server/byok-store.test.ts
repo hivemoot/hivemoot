@@ -54,7 +54,7 @@ function makeEnvelope(overrides: Partial<ByokEnvelope> = {}): ByokEnvelope {
     status: "active",
     updatedAt: "2026-02-19T12:00:00Z",
     updatedBy: "alice",
-    fingerprintLast4: "ab12",
+    fingerprint: "ab12",
     ...overrides,
   };
 }
@@ -85,6 +85,32 @@ describe("getByokEnvelope", () => {
 
     const result = await getByokEnvelope("456", redis);
     expect(result).toBeNull();
+  });
+
+  it("reads legacy envelopes that still use fingerprintLast4", async () => {
+    const redis = makeMockRedis();
+    redis._store.set(
+      "hive:byok:789",
+      JSON.stringify({
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        ciphertext: "Y2lwaGVydGV4dA==",
+        iv: "aXYtdGVzdA==",
+        tag: "dGFnLXRlc3Q=",
+        keyVersion: "v1",
+        status: "active",
+        updatedAt: "2026-02-19T12:00:00Z",
+        updatedBy: "alice",
+        fingerprintLast4: "c0de",
+      }),
+    );
+
+    const result = await getByokEnvelope("789", redis);
+    expect(result).toEqual(
+      expect.objectContaining({
+        fingerprint: "c0de",
+      }),
+    );
   });
 });
 

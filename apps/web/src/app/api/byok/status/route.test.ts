@@ -46,7 +46,7 @@ const MOCK_ENVELOPE = {
   status: "active" as const,
   updatedAt: "2026-02-19T12:00:00Z",
   updatedBy: "alice",
-  fingerprintLast4: "1234",
+  fingerprint: "1234",
 };
 
 function makeRequest(installationId?: string) {
@@ -75,7 +75,7 @@ describe("GET /api/byok/status", () => {
     expect(body.status).toBe("active");
     expect(body.provider).toBe("anthropic");
     expect(body.model).toBe("claude-sonnet-4-20250514");
-    expect(body.fingerprintLast4).toBe("1234");
+    expect(body.fingerprint).toBe("1234");
     expect(body.updatedAt).toBe("2026-02-19T12:00:00Z");
 
     // Must NOT include sensitive fields
@@ -85,7 +85,7 @@ describe("GET /api/byok/status", () => {
     expect(body.keyVersion).toBeUndefined();
   });
 
-  it("returns revoked status for a revoked config", async () => {
+  it("returns byok_revoked for a revoked config", async () => {
     vi.mocked(getByokEnvelope).mockResolvedValue({
       ...MOCK_ENVELOPE,
       status: "revoked",
@@ -97,6 +97,8 @@ describe("GET /api/byok/status", () => {
     const req = makeRequest("123");
     const res = await GET(req);
     const body = await res.json();
+    expect(res.status).toBe(409);
+    expect(body.code).toBe("byok_revoked");
     expect(body.status).toBe("revoked");
   });
 
@@ -108,6 +110,7 @@ describe("GET /api/byok/status", () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe("byok_not_configured");
+    expect(body.message).toBe("BYOK is not configured");
   });
 
   it("returns 403 on cross-installation attempt", async () => {

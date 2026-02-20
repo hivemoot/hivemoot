@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
+import { BYOK_ERROR, byokError } from "@/server/byok-error";
 
 interface RevokeRequestBody {
   installationId: string;
@@ -21,31 +22,30 @@ export async function POST(request: NextRequest) {
   try {
     body = (await request.json()) as RevokeRequestBody;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return byokError(BYOK_ERROR.INVALID_JSON, "Invalid JSON body", 400);
   }
 
   const { installationId } = body;
 
   if (!installationId) {
-    return NextResponse.json(
-      { error: "Missing required field: installationId" },
-      { status: 400 },
+    return byokError(
+      BYOK_ERROR.MISSING_FIELD,
+      "Missing required field: installationId",
+      400,
     );
   }
 
   if (auth.session.installationId !== installationId) {
-    return NextResponse.json(
-      { error: "Installation ID does not match session" },
-      { status: 403 },
+    return byokError(
+      BYOK_ERROR.INSTALLATION_MISMATCH,
+      "Installation ID does not match session",
+      403,
     );
   }
 
   const existing = await getByokEnvelope(installationId, auth.redis);
   if (!existing) {
-    return NextResponse.json(
-      { code: "byok_not_configured" },
-      { status: 404 },
-    );
+    return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
   }
 
   // Clear ciphertext fields, keep metadata for audit

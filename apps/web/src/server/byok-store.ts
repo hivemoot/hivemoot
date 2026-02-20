@@ -3,7 +3,7 @@
  *
  * Each installation gets one encrypted envelope at `hive:byok:{installationId}`.
  * The envelope holds the provider's API key in encrypted form plus non-sensitive
- * metadata (provider name, model, last-4 fingerprint, status).
+ * metadata (provider name, model, key fingerprint, status).
  */
 
 import type Redis from "ioredis";
@@ -20,7 +20,47 @@ export interface ByokEnvelope {
   status: "active" | "revoked";
   updatedAt: string; // ISO 8601
   updatedBy: string; // GitHub login
-  fingerprintLast4: string;
+  fingerprint: string;
+}
+
+function isByokStatus(value: unknown): value is ByokEnvelope["status"] {
+  return value === "active" || value === "revoked";
+}
+
+function normalizeEnvelope(
+  installationId: string,
+  rawEnvelope: Partial<ByokEnvelope> & { fingerprintLast4?: unknown },
+): ByokEnvelope | null {
+  const fingerprint = rawEnvelope.fingerprint ?? rawEnvelope.fingerprintLast4;
+
+  if (
+    typeof rawEnvelope.provider !== "string" ||
+    typeof rawEnvelope.model !== "string" ||
+    typeof rawEnvelope.ciphertext !== "string" ||
+    typeof rawEnvelope.iv !== "string" ||
+    typeof rawEnvelope.tag !== "string" ||
+    typeof rawEnvelope.keyVersion !== "string" ||
+    !isByokStatus(rawEnvelope.status) ||
+    typeof rawEnvelope.updatedAt !== "string" ||
+    typeof rawEnvelope.updatedBy !== "string" ||
+    typeof fingerprint !== "string"
+  ) {
+    console.warn("Invalid BYOK envelope shape in Redis", { installationId });
+    return null;
+  }
+
+  return {
+    provider: rawEnvelope.provider,
+    model: rawEnvelope.model,
+    ciphertext: rawEnvelope.ciphertext,
+    iv: rawEnvelope.iv,
+    tag: rawEnvelope.tag,
+    keyVersion: rawEnvelope.keyVersion,
+    status: rawEnvelope.status,
+    updatedAt: rawEnvelope.updatedAt,
+    updatedBy: rawEnvelope.updatedBy,
+    fingerprint,
+  };
 }
 
 /**
@@ -34,8 +74,15 @@ export async function getByokEnvelope(
   if (!raw) return null;
 
   try {
-    return JSON.parse(raw) as ByokEnvelope;
+    const parsed = JSON.parse(raw) as Partial<ByokEnvelope> & {
+      fingerprintLast4?: unknown;
+    };
+    return normalizeEnvelope(installationId, parsed);
   } catch {
+    console.warn("Invalid BYOK envelope JSON in Redis", {
+      installationId,
+      error: "invalid_json",
+    });
     return null;
   }
 }
