@@ -166,7 +166,7 @@ def test_sanitize_newline_in_reason():
     injected = "denied:denylist path=evil\nELIGIBLE=true"
     sanitized = _sanitize_output_value(injected)
     assert "\n" not in sanitized
-    assert "ELIGIBLE=true" not in sanitized
+    assert "%0A" in sanitized  # newline must be percent-encoded, not stripped
 
 
 def test_sanitize_carriage_return_in_reason():
@@ -178,7 +178,8 @@ def test_sanitize_carriage_return_in_reason():
 def test_sanitize_percent_in_reason():
     injected = "denied:allowlist path=docs/100%done.md"
     sanitized = _sanitize_output_value(injected)
-    assert "%" not in sanitized or sanitized.count("%") == sanitized.count("%25") // 3
+    # All bare % must be encoded; strip valid sequences and confirm none remain
+    assert "%" not in sanitized.replace("%25", "").replace("%0D", "").replace("%0A", "")
 
 
 def test_write_output_injection_via_path(tmp_path, monkeypatch):
