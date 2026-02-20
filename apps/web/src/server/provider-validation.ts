@@ -16,6 +16,7 @@ type ValidationResult =
 export async function validateProviderKey(
   provider: string,
   apiKey: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _model?: string,
 ): Promise<ValidationResult> {
   switch (provider) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -47,7 +47,6 @@ function mockAuthSuccess() {
 }
 
 function mockAuthFailure(status: number, error: string) {
-  const { NextResponse } = require("next/server");
   vi.mocked(authenticateByokRequest).mockResolvedValue({
     ok: false,
     response: NextResponse.json({ error }, { status }),

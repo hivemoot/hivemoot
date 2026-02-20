@@ -25,6 +25,7 @@ function makeMockRedis() {
       store.delete(key);
       return existed ? 1 : 0;
     }),
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     scan: vi.fn(async (cursor: string, ..._args: unknown[]) => {
       // Return all matching keys on first call, "0" cursor to signal done
       if (cursor === "0") {
