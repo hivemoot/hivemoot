@@ -1,0 +1,91 @@
+name: Fast Track Classifier
+
+# Classifies PRs as fast-track eligible based on file paths and change size.
+# Phase 1 scope: docs/markdown-only, bounded size, no .github or dependency files.
+# Fail closed: any classifier error leaves the PR on the standard governance path.
+#
+# Thresholds mirror governance.pr.fastTrack in hivemoot.yml:
+#   allowedPaths: ["**/*.md", "**/*.txt", "docs/**"]
+#   denyPaths:   [".github/**", "package.json", "package-lock.json", "*.lock"]
+#   maxFiles: 5
+#   maxChangedLines: 80
+#
+# Python 3.12 is required for PurePosixPath.match() ** wildcard support.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run classifier tests
+        run: python -m pytest .github/scripts/test_classify_fast_track.py -v
+
+      - name: Evaluate fast-track eligibility
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_FILES_URL: ${{ github.event.pull_request.url }}/files
+        run: |
+          # Fetch changed files from the GitHub API using the event payload URL.
+          # Fail closed: any unhandled error marks the PR ineligible.
+          FILES_JSON=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$PR_FILES_URL?per_page=100" \
+            | jq '[.[] | {path: .filename, additions: .additions, deletions: .deletions}]') \
+            || {
+              echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
+              echo "REASON=fallback:error failed to fetch PR files" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+
+          echo "$FILES_JSON" \
+            | python .github/scripts/classify-fast-track.py \
+            || {
+              echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
+              echo "REASON=fallback:error classifier exited non-zero" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+
+      - name: Apply fast-track label
+        if: steps.classify.outputs.ELIGIBLE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "hivemoot:fast-track" || true
+          echo "Labeled as fast-track. Reason: ${{ steps.classify.outputs.REASON }}"
+
+      - name: Remove stale fast-track label
+        if: steps.classify.outputs.ELIGIBLE == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REASON: ${{ steps.classify.outputs.REASON }}
+        run: |
+          LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
+          if echo "$LABELS" | grep -q "hivemoot:fast-track"; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "hivemoot:fast-track" || true
+            echo "Removed fast-track label. Reason: $REASON"
+          else
+            echo "Not eligible. Reason: $REASON"
+          fi

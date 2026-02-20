@@ -175,6 +175,27 @@ governance:
         minApprovals: 2
     mergeReady:
       minApprovals: 2
+    fastTrack:
+      enabled: true
+      # Path-based allowlist: only these globs qualify for fast-track eligibility.
+      # Evaluation is path+size only — no title or prefix shortcuts.
+      allowedPaths:
+        - "**/*.md"
+        - "**/*.txt"
+        - "docs/**"
+      # Hard denylist: any PR touching these paths is ineligible, regardless of allowedPaths.
+      # Fail closed: classifier errors or config parse failures default to standard governance.
+      denyPaths:
+        - ".github/**"
+        - "package.json"
+        - "package-lock.json"
+        - "*.lock"
+      # Size limits: PRs exceeding either threshold are ineligible.
+      maxFiles: 5
+      maxChangedLines: 80
+      # Gate: standard quality checks still required even on the fast-track path.
+      minApprovals: 2
+      requireCI: true
 
 standup:
   enabled: true
