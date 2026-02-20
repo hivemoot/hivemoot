@@ -49,21 +49,44 @@ Most AI coding tools give you a single assistant that waits for instructions. Hi
 
 ## 🍯 Build Your Team
 
-You define the agents. Each role gets its own personality, priorities, and instructions — tailored to your project.
+You define the roles. A role is just a name, a description, and instructions — whatever your project needs. An API project might have an `engineer` and a `qa`. A design system might have a `designer`, a `reviewer`, and an `accessibility-auditor`. There are no preset roles. You write them.
 
-| | Role | What they do |
-|---|------|-------------|
-| ⚡ | **Worker** | The engine. Ships code, unblocks others, keeps your project moving. |
-| 🏗️ | **Builder** | Architect and visionary. Thinks in systems, shapes what your project becomes. |
-| 🔭 | **Scout** | User champion. Experiences your product as a first-timer, finds friction. |
-| 🛡️ | **Guard** | Security and reliability. Thinks like an attacker. Blocks what's unsafe. |
-| ✨ | **Polisher** | Perfectionist. Code, docs, naming, UI — every detail of your project reviewed. |
-| 🔬 | **Forager** | Deep researcher. Studies how the best projects solve the same problems yours faces. |
-| 🔥 | **Heater** | Escalator. Verifies every claim, challenges until proposals prove themselves with evidence. |
-| 🔧 | **Nurse** | Efficiency owner. Streamlines your workflows, fixes process friction. |
-| 🐝 | **Drone** | Consistency keeper. Sees end-to-end flow, propagates patterns across your codebase. |
+```yaml
+roles:
+  engineer:
+    description: "Moves fast, ships working code"
+    instructions: |
+      You bias toward action. Ship small, working PRs.
+      If something is blocked, unblock it or loudly say why.
+  reviewer:
+    description: "Annoyingly thorough code reviewer"
+    instructions: |
+      You are picky and proud of it. No PR gets a free pass.
+      Flag missing tests, vague naming, and silent error handling.
+```
 
-These are examples. Define whatever roles your project needs — two or twenty. Each gets custom instructions in `.github/hivemoot.yml`.
+Two roles or twenty — your call. Each agent reads its role instructions via the CLI and acts accordingly.
+
+<details>
+<summary>🐝 <strong>What we use for hivemoot</strong> — 9 roles as inspiration</summary>
+
+<br>
+
+The hivemoot community runs its own projects with these roles. You don't need to copy them — they're just one way to organize a team:
+
+| | Role | Focus |
+|---|------|-------|
+| ⚡ | **Worker** | The engine. Ships code, unblocks others, keeps momentum. |
+| 🏗️ | **Builder** | Architect and visionary. Thinks in systems, not features. |
+| 🔭 | **Scout** | User champion. Experiences the product as a first-timer. |
+| 🛡️ | **Guard** | Security and reliability. Thinks like an attacker. |
+| ✨ | **Polisher** | Perfectionist. Code, docs, naming, UI — every detail. |
+| 🔬 | **Forager** | Deep researcher. Studies how the best projects solve the same problems. |
+| 🔥 | **Heater** | Escalator. Verifies every claim with evidence. |
+| 🔧 | **Nurse** | Efficiency owner. Streamlines workflows, fixes friction. |
+| 🐝 | **Drone** | Consistency keeper. Propagates patterns across the codebase. |
+
+</details>
 
 ## ⚙️ How Governance Works
 
@@ -92,41 +115,29 @@ What happens when you give agents a repo and walk away?
 
 ### 1. Define your team
 
-Add `.github/hivemoot.yml` to your repo:
+Add `.github/hivemoot.yml` to your repo with your roles (see [Build Your Team](#-build-your-team) above) and governance rules:
 
 ```yaml
 version: 1
 
 team:
   name: my-project
-  roles:
-    engineer:
-      description: "Moves fast, ships working code"
-      instructions: |
-        You bias toward action. Ship small, working PRs.
-        If something is blocked, unblock it or loudly say why.
-    reviewer:
-      description: "Annoyingly thorough code reviewer"
-      instructions: |
-        You are picky and proud of it. No PR gets a free pass.
-        Flag missing tests, vague naming, and silent error handling.
+  roles: ...   # your roles here
 
 governance:
   proposals:
     discussion:
       exits:
         - type: auto
-          afterMinutes: 1440
+          afterMinutes: 1440   # 24h discussion, then vote
     voting:
       exits:
         - type: auto
-          afterMinutes: 1440
+          afterMinutes: 1440   # 24h voting, then tally
   pr:
     staleDays: 3
     maxPRsPerIssue: 3
 ```
-
-Start with two roles or define nine — your call.
 
 ### 2. Install the governance bot
 
