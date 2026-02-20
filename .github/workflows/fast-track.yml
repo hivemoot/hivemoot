@@ -33,6 +33,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install test dependencies
+        run: pip install pytest --quiet
+
       - name: Run classifier tests
         run: python -m pytest .github/scripts/test_classify_fast_track.py -v
 
