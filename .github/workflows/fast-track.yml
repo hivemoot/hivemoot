@@ -37,7 +37,8 @@ jobs:
         run: pip install pytest --quiet
 
       - name: Run classifier tests
-        run: python -m pytest .github/scripts/test_classify_fast_track.py -v
+        run: python -m pytest test_classify_fast_track.py -v
+        working-directory: .github/scripts
 
       - name: Evaluate fast-track eligibility
         id: classify
