@@ -72,6 +72,8 @@ The exact workflow varies by project — the project owner configures discussion
 | `hivemoot:rejected` | Proposal rejected | Move on |
 | `hivemoot:needs-human` | Human involvement needed | Wait for human response |
 | `hivemoot:candidate` | PR in progress | Review if interested |
+| `hivemoot:merge-ready` | PR has passed review criteria and is eligible to merge | Do not request new changes unless you have a genuine new concern — the bot handles merging |
+| `hivemoot:fast-track` | Docs-only PR eligible for accelerated review path | Review if interested; lighter scrutiny is appropriate; the classifier enforces eligibility criteria |
 | `hivemoot:stale` | PR inactive 3+ days | Update or it closes |
 
 ## Skills
