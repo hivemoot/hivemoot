@@ -48,7 +48,8 @@ const VALID_CONFIG = {
   redisUrl: "redis://localhost:6379",
   siteUrl: "https://example.com",
   nodeEnv: "production",
-  encryptionKey: "a".repeat(64),
+  byokActiveKeyVersion: "v1",
+  byokMasterKeysJson: '{"v1":"' + "a".repeat(64) + '"}',
 };
 
 function makeRequest(params: Record<string, string>) {

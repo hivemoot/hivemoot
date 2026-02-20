@@ -14,7 +14,6 @@ import { GET } from "./route";
 
 // process.env typed as mutable for test manipulation
 type MutableEnv = Record<string, string | undefined>;
-const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 describe("GET /api/health", () => {
   const originalEnv = process.env;
@@ -45,7 +44,8 @@ describe("GET /api/health", () => {
     delete env().GITHUB_APP_PRIVATE_KEY;
     delete env().GITHUB_CLIENT_ID;
     delete env().GITHUB_CLIENT_SECRET;
-    delete env().ENCRYPTION_KEY;
+    delete env().BYOK_ACTIVE_KEY_VERSION;
+    delete env().BYOK_MASTER_KEYS;
     delete env().NEXT_PUBLIC_SITE_URL;
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -57,7 +57,8 @@ describe("GET /api/health", () => {
       "GITHUB_APP_PRIVATE_KEY",
       "GITHUB_CLIENT_ID",
       "GITHUB_CLIENT_SECRET",
-      "ENCRYPTION_KEY",
+      "BYOK_ACTIVE_KEY_VERSION",
+      "BYOK_MASTER_KEYS",
       "NEXT_PUBLIC_SITE_URL",
     ]);
   });
@@ -69,7 +70,9 @@ describe("GET /api/health", () => {
     env().GITHUB_APP_PRIVATE_KEY = "key";
     env().GITHUB_CLIENT_ID = "Iv1.test";
     env().GITHUB_CLIENT_SECRET = "secret";
-    env().ENCRYPTION_KEY = "a".repeat(64);
+    env().BYOK_ACTIVE_KEY_VERSION = "v1";
+    env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
     env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -78,19 +81,4 @@ describe("GET /api/health", () => {
     expect(response.body.env).toBe("production");
   });
 
-  it("returns 503 in production when ENCRYPTION_KEY is malformed", () => {
-    env().NODE_ENV = "production";
-    env().REDIS_URL = "redis://prod:6379";
-    env().GITHUB_APP_ID = "99";
-    env().GITHUB_APP_PRIVATE_KEY = "key";
-    env().GITHUB_CLIENT_ID = "Iv1.test";
-    env().GITHUB_CLIENT_SECRET = "secret";
-    env().ENCRYPTION_KEY = "not-hex";
-    env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
-
-    const response = GET() as unknown as { body: Record<string, unknown>; status: number };
-    expect(response.status).toBe(503);
-    expect(response.body.status).toBe("error");
-    expect(response.body.missing).toEqual([ENCRYPTION_KEY_FORMAT_ERROR]);
-  });
 });
