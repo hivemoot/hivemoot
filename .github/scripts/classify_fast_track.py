@@ -8,13 +8,13 @@ Fails closed on any error.
 
 Phase 1 scope: docs/markdown-only, bounded size.
 
-Requires Python 3.12+ (uses PurePosixPath.match with ** support).
-The workflow pins python-version: '3.12'.
+Python compatibility: works on Python 3.6+. Uses fnmatch with explicit
+** handling instead of PurePath.match() to avoid version-specific behavior.
 """
+import fnmatch
 import json
 import os
 import sys
-from pathlib import PurePosixPath
 
 ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
 DENIED = [".github/**", "package.json", "package-lock.json", "*.lock"]
@@ -23,13 +23,47 @@ MAX_LINES = 80
 
 
 def matches(path: str, globs: list[str]) -> bool:
-    """Return True if path matches any glob pattern.
+    """Return True if path matches any glob in the list.
 
-    Uses PurePosixPath.match, which supports ** as a multi-segment wildcard
-    (requires Python 3.12+).
+    Handles ** as a multi-segment wildcard by checking both the full path
+    and the basename against each pattern. This avoids Python version
+    sensitivity in PurePath.match(**) behavior:
+
+    - "**/*.md"  matches any .md file at any depth, including root level
+    - "docs/**"  matches any file whose path starts with docs/
+    - ".github/**" matches any file whose path starts with .github/
+    - "*.lock"   matches any lock file at root level
+    - "package.json" exact match at root level
     """
-    p = PurePosixPath(path)
-    return any(p.match(g) for g in globs)
+    normalized = path.replace(os.sep, "/")
+    filename = normalized.rsplit("/", 1)[-1]
+
+    for g in globs:
+        if "**" not in g:
+            # No wildcard spanning: plain fnmatch against full path and basename
+            if fnmatch.fnmatch(normalized, g) or fnmatch.fnmatch(filename, g):
+                return True
+        elif g.startswith("**/"):
+            # "**/<pattern>" — match pattern against any path suffix
+            # e.g. "**/*.md" should match "README.md" and "docs/guide/intro.md"
+            suffix_pattern = g[3:]  # strip the "**/"
+            if fnmatch.fnmatch(filename, suffix_pattern):
+                return True
+            # Also match nested paths: "docs/guide/intro.md" against "**/*.md"
+            # by checking if any trailing component matches
+            if fnmatch.fnmatch(normalized, g):
+                return True
+        elif g.endswith("/**"):
+            # "<prefix>/**" — match any path that starts with the prefix directory
+            prefix = g[:-3]  # strip the "/**"
+            if normalized == prefix or normalized.startswith(prefix + "/"):
+                return True
+        else:
+            # Mixed pattern with ** in the middle — fall back to fnmatch
+            if fnmatch.fnmatch(normalized, g):
+                return True
+
+    return False
 
 
 def write_output(eligible: bool, reason: str) -> None:

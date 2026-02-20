@@ -10,7 +10,6 @@ name: Fast Track Classifier
 #   maxFiles: 5
 #   maxChangedLines: 80
 #
-# Python 3.12 is required for PurePosixPath.match() ** wildcard support.
 # The classifier script uses underscores (classify_fast_track.py) for valid
 # Python module naming, which allows the test file to import it directly.
 
@@ -30,10 +29,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.x'
 
       - name: Install test dependencies
         run: pip install pytest --quiet
