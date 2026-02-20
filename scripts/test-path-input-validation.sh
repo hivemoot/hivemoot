@@ -61,3 +61,19 @@ assert_fails_with \
   env TARGET_REPO=owner/repo AGENT_ID_01=.. AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-loop.sh
 
 echo "PASS: workspace root and agent ID validation checks"
+
+echo "Running GIT_CLONE_DEPTH validation checks"
+
+assert_fails_with \
+  "Unsupported GIT_CLONE_DEPTH: abc. Use 0 (full clone) or a positive integer." \
+  env TARGET_REPO=owner/repo GIT_CLONE_DEPTH=abc bash scripts/run-once.sh
+
+assert_fails_with \
+  "Unsupported GIT_CLONE_DEPTH: -1. Use 0 (full clone) or a positive integer." \
+  env TARGET_REPO=owner/repo GIT_CLONE_DEPTH=-1 bash scripts/run-once.sh
+
+assert_fails_with \
+  "Unsupported GIT_CLONE_DEPTH: 1.5. Use 0 (full clone) or a positive integer." \
+  env TARGET_REPO=owner/repo GIT_CLONE_DEPTH=1.5 bash scripts/run-once.sh
+
+echo "PASS: GIT_CLONE_DEPTH validation checks"

@@ -254,7 +254,7 @@ auth_mode="${AGENT_AUTH_MODE:-auto}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-fresh_clone="${FRESH_CLONE:-1}"
+clone_depth="${GIT_CLONE_DEPTH:-50}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
@@ -283,6 +283,11 @@ fi
 
 if ! is_positive_integer "$session_resume_max_age_hours"; then
   echo "Unsupported SESSION_RESUME_MAX_AGE_HOURS: ${session_resume_max_age_hours}. Use a positive integer." >&2
+  exit 1
+fi
+
+if ! is_non_negative_integer "$clone_depth"; then
+  echo "Unsupported GIT_CLONE_DEPTH: ${clone_depth}. Use 0 (full clone) or a positive integer." >&2
   exit 1
 fi
 
@@ -511,6 +516,21 @@ Local repository path: ${repo_dir}
 "
 fi
 
+# Technical notes block: runtime details agents should be aware of.
+# Append new notes here as the environment evolves.
+technical_notes=""
+if [ "$clone_depth" -gt 0 ]; then
+  technical_notes="${technical_notes}
+- Shallow clone (depth ${clone_depth}). git log/blame are truncated. Run \`git fetch --unshallow\` if you need full history."
+fi
+
+if [ -n "$technical_notes" ]; then
+  system_prompt="${system_prompt}
+Technical notes:
+${technical_notes}
+"
+fi
+
 # User message: mention context / extra instructions when present,
 # otherwise a default directive.
 default_user_message="Make meaningful contributions to the repository according to your role instructions."
@@ -524,6 +544,39 @@ fi
 prompt="${system_prompt}
 
 ${user_message}"
+
+resolve_remote_default_branch() {
+  local dir="$1"
+  local branch=""
+
+  # Prefer origin/HEAD (set by clone or remote set-head)
+  if branch="$(git -C "$dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null)"; then
+    branch="${branch#refs/remotes/origin/}"
+    if [ -n "$branch" ]; then
+      printf '%s' "$branch"
+      return 0
+    fi
+  fi
+
+  # Fallback: try well-known defaults
+  local candidate
+  for candidate in main master; do
+    if git -C "$dir" rev-parse --verify "origin/${candidate}" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  # Last resort: first remote branch
+  branch="$(git -C "$dir" branch -r --format='%(refname:short)' 2>/dev/null \
+    | sed -n 's|^origin/||p' | grep -v '^HEAD$' | head -n 1)"
+  if [ -n "$branch" ]; then
+    printf '%s' "$branch"
+    return 0
+  fi
+
+  return 1
+}
 
 clone_repo() {
   local askpass
@@ -539,22 +592,44 @@ esac
 EOF
   chmod 700 "$askpass"
 
-  if [ "$fresh_clone" = "1" ] && [ -d "$repo_dir" ]; then
-    log "Removing previous clone: ${repo_dir}"
-    rm -rf "$repo_dir"
+  # Try to sync an existing checkout; on any failure, delete and reclone.
+  local sync_ok=0
+  if [ -d "$repo_dir/.git" ]; then
+    log "Reusing existing clone: ${repo_dir}"
+    local default_branch=""
+    if default_branch="$(resolve_remote_default_branch "$repo_dir")"; then
+      log "Updating to origin/${default_branch}"
+      if git -C "$repo_dir" fetch --prune origin 2>&1 \
+        && git -C "$repo_dir" reset --hard "origin/${default_branch}" 2>&1 \
+        && git -C "$repo_dir" clean -fdx 2>&1; then
+        sync_ok=1
+      else
+        log "Sync failed; deleting stale checkout and recloning"
+      fi
+    else
+      log "Could not determine default branch; deleting stale checkout and recloning"
+    fi
+
+    if [ "$sync_ok" -eq 0 ]; then
+      rm -rf "$repo_dir"
+    fi
   fi
 
   if [ ! -d "$repo_dir/.git" ]; then
-    log "Cloning https://github.com/${target_repo}.git"
+    local clone_args=(--single-branch)
+    local depth_label="full"
+    if [ "$clone_depth" -gt 0 ]; then
+      clone_args+=(--depth "$clone_depth")
+      depth_label="$clone_depth"
+    fi
+    log "Cloning https://github.com/${target_repo}.git (depth=${depth_label})"
     if ! GIT_ASKPASS="$askpass" GIT_PAT="$github_token" GIT_TERMINAL_PROMPT=0 \
-      git clone "https://github.com/${target_repo}.git" "$repo_dir" >/dev/null 2>&1; then
+      git clone "${clone_args[@]}" "https://github.com/${target_repo}.git" "$repo_dir" 2>&1; then
       rm -rf "$repo_dir"
       rm -f "$askpass"
       echo "Failed to clone ${target_repo}. Check token and repo access." >&2
       exit 1
     fi
-  else
-    log "Reusing existing clone: ${repo_dir}"
   fi
 
   rm -f "$askpass"
