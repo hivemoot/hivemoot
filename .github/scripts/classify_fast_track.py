@@ -38,16 +38,27 @@ def matches(path: str, globs: list[str]) -> bool:
     return False
 
 
+def _sanitize_output_value(value: str) -> str:
+    """Strip characters that could inject keys into GitHub env/output files.
+
+    GitHub Actions output files use newlines as record delimiters and '%' as
+    the escape character. A raw untrusted string written directly can inject
+    extra key=value pairs. Replace these with safe substitutes.
+    """
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def write_output(eligible: bool, reason: str) -> None:
+    safe_reason = _sanitize_output_value(reason)
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:
             f.write(f"ELIGIBLE={str(eligible).lower()}\n")
-            f.write(f"REASON={reason}\n")
+            f.write(f"REASON={safe_reason}\n")
     else:
         # Local testing fallback
         print(f"ELIGIBLE={str(eligible).lower()}")
-        print(f"REASON={reason}")
+        print(f"REASON={safe_reason}")
 
 
 def classify(files: list[dict]) -> tuple[bool, str]:

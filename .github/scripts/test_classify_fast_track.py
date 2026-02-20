@@ -7,7 +7,10 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from classify_fast_track import classify, matches, ALLOWED, DENIED
+import io
+import tempfile
+
+from classify_fast_track import classify, matches, write_output, _sanitize_output_value, ALLOWED, DENIED
 
 # --- matches() tests ---
 
@@ -153,3 +156,46 @@ def test_fallback_over_boundary_lines():
     eligible, reason = classify(files)
     assert eligible is False
     assert "denied:size" in reason
+
+
+# --- output injection regression tests ---
+
+
+def test_sanitize_newline_in_reason():
+    # A crafted path with a newline cannot inject an extra output key
+    injected = "denied:denylist path=evil\nELIGIBLE=true"
+    sanitized = _sanitize_output_value(injected)
+    assert "\n" not in sanitized
+    assert "ELIGIBLE=true" not in sanitized
+
+
+def test_sanitize_carriage_return_in_reason():
+    injected = "denied:denylist path=evil\rELIGIBLE=true"
+    sanitized = _sanitize_output_value(injected)
+    assert "\r" not in sanitized
+
+
+def test_sanitize_percent_in_reason():
+    injected = "denied:allowlist path=docs/100%done.md"
+    sanitized = _sanitize_output_value(injected)
+    assert "%" not in sanitized or sanitized.count("%") == sanitized.count("%25") // 3
+
+
+def test_write_output_injection_via_path(tmp_path, monkeypatch):
+    # Simulate a crafted filename containing newline + injected key
+    output_file = tmp_path / "github_output"
+    output_file.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+
+    # Attacker crafts a path that would inject ELIGIBLE=true if unescaped
+    crafted_reason = "denied:denylist path=evil\nELIGIBLE=true"
+    write_output(False, crafted_reason)
+
+    contents = output_file.read_text()
+    lines = contents.splitlines()
+    # There must be exactly 2 key=value lines
+    assert len(lines) == 2
+    # ELIGIBLE must remain false
+    assert lines[0] == "ELIGIBLE=false"
+    # The injected newline must be escaped in REASON
+    assert "\nELIGIBLE=true" not in contents
