@@ -3,6 +3,7 @@ x-agent-base-common: &agent-base-common
     context: .
     dockerfile: Dockerfile
     args:
+      PROVIDER: ${DOCKER_PROVIDER:-all}
       CODEX_VERSION: ${CODEX_VERSION:-latest}
       GEMINI_VERSION: ${GEMINI_VERSION:-latest}
       KILO_VERSION: ${KILO_VERSION:-latest}
