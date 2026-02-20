@@ -248,9 +248,8 @@ run_success_case() {
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"
 
-  if [ -s "${case_dir}/mock-state/overlap.log" ]; then
-    fail "per-repo lock failed; detected overlapping worker launches"
-  fi
+  # Different agents on the same repo use separate per-agent locks and are
+  # allowed to run concurrently. Overlap between distinct agents is expected.
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log"
@@ -647,6 +646,11 @@ run_shutdown_signal_case() {
   setup_mock_docker "${case_dir}/mock-bin"
   run_log="${case_dir}/mock-state/docker-run.log"
 
+  # MAX_WORKERS=1 forces the second job to queue behind the first. SIGTERM
+  # arrives while the first is running; wait_for_available_slot detects shutdown
+  # and cancels the second launch. With per-agent locks, different agents can
+  # otherwise run concurrently, so worker-slot contention is the only reliable
+  # way to hold a second job in the queue for this test.
   env -i \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
@@ -654,7 +658,7 @@ run_shutdown_signal_case() {
     MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
     TARGET_REPO="owner/repo" \
     CONTROLLER_RUN_MODE="once" \
-    CONTROLLER_MAX_WORKERS="2" \
+    CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \

@@ -47,21 +47,23 @@ sanitize_lock_key() {
   printf '%s' "$value" | tr -c 'A-Za-z0-9' '_'
 }
 
-ensure_repo_lock_file() {
+ensure_agent_lock_file() {
   local repo="$1"
+  local agent_id="$2"
+  local lock_key="${repo}:${agent_id}"
   local repo_key=""
-  local repo_lock_file="${repo_lock_files[$repo]:-}"
+  local lock_file="${repo_lock_files[$lock_key]:-}"
 
-  if [ -n "$repo_lock_file" ]; then
+  if [ -n "$lock_file" ]; then
     return 0
   fi
 
-  repo_key="$(sanitize_lock_key "$repo")"
-  repo_lock_file="${lock_dir}/repo-${repo_key}.lock"
-  mkdir -p "$(dirname "$repo_lock_file")"
-  : > "$repo_lock_file"
-  chmod 600 "$repo_lock_file" 2>/dev/null || true
-  repo_lock_files["$repo"]="$repo_lock_file"
+  repo_key="$(sanitize_lock_key "${repo}__${agent_id}")"
+  lock_file="${lock_dir}/agent-${repo_key}.lock"
+  mkdir -p "$(dirname "$lock_file")"
+  : > "$lock_file"
+  chmod 600 "$lock_file" 2>/dev/null || true
+  repo_lock_files["$lock_key"]="$lock_file"
 }
 
 generate_job_id() {
@@ -942,7 +944,8 @@ run_job() {
   local session_key="$6"
 
   local token_file="${agent_token_files[$agent_id]}"
-  local repo_lock_file="${repo_lock_files[$repo]:-}"
+  local lock_key="${repo}:${agent_id}"
+  local repo_lock_file="${repo_lock_files[$lock_key]:-}"
   local job_workspace="${workspaces_root}/${job_id}"
   local job_home="${homes_root}/${job_id}"
   local job_run_dir="${runs_root}/${job_id}"
@@ -957,8 +960,8 @@ run_job() {
   local log_follow_deadline=0
 
   if [ -z "$repo_lock_file" ]; then
-    ensure_repo_lock_file "$repo"
-    repo_lock_file="${repo_lock_files[$repo]}"
+    ensure_agent_lock_file "$repo" "$agent_id"
+    repo_lock_file="${repo_lock_files[$lock_key]}"
   fi
 
   mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir"
@@ -1043,7 +1046,7 @@ launch_job() {
   local session_key="${8:-}"
   local processing_file="${9:-}"
 
-  ensure_repo_lock_file "$repo"
+  ensure_agent_lock_file "$repo" "$agent_id"
 
   if ! wait_for_available_slot; then
     return 1
@@ -1254,8 +1257,6 @@ fi
 mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root"
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
-ensure_repo_lock_file "$target_repo"
-
 declare -A seen_agents=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
@@ -1310,6 +1311,7 @@ for index in "${!agent_ids[@]}"; do
   chmod 600 "$token_file" 2>/dev/null || true
   temp_token_files+=("$token_file")
   agent_token_files["$aid"]="$token_file"
+  ensure_agent_lock_file "$target_repo" "$aid"
 done
 
 for slot in $(seq 1 "$max_agents"); do
