@@ -20,9 +20,22 @@ MAX_LINES = 80
 
 
 def matches(path: str, globs: list[str]) -> bool:
-    """Return True if path matches any glob. Uses fnmatch for cross-version ** support."""
+    """Return True if path matches any glob pattern.
+
+    Uses fnmatch for portability across Python versions. For patterns starting
+    with '**/', also checks the basename so top-level files match (e.g.
+    'README.md' matches '**/*.md').
+    """
     normalized = path.replace(os.sep, "/")
-    return any(fnmatch.fnmatch(normalized, g) for g in globs)
+    basename = normalized.split("/")[-1]
+    for g in globs:
+        if fnmatch.fnmatch(normalized, g):
+            return True
+        # '**/*.ext' should match top-level 'file.ext' (no directory component)
+        if g.startswith("**/") and "/" not in normalized:
+            if fnmatch.fnmatch(basename, g[3:]):
+                return True
+    return False
 
 
 def write_output(eligible: bool, reason: str) -> None:

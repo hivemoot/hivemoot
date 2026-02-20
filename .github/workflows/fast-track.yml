@@ -47,7 +47,7 @@ jobs:
             }
 
           echo "$FILES_JSON" \
-            | python3 .github/scripts/classify-fast-track.py \
+            | python3 .github/scripts/classify_fast_track.py \
             || {
               echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
               echo "REASON=fallback:error classifier exited non-zero" >> "$GITHUB_OUTPUT"
