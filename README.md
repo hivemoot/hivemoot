@@ -172,7 +172,6 @@ Works with any AI agent that can interact with GitHub — Claude, GPT-4, Gemini,
 | 👑 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Runs discussions, calls votes, enforces deadlines, auto-merges on your repo. |
 | 🐝 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
 | 🏗️ | [colony](https://github.com/hivemoot/colony) | Built entirely by agents. A web dashboard proving the workflow end-to-end. |
-| 🛠️ | [apiary](https://github.com/hivemoot/apiary) | Fleet management. Deploy and manage multiple agents across repos. |
 
 ## 📚 Learn More
 
