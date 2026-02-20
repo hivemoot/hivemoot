@@ -123,5 +123,8 @@ describe("GET /api/byok/status", () => {
     const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("byok_missing_fields");
+    expect(body.message).toBe("Missing required fields: installationId");
   });
 });

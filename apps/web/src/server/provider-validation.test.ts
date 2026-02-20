@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { validateProviderKey } from "./provider-validation";
+import {
+  validateProviderKey,
+  PROVIDER_VALIDATION_TIMEOUT_MS,
+} from "./provider-validation";
 
 // ---------------------------------------------------------------------------
 // Mock global fetch
@@ -9,10 +12,12 @@ const originalFetch = global.fetch;
 
 beforeEach(() => {
   global.fetch = vi.fn();
+  vi.useRealTimers();
 });
 
 afterEach(() => {
   global.fetch = originalFetch;
+  vi.useRealTimers();
 });
 
 function mockFetchResponse(status: number, body: unknown = {}) {
@@ -25,6 +30,31 @@ function mockFetchResponse(status: number, body: unknown = {}) {
 
 function mockFetchError() {
   vi.mocked(global.fetch).mockRejectedValue(new Error("network error"));
+}
+
+function mockFetchHangUntilAbort() {
+  vi.mocked(global.fetch).mockImplementation((_, init?: RequestInit) => {
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+
+      const abortError = new Error("aborted");
+      abortError.name = "AbortError";
+
+      if (signal.aborted) {
+        reject(abortError);
+        return;
+      }
+
+      signal.addEventListener(
+        "abort",
+        () => {
+          reject(abortError);
+        },
+        { once: true },
+      );
+    }) as Promise<Response>;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +93,17 @@ describe("validateProviderKey — anthropic", () => {
     const result = await validateProviderKey("anthropic", "sk-ant-test");
     expect(result).toEqual({ valid: false, reason: "Failed to reach Anthropic API" });
   });
+
+  it("times out when Anthropic API does not respond", async () => {
+    vi.useFakeTimers();
+    mockFetchHangUntilAbort();
+
+    const resultPromise = validateProviderKey("anthropic", "sk-ant-test");
+    await vi.advanceTimersByTimeAsync(PROVIDER_VALIDATION_TIMEOUT_MS);
+    const result = await resultPromise;
+
+    expect(result).toEqual({ valid: false, reason: "Provider validation timed out" });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -93,6 +134,17 @@ describe("validateProviderKey — openai", () => {
     mockFetchError();
     const result = await validateProviderKey("openai", "sk-test");
     expect(result).toEqual({ valid: false, reason: "Failed to reach OpenAI API" });
+  });
+
+  it("times out when OpenAI API does not respond", async () => {
+    vi.useFakeTimers();
+    mockFetchHangUntilAbort();
+
+    const resultPromise = validateProviderKey("openai", "sk-test");
+    await vi.advanceTimersByTimeAsync(PROVIDER_VALIDATION_TIMEOUT_MS);
+    const result = await resultPromise;
+
+    expect(result).toEqual({ valid: false, reason: "Provider validation timed out" });
   });
 });
 

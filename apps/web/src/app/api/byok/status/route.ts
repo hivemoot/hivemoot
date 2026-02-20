@@ -19,8 +19,8 @@ export async function GET(request: NextRequest) {
 
   if (!installationId) {
     return byokError(
-      BYOK_ERROR.MISSING_FIELD,
-      "Missing required query parameter: installationId",
+      BYOK_ERROR.MISSING_FIELDS,
+      "Missing required fields: installationId",
       400,
     );
   }

@@ -11,10 +11,34 @@ type ValidationResult =
 
 type ProviderValidator = (apiKey: string) => Promise<ValidationResult>;
 
+export const PROVIDER_VALIDATION_TIMEOUT_MS = 10_000;
+
+const PROVIDER_VALIDATION_TIMEOUT_REASON = "Provider validation timed out";
+
 const PROVIDER_VALIDATORS: Record<string, ProviderValidator> = {
   anthropic: validateAnthropic,
   openai: validateOpenAI,
 };
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_VALIDATION_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 /**
  * Tests whether the given API key is accepted by the provider.
@@ -39,7 +63,7 @@ export async function validateProviderKey(
 
 async function validateAnthropic(apiKey: string): Promise<ValidationResult> {
   try {
-    const response = await fetch("https://api.anthropic.com/v1/models", {
+    const response = await fetchWithTimeout("https://api.anthropic.com/v1/models", {
       headers: {
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
@@ -49,14 +73,17 @@ async function validateAnthropic(apiKey: string): Promise<ValidationResult> {
     if (response.ok) return { valid: true };
     if (response.status === 401) return { valid: false, reason: "Invalid API key" };
     return { valid: false, reason: `Provider returned ${response.status}` };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) {
+      return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
+    }
     return { valid: false, reason: "Failed to reach Anthropic API" };
   }
 }
 
 async function validateOpenAI(apiKey: string): Promise<ValidationResult> {
   try {
-    const response = await fetch("https://api.openai.com/v1/models", {
+    const response = await fetchWithTimeout("https://api.openai.com/v1/models", {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
@@ -65,7 +92,10 @@ async function validateOpenAI(apiKey: string): Promise<ValidationResult> {
     if (response.ok) return { valid: true };
     if (response.status === 401) return { valid: false, reason: "Invalid API key" };
     return { valid: false, reason: `Provider returned ${response.status}` };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) {
+      return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
+    }
     return { valid: false, reason: "Failed to reach OpenAI API" };
   }
 }

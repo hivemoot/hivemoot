@@ -29,8 +29,8 @@ export async function POST(request: NextRequest) {
 
   if (!installationId) {
     return byokError(
-      BYOK_ERROR.MISSING_FIELD,
-      "Missing required field: installationId",
+      BYOK_ERROR.MISSING_FIELDS,
+      "Missing required fields: installationId",
       400,
     );
   }

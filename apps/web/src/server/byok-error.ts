@@ -6,7 +6,6 @@ export const BYOK_ERROR = {
   ENCRYPTION_NOT_CONFIGURED: "byok_encryption_not_configured",
   INSTALLATION_MISMATCH: "byok_installation_mismatch",
   INVALID_JSON: "byok_invalid_json",
-  MISSING_FIELD: "byok_missing_field",
   MISSING_FIELDS: "byok_missing_fields",
   NOT_AUTHENTICATED: "byok_not_authenticated",
   NOT_CONFIGURED: "byok_not_configured",

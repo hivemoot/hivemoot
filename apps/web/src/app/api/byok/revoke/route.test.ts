@@ -112,5 +112,8 @@ describe("POST /api/byok/revoke", () => {
     const req = makeRequest({});
     const res = await POST(req);
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("byok_missing_fields");
+    expect(body.message).toBe("Missing required fields: installationId");
   });
 });
