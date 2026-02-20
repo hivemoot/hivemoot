@@ -29,7 +29,7 @@ Each Redis value at `hive:byok:{installationId}` is a JSON object with this sche
 | `iv` | string | yes | Base64 IV (12 bytes before base64 encoding) |
 | `tag` | string | yes | Base64 GCM auth tag (16 bytes before base64 encoding) |
 | `keyVersion` | string | yes | Key version used for encryption (e.g. `v1`) |
-| `status` | `"active" | "revoked"` | yes | Runtime state gate |
+| `status` | `"active" \| "revoked"` | yes | Runtime state gate |
 | `updatedAt` | string | yes | ISO-8601 timestamp |
 | `updatedBy` | string | yes | GitHub login of actor |
 | `fingerprint` | string | yes | Non-sensitive key fingerprint |
