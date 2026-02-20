@@ -133,3 +133,8 @@ Contract behavior is covered by:
 - `apps/web/src/server/crypto.test.ts`
 
 These tests cover configured resolution, absent/revoked states, tamper detection, key version failures, cross-installation isolation, and migration compatibility.
+
+Real Redis execution path:
+- Set `BYOK_ACCEPTANCE_REDIS_URL` (or `REDIS_URL`) and run:
+  - `npm test -- src/server/byok-contract-acceptance.test.ts`
+- The live-Redis block verifies resolver behavior through actual Redis transport rather than an in-memory mock.

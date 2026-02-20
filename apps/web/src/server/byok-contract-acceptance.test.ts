@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type Redis from "ioredis";
+import IORedis, { type Redis } from "ioredis";
 import { encrypt, decrypt, parseKeyring, ByokCryptoError } from "./crypto";
 import { getByokEnvelope, setByokEnvelope } from "./byok-store";
 import type { ByokEnvelope } from "./byok-store";
@@ -46,6 +46,20 @@ function makeMockRedis() {
   return client as unknown as Redis & { _store: Map<string, string> };
 }
 
+const LIVE_REDIS_URL = process.env.BYOK_ACCEPTANCE_REDIS_URL ?? process.env.REDIS_URL;
+
+function makeLiveRedisClient(): Redis {
+  if (!LIVE_REDIS_URL) {
+    throw new Error("LIVE_REDIS_URL is required");
+  }
+
+  return new IORedis(LIVE_REDIS_URL, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    lazyConnect: false,
+  });
+}
+
 function makeNowIso() {
   return "2026-02-20T21:00:00Z";
 }
@@ -82,6 +96,69 @@ async function writeActiveEnvelope(args: {
 
   await setByokEnvelope(args.installationId, envelope, args.redis);
   return envelope;
+}
+
+function asEncryptedEnvelope(envelope: ByokEnvelope) {
+  return {
+    ciphertext: envelope.ciphertext,
+    iv: envelope.iv,
+    tag: envelope.tag,
+    keyVersion: envelope.keyVersion,
+  };
+}
+
+async function reEncryptInstallation(args: {
+  installationId: string;
+  redis: Redis;
+  keyring: Map<string, Buffer>;
+  activeKeyVersion: string;
+}): Promise<boolean> {
+  const existing = await getByokEnvelope(args.installationId, args.redis);
+  if (!existing || existing.status === "revoked" || existing.keyVersion === args.activeKeyVersion) {
+    return false;
+  }
+
+  const plaintext = decrypt(asEncryptedEnvelope(existing), args.keyring);
+  const rotated = encrypt(plaintext, args.activeKeyVersion, args.keyring);
+
+  await setByokEnvelope(
+    args.installationId,
+    {
+      ...existing,
+      ciphertext: rotated.ciphertext,
+      iv: rotated.iv,
+      tag: rotated.tag,
+      keyVersion: rotated.keyVersion,
+      updatedAt: makeNowIso(),
+      updatedBy: "guard-rotation",
+    },
+    args.redis,
+  );
+
+  return true;
+}
+
+async function batchReEncryptInstallations(args: {
+  installationIds: string[];
+  redis: Redis;
+  keyring: Map<string, Buffer>;
+  activeKeyVersion: string;
+}): Promise<number> {
+  let reEncrypted = 0;
+
+  for (const installationId of args.installationIds) {
+    const changed = await reEncryptInstallation({
+      installationId,
+      redis: args.redis,
+      keyring: args.keyring,
+      activeKeyVersion: args.activeKeyVersion,
+    });
+    if (changed) {
+      reEncrypted++;
+    }
+  }
+
+  return reEncrypted;
 }
 
 async function resolveByokForBot(
@@ -290,10 +367,10 @@ describe("BYOK contract acceptance", () => {
       }),
     );
 
-    await writeActiveEnvelope({
+    const oldEnvelopeBeforeMigration = await writeActiveEnvelope({
       redis,
       installationId: "601",
-      plaintextKey: "sk-old-version",
+      plaintextKey: "sk-old-version-601",
       keyVersion: "v1",
       keyring,
     });
@@ -301,28 +378,78 @@ describe("BYOK contract acceptance", () => {
     await writeActiveEnvelope({
       redis,
       installationId: "602",
-      plaintextKey: "sk-new-version",
-      keyVersion: "v2",
+      plaintextKey: "sk-old-version-602",
+      keyVersion: "v1",
       keyring,
     });
 
-    const oldResult = await resolveByokForBot("601", redis, keyring);
-    const newResult = await resolveByokForBot("602", redis, keyring);
+    const oldEnvelopeSnapshot = asEncryptedEnvelope(oldEnvelopeBeforeMigration);
 
-    expect(oldResult).toEqual(
+    const reEncrypted = await batchReEncryptInstallations({
+      installationIds: ["601", "602"],
+      redis,
+      keyring,
+      activeKeyVersion: "v2",
+    });
+    expect(reEncrypted).toBe(2);
+
+    const migratedA = await getByokEnvelope("601", redis);
+    const migratedB = await getByokEnvelope("602", redis);
+    expect(migratedA?.keyVersion).toBe("v2");
+    expect(migratedB?.keyVersion).toBe("v2");
+
+    const oldVersionStillDecrypts = decrypt(oldEnvelopeSnapshot, keyring);
+    expect(oldVersionStillDecrypts).toBe("sk-old-version-601");
+
+    const migratedAResult = await resolveByokForBot("601", redis, keyring);
+    const migratedBResult = await resolveByokForBot("602", redis, keyring);
+
+    expect(migratedAResult).toEqual(
       expect.objectContaining({
         ok: true,
-        key: "sk-old-version",
-        keyVersion: "v1",
-      }),
-    );
-
-    expect(newResult).toEqual(
-      expect.objectContaining({
-        ok: true,
-        key: "sk-new-version",
+        key: "sk-old-version-601",
         keyVersion: "v2",
       }),
     );
+
+    expect(migratedBResult).toEqual(
+      expect.objectContaining({
+        ok: true,
+        key: "sk-old-version-602",
+        keyVersion: "v2",
+      }),
+    );
+  });
+});
+
+const describeLiveRedis = LIVE_REDIS_URL ? describe : describe.skip;
+
+describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
+  it("resolves a configured installation through a real Redis transport", async () => {
+    const redis = makeLiveRedisClient();
+    const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
+    const installationId = `live-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    try {
+      await writeActiveEnvelope({
+        redis,
+        installationId,
+        plaintextKey: "sk-ant-live-redis",
+        keyVersion: "v1",
+        keyring,
+      });
+
+      const result = await resolveByokForBot(installationId, redis, keyring);
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          key: "sk-ant-live-redis",
+          keyVersion: "v1",
+        }),
+      );
+    } finally {
+      await redis.del(`hive:byok:${installationId}`);
+      await redis.quit();
+    }
   });
 });
