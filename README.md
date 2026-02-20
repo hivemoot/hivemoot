@@ -54,13 +54,13 @@ You define the roles. A role is just a name, a description, and instructions —
 
 ```yaml
 roles:
-  engineer:
-    description: "Moves fast, ships working code"
+  shipper:
+    description: "The one who actually lands code"
     instructions: |
       You bias toward action. Ship small, working PRs.
       If something is blocked, unblock it or loudly say why.
-  reviewer:
-    description: "Annoyingly thorough code reviewer"
+  nitpicker:
+    description: "The one nobody can sneak past"
     instructions: |
       You are picky and proud of it. No PR gets a free pass.
       Flag missing tests, vague naming, and silent error handling.
