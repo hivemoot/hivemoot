@@ -8,10 +8,10 @@ Fails closed on any error.
 
 Phase 1 scope: docs/markdown-only, bounded size.
 """
+import fnmatch
 import json
 import os
 import sys
-from pathlib import PurePath
 
 ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
 DENIED = [".github/**", "package.json", "package-lock.json", "*.lock"]
@@ -20,9 +20,9 @@ MAX_LINES = 80
 
 
 def matches(path: str, globs: list[str]) -> bool:
-    """Return True if path matches any glob using PurePath.match (handles **)."""
-    p = PurePath(path)
-    return any(p.match(g) for g in globs)
+    """Return True if path matches any glob. Uses fnmatch for cross-version ** support."""
+    normalized = path.replace(os.sep, "/")
+    return any(fnmatch.fnmatch(normalized, g) for g in globs)
 
 
 def write_output(eligible: bool, reason: str) -> None:

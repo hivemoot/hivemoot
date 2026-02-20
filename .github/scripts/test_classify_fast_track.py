@@ -25,7 +25,7 @@ def test_matches_txt():
 
 
 def test_matches_docs_dir():
-    assert matches("docs/reference.rst", ALLOWED) is False  # .rst not in allowlist
+    assert matches("docs/reference.rst", ALLOWED) is True  # docs/** matches any file under docs/
 
 
 def test_matches_docs_md():
