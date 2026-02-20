@@ -9,6 +9,13 @@ type ValidationResult =
   | { valid: true }
   | { valid: false; reason: string };
 
+type ProviderValidator = (apiKey: string) => Promise<ValidationResult>;
+
+const PROVIDER_VALIDATORS: Record<string, ProviderValidator> = {
+  anthropic: validateAnthropic,
+  openai: validateOpenAI,
+};
+
 /**
  * Tests whether the given API key is accepted by the provider.
  * Uses the lightest possible endpoint (model listing) to minimize cost.
@@ -19,14 +26,15 @@ export async function validateProviderKey(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _model?: string,
 ): Promise<ValidationResult> {
-  switch (provider) {
-    case "anthropic":
-      return validateAnthropic(apiKey);
-    case "openai":
-      return validateOpenAI(apiKey);
-    default:
-      return { valid: false, reason: "Unsupported provider" };
+  const validator = PROVIDER_VALIDATORS[provider];
+  if (!validator) {
+    const supportedProviders = Object.keys(PROVIDER_VALIDATORS).join(", ");
+    return {
+      valid: false,
+      reason: `Unsupported provider. Supported providers: ${supportedProviders}`,
+    };
   }
+  return validator(apiKey);
 }
 
 async function validateAnthropic(apiKey: string): Promise<ValidationResult> {

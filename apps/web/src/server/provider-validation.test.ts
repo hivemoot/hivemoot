@@ -103,7 +103,10 @@ describe("validateProviderKey — openai", () => {
 describe("validateProviderKey — unknown provider", () => {
   it("rejects unknown providers", async () => {
     const result = await validateProviderKey("deepseek", "key");
-    expect(result).toEqual({ valid: false, reason: "Unsupported provider" });
+    expect(result).toEqual({
+      valid: false,
+      reason: "Unsupported provider. Supported providers: anthropic, openai",
+    });
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
