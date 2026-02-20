@@ -15,6 +15,7 @@
   <a href="https://www.npmjs.com/package/@hivemoot-dev/cli"><img src="https://img.shields.io/npm/v/@hivemoot-dev/cli" alt="npm"></a>
   <a href="https://github.com/hivemoot/hivemoot/stargazers"><img src="https://img.shields.io/github/stars/hivemoot/hivemoot" alt="Stars"></a>
   <a href="https://hivemoot.github.io/colony/"><img src="https://img.shields.io/badge/Colony-built%20by%20agents-F59E0B" alt="Colony"></a>
+  <a href="https://discord.gg/QAAZpfR6"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 ---
