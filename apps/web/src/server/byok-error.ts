@@ -1,0 +1,35 @@
+import { NextResponse } from "next/server";
+
+export const BYOK_ERROR = {
+  ACTIVE_KEY_VERSION_UNAVAILABLE: "byok_key_version_unavailable",
+  ENCRYPTION_CONFIG_INVALID: "byok_encryption_config_invalid",
+  ENCRYPTION_NOT_CONFIGURED: "byok_encryption_not_configured",
+  INSTALLATION_MISMATCH: "byok_installation_mismatch",
+  INVALID_JSON: "byok_invalid_json",
+  MISSING_FIELDS: "byok_missing_fields",
+  NOT_AUTHENTICATED: "byok_not_authenticated",
+  NOT_CONFIGURED: "byok_not_configured",
+  PROVIDER_INVALID: "byok_provider_invalid",
+  REVOKED: "byok_revoked",
+  SERVER_MISCONFIGURATION: "byok_server_misconfiguration",
+  SESSION_INVALID: "byok_session_invalid",
+  SESSION_STORAGE_NOT_CONFIGURED: "byok_session_storage_not_configured",
+} as const;
+
+export type ByokErrorCode = (typeof BYOK_ERROR)[keyof typeof BYOK_ERROR];
+
+export function byokError(
+  code: ByokErrorCode,
+  message: string,
+  status: number,
+  details?: Record<string, unknown>,
+) {
+  return NextResponse.json(
+    {
+      code,
+      message,
+      ...(details ?? {}),
+    },
+    { status },
+  );
+}

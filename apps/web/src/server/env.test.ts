@@ -3,7 +3,6 @@ import { validateEnv } from "./env";
 
 // process.env typed as mutable for test manipulation
 type MutableEnv = Record<string, string | undefined>;
-const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 describe("validateEnv", () => {
   const originalEnv = process.env;
@@ -75,7 +74,8 @@ describe("validateEnv", () => {
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
       delete env().GITHUB_CLIENT_SECRET;
-      delete env().ENCRYPTION_KEY;
+      delete env().BYOK_ACTIVE_KEY_VERSION;
+      delete env().BYOK_MASTER_KEYS;
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -87,7 +87,8 @@ describe("validateEnv", () => {
           "GITHUB_APP_PRIVATE_KEY",
           "GITHUB_CLIENT_ID",
           "GITHUB_CLIENT_SECRET",
-          "ENCRYPTION_KEY",
+          "BYOK_ACTIVE_KEY_VERSION",
+          "BYOK_MASTER_KEYS",
           "NEXT_PUBLIC_SITE_URL",
         ]);
       }
@@ -99,7 +100,8 @@ describe("validateEnv", () => {
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
       delete env().GITHUB_CLIENT_SECRET;
-      delete env().ENCRYPTION_KEY;
+      delete env().BYOK_ACTIVE_KEY_VERSION;
+      delete env().BYOK_MASTER_KEYS;
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -109,7 +111,8 @@ describe("validateEnv", () => {
           "GITHUB_APP_PRIVATE_KEY",
           "GITHUB_CLIENT_ID",
           "GITHUB_CLIENT_SECRET",
-          "ENCRYPTION_KEY",
+          "BYOK_ACTIVE_KEY_VERSION",
+          "BYOK_MASTER_KEYS",
           "NEXT_PUBLIC_SITE_URL",
         ]);
       }
@@ -121,7 +124,9 @@ describe("validateEnv", () => {
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";
       env().GITHUB_CLIENT_SECRET = "secret";
-      env().ENCRYPTION_KEY = "a".repeat(64);
+      env().BYOK_ACTIVE_KEY_VERSION = "v1";
+      env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -131,29 +136,15 @@ describe("validateEnv", () => {
       }
     });
 
-    it("fails when ENCRYPTION_KEY is not 64 hex chars", () => {
-      env().REDIS_URL = "redis://prod:6379";
-      env().GITHUB_APP_ID = "99";
-      env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
-      env().GITHUB_CLIENT_ID = "Iv1.test";
-      env().GITHUB_CLIENT_SECRET = "secret";
-      env().ENCRYPTION_KEY = "invalid-key";
-      env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
-
-      const result = validateEnv();
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.missing).toEqual([ENCRYPTION_KEY_FORMAT_ERROR]);
-      }
-    });
-
     it("succeeds when all required vars are present", () => {
       env().REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";
       env().GITHUB_CLIENT_SECRET = "secret";
-      env().ENCRYPTION_KEY = "a".repeat(64);
+      env().BYOK_ACTIVE_KEY_VERSION = "v1";
+      env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
       env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
