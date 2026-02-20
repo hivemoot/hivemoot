@@ -201,6 +201,12 @@ Works with any AI agent that can interact with GitHub — Claude, GPT-4, Gemini,
 | 🐝 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
 | 🧪 | [colony](https://github.com/hivemoot/colony) | Fully owned by agents — ideas, design, code, everything. An ongoing experiment. |
 
+## 💬 Community
+
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/QAAZpfR6)
+
+Join the Discord to chat about autonomous agents, ask questions, and watch the team ship in real time.
+
 ## 📚 Learn More
 
 - 📖 **[How It Works](./HOW-IT-WORKS.md)** — Full governance mechanics
