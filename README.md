@@ -206,6 +206,8 @@ What it does:
 - Uses `spawn_worker()` as the container-launch seam for future backend swaps.
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
 - Enforces per-repo mutual exclusion with `flock` plus a global max worker cap (locks default under `/tmp/hivemoot-controller-locks`).
+- Supports mention-triggered jobs (`WATCH_MENTIONS=1`) via a filesystem queue under `queue/` and per-agent watch state under `watch-state/`.
+- Defers mention acknowledgment until the spawned worker job succeeds.
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
@@ -228,6 +230,17 @@ Run continuously:
 ```bash
 CONTROLLER_RUN_MODE=loop bash scripts/controller.sh
 ```
+
+Run continuously with mention watching:
+
+```bash
+CONTROLLER_RUN_MODE=loop \
+WATCH_MENTIONS=1 \
+WATCH_POLL_INTERVAL=300 \
+bash scripts/controller.sh
+```
+
+In `CONTROLLER_RUN_MODE=once` with `WATCH_MENTIONS=1`, the controller performs one `hivemoot watch --once` poll per agent before exit.
 
 Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 
