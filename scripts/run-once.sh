@@ -201,6 +201,21 @@ extract_codex_session_id_from_log() {
   sed -nE 's/.*"type":"thread\.started".*"thread_id":"([0-9a-fA-F-]{36})".*/\1/p' "$path" | head -n 1
 }
 
+extract_claude_session_id_from_log() {
+  local path="$1"
+
+  if [ ! -f "$path" ]; then
+    return 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rr 'fromjson? | select(.type=="system" and .subtype=="init") | .session_id // empty' "$path" | head -n 1
+    return 0
+  fi
+
+  sed -nE 's/.*"type":"system".*"subtype":"init".*"session_id":"([0-9a-fA-F-]{36})".*/\1/p' "$path" | head -n 1
+}
+
 build_scoped_session_key() {
   local base_key="$1"
   local repo_full_name="$2"
@@ -651,6 +666,11 @@ codex_active_session_created_epoch=""
 codex_used_resume=0
 codex_fresh_cmd=()
 codex_resume_supported=0
+claude_active_session_id=""
+claude_active_session_created_epoch=""
+claude_used_resume=0
+claude_fresh_cmd=()
+claude_resume_supported=0
 case "$provider" in
   codex)
     if ! command -v codex >/dev/null 2>&1; then
@@ -839,12 +859,67 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
-    cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
-    cmd+=(--append-system-prompt "$system_prompt")
+    claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
-      cmd+=(--model "$agent_model")
+      claude_fresh_cmd+=(--model "$agent_model")
     fi
-    cmd+=("$user_message")
+    claude_fresh_cmd+=("$user_message")
+
+    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+      if claude -p --resume --help >/dev/null 2>&1 \
+        || claude --help 2>&1 | grep -Eq '(^|[[:space:]])--resume([[:space:]]|$)'; then
+        claude_resume_supported=1
+      else
+        log "Claude resume unavailable; starting fresh session for key=${agent_session_key}"
+      fi
+    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+      log "Claude session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
+    fi
+
+    claude_resume_now_epoch="$(date +%s)"
+    if [ "$claude_resume_supported" -eq 1 ]; then
+      claude_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      if [ -n "$claude_session_record" ]; then
+        IFS=$'\t' read -r claude_record_session_id claude_record_created_epoch claude_record_last_used_epoch <<< "$claude_session_record"
+      else
+        claude_record_session_id=""
+        claude_record_created_epoch=""
+        claude_record_last_used_epoch=""
+      fi
+
+      if [ -n "$claude_record_session_id" ] && ! is_valid_uuid "$claude_record_session_id"; then
+        log "Claude session resume: ignoring invalid session id for key=${agent_session_key}"
+        claude_active_session_id=""
+      elif [ -n "$claude_record_session_id" ] && ! should_resume_session \
+        "$claude_record_created_epoch" "$claude_record_last_used_epoch" "$claude_resume_now_epoch" \
+        "$session_resume_max_idle_hours" "$session_resume_max_age_hours"; then
+        log "Claude session resume: policy reset for key=${agent_session_key} (max_idle=${session_resume_max_idle_hours}h max_age=${session_resume_max_age_hours}h)"
+        claude_active_session_id=""
+      else
+        claude_active_session_id="$claude_record_session_id"
+        claude_active_session_created_epoch="$claude_record_created_epoch"
+      fi
+    fi
+
+    if [ -n "$claude_active_session_id" ]; then
+      claude_used_resume=1
+      log "Claude session resume: key=${agent_session_key} session=${claude_active_session_id}"
+      claude_resume_user_message="${user_message}
+
+You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
+      cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
+      cmd+=(--append-system-prompt "$system_prompt")
+      if [ -n "$agent_model" ]; then
+        cmd+=(--model "$agent_model")
+      fi
+      cmd+=("$claude_resume_user_message")
+    else
+      if [ -n "$codex_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
+        log "Claude session resume: no saved session for key=${agent_session_key}; starting fresh"
+      fi
+      cmd=("${claude_fresh_cmd[@]}")
+    fi
     run_in_repo=1
     ;;
 
@@ -998,6 +1073,15 @@ if [ "$provider" = "codex" ] && [ "$codex_used_resume" -eq 1 ] && [ "$exit_code"
   run_selected_command
 fi
 
+if [ "$provider" = "claude" ] && [ "$claude_used_resume" -eq 1 ] && [ "$exit_code" -ne 0 ]; then
+  log "Claude session resume failed once; retrying with a fresh session"
+  cmd=("${claude_fresh_cmd[@]}")
+  claude_used_resume=0
+  claude_active_session_id=""
+  claude_active_session_created_epoch=""
+  run_selected_command
+fi
+
 if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
   codex_session_from_log="$(extract_codex_session_id_from_log "$last_command_log")"
   if is_valid_uuid "$codex_session_from_log"; then
@@ -1014,6 +1098,25 @@ if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq
     log "Codex session saved: key=${agent_session_key} session=${codex_session_from_log}"
   else
     log "Codex session id not found in log for key=${agent_session_key}"
+  fi
+fi
+
+if [ "$provider" = "claude" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+  claude_session_from_log="$(extract_claude_session_id_from_log "$last_command_log")"
+  if is_valid_uuid "$claude_session_from_log"; then
+    claude_saved_at_epoch="$(date +%s)"
+    claude_created_to_store="$claude_saved_at_epoch"
+    if [ "$claude_used_resume" -eq 1 ] \
+      && [ -n "$claude_active_session_id" ] \
+      && [ "$claude_session_from_log" = "$claude_active_session_id" ] \
+      && is_non_negative_integer "$claude_active_session_created_epoch"; then
+      claude_created_to_store="$claude_active_session_created_epoch"
+    fi
+    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+      "$claude_session_from_log" "$claude_created_to_store" "$claude_saved_at_epoch"
+    log "Claude session saved: key=${agent_session_key} session=${claude_session_from_log}"
+  else
+    log "Claude session id not found in log for key=${agent_session_key}"
   fi
 fi
 

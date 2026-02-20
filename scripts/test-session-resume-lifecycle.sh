@@ -220,7 +220,92 @@ fi
 /usr/bin/mktemp "$template" "$@"
 EOF
 
-  chmod +x "${mock_bin}/gh" "${mock_bin}/codex" "${mock_bin}/mktemp"
+  cat > "${mock_bin}/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+contains_arg() {
+  local needle="$1"
+  shift
+  local arg=""
+  for arg in "$@"; do
+    if [ "$arg" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+emit_init_event() {
+  local session_id="$1"
+  printf '{"type":"system","subtype":"init","session_id":"%s","tools":[],"mcp_servers":[]}\n' "$session_id"
+}
+
+next_attempt() {
+  local state_file="${CLAUDE_TEST_STATE_FILE:?CLAUDE_TEST_STATE_FILE is required}"
+  local current=0
+  if [ -f "$state_file" ]; then
+    current="$(cat "$state_file")"
+  fi
+  current=$((current + 1))
+  printf '%s' "$current" > "$state_file"
+}
+
+# Help probes
+if contains_arg "--help" "$@"; then
+  echo "usage: claude [-p] [--resume <session-id>] [--verbose] [--output-format <format>]"
+  exit 0
+fi
+
+scenario="${CLAUDE_TEST_SCENARIO:-}"
+
+# Resume run (--resume is present but --help is not)
+if contains_arg "--resume" "$@"; then
+  next_attempt
+  case "$scenario" in
+    resume_fail_then_fresh_fail)
+      emit_init_event "${CLAUDE_RESUME_SESSION_ID:?CLAUDE_RESUME_SESSION_ID is required}"
+      exit 17
+      ;;
+    resume_success_same_id)
+      emit_init_event "${CLAUDE_RESUME_SESSION_ID:?CLAUDE_RESUME_SESSION_ID is required}"
+      exit 0
+      ;;
+    resume_fail_fresh_success_new_id)
+      emit_init_event "${CLAUDE_RESUME_SESSION_ID:?CLAUDE_RESUME_SESSION_ID is required}"
+      exit 23
+      ;;
+    *)
+      echo "unexpected resume scenario: ${scenario}" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# Fresh run (no --resume)
+if contains_arg "-p" "$@"; then
+  next_attempt
+  case "$scenario" in
+    resume_fail_then_fresh_fail)
+      echo '{"type":"system","subtype":"error"}'
+      exit 19
+      ;;
+    resume_fail_fresh_success_new_id|fresh_success_new_id)
+      emit_init_event "${CLAUDE_FRESH_SESSION_ID:?CLAUDE_FRESH_SESSION_ID is required}"
+      exit 0
+      ;;
+    *)
+      echo "unexpected fresh scenario: ${scenario}" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+echo "unexpected claude invocation: $*" >&2
+exit 1
+EOF
+
+  chmod +x "${mock_bin}/gh" "${mock_bin}/codex" "${mock_bin}/claude" "${mock_bin}/mktemp"
 }
 
 setup_case_repo() {
@@ -347,4 +432,114 @@ assert_gt "$case3_created_after" "$case3_created" "case3: created epoch did not 
 assert_ge "$case3_last_used_after" "$case3_created_after" "case3: last_used should be >= created"
 echo "PASS: case3 resume-fail + fresh-success stores new session metadata"
 
-echo "PASS: session resume lifecycle checks"
+echo "PASS: codex session resume lifecycle checks"
+
+# ---------------------------------------------------------------------------
+# Claude provider tests
+# ---------------------------------------------------------------------------
+echo "Running claude session resume lifecycle checks"
+
+claude_session_key="$(build_scoped_session_key "mention-thread:test-thread" "owner/repo" "claude" "" "{}")"
+claude_old_session_id="33333333-3333-3333-3333-333333333333"
+claude_new_session_id="44444444-4444-4444-4444-444444444444"
+
+run_run_once_claude() {
+  local case_dir="$1"
+  shift
+  local repo_root="$1"
+  shift
+
+  env \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="claude" \
+    AGENT_AUTH_MODE="api_key" \
+    ANTHROPIC_API_KEY="test-anthropic-key" \
+    AGENT_GITHUB_TOKEN="test-gh-token" \
+    AGENT_PROMPT_FILE="${repo_root}/prompts/default.md" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    REPO_DIR="${case_dir}/repo" \
+    LOG_DIR="${case_dir}/logs" \
+    FRESH_CLONE="0" \
+    AGENT_SESSION_KEY="mention-thread:test-thread" \
+    SESSION_RESUME="1" \
+    SESSION_RESUME_MAX_IDLE_HOURS="12" \
+    SESSION_RESUME_MAX_AGE_HOURS="24" \
+    AGENT_TOOL_OPTIONS_JSON="{}" \
+    AGENT_TIMEOUT_SECONDS="30" \
+    CLAUDE_TEST_STATE_FILE="${case_dir}/claude-attempts" \
+    "$@" \
+    bash "${repo_root}/scripts/run-once.sh"
+}
+
+# Claude Case 1: Resume fails and fresh retry fails -> stale session record is not re-saved.
+claude_case1_dir="${tmpdir}/claude-case1"
+mkdir -p "${claude_case1_dir}/home" "${claude_case1_dir}/workspace/sessions/claude" "${claude_case1_dir}/logs"
+setup_mocks "${claude_case1_dir}/mock-bin"
+setup_case_repo "${claude_case1_dir}/repo"
+claude_map_file_case1="${claude_case1_dir}/workspace/sessions/claude/tool-session-map.tsv"
+claude_now_epoch="$(date +%s)"
+claude_case1_created="$((claude_now_epoch - 900))"
+claude_case1_last_used="$((claude_now_epoch - 120))"
+printf '%s\t%s\t%s\t%s\n' "$claude_session_key" "$claude_old_session_id" "$claude_case1_created" "$claude_case1_last_used" > "$claude_map_file_case1"
+claude_before_case1="$(cat "$claude_map_file_case1")"
+
+if run_run_once_claude "$claude_case1_dir" "$repo_root" \
+  CLAUDE_TEST_SCENARIO="resume_fail_then_fresh_fail" \
+  CLAUDE_RESUME_SESSION_ID="$claude_old_session_id"; then
+  fail "claude case1: expected run-once.sh to fail after resume+fresh failures"
+fi
+
+claude_after_case1="$(cat "$claude_map_file_case1")"
+assert_eq "$claude_before_case1" "$claude_after_case1" "claude case1: session map changed despite final failure"
+echo "PASS: claude case1 resume-fail + fresh-fail keeps existing record unchanged"
+
+# Claude Case 2: Resume succeeds with same session id -> created is preserved and last_used advances.
+claude_case2_dir="${tmpdir}/claude-case2"
+mkdir -p "${claude_case2_dir}/home" "${claude_case2_dir}/workspace/sessions/claude" "${claude_case2_dir}/logs"
+setup_mocks "${claude_case2_dir}/mock-bin"
+setup_case_repo "${claude_case2_dir}/repo"
+claude_map_file_case2="${claude_case2_dir}/workspace/sessions/claude/tool-session-map.tsv"
+claude_case2_now="$(date +%s)"
+claude_case2_created="$((claude_case2_now - 1200))"
+claude_case2_last_used="$((claude_case2_now - 300))"
+printf '%s\t%s\t%s\t%s\n' "$claude_session_key" "$claude_old_session_id" "$claude_case2_created" "$claude_case2_last_used" > "$claude_map_file_case2"
+
+run_run_once_claude "$claude_case2_dir" "$repo_root" \
+  CLAUDE_TEST_SCENARIO="resume_success_same_id" \
+  CLAUDE_RESUME_SESSION_ID="$claude_old_session_id" >/dev/null
+
+claude_record_case2="$(read_session_record "$claude_map_file_case2" "$claude_session_key")"
+[ -n "$claude_record_case2" ] || fail "claude case2: missing session record after successful resume"
+IFS=$'\t' read -r claude_case2_sid claude_case2_created_after claude_case2_last_used_after <<< "$claude_record_case2"
+assert_eq "$claude_old_session_id" "$claude_case2_sid" "claude case2: session id changed unexpectedly"
+assert_eq "$claude_case2_created" "$claude_case2_created_after" "claude case2: created epoch was not preserved"
+assert_gt "$claude_case2_last_used_after" "$claude_case2_last_used" "claude case2: last_used was not advanced"
+echo "PASS: claude case2 successful resume preserves created and updates last_used"
+
+# Claude Case 3: Resume fails then fresh succeeds -> new session id is persisted.
+claude_case3_dir="${tmpdir}/claude-case3"
+mkdir -p "${claude_case3_dir}/home" "${claude_case3_dir}/workspace/sessions/claude" "${claude_case3_dir}/logs"
+setup_mocks "${claude_case3_dir}/mock-bin"
+setup_case_repo "${claude_case3_dir}/repo"
+claude_map_file_case3="${claude_case3_dir}/workspace/sessions/claude/tool-session-map.tsv"
+claude_case3_now="$(date +%s)"
+claude_case3_created="$((claude_case3_now - 1500))"
+claude_case3_last_used="$((claude_case3_now - 400))"
+printf '%s\t%s\t%s\t%s\n' "$claude_session_key" "$claude_old_session_id" "$claude_case3_created" "$claude_case3_last_used" > "$claude_map_file_case3"
+
+run_run_once_claude "$claude_case3_dir" "$repo_root" \
+  CLAUDE_TEST_SCENARIO="resume_fail_fresh_success_new_id" \
+  CLAUDE_RESUME_SESSION_ID="$claude_old_session_id" \
+  CLAUDE_FRESH_SESSION_ID="$claude_new_session_id" >/dev/null
+
+claude_record_case3="$(read_session_record "$claude_map_file_case3" "$claude_session_key")"
+[ -n "$claude_record_case3" ] || fail "claude case3: missing session record after fresh retry success"
+IFS=$'\t' read -r claude_case3_sid claude_case3_created_after claude_case3_last_used_after <<< "$claude_record_case3"
+assert_eq "$claude_new_session_id" "$claude_case3_sid" "claude case3: fresh session id was not stored"
+assert_gt "$claude_case3_created_after" "$claude_case3_created" "claude case3: created epoch did not refresh for new session"
+assert_ge "$claude_case3_last_used_after" "$claude_case3_created_after" "claude case3: last_used should be >= created"
+echo "PASS: claude case3 resume-fail + fresh-success stores new session metadata"
+
+echo "PASS: all session resume lifecycle checks"
