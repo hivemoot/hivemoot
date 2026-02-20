@@ -132,6 +132,7 @@ describe("validateEnv", () => {
       env().ENCRYPTION_KEY = "a".repeat(64);
       env().BYOK_ACTIVE_KEY_VERSION = "v1";
       env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
       delete env().NEXT_PUBLIC_SITE_URL;
 
       const result = validateEnv();
@@ -150,6 +151,7 @@ describe("validateEnv", () => {
       env().ENCRYPTION_KEY = "invalid-key";
       env().BYOK_ACTIVE_KEY_VERSION = "v1";
       env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
       env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();
@@ -168,6 +170,7 @@ describe("validateEnv", () => {
       env().ENCRYPTION_KEY = "a".repeat(64);
       env().BYOK_ACTIVE_KEY_VERSION = "v1";
       env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
       env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
       const result = validateEnv();

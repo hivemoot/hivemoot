@@ -76,6 +76,7 @@ describe("GET /api/health", () => {
     env().ENCRYPTION_KEY = "a".repeat(64);
     env().BYOK_ACTIVE_KEY_VERSION = "v1";
     env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
     env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
@@ -94,6 +95,7 @@ describe("GET /api/health", () => {
     env().ENCRYPTION_KEY = "not-hex";
     env().BYOK_ACTIVE_KEY_VERSION = "v1";
     env().BYOK_MASTER_KEYS = '{"v1":"' + "a".repeat(64) + '"}';
+
     env().NEXT_PUBLIC_SITE_URL = "https://hivemoot.dev";
 
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
