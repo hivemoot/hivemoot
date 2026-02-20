@@ -343,13 +343,9 @@ for index in "${!agent_ids[@]}"; do
     "$agent_home/.local" \
     "$agent_home/.local/share" 2>/dev/null || true
 
-  # Copy shared provider auth state into each agent home
-  seed_shared_provider_state "$agent_home"
-
-  # Generate OpenCode auth.json if missing (API key stored in auth.json,
-  # not in config provider options). Must run after shared-state seeding so
-  # the bind-mounted config is already in place.
-  generate_opencode_config "$agent_home"
+  # Seed only auth credentials into each agent home; skip session state
+  # (conversation caches, memory, history) to prevent cross-run leakage.
+  seed_provider_auth "$agent_home"
 
   # Ensure agent subprocesses can find npm-installed binaries
   # shellcheck disable=SC2016
