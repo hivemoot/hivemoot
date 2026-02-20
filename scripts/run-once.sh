@@ -345,7 +345,7 @@ else
   job_home=""
 fi
 
-codex_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
+session_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
 provider_session_map_dir="${workspace_root}/sessions/${provider}"
 provider_session_map_file="${provider_session_map_dir}/tool-session-map.tsv"
 
@@ -739,7 +739,7 @@ case "$provider" in
     fi
     codex_fresh_cmd=(codex exec "${codex_cmd_common[@]}" "$prompt")
 
-    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+    if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
       # Probe resume support defensively: some CLI builds may expose
       # `resume` but handle `resume --help` inconsistently.
       if codex exec resume --help >/dev/null 2>&1 \
@@ -748,13 +748,13 @@ case "$provider" in
       else
         log "Codex resume unavailable; starting fresh session for key=${agent_session_key}"
       fi
-    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+    elif [ "$session_resume" = "0" ] && [ -n "$session_resume_key" ]; then
       log "Codex session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
     fi
 
     codex_resume_now_epoch="$(date +%s)"
     if [ "$codex_resume_supported" -eq 1 ]; then
-      codex_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      codex_session_record="$(load_session_record_for_key "$provider_session_map_file" "$session_resume_key")"
       if [ -n "$codex_session_record" ]; then
         IFS=$'\t' read -r codex_record_session_id codex_record_created_epoch codex_record_last_used_epoch <<< "$codex_session_record"
       else
@@ -785,7 +785,7 @@ case "$provider" in
 You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
       cmd=(codex exec resume "${codex_cmd_common[@]}" "$codex_active_session_id" "$prompt")
     else
-      if [ -n "$codex_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
+      if [ -n "$session_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
         log "Codex session resume: no saved session for key=${agent_session_key}; starting fresh"
       fi
       cmd=("${codex_fresh_cmd[@]}")
@@ -866,20 +866,20 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     claude_fresh_cmd+=("$user_message")
 
-    if [ "$session_resume" = "1" ] && [ -n "$codex_resume_key" ]; then
+    if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
       if claude -p --resume --help >/dev/null 2>&1 \
         || claude --help 2>&1 | grep -Eq '(^|[[:space:]])--resume([[:space:]]|$)'; then
         claude_resume_supported=1
       else
         log "Claude resume unavailable; starting fresh session for key=${agent_session_key}"
       fi
-    elif [ "$session_resume" = "0" ] && [ -n "$codex_resume_key" ]; then
+    elif [ "$session_resume" = "0" ] && [ -n "$session_resume_key" ]; then
       log "Claude session resume disabled (SESSION_RESUME=0); starting fresh session for key=${agent_session_key}"
     fi
 
     claude_resume_now_epoch="$(date +%s)"
     if [ "$claude_resume_supported" -eq 1 ]; then
-      claude_session_record="$(load_session_record_for_key "$provider_session_map_file" "$codex_resume_key")"
+      claude_session_record="$(load_session_record_for_key "$provider_session_map_file" "$session_resume_key")"
       if [ -n "$claude_session_record" ]; then
         IFS=$'\t' read -r claude_record_session_id claude_record_created_epoch claude_record_last_used_epoch <<< "$claude_session_record"
       else
@@ -915,7 +915,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
       fi
       cmd+=("$claude_resume_user_message")
     else
-      if [ -n "$codex_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
+      if [ -n "$session_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
         log "Claude session resume: no saved session for key=${agent_session_key}; starting fresh"
       fi
       cmd=("${claude_fresh_cmd[@]}")
@@ -1082,7 +1082,7 @@ if [ "$provider" = "claude" ] && [ "$claude_used_resume" -eq 1 ] && [ "$exit_cod
   run_selected_command
 fi
 
-if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+if [ "$provider" = "codex" ] && [ -n "$session_resume_key" ] && [ "$exit_code" -eq 0 ]; then
   codex_session_from_log="$(extract_codex_session_id_from_log "$last_command_log")"
   if is_valid_uuid "$codex_session_from_log"; then
     codex_saved_at_epoch="$(date +%s)"
@@ -1093,7 +1093,7 @@ if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq
       && is_non_negative_integer "$codex_active_session_created_epoch"; then
       codex_created_to_store="$codex_active_session_created_epoch"
     fi
-    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+    save_session_record_for_key "$provider_session_map_file" "$session_resume_key" \
       "$codex_session_from_log" "$codex_created_to_store" "$codex_saved_at_epoch"
     log "Codex session saved: key=${agent_session_key} session=${codex_session_from_log}"
   else
@@ -1101,7 +1101,7 @@ if [ "$provider" = "codex" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq
   fi
 fi
 
-if [ "$provider" = "claude" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -eq 0 ]; then
+if [ "$provider" = "claude" ] && [ -n "$session_resume_key" ] && [ "$exit_code" -eq 0 ]; then
   claude_session_from_log="$(extract_claude_session_id_from_log "$last_command_log")"
   if is_valid_uuid "$claude_session_from_log"; then
     claude_saved_at_epoch="$(date +%s)"
@@ -1112,7 +1112,7 @@ if [ "$provider" = "claude" ] && [ -n "$codex_resume_key" ] && [ "$exit_code" -e
       && is_non_negative_integer "$claude_active_session_created_epoch"; then
       claude_created_to_store="$claude_active_session_created_epoch"
     fi
-    save_session_record_for_key "$provider_session_map_file" "$codex_resume_key" \
+    save_session_record_for_key "$provider_session_map_file" "$session_resume_key" \
       "$claude_session_from_log" "$claude_created_to_store" "$claude_saved_at_epoch"
     log "Claude session saved: key=${agent_session_key} session=${claude_session_from_log}"
   else
