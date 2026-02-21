@@ -28,10 +28,6 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-    defaults:
-      run:
-        working-directory: apps/web
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
