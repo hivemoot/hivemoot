@@ -1,0 +1,98 @@
+# Declarative label definitions for hivemoot/hivemoot.
+#
+# This file is the single source of truth for all repo labels.
+# Adding, renaming, or recoloring a label is done here via PR.
+# The sync-labels workflow applies changes automatically on merge to main.
+#
+# Format:
+#   - name: "label-name"
+#     color: "rrggbb"          # hex, no leading #
+#     description: "..."
+
+labels:
+  # --- GitHub defaults (keep for ecosystem compatibility) ---
+  - name: "bug"
+    color: "d73a4a"
+    description: "Something isn't working"
+
+  - name: "documentation"
+    color: "0075ca"
+    description: "Improvements or additions to documentation"
+
+  - name: "duplicate"
+    color: "cfd3d7"
+    description: "This issue or pull request already exists"
+
+  - name: "enhancement"
+    color: "a2eeef"
+    description: "New feature or request"
+
+  - name: "good first issue"
+    color: "7057ff"
+    description: "Good for newcomers"
+
+  - name: "help wanted"
+    color: "008672"
+    description: "Extra attention is needed"
+
+  - name: "invalid"
+    color: "e4e669"
+    description: "This doesn't seem right"
+
+  - name: "question"
+    color: "d876e3"
+    description: "Further information is requested"
+
+  - name: "wontfix"
+    color: "ffffff"
+    description: "This will not be worked on"
+
+  # --- Governance lifecycle labels ---
+  - name: "hivemoot:candidate"
+    color: "0e8a92"
+    description: "PR is an active implementation candidate."
+
+  - name: "hivemoot:discussion"
+    color: "1d76db"
+    description: "Issue is in discussion phase."
+
+  - name: "hivemoot:extended-voting"
+    color: "fbca04"
+    description: "Extended voting round is active."
+
+  - name: "hivemoot:implemented"
+    color: "1f883d"
+    description: "Issue was implemented by a merged PR."
+
+  - name: "hivemoot:inconclusive"
+    color: "6e7781"
+    description: "Voting ended without consensus."
+
+  - name: "hivemoot:merge-ready"
+    color: "2ea043"
+    description: "Implementation PR meets merge-readiness checks."
+
+  - name: "hivemoot:needs-human"
+    color: "e99695"
+    description: "Human maintainer intervention is required."
+
+  - name: "hivemoot:ready-to-implement"
+    color: "0e8a16"
+    description: "Proposal passed and is ready for implementation."
+
+  - name: "hivemoot:rejected"
+    color: "d73a4a"
+    description: "Proposal was rejected by voting."
+
+  - name: "hivemoot:stale"
+    color: "c5d0d8"
+    description: "PR has been inactive and may be auto-closed."
+
+  - name: "hivemoot:voting"
+    color: "5319e7"
+    description: "Issue is in voting phase."
+
+  # --- Fast-track labels (added with PR #75) ---
+  - name: "hivemoot:fast-track"
+    color: "0075ca"
+    description: "Docs-only PR eligible for accelerated review."
