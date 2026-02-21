@@ -411,60 +411,11 @@ if [ -n "$job_home" ]; then
   chmod 700 "$job_home" "$job_home/.config" "$job_home/.cache" \
     "$job_home/.local" "$job_home/.local/share" 2>/dev/null || true
 
-  # Selective auth seeding: copy ONLY credential files, skip session state.
-  # Claude Code: auth tokens live in ~/.config/claude/
-  if [ -d "${HOME}/.config/claude" ]; then
-    mkdir -p "$job_home/.config/claude"
-    cp -R "${HOME}/.config/claude"/. "$job_home/.config/claude"/
-  fi
-  # Claude Code: ~/.claude/ contains both auth and session state.
-  # Seed only the OAuth credential file; skip auto-memory and projects/.
-  if [ -f "${HOME}/.claude/.credentials.json" ]; then
-    mkdir -p "$job_home/.claude"
-    cp "${HOME}/.claude/.credentials.json" "$job_home/.claude/.credentials.json"
-  fi
-  if [ -f "${HOME}/.claude.json" ]; then
-    cp "${HOME}/.claude.json" "$job_home/.claude.json"
-  fi
+  # Seed only auth credentials into the isolated job home; skip session
+  # state (conversation caches, memory, etc.).
+  seed_provider_auth "$job_home" "$HOME"
 
-  # Codex: auth.json is the credential file
-  if [ -f "${HOME}/.codex/auth.json" ]; then
-    mkdir -p "$job_home/.codex"
-    cp "${HOME}/.codex/auth.json" "$job_home/.codex/auth.json"
-  fi
-  # Codex: skip ~/.codex/conversations/, ~/.codex/cache/
-
-  # Gemini: seed only known auth/credential files; skip session state
-  # (memory.md, settings.json, state.json, telemetry, etc.)
-  if [ -d "${HOME}/.gemini" ]; then
-    mkdir -p "$job_home/.gemini"
-    for f in oauth_creds.json google_accounts.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
-      if [ -f "${HOME}/.gemini/$f" ]; then
-        cp "${HOME}/.gemini/$f" "$job_home/.gemini/$f"
-      fi
-    done
-  fi
-
-  # Kilo: seed config (provider auth, permissions) from ~/.config/kilo/
-  if [ -d "${HOME}/.config/kilo" ]; then
-    mkdir -p "$job_home/.config/kilo"
-    cp -R "${HOME}/.config/kilo"/. "$job_home/.config/kilo"/
-  fi
-
-  # OpenCode: seed config from ~/.config/opencode/
-  if [ -d "${HOME}/.config/opencode" ]; then
-    mkdir -p "$job_home/.config/opencode"
-    cp -R "${HOME}/.config/opencode"/. "$job_home/.config/opencode"/
-  fi
-  if [ -f "${HOME}/.local/share/opencode/auth.json" ]; then
-    mkdir -p "$job_home/.local/share/opencode"
-    cp "${HOME}/.local/share/opencode/auth.json" "$job_home/.local/share/opencode/auth.json"
-  fi
-
-  # OpenCode: auto-generate config and auth.json if missing
-  generate_opencode_config "$job_home"
-
-  # Carry forward .profile so agent subprocesses find npm binaries
+  # Carry forward .profile so agent subprocesses find npm binaries.
   if [ -f "${HOME}/.profile" ]; then
     cp "${HOME}/.profile" "$job_home/.profile"
   fi
