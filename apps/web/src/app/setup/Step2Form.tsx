@@ -22,7 +22,7 @@ interface SuccessData {
 }
 
 const DEFAULT_MODELS: Record<Provider, string> = {
-  anthropic: "claude-sonnet-4-5-20250514",
+  anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
 };
 

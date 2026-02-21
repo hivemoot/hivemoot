@@ -30,6 +30,9 @@ const SESSION_KEY_PREFIX = "setup-session:";
  */
 export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
 
+/** Cookie name for the short-lived setup session token. */
+export const SETUP_SESSION_COOKIE = "setup_session";
+
 interface OAuthStatePayload {
   installationId: string;
   stateBinding: string;

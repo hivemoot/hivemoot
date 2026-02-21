@@ -29,13 +29,9 @@ import {
   validateOAuthState,
   createSetupSession,
   OAUTH_STATE_BINDING_COOKIE,
+  SETUP_SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
-
-/** Cookie name for the short-lived setup session token */
-export const SETUP_SESSION_COOKIE = "setup_session";
-
-/** How long the session cookie lives in the browser (matches Redis TTL) */
-const SESSION_COOKIE_MAX_AGE = 1800; // 30 minutes
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -203,7 +199,7 @@ export async function GET(request: NextRequest) {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: SESSION_COOKIE_MAX_AGE,
+    maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
   clearOAuthStateBindingCookie(response);

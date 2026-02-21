@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import Step2Form from "./Step2Form";
-import { SESSION_TTL_SECONDS } from "@/server/setup-session";
+import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 
 export const metadata: Metadata = {
   title: "Set up Hivemoot — Governance for Autonomous AI Agents",
@@ -197,7 +197,7 @@ export default async function SetupPage({
   const auth = params.auth;
   const reason = params.reason;
   const cookieStore = await cookies();
-  const hasSession = !!cookieStore.get("setup_session")?.value;
+  const hasSession = !!cookieStore.get(SETUP_SESSION_COOKIE)?.value;
   const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
 
@@ -345,7 +345,7 @@ export default async function SetupPage({
 
                 {installationId ? (
                   <Link
-                    href={`/api/auth/github/start?installation_id=${installationId}`}
+                    href={`/api/auth/github/start?installation_id=${encodeURIComponent(installationId)}`}
                     className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
                   >
                     <svg

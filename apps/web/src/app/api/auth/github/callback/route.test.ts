@@ -18,6 +18,8 @@ vi.mock("@/server/setup-session", () => ({
   validateOAuthState: vi.fn(),
   createSetupSession: vi.fn(),
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
+  SETUP_SESSION_COOKIE: "setup_session",
+  SESSION_TTL_SECONDS: 1800,
 }));
 
 import { validateEnv } from "@/server/env";
@@ -34,7 +36,8 @@ import {
   createSetupSession,
   OAUTH_STATE_BINDING_COOKIE,
 } from "@/server/setup-session";
-import { GET, SETUP_SESSION_COOKIE } from "./route";
+import { SETUP_SESSION_COOKIE } from "@/server/setup-session";
+import { GET } from "./route";
 
 // ---------------------------------------------------------------------------
 // Helpers

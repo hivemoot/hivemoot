@@ -10,12 +10,10 @@ import { NextRequest, NextResponse } from "next/server";
 import type Redis from "ioredis";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { getSetupSession } from "@/server/setup-session";
+import { getSetupSession, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 import { parseKeyring } from "@/server/crypto";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
 import type { SetupSessionPayload } from "@/server/setup-session";
-
-const SETUP_SESSION_COOKIE = "setup_session";
 
 type AuthSuccess = {
   ok: true;
