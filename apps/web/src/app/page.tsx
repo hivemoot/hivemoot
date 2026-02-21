@@ -501,25 +501,25 @@ export default function LandingPage() {
         </div>
 
         <div className="relative grid gap-8 md:grid-cols-3">
-          {/* Connecting line behind steps */}
+          {/* Connecting line between steps — inset so it starts/ends at hex edges */}
           <div
-            className="absolute left-0 right-0 top-12 hidden h-px md:block"
+            className="absolute left-[16.67%] right-[16.67%] top-12 hidden h-px md:block"
             style={{
               background:
-                "linear-gradient(90deg, transparent 5%, rgba(245,158,11,0.2) 20%, rgba(245,158,11,0.2) 80%, transparent 95%)",
+                "linear-gradient(90deg, transparent 0%, rgba(245,158,11,0.25) 10%, rgba(245,158,11,0.25) 90%, transparent 100%)",
             }}
             aria-hidden="true"
           />
 
           {steps.map((step) => (
             <div key={step.number} className="relative text-center">
-              {/* Step number hex badge */}
-              <div className="relative mx-auto mb-5 flex h-24 w-24 items-center justify-center">
+              {/* Step number hex badge — z-10 lifts it above the connecting line */}
+              <div className="relative z-10 mx-auto mb-5 flex h-24 w-24 items-center justify-center">
                 <Hexagon
                   size={96}
                   strokeWidth={1.5}
                   stroke="#f59e0b"
-                  fill="rgba(245,158,11,0.05)"
+                  fill="#111114"
                   className="absolute inset-0"
                 />
                 <span className="relative text-2xl font-bold text-honey-500">
