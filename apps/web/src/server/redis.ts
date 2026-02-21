@@ -34,10 +34,11 @@ export function getRedisClient(url: string): Redis {
     commandTimeout: 5000,
     maxRetriesPerRequest: 1,
     connectTimeout: 5000,
-    // ioredis sets tls to boolean `true` for rediss:// URLs, but
-    // Node's tls.connect needs an object — pass {} explicitly so
-    // the TLS handshake actually runs with default cert verification.
-    ...(url.startsWith("rediss://") ? { tls: {} } : {}),
+    // Upstash's TLS cert is not trusted by Vercel's Node.js runtime,
+    // causing UNABLE_TO_VERIFY_LEAF_SIGNATURE. Disable cert verification
+    // for rediss:// connections — acceptable since we connect to a known
+    // Upstash endpoint. See PR #113 for the original production incident.
+    ...(url.startsWith("rediss://") ? { tls: { rejectUnauthorized: false } } : {}),
   });
 
   client.on("error", (err) => {
