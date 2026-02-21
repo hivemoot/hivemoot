@@ -1,77 +1,40 @@
 /**
  * POST /api/byok/re-encrypt
  *
- * Re-encrypts BYOK envelopes with the current active master key version.
- * Used after master key rotation to migrate old envelopes forward.
+ * Re-encrypts the session installation's BYOK envelope with the current
+ * active master key version. Used after master key rotation to migrate
+ * the envelope forward.
  *
- * Accepts either a single installationId or no body.
- * No-body mode is still installation-scoped: only the session installation
- * is processed by this user-facing endpoint.
+ * Always operates on the authenticated session's installation — no
+ * installationId field is accepted from the client.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt, decrypt } from "@/server/crypto";
 import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
-import { BYOK_ERROR, byokError } from "@/server/byok-error";
-
-interface ReEncryptRequestBody {
-  installationId?: string;
-}
 
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  let body: ReEncryptRequestBody = {};
-  try {
-    const text = await request.text();
-    if (text) body = JSON.parse(text) as ReEncryptRequestBody;
-  } catch {
-    return byokError(BYOK_ERROR.INVALID_JSON, "Invalid JSON body", 400);
-  }
-
-  let installationIds: string[];
-
-  if (body.installationId) {
-    // Single mode — verify cross-installation isolation
-    if (auth.session.installationId !== body.installationId) {
-      return byokError(
-        BYOK_ERROR.INSTALLATION_MISMATCH,
-        "Installation ID does not match session",
-        403,
-      );
-    }
-    installationIds = [body.installationId];
-  } else {
-    // Batch mode — only process the session's own installation
-    installationIds = [auth.session.installationId];
-  }
+  const installationId = auth.session.installationId;
 
   let reEncrypted = 0;
   let skipped = 0;
   const failed: string[] = [];
 
-  for (const id of installationIds) {
-    try {
-      const envelope = await getByokEnvelope(id, auth.redis);
-      if (!envelope) {
-        skipped++;
-        continue;
-      }
-
+  try {
+    const envelope = await getByokEnvelope(installationId, auth.redis);
+    if (!envelope) {
+      skipped++;
+    } else if (envelope.status === "revoked") {
       // Skip revoked envelopes — no ciphertext to re-encrypt
-      if (envelope.status === "revoked") {
-        skipped++;
-        continue;
-      }
-
+      skipped++;
+    } else if (envelope.keyVersion === auth.activeKeyVersion) {
       // Skip if already on current key version (idempotent)
-      if (envelope.keyVersion === auth.activeKeyVersion) {
-        skipped++;
-        continue;
-      }
-
+      skipped++;
+    } else {
       // Decrypt with old key, re-encrypt with current active key
       const plaintext = decrypt(
         {
@@ -86,7 +49,7 @@ export async function POST(request: NextRequest) {
       const reEncryptedEnvelope = encrypt(plaintext, auth.activeKeyVersion, auth.keyring);
 
       await setByokEnvelope(
-        id,
+        installationId,
         {
           ...envelope,
           ciphertext: reEncryptedEnvelope.ciphertext,
@@ -100,9 +63,9 @@ export async function POST(request: NextRequest) {
       );
 
       reEncrypted++;
-    } catch {
-      failed.push(id);
     }
+  } catch {
+    failed.push(installationId);
   }
 
   return NextResponse.json({ reEncrypted, skipped, failed });

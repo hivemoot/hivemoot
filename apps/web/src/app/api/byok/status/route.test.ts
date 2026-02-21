@@ -49,10 +49,8 @@ const MOCK_ENVELOPE = {
   fingerprint: "1234",
 };
 
-function makeRequest(installationId?: string) {
-  const url = new URL("https://example.com/api/byok/status");
-  if (installationId) url.searchParams.set("installationId", installationId);
-  return new NextRequest(url.toString());
+function makeRequest() {
+  return new NextRequest("https://example.com/api/byok/status");
 }
 
 beforeEach(() => {
@@ -67,7 +65,7 @@ beforeEach(() => {
 
 describe("GET /api/byok/status", () => {
   it("returns non-sensitive metadata for an active config", async () => {
-    const req = makeRequest("123");
+    const req = makeRequest();
     const res = await GET(req);
 
     expect(res.status).toBe(200);
@@ -94,7 +92,7 @@ describe("GET /api/byok/status", () => {
       tag: "",
     });
 
-    const req = makeRequest("123");
+    const req = makeRequest();
     const res = await GET(req);
     const body = await res.json();
     expect(res.status).toBe(409);
@@ -105,7 +103,7 @@ describe("GET /api/byok/status", () => {
   it("returns 404 with byok_not_configured when no envelope exists", async () => {
     vi.mocked(getByokEnvelope).mockResolvedValue(null);
 
-    const req = makeRequest("123");
+    const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(404);
     const body = await res.json();
@@ -113,18 +111,13 @@ describe("GET /api/byok/status", () => {
     expect(body.message).toBe("BYOK is not configured");
   });
 
-  it("returns 403 on cross-installation attempt", async () => {
-    const req = makeRequest("999");
-    const res = await GET(req);
-    expect(res.status).toBe(403);
-  });
-
-  it("returns 400 when installationId query param is missing", async () => {
+  it("uses installationId from session, not query params", async () => {
     const req = makeRequest();
-    const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.code).toBe("byok_missing_fields");
-    expect(body.message).toBe("Missing required fields: installationId");
+    await GET(req);
+
+    expect(getByokEnvelope).toHaveBeenCalledWith(
+      MOCK_SESSION.installationId,
+      expect.anything(),
+    );
   });
 });

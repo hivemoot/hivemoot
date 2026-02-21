@@ -1,5 +1,5 @@
 /**
- * GET /api/byok/status?installationId=<id>
+ * GET /api/byok/status
  *
  * Returns non-sensitive metadata about the BYOK configuration.
  * Never returns key material — only provider, model, fingerprint, status, timestamps.
@@ -14,24 +14,7 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  const { searchParams } = new URL(request.url);
-  const installationId = searchParams.get("installationId");
-
-  if (!installationId) {
-    return byokError(
-      BYOK_ERROR.MISSING_FIELDS,
-      "Missing required fields: installationId",
-      400,
-    );
-  }
-
-  if (auth.session.installationId !== installationId) {
-    return byokError(
-      BYOK_ERROR.INSTALLATION_MISMATCH,
-      "Installation ID does not match session",
-      403,
-    );
-  }
+  const installationId = auth.session.installationId;
 
   const envelope = await getByokEnvelope(installationId, auth.redis);
   if (!envelope) {

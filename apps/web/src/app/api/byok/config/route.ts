@@ -14,7 +14,6 @@ import { BYOK_ERROR, byokError } from "@/server/byok-error";
 import type { ByokEnvelope } from "@/server/byok-store";
 
 interface ConfigRequestBody {
-  installationId: string;
   provider: string;
   model: string;
   apiKey: string;
@@ -31,22 +30,14 @@ export async function POST(request: NextRequest) {
     return byokError(BYOK_ERROR.INVALID_JSON, "Invalid JSON body", 400);
   }
 
-  const { installationId, provider, model, apiKey } = body;
+  const { provider, model, apiKey } = body;
+  const installationId = auth.session.installationId;
 
-  if (!installationId || !provider || !model || !apiKey) {
+  if (!provider || !model || !apiKey) {
     return byokError(
       BYOK_ERROR.MISSING_FIELDS,
-      "Missing required fields: installationId, provider, model, apiKey",
+      "Missing required fields: provider, model, apiKey",
       400,
-    );
-  }
-
-  // Cross-installation isolation
-  if (auth.session.installationId !== installationId) {
-    return byokError(
-      BYOK_ERROR.INSTALLATION_MISMATCH,
-      "Installation ID does not match session",
-      403,
     );
   }
 

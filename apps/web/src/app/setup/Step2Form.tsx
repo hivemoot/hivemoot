@@ -264,7 +264,6 @@ export default function Step2Form({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          installationId,
           provider,
           model: model.trim(),
           apiKey: trimmedKey,

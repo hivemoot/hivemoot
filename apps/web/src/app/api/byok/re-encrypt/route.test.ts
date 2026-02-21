@@ -15,16 +15,11 @@ vi.mock("@/server/crypto", () => ({
 vi.mock("@/server/byok-store", () => ({
   getByokEnvelope: vi.fn(),
   setByokEnvelope: vi.fn(),
-  listByokInstallationIds: vi.fn(),
 }));
 
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt, decrypt } from "@/server/crypto";
-import {
-  getByokEnvelope,
-  setByokEnvelope,
-  listByokInstallationIds,
-} from "@/server/byok-store";
+import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
 import { POST } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -63,11 +58,9 @@ const OLD_ENVELOPE = {
   fingerprint: "1234",
 };
 
-function makeRequest(body?: unknown) {
+function makeRequest() {
   return new NextRequest("https://example.com/api/byok/re-encrypt", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body !== undefined ? JSON.stringify(body) : "",
   });
 }
 
@@ -83,7 +76,6 @@ beforeEach(() => {
     keyVersion: "v2",
   });
   vi.mocked(setByokEnvelope).mockResolvedValue(undefined);
-  vi.mocked(listByokInstallationIds).mockResolvedValue(["123", "999"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -92,7 +84,7 @@ beforeEach(() => {
 
 describe("POST /api/byok/re-encrypt", () => {
   it("re-encrypts an envelope with the active key version", async () => {
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest();
     const res = await POST(req);
 
     expect(res.status).toBe(200);
@@ -117,7 +109,7 @@ describe("POST /api/byok/re-encrypt", () => {
       keyVersion: "v2",
     });
 
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest();
     const res = await POST(req);
     const body = await res.json();
 
@@ -135,7 +127,7 @@ describe("POST /api/byok/re-encrypt", () => {
       tag: "",
     });
 
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest();
     const res = await POST(req);
     const body = await res.json();
 
@@ -143,33 +135,16 @@ describe("POST /api/byok/re-encrypt", () => {
     expect(body.skipped).toBe(1);
   });
 
-  it("returns 403 on cross-installation attempt", async () => {
-    const req = makeRequest({ installationId: "999" });
-    const res = await POST(req);
-    expect(res.status).toBe(403);
-  });
+  it("skips when envelope does not exist", async () => {
+    vi.mocked(getByokEnvelope).mockResolvedValue(null);
 
-  it("batch mode processes session installation when no installationId given", async () => {
-    const req = makeRequest({});
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.reEncrypted).toBe(1);
-    expect(body.skipped).toBe(0);
-  });
-
-  it("batch mode does not scan other tenant installations", async () => {
-    vi.mocked(listByokInstallationIds).mockResolvedValue(["123", "456", "789"]);
-
-    const req = makeRequest({});
+    const req = makeRequest();
     const res = await POST(req);
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.reEncrypted).toBe(1);
-    expect(body.skipped).toBe(0);
-    expect(listByokInstallationIds).not.toHaveBeenCalled();
+    expect(body.reEncrypted).toBe(0);
+    expect(body.skipped).toBe(1);
   });
 
   it("records failed installations without aborting", async () => {
@@ -177,11 +152,11 @@ describe("POST /api/byok/re-encrypt", () => {
       throw new Error("tampered");
     });
 
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest();
     const res = await POST(req);
     const body = await res.json();
 
     expect(body.reEncrypted).toBe(0);
-    expect(body.failed).toEqual(["123"]);
+    expect(body.failed).toEqual([MOCK_SESSION.installationId]);
   });
 });
