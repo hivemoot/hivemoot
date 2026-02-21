@@ -117,10 +117,9 @@ export async function GET(request: NextRequest) {
     );
   }
   if (!installationId) {
-    const response = NextResponse.json(
-      { error: "Invalid or expired OAuth state" },
-      { status: 400 },
-    );
+    const expiredUrl = new URL(`${siteUrl}/setup`);
+    expiredUrl.searchParams.set("auth", "expired");
+    const response = NextResponse.redirect(expiredUrl.toString());
     clearOAuthStateBindingCookie(response);
     return response;
   }

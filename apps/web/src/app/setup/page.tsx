@@ -160,6 +160,18 @@ function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
       </div>
     );
   }
+  if (auth === "expired") {
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
+        <svg className="h-4 w-4 shrink-0 text-honey-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" />
+          <line x1="8" y1="5" x2="8" y2="8.5" />
+          <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+        </svg>
+        <p className="text-sm text-honey-400">Your authorization link expired. Click below to try again.</p>
+      </div>
+    );
+  }
   if (auth === "denied") {
     return (
       <div className="mb-6 flex items-center gap-2 rounded-lg border border-zinc-500/20 bg-zinc-500/5 px-4 py-3">
