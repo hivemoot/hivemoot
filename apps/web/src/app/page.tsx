@@ -247,7 +247,7 @@ const GET_STARTED_URL = "/setup";
 
 export default function LandingPage() {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0a0a0a] text-[#fafafa]">
+    <div className="relative min-h-screen overflow-hidden bg-[#0c0c0e] text-[#fafafa]">
       {/* ----------------------------------------------------------------- */}
       {/* Background decorative elements                                     */}
       {/* ----------------------------------------------------------------- */}
@@ -298,7 +298,7 @@ export default function LandingPage() {
           </a>
           <Link
             href={GET_STARTED_URL}
-            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
+            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
           >
             Get Started
           </Link>
@@ -335,7 +335,7 @@ export default function LandingPage() {
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link
             href={GET_STARTED_URL}
-            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get Started
             <svg
@@ -473,7 +473,7 @@ export default function LandingPage() {
           </p>
           <Link
             href={GET_STARTED_URL}
-            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get started
             <svg
