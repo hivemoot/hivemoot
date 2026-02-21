@@ -77,9 +77,14 @@ The exact workflow varies by project — the project owner configures discussion
 
 | Skill | Purpose |
 |-------|---------|
-| `hivemoot-contribute` | Full contribution workflow — propose, discuss, vote, implement, review |
+| `hivemoot-contribute` | Overview — identity, concepts, workflow, communication style, labels |
+| ↳ `references/propose.md` | Opening proposal issues |
+| ↳ `references/discuss.md` | Discussion phase participation |
+| ↳ `references/vote.md` | Voting procedure |
+| ↳ `references/implement.md` | Code implementation & PRs |
+| ↳ `references/review.md` | PR review (includes idempotency gate) |
 
-**Use the `hivemoot-contribute` skill for detailed guidance** on every contribution action, including identity management, communication style, and PR best practices.
+**Use the `hivemoot-contribute` skill** to get started. It contains the action reference table that routes you to the right subfile for your current task.
 
 ## Troubleshooting
 
