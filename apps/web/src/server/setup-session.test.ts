@@ -1,22 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 
 // ---------------------------------------------------------------------------
-// Minimal Redis mock — mirrors ioredis behavior: values are stored and
-// returned as strings (the caller handles JSON serialization).
+// Minimal Redis mock — mirrors @upstash/redis auto-deserialization behavior:
+// values are stored and returned as-is (the SDK handles JSON internally).
 // ---------------------------------------------------------------------------
 function makeMockRedis() {
-  const store = new Map<string, string>();
+  const store = new Map<string, unknown>();
   const expiryMs = new Map<string, number>();
 
   const client = {
-    set: vi.fn(async (key: string, value: string, ...args: unknown[]) => {
+    set: vi.fn(async (key: string, value: unknown, opts?: { ex?: number }) => {
       store.set(key, value);
-      // Parse positional EX arg: "EX", <seconds>
-      const exIdx = args.indexOf("EX");
-      if (exIdx !== -1 && typeof args[exIdx + 1] === "number") {
-        expiryMs.set(key, Date.now() + (args[exIdx + 1] as number) * 1000);
-      }
+      if (opts?.ex) expiryMs.set(key, Date.now() + opts.ex * 1000);
       return "OK";
     }),
     get: vi.fn(async (key: string) => {
@@ -48,7 +44,7 @@ function makeMockRedis() {
     }),
     _store: store,
   };
-  return client as unknown as Redis & { _store: Map<string, string> };
+  return client as unknown as Redis & { _store: Map<string, unknown> };
 }
 
 // ---------------------------------------------------------------------------
@@ -72,11 +68,12 @@ describe("createOAuthState", () => {
   it("stores installationId and binding in Redis under the state key", async () => {
     const redis = makeMockRedis();
     const record = await createOAuthState("456", redis);
-    const raw = await redis.get(`oauth-state:${record.state}`);
-    expect(raw).not.toBeNull();
-    const payload = JSON.parse(raw!);
-    expect(payload.installationId).toBe("456");
-    expect(payload.stateBinding).toBe(record.stateBinding);
+    const payload = await redis.get<{ installationId: string; stateBinding: string }>(
+      `oauth-state:${record.state}`,
+    );
+    expect(payload).not.toBeNull();
+    expect(payload!.installationId).toBe("456");
+    expect(payload!.stateBinding).toBe(record.stateBinding);
   });
 });
 
@@ -150,12 +147,13 @@ describe("createSetupSession", () => {
       { installationId: "2", userId: 99, userLogin: "bob" },
       redis,
     );
-    const raw = await redis.get(`setup-session:${token}`);
-    expect(raw).not.toBeNull();
-    const data = JSON.parse(raw!);
-    expect(data.installationId).toBe("2");
-    expect(data.userId).toBe(99);
-    expect(data.userLogin).toBe("bob");
+    const data = await redis.get<{ installationId: string; userId: number; userLogin: string }>(
+      `setup-session:${token}`,
+    );
+    expect(data).not.toBeNull();
+    expect(data!.installationId).toBe("2");
+    expect(data!.userId).toBe(99);
+    expect(data!.userLogin).toBe("bob");
   });
 });
 
@@ -178,32 +176,33 @@ describe("getSetupSession", () => {
 
   it("returns null for an expired session", async () => {
     const redis = makeMockRedis();
-    const key = "setup-session:" + "c".repeat(64);
-    // Store a session with an exp in the past
-    await redis.set(
-      key,
-      JSON.stringify({ installationId: "4", userId: 8, userLogin: "dave", exp: Date.now() - 1000 }),
-      "EX",
-      1800,
+    const token = await createSetupSession(
+      { installationId: "4", userId: 8, userLogin: "dave" },
+      redis,
     );
 
-    const session = await getSetupSession("c".repeat(64), redis);
+    // Manually corrupt the exp to be in the past
+    const key = `setup-session:${token}`;
+    const data = await redis.get<{ exp: number }>(key);
+    await redis.set(key, { ...data, exp: Date.now() - 1000 });
+
+    const session = await getSetupSession(token, redis);
     expect(session).toBeNull();
   });
 
   it("returns null when exp field is missing (corrupted payload)", async () => {
     const redis = makeMockRedis();
     const key = "setup-session:" + "a".repeat(64);
-    await redis.set(key, JSON.stringify({ installationId: "5", userId: 9, userLogin: "eve" }));
+    await redis.set(key, { installationId: "5", userId: 9, userLogin: "eve" });
 
     const session = await getSetupSession("a".repeat(64), redis);
     expect(session).toBeNull();
   });
 
-  it("returns null when Redis contains a non-JSON value (corrupted data)", async () => {
+  it("returns null when Redis contains a non-object value (corrupted data)", async () => {
     const redis = makeMockRedis();
     const key = "setup-session:" + "b".repeat(64);
-    // Simulate corrupted Redis data by storing a non-JSON string directly
+    // Simulate corrupted Redis data by storing a non-object directly
     redis._store.set(key, "corrupted-data");
 
     const session = await getSetupSession("b".repeat(64), redis);

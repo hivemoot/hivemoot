@@ -1,14 +1,13 @@
 /**
  * Redis client factory.
  *
- * Uses a process-global singleton to avoid creating multiple TCP connections
- * across Next.js hot reloads in development. Unlike the previous @upstash/redis
- * HTTP client, ioredis maintains a persistent TCP connection that needs
- * lifecycle management — lazyConnect defers the handshake until the first
- * command, and dead-client detection prevents reusing a torn-down socket.
+ * Uses a process-global singleton to avoid creating multiple client objects
+ * across Next.js hot reloads in development. The @upstash/redis client is
+ * stateless (HTTP REST), so there is no connection lifecycle to manage —
+ * the singleton is a lightweight object-reuse optimization only.
  */
 
-import Redis from "ioredis";
+import { Redis } from "@upstash/redis";
 
 declare global {
   var __redis: Redis | undefined;
@@ -16,45 +15,17 @@ declare global {
 
 /**
  * Returns the shared Redis client, creating it on first call.
- *
- * Matches the bot's connection settings: lazyConnect, 5 s command timeout,
- * 1 retry per request, 5 s connect timeout.
  */
-export function getRedisClient(url: string): Redis {
-  if (
-    global.__redis
-    && global.__redis.status !== "end"
-    && global.__redis.status !== "close"
-  ) {
-    return global.__redis;
+export function getRedisClient(url: string, token: string): Redis {
+  if (!global.__redis) {
+    global.__redis = new Redis({ url, token });
   }
-
-  const client = new Redis(url, {
-    lazyConnect: true,
-    commandTimeout: 5000,
-    maxRetriesPerRequest: 1,
-    connectTimeout: 5000,
-    // Upstash's TLS cert is not trusted by Vercel's Node.js runtime,
-    // causing UNABLE_TO_VERIFY_LEAF_SIGNATURE. Disable cert verification
-    // for rediss:// connections — acceptable since we connect to a known
-    // Upstash endpoint. See PR #113 for the original production incident.
-    ...(url.startsWith("rediss://") ? { tls: { rejectUnauthorized: false } } : {}),
-  });
-
-  client.on("error", (err) => {
-    console.error("[redis] connection error:", err.message);
-  });
-
-  global.__redis = client;
-  return client;
+  return global.__redis;
 }
 
 /**
  * Resets the singleton — used only in tests to get a fresh client per test.
  */
 export function resetRedisClient(): void {
-  if (global.__redis) {
-    global.__redis.disconnect();
-  }
   global.__redis = undefined;
 }

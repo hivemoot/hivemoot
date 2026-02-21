@@ -39,7 +39,8 @@ describe("GET /api/health", () => {
 
   it("returns 503 with missing vars in production", () => {
     env().NODE_ENV = "production";
-    delete env().HIVEMOOT_REDIS_URL;
+    delete env().HIVEMOOT_REDIS_REST_URL;
+    delete env().HIVEMOOT_REDIS_REST_TOKEN;
     delete env().GITHUB_APP_ID;
     delete env().GITHUB_APP_PRIVATE_KEY;
     delete env().GITHUB_CLIENT_ID;
@@ -52,7 +53,8 @@ describe("GET /api/health", () => {
     expect(response.status).toBe(503);
     expect(response.body.status).toBe("error");
     expect(response.body.missing).toEqual([
-      "HIVEMOOT_REDIS_URL",
+      "HIVEMOOT_REDIS_REST_URL",
+      "HIVEMOOT_REDIS_REST_TOKEN",
       "GITHUB_APP_ID",
       "GITHUB_APP_PRIVATE_KEY",
       "GITHUB_CLIENT_ID",
@@ -65,7 +67,8 @@ describe("GET /api/health", () => {
 
   it("returns 200 in production when all vars present", () => {
     env().NODE_ENV = "production";
-    env().HIVEMOOT_REDIS_URL = "redis://localhost:6379";
+    env().HIVEMOOT_REDIS_REST_URL = "https://example.upstash.io";
+    env().HIVEMOOT_REDIS_REST_TOKEN = "test-token";
     env().GITHUB_APP_ID = "99";
     env().GITHUB_APP_PRIVATE_KEY = "key";
     env().GITHUB_CLIENT_ID = "Iv1.test";
