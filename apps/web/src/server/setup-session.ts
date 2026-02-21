@@ -7,7 +7,7 @@
  *    Validated on callback to prevent CSRF. Deleted after single use.
  *
  * 2. **Setup session token** — an opaque random token issued after successful
- *    OAuth + admin verification. Stored in Redis with a 10-minute TTL. Required
+ *    OAuth + admin verification. Stored in Redis with a 30-minute TTL. Required
  *    on all subsequent /api/byok/* calls (Phase 3).
  */
 

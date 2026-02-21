@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import Step2Form from "./Step2Form";
 import { SESSION_TTL_SECONDS } from "@/server/setup-session";
 
@@ -195,7 +196,9 @@ export default async function SetupPage({
   const installationId = params.installation_id;
   const auth = params.auth;
   const reason = params.reason;
-  const isAuthorized = auth === "ok";
+  const cookieStore = await cookies();
+  const hasSession = !!cookieStore.get("setup_session")?.value;
+  const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
 
   return (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -157,9 +157,11 @@ export default function Step2Form({
   installationId,
   sessionTtlSeconds,
 }: Step2FormProps) {
-  // Compute expiry once at mount time — approximate but close enough since
-  // this component mounts immediately after the OAuth redirect.
-  const [sessionExpiresAt] = useState(() => Date.now() + sessionTtlSeconds * 1000);
+  // Compute expiry once at mount time. Subtract a 5-second buffer to account
+  // for time consumed by the redirect + page load after the session was created.
+  const [sessionExpiresAt] = useState(
+    () => Date.now() + (sessionTtlSeconds - 5) * 1000,
+  );
   // Form state
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
@@ -179,12 +181,18 @@ export default function Step2Form({
   // -----------------------------------------------------------------------
   // Session countdown timer
   // -----------------------------------------------------------------------
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     function update() {
       const remaining = sessionExpiresAt - Date.now();
       if (remaining <= 0) {
         setSessionExpired(true);
         setMinutesRemaining(0);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
         return;
       }
       const mins = Math.ceil(remaining / 60_000);
@@ -192,8 +200,16 @@ export default function Step2Form({
     }
 
     update();
-    const id = setInterval(update, 15_000);
-    return () => clearInterval(id);
+    // Only start polling if not already expired after the initial check
+    if (!timerRef.current) {
+      timerRef.current = setInterval(update, 15_000);
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [sessionExpiresAt]);
 
   // -----------------------------------------------------------------------
@@ -306,7 +322,7 @@ export default function Step2Form({
   // -----------------------------------------------------------------------
   // Session expiry banner
   // -----------------------------------------------------------------------
-  const restartHref = `/api/auth/github/start?installation_id=${installationId}`;
+  const restartHref = `/api/auth/github/start?installation_id=${encodeURIComponent(installationId)}`;
 
   const sessionBanner =
     sessionExpired ? (
@@ -523,6 +539,7 @@ export default function Step2Form({
           <input
             id="api-key"
             type={showKey ? "text" : "password"}
+            autoComplete="off"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={KEY_PLACEHOLDERS[provider]}
