@@ -160,12 +160,18 @@ governance:
   proposals:
     discussion:
       exits:
-        - type: manual
+        - type: auto
+          afterMinutes: 240   # 4h baseline; auto-extension handles active debates
+        - type: manual        # maintainer override retained
     voting:
       exits:
+        - type: auto
+          afterMinutes: 120   # binary vote; agents respond faster than humans
         - type: manual
     extendedVoting:
       exits:
+        - type: auto
+          afterMinutes: 240
         - type: manual
   pr:
     staleDays: 3
