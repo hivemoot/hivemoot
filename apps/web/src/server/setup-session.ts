@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from "crypto";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 
 const STATE_TTL_SECONDS = 600;
 export const SESSION_TTL_SECONDS = 1800;
@@ -52,9 +52,8 @@ export async function createOAuthState(
   const payload: OAuthStatePayload = { installationId, stateBinding };
   await redis.set(
     `${STATE_KEY_PREFIX}${state}`,
-    JSON.stringify(payload),
-    "EX",
-    STATE_TTL_SECONDS,
+    payload,
+    { ex: STATE_TTL_SECONDS },
   );
   return { state, stateBinding };
 }
@@ -68,23 +67,18 @@ export async function validateOAuthState(
 
   // GETDEL is a single atomic command (Redis 6.2+) — guarantees strict one-time
   // nonce semantics even under concurrent callbacks.
-  const raw = await redis.getdel(`${STATE_KEY_PREFIX}${state}`);
-  if (!raw) return null;
+  const payload = await redis.getdel<Partial<OAuthStatePayload>>(`${STATE_KEY_PREFIX}${state}`);
+  if (!payload) return null;
 
-  try {
-    const payload = JSON.parse(raw) as Partial<OAuthStatePayload>;
-    if (
-      typeof payload.installationId !== "string"
-      || typeof payload.stateBinding !== "string"
-    ) {
-      return null;
-    }
-
-    if (payload.stateBinding !== stateBinding) return null;
-    return payload.installationId;
-  } catch {
+  if (
+    typeof payload.installationId !== "string"
+    || typeof payload.stateBinding !== "string"
+  ) {
     return null;
   }
+
+  if (payload.stateBinding !== stateBinding) return null;
+  return payload.installationId;
 }
 
 export interface SetupSessionPayload {
@@ -100,9 +94,8 @@ export async function createSetupSession(
   const token = randomBytes(32).toString("hex");
   await redis.set(
     `${SESSION_KEY_PREFIX}${token}`,
-    JSON.stringify({ ...payload, exp: Date.now() + SESSION_TTL_SECONDS * 1000 }),
-    "EX",
-    SESSION_TTL_SECONDS,
+    { ...payload, exp: Date.now() + SESSION_TTL_SECONDS * 1000 },
+    { ex: SESSION_TTL_SECONDS },
   );
   return token;
 }
@@ -111,21 +104,13 @@ export async function getSetupSession(
   token: string,
   redis: Redis,
 ): Promise<SetupSessionPayload | null> {
-  const raw = await redis.get(`${SESSION_KEY_PREFIX}${token}`);
-  if (!raw) return null;
+  const data = await redis.get<SetupSessionPayload & { exp: number }>(`${SESSION_KEY_PREFIX}${token}`);
+  if (!data) return null;
 
-  try {
-    const data = JSON.parse(raw) as SetupSessionPayload & { exp: number };
-
-    if (typeof data.exp !== "number" || Date.now() > data.exp) {
-      await redis.del(`${SESSION_KEY_PREFIX}${token}`);
-      return null;
-    }
-
-    return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
-  } catch {
-    // Corrupted JSON in Redis — treat as invalid session and clean up.
+  if (typeof data.exp !== "number" || Date.now() > data.exp) {
     await redis.del(`${SESSION_KEY_PREFIX}${token}`);
     return null;
   }
+
+  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
 }

@@ -1,12 +1,13 @@
 /**
  * Redis client factory.
  *
- * Uses a process-global singleton to avoid creating multiple connections
- * across Next.js hot reloads in development. The global is typed via
- * declaration merging so TypeScript stays happy.
+ * Uses a process-global singleton to avoid creating multiple client objects
+ * across Next.js hot reloads in development. The @upstash/redis client is
+ * stateless (HTTP REST), so there is no connection lifecycle to manage —
+ * the singleton is a lightweight object-reuse optimization only.
  */
 
-import Redis from "ioredis";
+import { Redis } from "@upstash/redis";
 
 declare global {
   var __redis: Redis | undefined;
@@ -14,16 +15,10 @@ declare global {
 
 /**
  * Returns the shared Redis client, creating it on first call.
- * Throws if `redisUrl` is undefined (dev mode with no Redis configured).
  */
-export function getRedisClient(redisUrl: string): Redis {
+export function getRedisClient(url: string, token: string): Redis {
   if (!global.__redis) {
-    const useTls = redisUrl.startsWith("rediss://");
-    global.__redis = new Redis(redisUrl, {
-      maxRetriesPerRequest: 3,
-      connectTimeout: 5000,
-      ...(useTls ? { tls: { rejectUnauthorized: false } } : {}),
-    });
+    global.__redis = new Redis({ url, token });
   }
   return global.__redis;
 }
