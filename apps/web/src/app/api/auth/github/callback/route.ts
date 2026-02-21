@@ -56,14 +56,15 @@ export async function GET(request: NextRequest) {
     githubClientSecret,
     githubAppId,
     githubAppPrivateKey,
-    redisUrl,
+    redisRestUrl,
+    redisRestToken,
     siteUrl,
   } = env.config;
 
   if (!githubClientId || !githubClientSecret || !githubAppId || !githubAppPrivateKey) {
     return NextResponse.json({ error: "GitHub is not configured on this server" }, { status: 503 });
   }
-  if (!redisUrl) {
+  if (!redisRestUrl || !redisRestToken) {
     return NextResponse.json({ error: "Session storage is not configured" }, { status: 503 });
   }
 
@@ -72,7 +73,7 @@ export async function GET(request: NextRequest) {
   const state = searchParams.get("state");
   const errorParam = searchParams.get("error");
   const oauthStateBinding = request.cookies.get(OAUTH_STATE_BINDING_COOKIE)?.value;
-  const redis = getRedisClient(redisUrl);
+  const redis = getRedisClient(redisRestUrl, redisRestToken);
 
   // GitHub sends `error=access_denied` when the user cancels
   if (errorParam) {

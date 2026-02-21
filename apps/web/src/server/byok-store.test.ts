@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 import {
   getByokEnvelope,
   setByokEnvelope,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 
 // ---------------------------------------------------------------------------
 // Minimal Redis mock — covers the methods used by setup-session.ts
@@ -9,9 +9,9 @@ function makeMockRedis() {
   const expiryMs = new Map<string, number>();
 
   const client = {
-    set: vi.fn(async (key: string, value: string, _exArg?: string, ttl?: number) => {
+    set: vi.fn(async (key: string, value: string, opts?: { ex?: number }) => {
       store.set(key, value);
-      if (ttl) expiryMs.set(key, Date.now() + ttl * 1000);
+      if (opts?.ex) expiryMs.set(key, Date.now() + opts.ex * 1000);
       return "OK";
     }),
     get: vi.fn(async (key: string) => {
@@ -67,7 +67,7 @@ describe("createOAuthState", () => {
   it("stores installationId and binding in Redis under the state key", async () => {
     const redis = makeMockRedis();
     const record = await createOAuthState("456", redis);
-    const raw = await redis.get(`oauth-state:${record.state}`);
+    const raw = await redis.get<string>(`oauth-state:${record.state}`);
     expect(raw).not.toBeNull();
     const payload = JSON.parse(raw!);
     expect(payload.installationId).toBe("456");
@@ -145,7 +145,7 @@ describe("createSetupSession", () => {
       { installationId: "2", userId: 99, userLogin: "bob" },
       redis,
     );
-    const raw = await redis.get(`setup-session:${token}`);
+    const raw = await redis.get<string>(`setup-session:${token}`);
     expect(raw).not.toBeNull();
     const data = JSON.parse(raw!);
     expect(data.installationId).toBe("2");
@@ -180,7 +180,7 @@ describe("getSetupSession", () => {
 
     // Manually corrupt the exp to be in the past
     const key = `setup-session:${token}`;
-    const raw = await redis.get(key);
+    const raw = await redis.get<string>(key);
     const data = JSON.parse(raw!);
     data.exp = Date.now() - 1000; // 1 second in the past
     await redis.set(key, JSON.stringify(data));

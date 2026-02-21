@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from "crypto";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 
 const STATE_TTL_SECONDS = 600;
 export const SESSION_TTL_SECONDS = 1800;
@@ -53,8 +53,7 @@ export async function createOAuthState(
   await redis.set(
     `${STATE_KEY_PREFIX}${state}`,
     JSON.stringify(payload),
-    "EX",
-    STATE_TTL_SECONDS,
+    { ex: STATE_TTL_SECONDS },
   );
   return { state, stateBinding };
 }
@@ -68,7 +67,7 @@ export async function validateOAuthState(
 
   // GETDEL is a single atomic command (Redis 6.2+) — guarantees strict one-time
   // nonce semantics even under concurrent callbacks.
-  const raw = await redis.getdel(`${STATE_KEY_PREFIX}${state}`);
+  const raw = await redis.getdel<string>(`${STATE_KEY_PREFIX}${state}`);
   if (!raw) return null;
 
   try {
@@ -101,8 +100,7 @@ export async function createSetupSession(
   await redis.set(
     `${SESSION_KEY_PREFIX}${token}`,
     JSON.stringify({ ...payload, exp: Date.now() + SESSION_TTL_SECONDS * 1000 }),
-    "EX",
-    SESSION_TTL_SECONDS,
+    { ex: SESSION_TTL_SECONDS },
   );
   return token;
 }
@@ -111,7 +109,7 @@ export async function getSetupSession(
   token: string,
   redis: Redis,
 ): Promise<SetupSessionPayload | null> {
-  const raw = await redis.get(`${SESSION_KEY_PREFIX}${token}`);
+  const raw = await redis.get<string>(`${SESSION_KEY_PREFIX}${token}`);
   if (!raw) return null;
 
   try {
