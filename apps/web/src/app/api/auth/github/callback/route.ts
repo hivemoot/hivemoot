@@ -6,6 +6,8 @@
  * Security sequence:
  * 1. Validate `state` against Redis — reject if unknown/expired (CSRF protection)
  * 2. Exchange `code` for a user access token
+ * 2b. If state held the "discover" sentinel (user started from the "already installed"
+ *     flow), resolve the real installationId via GET /user/installations
  * 3. Fetch authenticated user identity
  * 4. Fetch installation metadata (via App JWT)
  * 5. Authorization check:
@@ -23,11 +25,13 @@ import {
   generateAppJwt,
   getAuthenticatedUser,
   getInstallation,
+  getUserInstallations,
   checkOrgAdmin,
 } from "@/server/github-auth";
 import {
   validateOAuthState,
   createSetupSession,
+  DISCOVER_SENTINEL,
   OAUTH_STATE_BINDING_COOKIE,
   SETUP_SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -81,10 +85,11 @@ export async function GET(request: NextRequest) {
     deniedUrl.searchParams.set("auth", "denied");
 
     // Preserve installation context for retry CTA when state+cookie validate.
+    // Skip if the state held the discover sentinel — there's no specific installation to preserve.
     if (state) {
       try {
         const deniedInstallationId = await validateOAuthState(state, oauthStateBinding, redis);
-        if (deniedInstallationId) {
+        if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
           deniedUrl.searchParams.set("installation_id", deniedInstallationId);
         }
       } catch {
@@ -128,12 +133,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Failed to exchange authorization code" }, { status: 502 });
   }
 
+  // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
+  if (installationId === DISCOVER_SENTINEL) {
+    try {
+      const installations = await getUserInstallations(userToken, githubAppId!);
+      if (installations.length === 0) {
+        const notInstalledUrl = new URL(`${siteUrl}/setup`);
+        notInstalledUrl.searchParams.set("auth", "not_installed");
+        const response = NextResponse.redirect(notInstalledUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
+      installationId = String(installations[0].id);
+    } catch {
+      return NextResponse.json({ error: "Failed to discover installations" }, { status: 502 });
+    }
+  }
+
   let user: { login: string; id: number };
   let installation: { account: { login: string; type: string } };
 
   try {
     // --- Step 3 & 4: Fetch user identity and installation in parallel ---
-    const appJwt = generateAppJwt(githubAppId, githubAppPrivateKey);
+    const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
     [user, installation] = await Promise.all([
       getAuthenticatedUser(userToken),
       getInstallation(installationId, appJwt),

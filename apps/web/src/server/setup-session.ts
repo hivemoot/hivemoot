@@ -33,6 +33,13 @@ export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
 /** Cookie name for the short-lived setup session token. */
 export const SETUP_SESSION_COOKIE = "setup_session";
 
+/**
+ * Sentinel value used as the installationId in OAuth state when the user
+ * starts the "already installed" discovery flow. The callback detects this
+ * and resolves the real installationId via `GET /user/installations`.
+ */
+export const DISCOVER_SENTINEL = "discover";
+
 interface OAuthStatePayload {
   installationId: string;
   stateBinding: string;

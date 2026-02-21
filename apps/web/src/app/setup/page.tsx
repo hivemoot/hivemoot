@@ -167,6 +167,18 @@ function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
       </div>
     );
   }
+  if (auth === "not_installed") {
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
+        <svg className="h-4 w-4 shrink-0 text-honey-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" />
+          <line x1="8" y1="5" x2="8" y2="8.5" />
+          <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+        </svg>
+        <p className="text-sm text-honey-400">No Hivemoot installation found on your account. Install the app first, then come back here.</p>
+      </div>
+    );
+  }
   if (auth === "forbidden") {
     const message =
       reason === "not_org_admin"
@@ -363,24 +375,39 @@ export default async function SetupPage({
                     Authorize with GitHub
                   </Link>
                 ) : (
-                  <Link
-                    href="https://github.com/apps/hivemoot/installations/new"
-                    className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
-                  >
-                    <svg
-                      className="h-4 w-4"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
+                  <>
+                    <Link
+                      href="https://github.com/apps/hivemoot/installations/new"
+                      className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
                     >
-                      <path d="M8 2C4.686 2 2 4.686 2 8c0 2.651 1.719 4.9 4.105 5.693.3.056.41-.13.41-.289 0-.142-.006-.617-.006-1.12-1.503.274-1.878-.366-1.995-.701-.067-.172-.356-.701-.61-.842-.208-.112-.506-.387-.006-.394.469-.006.804.432.916.61.536.898 1.39.645 1.733.49.053-.387.21-.645.381-.794-1.328-.149-2.716-.664-2.716-2.95 0-.652.232-1.19.61-1.61-.06-.149-.266-.762.06-1.585 0 0 .498-.156 1.636.61a5.52 5.52 0 0 1 1.487-.2c.506 0 1.01.067 1.487.2 1.138-.773 1.636-.61 1.636-.61.326.823.12 1.436.06 1.585.378.42.61.951.61 1.61 0 2.294-1.395 2.801-2.723 2.95.216.187.405.547.405 1.108 0 .795-.007 1.436-.007 1.636 0 .159.11.35.41.29C12.282 12.9 14 10.644 14 8c0-3.314-2.686-6-6-6Z" />
-                    </svg>
-                    Install GitHub App
-                  </Link>
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M8 2C4.686 2 2 4.686 2 8c0 2.651 1.719 4.9 4.105 5.693.3.056.41-.13.41-.289 0-.142-.006-.617-.006-1.12-1.503.274-1.878-.366-1.995-.701-.067-.172-.356-.701-.61-.842-.208-.112-.506-.387-.006-.394.469-.006.804.432.916.61.536.898 1.39.645 1.733.49.053-.387.21-.645.381-.794-1.328-.149-2.716-.664-2.716-2.95 0-.652.232-1.19.61-1.61-.06-.149-.266-.762.06-1.585 0 0 .498-.156 1.636.61a5.52 5.52 0 0 1 1.487-.2c.506 0 1.01.067 1.487.2 1.138-.773 1.636-.61 1.636-.61.326.823.12 1.436.06 1.585.378.42.61.951.61 1.61 0 2.294-1.395 2.801-2.723 2.95.216.187.405.547.405 1.108 0 .795-.007 1.436-.007 1.636 0 .159.11.35.41.29C12.282 12.9 14 10.644 14 8c0-3.314-2.686-6-6-6Z" />
+                      </svg>
+                      Install GitHub App
+                    </Link>
+
+                    <div className="mt-4 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-white/[0.06]" />
+                      <span className="text-xs text-zinc-600">or</span>
+                      <div className="h-px flex-1 bg-white/[0.06]" />
+                    </div>
+
+                    <Link
+                      href="/api/auth/github/start-discover"
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:text-[#fafafa]"
+                    >
+                      Already installed? Authorize to continue
+                    </Link>
+                  </>
                 )}
               </div>
             )}
