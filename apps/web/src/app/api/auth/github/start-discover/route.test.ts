@@ -31,8 +31,7 @@ import { GET } from "./route";
 const VALID_CONFIG = {
   githubClientId: "Iv1.test",
   githubClientSecret: "secret",
-  redisRestUrl: "https://example.upstash.io",
-  redisRestToken: "test-token",
+  redisUrl: "redis://localhost:6379",
   siteUrl: "https://example.com",
   nodeEnv: "production",
   githubAppId: "99",
@@ -84,7 +83,7 @@ describe("GET /api/auth/github/start-discover", () => {
   });
 
   it("returns 503 when env validation fails", async () => {
-    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["UPSTASH_REDIS_REST_URL"] });
+    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_URL"] });
     const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(503);
@@ -103,7 +102,7 @@ describe("GET /api/auth/github/start-discover", () => {
   it("returns 503 when Redis is not configured", async () => {
     vi.mocked(validateEnv).mockReturnValue({
       ok: true,
-      config: { ...VALID_CONFIG, redisRestUrl: undefined, redisRestToken: undefined },
+      config: { ...VALID_CONFIG, redisUrl: undefined },
     });
     const req = makeRequest();
     const res = await GET(req);

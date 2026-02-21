@@ -6,7 +6,7 @@
  * metadata (provider name, model, key fingerprint, status).
  */
 
-import { type Redis } from "@upstash/redis";
+import type Redis from "ioredis";
 
 const KEY_PREFIX = "hive:byok:";
 
@@ -70,10 +70,18 @@ export async function getByokEnvelope(
   installationId: string,
   redis: Redis,
 ): Promise<ByokEnvelope | null> {
-  const raw = await redis.get<Partial<ByokEnvelope> & { fingerprintLast4?: unknown }>(`${KEY_PREFIX}${installationId}`);
+  const raw = await redis.get(`${KEY_PREFIX}${installationId}`);
   if (!raw) return null;
 
-  return normalizeEnvelope(installationId, raw);
+  let parsed: Partial<ByokEnvelope> & { fingerprintLast4?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn("Invalid JSON in BYOK envelope", { installationId });
+    return null;
+  }
+
+  return normalizeEnvelope(installationId, parsed);
 }
 
 /**
@@ -84,7 +92,7 @@ export async function setByokEnvelope(
   envelope: ByokEnvelope,
   redis: Redis,
 ): Promise<void> {
-  await redis.set(`${KEY_PREFIX}${installationId}`, envelope);
+  await redis.set(`${KEY_PREFIX}${installationId}`, JSON.stringify(envelope));
 }
 
 /**
@@ -96,7 +104,7 @@ export async function listByokInstallationIds(redis: Redis): Promise<string[]> {
   let cursor = "0";
 
   do {
-    const [nextCursor, keys] = await redis.scan(cursor, { match: `${KEY_PREFIX}*`, count: 100 });
+    const [nextCursor, keys] = await redis.scan(cursor, "MATCH", `${KEY_PREFIX}*`, "COUNT", 100);
     cursor = nextCursor;
     for (const key of keys) {
       ids.push(key.slice(KEY_PREFIX.length));

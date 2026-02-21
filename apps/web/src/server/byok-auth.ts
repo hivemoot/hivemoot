@@ -7,7 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { type Redis } from "@upstash/redis";
+import type Redis from "ioredis";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
 import { getSetupSession, SETUP_SESSION_COOKIE } from "@/server/setup-session";
@@ -32,8 +32,7 @@ export type ByokAuthResult = AuthSuccess | AuthFailure;
 
 type RuntimeConfigSuccess = {
   ok: true;
-  redisRestUrl: string;
-  redisRestToken: string;
+  redisUrl: string;
   keyring: Map<string, Buffer>;
   activeKeyVersion: string;
 };
@@ -60,9 +59,9 @@ function loadRuntimeConfig(): RuntimeConfig {
     };
   }
 
-  const { redisRestUrl, redisRestToken, byokActiveKeyVersion, byokMasterKeysJson } = env.config;
+  const { redisUrl, byokActiveKeyVersion, byokMasterKeysJson } = env.config;
 
-  if (!redisRestUrl || !redisRestToken) {
+  if (!redisUrl) {
     return {
       ok: false,
       code: BYOK_ERROR.SESSION_STORAGE_NOT_CONFIGURED,
@@ -103,8 +102,7 @@ function loadRuntimeConfig(): RuntimeConfig {
 
   return {
     ok: true,
-    redisRestUrl,
-    redisRestToken,
+    redisUrl,
     keyring,
     activeKeyVersion: byokActiveKeyVersion,
   };
@@ -133,7 +131,7 @@ export async function authenticateByokRequest(
     };
   }
 
-  const redis = getRedisClient(runtimeConfig.redisRestUrl, runtimeConfig.redisRestToken);
+  const redis = getRedisClient(runtimeConfig.redisUrl);
   const token = request.cookies.get(SETUP_SESSION_COOKIE)?.value;
 
   if (!token) {

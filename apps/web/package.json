@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@upstash/redis": "^1.36.2",
+    "ioredis": "^5.0.0",
     "next": "^16.1.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
