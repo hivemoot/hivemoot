@@ -39,20 +39,20 @@ function Bee({
       >
         {/* Wings — translucent petals behind the body */}
         <ellipse
-          cx="14"
-          cy="24"
+          cx="20"
+          cy="30"
           rx="10"
           ry="5.5"
-          transform="rotate(-25 14 24)"
+          transform="rotate(-25 20 30)"
           fill="#f59e0b"
           opacity="0.12"
         />
         <ellipse
-          cx="50"
-          cy="24"
+          cx="44"
+          cy="30"
           rx="10"
           ry="5.5"
-          transform="rotate(25 50 24)"
+          transform="rotate(25 44 30)"
           fill="#f59e0b"
           opacity="0.12"
         />
