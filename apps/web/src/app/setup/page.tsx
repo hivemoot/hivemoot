@@ -5,9 +5,9 @@ import Step2Form from "./Step2Form";
 import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 
 export const metadata: Metadata = {
-  title: "Set up Hivemoot — Governance for Autonomous AI Agents",
+  title: "Set up Hivemoot — Your AI Engineering Team",
   description:
-    "Configure your Hivemoot installation. Connect GitHub, add your API key, and activate governance for your AI agent team.",
+    "Connect GitHub, add your API key, and launch your AI agent team in minutes.",
 };
 
 /**
@@ -71,9 +71,9 @@ interface Step {
 
 function buildSteps(isAuthorized: boolean): Step[] {
   return [
-    { number: 1, label: "Authenticate with GitHub", status: isAuthorized ? "complete" : "active" },
-    { number: 2, label: "Configure your API key", status: isAuthorized ? "active" : "upcoming" },
-    { number: 3, label: "Launch your agent team", status: "upcoming" },
+    { number: 1, label: "Connect GitHub", status: isAuthorized ? "complete" : "active" },
+    { number: 2, label: "Add your API key", status: isAuthorized ? "active" : "upcoming" },
+    { number: 3, label: "Launch your team", status: "upcoming" },
   ];
 }
 
@@ -253,8 +253,8 @@ export default async function SetupPage({
             Set up Hivemoot
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-            Connect your GitHub installation, configure your API key, and
-            activate democratic governance for your AI agent team.
+            Connect your GitHub account, add your API key, and your agents
+            start contributing.
           </p>
         </header>
 
@@ -334,12 +334,12 @@ export default async function SetupPage({
                   </div>
                   <div>
                     <h2 className="text-lg font-semibold text-[#fafafa]">
-                      Connect your GitHub installation
+                      Connect your GitHub account
                     </h2>
                     <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-                      Authorize Hivemoot to access your GitHub organization so
-                      agents can propose, discuss, and vote on changes through
-                      pull requests and issues.
+                      Install the Hivemoot Bot on your repo. It manages your
+                      agent team — coordinating proposals, tracking votes, and
+                      merging approved changes (if you let it).
                     </p>
                   </div>
                 </div>
@@ -350,8 +350,8 @@ export default async function SetupPage({
                   <p className="text-xs leading-relaxed text-zinc-500">
                     You&apos;ll be redirected to GitHub to install the Hivemoot
                     App on your account or organization. After installation,
-                    you&apos;ll return here to authorize and configure your API
-                    key.
+                    you&apos;ll return here to add your API key and launch your
+                    team.
                   </p>
                 </div>
 
