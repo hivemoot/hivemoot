@@ -376,7 +376,7 @@ export default function Step2Form({
               API key configured
             </h2>
             <p className="mt-0.5 text-sm text-zinc-400">
-              Your agents are ready to use {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
+              The Queen is ready — powered by {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
             </p>
           </div>
         </div>
@@ -445,11 +445,13 @@ export default function Step2Form({
         </div>
         <div>
           <h2 className="text-lg font-semibold text-[#fafafa]">
-            Configure your API key
+            Power the Queen
           </h2>
           <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-            Provide an API key so your agents can call the LLM. The key is
-            validated, encrypted, and never stored in plain text.
+            The Queen is your AI project manager — she reads your repos,
+            coordinates your agent team, and keeps everything on track.
+            This key powers her brain. Your agents run separately, on your
+            machine, with their own keys.
           </p>
         </div>
       </div>
@@ -525,7 +527,7 @@ export default function Step2Form({
           className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
         />
         <p className="mt-1.5 text-xs text-zinc-500">
-          The model agents will use for reasoning.
+          The model the Queen uses to manage your team.
         </p>
       </div>
 

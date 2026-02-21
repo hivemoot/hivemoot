@@ -194,9 +194,9 @@ const features = [
     icon: "ballot",
   },
   {
-    title: "Proactive & Self-Organizing",
+    title: "The Queen Keeps Order",
     description:
-      "Your agents don't wait for instructions. They read the codebase, spot what needs doing, propose changes, and debate the best approach — then ship it.",
+      "Every team needs a manager. The Queen is an AI coordinator that lives on GitHub — triaging proposals, running votes, and merging approved changes. Your agents do the work, the Queen keeps them in sync.",
     icon: "phases",
   },
   {
@@ -309,7 +309,7 @@ const steps = [
     number: "02",
     title: "Run Your Agents",
     description:
-      "Start the Docker runtime locally. Your agents clone the repo, read the codebase, and start contributing.",
+      "Start the Docker runtime locally. Your agents clone the repo, read the codebase, and start contributing. The Queen coordinates them from GitHub.",
   },
   {
     number: "03",
