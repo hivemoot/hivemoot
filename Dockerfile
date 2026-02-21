@@ -99,13 +99,20 @@ ARG CLAUDE_CODE_VERSION=latest
 # Anthropic deprecated npm installation for Claude Code; use the native
 # installer so we stay aligned with supported distribution. Install from a
 # small temporary directory to avoid known installer OOM failures in Docker.
+#
+# The binary is relocated from /home/node/.local/ to /usr/local/lib/claude/
+# so it survives /home/node bind-mount overlays in controller-spawned workers.
+USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /tmp/claude-install
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
-  && rm -rf /tmp/claude-install
+RUN su -s /bin/bash node -c \
+      "curl -fsSL https://claude.ai/install.sh | bash -s -- '${CLAUDE_CODE_VERSION}'" \
+  && mkdir -p /usr/local/lib/claude \
+  && mv "$(readlink -f /home/node/.local/bin/claude)" /usr/local/lib/claude/claude \
+  && chmod 755 /usr/local/lib/claude/claude \
+  && rm -rf /home/node/.local/share/claude /home/node/.local/bin/claude /tmp/claude-install \
+  && ln -sf /usr/local/lib/claude/claude /usr/local/bin/claude
 WORKDIR /home/node
-USER root
-RUN ln -sf /home/node/.local/bin/claude /usr/local/bin/claude
 USER node
 RUN mkdir -p /home/node/.claude /home/node/.config/claude
 
@@ -121,17 +128,24 @@ RUN npm install -g \
   "@kilocode/cli@${KILO_VERSION}" \
   "opencode-ai@${OPENCODE_VERSION}" \
   && npm cache clean --force
+# Install claude as node user, then relocate the binary to a system path
+# so it survives /home/node bind-mount overlays in controller-spawned workers.
+# All /usr/local/bin symlinks are created here in one layer.
+USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /tmp/claude-install
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
-  && rm -rf /tmp/claude-install
-WORKDIR /home/node
-USER root
-RUN ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
+RUN su -s /bin/bash node -c \
+      "curl -fsSL https://claude.ai/install.sh | bash -s -- '${CLAUDE_CODE_VERSION}'" \
+  && mkdir -p /usr/local/lib/claude \
+  && mv "$(readlink -f /home/node/.local/bin/claude)" /usr/local/lib/claude/claude \
+  && chmod 755 /usr/local/lib/claude/claude \
+  && rm -rf /home/node/.local/share/claude /home/node/.local/bin/claude /tmp/claude-install \
+  && ln -sf /usr/local/lib/claude/claude /usr/local/bin/claude \
+  && ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && ln -sf /usr/local/share/npm-global/bin/gemini /usr/local/bin/gemini \
   && ln -sf /usr/local/share/npm-global/bin/kilo /usr/local/bin/kilo \
-  && ln -sf /usr/local/share/npm-global/bin/opencode /usr/local/bin/opencode \
-  && ln -sf /home/node/.local/bin/claude /usr/local/bin/claude
+  && ln -sf /usr/local/share/npm-global/bin/opencode /usr/local/bin/opencode
+WORKDIR /home/node
 USER node
 RUN mkdir -p \
   /home/node/.codex \

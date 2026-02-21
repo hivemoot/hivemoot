@@ -40,6 +40,21 @@ assert_eq() {
   fi
 }
 
+assert_no_codex_auth_residue() {
+  local homes_root="$1"
+  local -a auth_files=()
+
+  shopt -s nullglob
+  auth_files=("${homes_root}"/*/.codex/auth.json)
+  shopt -u nullglob
+
+  if [ "${#auth_files[@]}" -ne 0 ]; then
+    echo "Unexpected Codex auth file residue:" >&2
+    printf '  %s\n' "${auth_files[@]}" >&2
+    fail "leftover Codex auth file in job home"
+  fi
+}
+
 setup_mock_docker() {
   local mock_bin="$1"
   mkdir -p "$mock_bin"
@@ -111,6 +126,11 @@ case "$cmd" in
     fi
 
     printf '%s\n' "$*" >> "$run_log_file"
+
+    if [ "${MOCK_DOCKER_RUN_FAIL:-0}" = "1" ]; then
+      rmdir "$active_lock_dir" 2>/dev/null || true
+      exit "${MOCK_DOCKER_RUN_EXIT:-1}"
+    fi
 
     container_id="$(next_id)"
     rm -f "$(container_exited_file "$container_id")"
@@ -224,8 +244,11 @@ EOF_MOCK
 run_success_case() {
   local repo_root="$1"
   local case_dir="$2"
+  local codex_auth_source="${case_dir}/secrets/codex-auth.json"
 
   mkdir -p "$case_dir"
+  mkdir -p "${case_dir}/secrets"
+  printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
   setup_mock_docker "${case_dir}/mock-bin"
 
   env -i \
@@ -243,6 +266,7 @@ run_success_case() {
     AGENT_ID_02="builder" \
     AGENT_GITHUB_TOKEN_02="token-2" \
     AGENT_TIMEOUT_SECONDS="120" \
+    CODEX_AUTH_FILE="${codex_auth_source}" \
     GIT_CLONE_DEPTH="1" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
@@ -258,7 +282,6 @@ run_success_case() {
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
-  assert_file_contains "$run_log" "--tmpfs /usr/local/share/npm-global:size=1g"
   assert_file_contains "$run_log" "-e RUN_MODE=once"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
   assert_file_contains "$run_log" "-e JOB_ID="
@@ -290,6 +313,7 @@ run_success_case() {
     assert_file_contains "$spec_file" '"type": "periodic"'
     assert_file_contains "$spec_file" '"timeout_seconds": 120'
   done
+  assert_no_codex_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: success case writes expected spawn flags and job artifacts"
 }
@@ -297,8 +321,11 @@ run_success_case() {
 run_failure_case() {
   local repo_root="$1"
   local case_dir="$2"
+  local codex_auth_source="${case_dir}/secrets/codex-auth.json"
 
   mkdir -p "$case_dir"
+  mkdir -p "${case_dir}/secrets"
+  printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
   setup_mock_docker "${case_dir}/mock-bin"
 
   if env -i \
@@ -314,6 +341,7 @@ run_failure_case() {
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="90" \
+    CODEX_AUTH_FILE="${codex_auth_source}" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"; then
@@ -331,8 +359,44 @@ run_failure_case() {
   assert_eq "failed" "$(cat "${status_files[0]}")" "expected failed job status"
   assert_file_contains "${summary_files[0]}" "status=failed"
   assert_file_contains "${summary_files[0]}" "exit_code=17"
+  assert_no_codex_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: failure case records failed sentinel with exit code"
+}
+
+run_spawn_failure_cleanup_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+
+  mkdir -p "$case_dir"
+  mkdir -p "${case_dir}/secrets"
+  printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  if env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_RUN_FAIL="1" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="90" \
+    CODEX_AUTH_FILE="${codex_auth_source}" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"; then
+    fail "controller succeeded unexpectedly in spawn failure case"
+  fi
+
+  assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+
+  echo "PASS: spawn failure cleanup removes copied Codex auth files"
 }
 
 run_mentions_case() {
@@ -709,6 +773,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
 run_failure_case "$repo_root" "${tmpdir}/failure"
+run_spawn_failure_cleanup_case "$repo_root" "${tmpdir}/spawn-failure"
 run_mentions_case "$repo_root" "${tmpdir}/mentions"
 run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"

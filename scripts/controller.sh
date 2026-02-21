@@ -172,6 +172,13 @@ append_secret_env() {
   fi
 }
 
+cleanup_job_home_credentials() {
+  local job_home="$1"
+
+  rm -f "${job_home}/.codex/auth.json" 2>/dev/null || true
+  rmdir "${job_home}/.codex" 2>/dev/null || true
+}
+
 spawn_worker() {
   local job_id="$1"
   local repo="$2"
@@ -197,13 +204,25 @@ spawn_worker() {
     --security-opt=no-new-privileges
     --read-only
     --tmpfs "/tmp:size=2g,mode=1777"
-    --tmpfs "/usr/local/share/npm-global:size=1g"
     --memory "${AGENT_MEMORY_LIMIT:-16g}"
     --cpus "${AGENT_CPU_LIMIT:-4.0}"
     --pids-limit "${AGENT_PIDS_LIMIT:-512}"
     -v "${job_workspace}:/workspace"
     -v "${job_home}:/home/node"
     -v "${token_file}:/run/secrets/agent_github_token:ro"
+  )
+
+  # Copy codex subscription auth into the worker's home if available.
+  # Docker Desktop on macOS (virtiofs) can't nest a file mount inside a
+  # bind mount with --read-only, so we copy instead of mounting.
+  local codex_auth_file="${CODEX_AUTH_FILE:-}"
+  if [ -n "$codex_auth_file" ] && [ -f "$codex_auth_file" ]; then
+    mkdir -p "${job_home}/.codex"
+    cp "$codex_auth_file" "${job_home}/.codex/auth.json"
+    chmod 600 "${job_home}/.codex/auth.json"
+  fi
+
+  docker_run_args+=(
     -e RUN_MODE=once
     -e TARGET_REPO="${repo}"
     -e WORKSPACE_ROOT=/workspace
@@ -982,6 +1001,7 @@ run_job() {
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
   if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key")"; then
+    cleanup_job_home_credentials "$job_home"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     return 125
   fi
@@ -1025,6 +1045,7 @@ run_job() {
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
+  cleanup_job_home_credentials "$job_home"
 
   if [ "$exit_code" -eq 0 ]; then
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "completed" "$exit_code"
