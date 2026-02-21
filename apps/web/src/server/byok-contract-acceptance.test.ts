@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import IORedis, { type Redis } from "ioredis";
+import { Redis, type Redis as RedisType } from "@upstash/redis";
 import { encrypt, decrypt, parseKeyring, ByokCryptoError } from "./crypto";
 import { getByokEnvelope, setByokEnvelope } from "./byok-store";
 import type { ByokEnvelope } from "./byok-store";
@@ -43,21 +43,18 @@ function makeMockRedis() {
     _store: store,
   };
 
-  return client as unknown as Redis & { _store: Map<string, string> };
+  return client as unknown as RedisType & { _store: Map<string, string> };
 }
 
-const LIVE_HIVEMOOT_REDIS_URL = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_URL ?? process.env.HIVEMOOT_REDIS_URL;
+const LIVE_UPSTASH_URL = process.env.BYOK_ACCEPTANCE_UPSTASH_REDIS_REST_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+const LIVE_UPSTASH_TOKEN = process.env.BYOK_ACCEPTANCE_UPSTASH_REDIS_REST_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
 
-function makeLiveRedisClient(): Redis {
-  if (!LIVE_HIVEMOOT_REDIS_URL) {
-    throw new Error("LIVE_HIVEMOOT_REDIS_URL is required");
+function makeLiveRedisClient(): RedisType {
+  if (!LIVE_UPSTASH_URL || !LIVE_UPSTASH_TOKEN) {
+    throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required");
   }
 
-  return new IORedis(LIVE_HIVEMOOT_REDIS_URL, {
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
-    lazyConnect: false,
-  });
+  return new Redis({ url: LIVE_UPSTASH_URL, token: LIVE_UPSTASH_TOKEN });
 }
 
 function makeNowIso() {
@@ -422,7 +419,7 @@ describe("BYOK contract acceptance", () => {
   });
 });
 
-const describeLiveRedis = LIVE_HIVEMOOT_REDIS_URL ? describe : describe.skip;
+const describeLiveRedis = LIVE_UPSTASH_URL && LIVE_UPSTASH_TOKEN ? describe : describe.skip;
 
 describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
   it("resolves a configured installation through a real Redis transport", async () => {
@@ -449,7 +446,7 @@ describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
       );
     } finally {
       await redis.del(`hive:byok:${installationId}`);
-      await redis.quit();
+      // @upstash/redis is HTTP REST — no connection to close
     }
   });
 });
