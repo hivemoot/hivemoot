@@ -22,7 +22,10 @@ x-agent-base-subscription: &agent-base-subscription
   tmpfs:
     - /tmp:size=2g,mode=1777
   volumes:
-    - ./data:/workspace
+    # Scope the bind mount to the repo-specific workspace directory so the
+    # container cannot access sibling workspaces or agent homes from other runs.
+    # Set WORKSPACE_DATA to a repo-specific host path when running multiple repos.
+    - ${WORKSPACE_DATA:-./data/repo}:${WORKSPACE_ROOT:-/workspace/repo}
     - codex-home:/home/node/.codex
     - gemini-home:/home/node/.gemini
     - claude-home:/home/node/.claude

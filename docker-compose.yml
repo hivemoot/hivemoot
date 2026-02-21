@@ -32,7 +32,10 @@ x-agent-base: &agent-base
     - /home/node/.config/opencode:uid=1000,gid=1000,mode=0700
     - /home/node/.local/share/opencode:uid=1000,gid=1000,mode=0700
   volumes:
-    - ./data:/workspace
+    # Scope the bind mount to the repo-specific workspace directory so the
+    # container cannot access sibling workspaces or agent homes from other runs.
+    # Set WORKSPACE_DATA to a repo-specific host path when running multiple repos.
+    - ${WORKSPACE_DATA:-./data/repo}:${WORKSPACE_ROOT:-/workspace/repo}
 
 x-agent-env: &agent-env
   RUN_MODE: ${RUN_MODE:-once}
