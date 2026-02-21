@@ -20,8 +20,8 @@ describe("validateEnv", () => {
   describe("in development", () => {
     it("returns ok when no vars are set", () => {
       delete env().NODE_ENV;
-      delete env().UPSTASH_REDIS_REST_URL;
-      delete env().UPSTASH_REDIS_REST_TOKEN;
+      delete env().HIVEMOOT_REDIS_REST_URL;
+      delete env().HIVEMOOT_REDIS_REST_TOKEN;
       delete env().GITHUB_APP_ID;
 
       const result = validateEnv();
@@ -52,8 +52,8 @@ describe("validateEnv", () => {
 
     it("passes through optional vars when present", () => {
       delete env().NODE_ENV;
-      env().UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
-      env().UPSTASH_REDIS_REST_TOKEN = "test-token";
+      env().HIVEMOOT_REDIS_REST_URL = "https://example.upstash.io";
+      env().HIVEMOOT_REDIS_REST_TOKEN = "test-token";
       env().GITHUB_APP_ID = "12345";
 
       const result = validateEnv();
@@ -72,8 +72,8 @@ describe("validateEnv", () => {
     });
 
     it("fails when all required vars are missing", () => {
-      delete env().UPSTASH_REDIS_REST_URL;
-      delete env().UPSTASH_REDIS_REST_TOKEN;
+      delete env().HIVEMOOT_REDIS_REST_URL;
+      delete env().HIVEMOOT_REDIS_REST_TOKEN;
       delete env().GITHUB_APP_ID;
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
@@ -86,8 +86,8 @@ describe("validateEnv", () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.missing).toEqual([
-          "UPSTASH_REDIS_REST_URL",
-          "UPSTASH_REDIS_REST_TOKEN",
+          "HIVEMOOT_REDIS_REST_URL",
+          "HIVEMOOT_REDIS_REST_TOKEN",
           "GITHUB_APP_ID",
           "GITHUB_APP_PRIVATE_KEY",
           "GITHUB_CLIENT_ID",
@@ -100,8 +100,8 @@ describe("validateEnv", () => {
     });
 
     it("fails when some required vars are missing", () => {
-      env().UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
-      env().UPSTASH_REDIS_REST_TOKEN = "test-token";
+      env().HIVEMOOT_REDIS_REST_URL = "https://example.upstash.io";
+      env().HIVEMOOT_REDIS_REST_TOKEN = "test-token";
       env().GITHUB_APP_ID = "99";
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
@@ -125,8 +125,8 @@ describe("validateEnv", () => {
     });
 
     it("fails when NEXT_PUBLIC_SITE_URL is missing in production", () => {
-      env().UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
-      env().UPSTASH_REDIS_REST_TOKEN = "test-token";
+      env().HIVEMOOT_REDIS_REST_URL = "https://example.upstash.io";
+      env().HIVEMOOT_REDIS_REST_TOKEN = "test-token";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";
@@ -144,8 +144,8 @@ describe("validateEnv", () => {
     });
 
     it("succeeds when all required vars are present", () => {
-      env().UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
-      env().UPSTASH_REDIS_REST_TOKEN = "test-token";
+      env().HIVEMOOT_REDIS_REST_URL = "https://example.upstash.io";
+      env().HIVEMOOT_REDIS_REST_TOKEN = "test-token";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";

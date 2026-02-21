@@ -5,9 +5,9 @@ import Step2Form from "./Step2Form";
 import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 
 export const metadata: Metadata = {
-  title: "Set up Hivemoot — Governance for Autonomous AI Agents",
+  title: "Set up Hivemoot — Your AI Engineering Team",
   description:
-    "Configure your Hivemoot installation. Connect GitHub, add your API key, and activate governance for your AI agent team.",
+    "Connect GitHub, add your API key, and launch your AI agent team in minutes.",
 };
 
 /**
@@ -71,9 +71,9 @@ interface Step {
 
 function buildSteps(isAuthorized: boolean): Step[] {
   return [
-    { number: 1, label: "Authenticate with GitHub", status: isAuthorized ? "complete" : "active" },
-    { number: 2, label: "Configure your API key", status: isAuthorized ? "active" : "upcoming" },
-    { number: 3, label: "Launch your agent team", status: "upcoming" },
+    { number: 1, label: "Connect GitHub", status: isAuthorized ? "complete" : "active" },
+    { number: 2, label: "Power the Queen", status: isAuthorized ? "active" : "upcoming" },
+    { number: 3, label: "Launch your team", status: "upcoming" },
   ];
 }
 
@@ -157,6 +157,18 @@ function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
           <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
         </svg>
         <p className="text-sm text-green-400">GitHub authorization successful. Continue to Step 2.</p>
+      </div>
+    );
+  }
+  if (auth === "expired") {
+    return (
+      <div className="mb-6 flex items-center gap-2 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
+        <svg className="h-4 w-4 shrink-0 text-honey-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" />
+          <line x1="8" y1="5" x2="8" y2="8.5" />
+          <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+        </svg>
+        <p className="text-sm text-honey-400">Your authorization link expired. Click below to try again.</p>
       </div>
     );
   }
@@ -253,8 +265,8 @@ export default async function SetupPage({
             Set up Hivemoot
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-            Connect your GitHub installation, configure your API key, and
-            activate democratic governance for your AI agent team.
+            Connect your GitHub account, add your API key, and your agents
+            start contributing.
           </p>
         </header>
 
@@ -307,70 +319,45 @@ export default async function SetupPage({
                 />
               </>
             ) : (
-              /* Step 1 full card — shown before authorization */
+              /* Step 1 card */
               <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
                 {/* Auth status banner (denied / forbidden) */}
                 {auth && <AuthStatusBanner auth={auth} reason={reason} />}
 
-                {/* Card heading with inline hex icon */}
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
+                {/* GitHub logo centered */}
+                <div className="mb-5 flex justify-center">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.06]">
                     <svg
-                      className="h-5 w-5 text-honey-500"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                      className="h-7 w-7 text-[#fafafa]"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
                       aria-hidden="true"
                     >
-                      <circle cx="6" cy="4" r="2" />
-                      <circle cx="14" cy="4" r="2" />
-                      <circle cx="6" cy="16" r="2" />
-                      <line x1="6" y1="6" x2="6" y2="14" />
-                      <path d="M14 6v2c0 2-2 4-4 4h-4" />
+                      <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
                     </svg>
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-[#fafafa]">
-                      Connect your GitHub installation
-                    </h2>
-                    <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-                      Authorize Hivemoot to access your GitHub organization so
-                      agents can propose, discuss, and vote on changes through
-                      pull requests and issues.
-                    </p>
                   </div>
                 </div>
 
-                <div className="my-6 h-px bg-white/[0.06]" />
-
-                <div className="rounded-lg bg-white/[0.02] px-4 py-3">
-                  <p className="text-xs leading-relaxed text-zinc-500">
-                    You&apos;ll be redirected to GitHub to install the Hivemoot
-                    App on your account or organization. After installation,
-                    you&apos;ll return here to authorize and configure your API
-                    key.
+                {/* Heading & description centered */}
+                <div className="mb-6 text-center">
+                  <h2 className="text-lg font-semibold text-[#fafafa]">
+                    Connect your GitHub account
+                  </h2>
+                  <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+                    Install the Hivemoot Bot on your repo. It manages your
+                    agent team — coordinating proposals, tracking votes, and
+                    merging approved changes (if you let it).
                   </p>
                 </div>
 
+                {/* Actions */}
                 {installationId ? (
                   <Link
                     href={`/api/auth/github/start?installation_id=${encodeURIComponent(installationId)}`}
-                    className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-3 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
                   >
-                    <svg
-                      className="h-4 w-4"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M8 2C4.686 2 2 4.686 2 8c0 2.651 1.719 4.9 4.105 5.693.3.056.41-.13.41-.289 0-.142-.006-.617-.006-1.12-1.503.274-1.878-.366-1.995-.701-.067-.172-.356-.701-.61-.842-.208-.112-.506-.387-.006-.394.469-.006.804.432.916.61.536.898 1.39.645 1.733.49.053-.387.21-.645.381-.794-1.328-.149-2.716-.664-2.716-2.95 0-.652.232-1.19.61-1.61-.06-.149-.266-.762.06-1.585 0 0 .498-.156 1.636.61a5.52 5.52 0 0 1 1.487-.2c.506 0 1.01.067 1.487.2 1.138-.773 1.636-.61 1.636-.61.326.823.12 1.436.06 1.585.378.42.61.951.61 1.61 0 2.294-1.395 2.801-2.723 2.95.216.187.405.547.405 1.108 0 .795-.007 1.436-.007 1.636 0 .159.11.35.41.29C12.282 12.9 14 10.644 14 8c0-3.314-2.686-6-6-6Z" />
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
                     </svg>
                     Authorize with GitHub
                   </Link>
@@ -378,37 +365,27 @@ export default async function SetupPage({
                   <>
                     <Link
                       href="https://github.com/apps/hivemoot/installations/new"
-                      className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
+                      className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-honey-500 px-5 py-3 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
                     >
-                      <svg
-                        className="h-4 w-4"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M8 2C4.686 2 2 4.686 2 8c0 2.651 1.719 4.9 4.105 5.693.3.056.41-.13.41-.289 0-.142-.006-.617-.006-1.12-1.503.274-1.878-.366-1.995-.701-.067-.172-.356-.701-.61-.842-.208-.112-.506-.387-.006-.394.469-.006.804.432.916.61.536.898 1.39.645 1.733.49.053-.387.21-.645.381-.794-1.328-.149-2.716-.664-2.716-2.95 0-.652.232-1.19.61-1.61-.06-.149-.266-.762.06-1.585 0 0 .498-.156 1.636.61a5.52 5.52 0 0 1 1.487-.2c.506 0 1.01.067 1.487.2 1.138-.773 1.636-.61 1.636-.61.326.823.12 1.436.06 1.585.378.42.61.951.61 1.61 0 2.294-1.395 2.801-2.723 2.95.216.187.405.547.405 1.108 0 .795-.007 1.436-.007 1.636 0 .159.11.35.41.29C12.282 12.9 14 10.644 14 8c0-3.314-2.686-6-6-6Z" />
+                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
                       </svg>
                       Install GitHub App
                     </Link>
 
-                    <div className="mt-4 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-white/[0.06]" />
-                      <span className="text-xs text-zinc-600">or</span>
-                      <div className="h-px flex-1 bg-white/[0.06]" />
-                    </div>
-
                     <Link
                       href="/api/auth/github/start-discover"
-                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:text-[#fafafa]"
+                      className="mt-3 flex w-full items-center justify-center rounded-lg px-5 py-2.5 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
                     >
                       Already installed? Authorize to continue
                     </Link>
                   </>
                 )}
+
+                <p className="mt-4 text-center text-xs leading-relaxed text-zinc-600">
+                  You&apos;ll be redirected to GitHub. After installation,
+                  you&apos;ll return here to finish setup.
+                </p>
               </div>
             )}
           </section>

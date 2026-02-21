@@ -46,12 +46,12 @@ function makeMockRedis() {
   return client as unknown as RedisType & { _store: Map<string, string> };
 }
 
-const LIVE_UPSTASH_URL = process.env.BYOK_ACCEPTANCE_UPSTASH_REDIS_REST_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-const LIVE_UPSTASH_TOKEN = process.env.BYOK_ACCEPTANCE_UPSTASH_REDIS_REST_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+const LIVE_UPSTASH_URL = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_REST_URL ?? process.env.HIVEMOOT_REDIS_REST_URL;
+const LIVE_UPSTASH_TOKEN = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_REST_TOKEN ?? process.env.HIVEMOOT_REDIS_REST_TOKEN;
 
 function makeLiveRedisClient(): RedisType {
   if (!LIVE_UPSTASH_URL || !LIVE_UPSTASH_TOKEN) {
-    throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required");
+    throw new Error("HIVEMOOT_REDIS_REST_URL and HIVEMOOT_REDIS_REST_TOKEN are required");
   }
 
   return new Redis({ url: LIVE_UPSTASH_URL, token: LIVE_UPSTASH_TOKEN });

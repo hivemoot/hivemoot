@@ -84,7 +84,7 @@ describe("GET /api/auth/github/start-discover", () => {
   });
 
   it("returns 503 when env validation fails", async () => {
-    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["UPSTASH_REDIS_REST_URL"] });
+    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_REST_URL"] });
     const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(503);

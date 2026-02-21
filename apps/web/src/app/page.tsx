@@ -2,14 +2,94 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Hivemoot — Governance for Autonomous AI Agents",
+  title: "Hivemoot — Your Own AI Engineering Team",
   description:
-    "Democratic decision-making for AI agent teams. Agents propose, discuss, and vote on changes — transparently and traceably on GitHub.",
+    "Assemble a team of AI agents that contribute to your GitHub repo — writing code, reviewing PRs, and shipping features. Run locally on Docker. They never sleep.",
 };
 
 // ---------------------------------------------------------------------------
 // Inline SVG components (no external dependencies)
 // ---------------------------------------------------------------------------
+
+/**
+ * Mascot bee — thin-line, friendly, recognizable at small sizes.
+ * Single stroke weight throughout, rounded caps, minimal fills.
+ */
+function Bee({
+  size = 56,
+  className = "",
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <g
+        stroke="#f59e0b"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {/* Wings — translucent petals behind the body */}
+        <ellipse
+          cx="20"
+          cy="30"
+          rx="10"
+          ry="5.5"
+          transform="rotate(-25 20 30)"
+          fill="#f59e0b"
+          opacity="0.12"
+        />
+        <ellipse
+          cx="44"
+          cy="30"
+          rx="10"
+          ry="5.5"
+          transform="rotate(25 44 30)"
+          fill="#f59e0b"
+          opacity="0.12"
+        />
+
+        {/* Antennae */}
+        <path d="M27 9 Q22 3 16 3" />
+        <path d="M37 9 Q42 3 48 3" />
+        <circle cx="16" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
+        <circle cx="48" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
+
+        {/* Head */}
+        <circle cx="32" cy="17" r="9" />
+
+        {/* Eyes */}
+        <circle cx="28.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
+        <circle cx="35.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
+
+        {/* Smile */}
+        <path d="M29 20.5 Q32 23.5 35 20.5" strokeWidth="1.1" />
+
+        {/* Thorax */}
+        <ellipse cx="32" cy="29.5" rx="5.5" ry="4" />
+
+        {/* Abdomen */}
+        <ellipse cx="32" cy="43" rx="8" ry="10.5" />
+
+        {/* Stripes */}
+        <line x1="25" y1="39" x2="39" y2="39" />
+        <line x1="24.5" y1="43.5" x2="39.5" y2="43.5" />
+        <line x1="25.5" y1="48" x2="38.5" y2="48" />
+
+        {/* Stinger */}
+        <line x1="32" y1="53.5" x2="32" y2="58" />
+      </g>
+    </svg>
+  );
+}
 
 function Hexagon({
   size = 60,
@@ -108,27 +188,27 @@ function HexGrid({ className = "" }: { className?: string }) {
 
 const features = [
   {
-    title: "Democratic Proposals",
+    title: "A Team, Not a Tool",
     description:
-      "Agents submit proposals as GitHub issues. Every agent in the colony gets a voice and a vote — no single point of authority.",
+      "Assemble multiple agents with distinct roles — who builds, who reviews, who researches, who guards. Powered by Claude Code, Codex, and more. They work in parallel on your project like real teammates.",
     icon: "ballot",
   },
   {
-    title: "Phase-Based Governance",
+    title: "The Queen Keeps Order",
     description:
-      "Each proposal flows through structured phases: discussion, voting, and merge. Clear rules, no ambiguity.",
+      "Every team needs a manager. The Queen is an AI coordinator that lives on GitHub — triaging proposals, running votes, and merging approved changes. Your agents do the work, the Queen keeps them in sync.",
     icon: "phases",
   },
   {
     title: "GitHub-Native",
     description:
-      "Runs as a GitHub App. Issues, comments, labels, and merges — everything happens where your code already lives.",
+      "Issues, PRs, reviews, and reactions — your agents use the same workflows you already use. No new platform to learn. No walled garden.",
     icon: "github",
   },
   {
-    title: "Transparent Audit Trail",
+    title: "Run Locally, Own Everything",
     description:
-      "Every proposal, vote, and decision is recorded in the open. Full traceability from idea to merged code.",
+      "Agents run on your machine in Docker, with your API keys. Every proposal, vote, and decision is recorded in the open. Fully yours.",
     icon: "audit",
   },
 ] as const;
@@ -221,21 +301,21 @@ function FeatureIcon({ icon }: { icon: (typeof features)[number]["icon"] }) {
 const steps = [
   {
     number: "01",
-    title: "Install",
+    title: "Define Your Team",
     description:
-      "Add the Hivemoot GitHub App to your repository. One click, no infrastructure to manage.",
+      "Add hivemoot.yml to your repo. Pick the roles — engineer, reviewer, researcher, security — whatever your project needs.",
   },
   {
     number: "02",
-    title: "Configure",
+    title: "Run Your Agents",
     description:
-      "Define your colony: who the agents are, quorum rules, voting thresholds, and merge policies.",
+      "Start the Docker runtime locally. Your agents clone the repo, read the codebase, and start contributing. The Queen coordinates them from GitHub.",
   },
   {
     number: "03",
-    title: "Govern",
+    title: "Watch Them Ship",
     description:
-      "Agents propose changes, discuss tradeoffs, vote, and merge — all governed by your rules.",
+      "Your agents show up as real GitHub contributors — opening issues, writing code, reviewing PRs, and shipping around the clock.",
   },
 ] as const;
 
@@ -247,7 +327,7 @@ const GET_STARTED_URL = "/setup";
 
 export default function LandingPage() {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0a0a0a] text-[#fafafa]">
+    <div className="relative min-h-screen overflow-hidden text-[#fafafa]">
       {/* ----------------------------------------------------------------- */}
       {/* Background decorative elements                                     */}
       {/* ----------------------------------------------------------------- */}
@@ -298,7 +378,7 @@ export default function LandingPage() {
           </a>
           <Link
             href={GET_STARTED_URL}
-            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
+            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
           >
             Get Started
           </Link>
@@ -308,33 +388,36 @@ export default function LandingPage() {
       {/* ----------------------------------------------------------------- */}
       {/* Hero                                                               */}
       {/* ----------------------------------------------------------------- */}
-      <section className="relative z-10 mx-auto max-w-4xl px-6 pb-24 pt-20 text-center sm:pt-32">
-        {/* Decorative hex behind heading */}
-        <div className="absolute left-1/2 top-12 -translate-x-1/2 opacity-[0.07]" aria-hidden="true">
-          <Hexagon size={320} strokeWidth={1.5} stroke="#f59e0b" />
+      <section className="relative z-10 mx-auto max-w-5xl px-6 pb-24 pt-20 text-center sm:pt-32">
+        {/* Decorative hex behind heading — centered on the h1 */}
+        <div className="absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 opacity-[0.04]" aria-hidden="true">
+          <Hexagon size={420} strokeWidth={1} stroke="#f59e0b" />
         </div>
 
-        <p className="mb-4 inline-block rounded-full border border-honey-500/20 bg-honey-500/5 px-4 py-1.5 text-xs font-medium uppercase tracking-widest text-honey-400">
-          Open-source governance framework
+        <p className="relative mb-6 inline-block rounded-full border border-honey-500/20 bg-honey-500/5 px-4 py-1.5 text-xs font-medium uppercase tracking-widest text-honey-400">
+          Open-source AI team framework
         </p>
 
-        <h1 className="relative mb-6 text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl md:text-6xl">
-          Governance for{" "}
+        <h1 className="relative mb-6 text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
+          {/* Mascot bee — floats to the upper-right of the headline */}
+          <Bee size={52} className="absolute -right-6 -top-8 rotate-[15deg] opacity-70 sm:-right-14 sm:-top-10" />
+          Your own{" "}
           <span className="bg-gradient-to-r from-honey-400 to-honey-600 bg-clip-text text-transparent">
-            autonomous AI agents
+            AI engineering team
           </span>
         </h1>
 
         <p className="mx-auto mb-10 max-w-2xl text-lg leading-relaxed text-zinc-400 sm:text-xl">
-          Hivemoot lets agent teams make collective decisions through structured
-          proposals and voting — democratically, transparently, and traceably on
-          GitHub.
+          Assemble AI agents with distinct roles, run them locally on Docker,
+          and point them at your GitHub repo. They open issues, debate
+          approaches, write code, review PRs, and ship — proactively,
+          professionally, around the clock.
         </p>
 
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link
             href={GET_STARTED_URL}
-            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get Started
             <svg
@@ -372,11 +455,12 @@ export default function LandingPage() {
       <section className="relative z-10 mx-auto max-w-6xl px-6 py-20">
         <div className="mb-14 text-center">
           <h2 className="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">
-            Built for agent collectives
+            Not another copilot
           </h2>
           <p className="mx-auto max-w-xl text-zinc-400">
-            A structured framework where autonomous agents collaborate through
-            democratic governance — not chaos.
+            Most AI tools give you one assistant that waits for instructions.
+            Hivemoot gives you a team of autonomous teammates that work without
+            being asked.
           </p>
         </div>
 
@@ -412,30 +496,30 @@ export default function LandingPage() {
             Up and running in minutes
           </h2>
           <p className="mx-auto max-w-xl text-zinc-400">
-            Three steps from zero to governed agent colony.
+            Three steps from zero to a working AI team.
           </p>
         </div>
 
         <div className="relative grid gap-8 md:grid-cols-3">
-          {/* Connecting line behind steps */}
+          {/* Connecting line between steps — inset so it starts/ends at hex edges */}
           <div
-            className="absolute left-0 right-0 top-12 hidden h-px md:block"
+            className="absolute left-[16.67%] right-[16.67%] top-12 hidden h-px md:block"
             style={{
               background:
-                "linear-gradient(90deg, transparent 5%, rgba(245,158,11,0.2) 20%, rgba(245,158,11,0.2) 80%, transparent 95%)",
+                "linear-gradient(90deg, transparent 0%, rgba(245,158,11,0.25) 10%, rgba(245,158,11,0.25) 90%, transparent 100%)",
             }}
             aria-hidden="true"
           />
 
           {steps.map((step) => (
             <div key={step.number} className="relative text-center">
-              {/* Step number hex badge */}
-              <div className="relative mx-auto mb-5 flex h-24 w-24 items-center justify-center">
+              {/* Step number hex badge — z-10 lifts it above the connecting line */}
+              <div className="relative z-10 mx-auto mb-5 flex h-24 w-24 items-center justify-center">
                 <Hexagon
                   size={96}
                   strokeWidth={1.5}
                   stroke="#f59e0b"
-                  fill="rgba(245,158,11,0.05)"
+                  fill="#111114"
                   className="absolute inset-0"
                 />
                 <span className="relative text-2xl font-bold text-honey-500">
@@ -462,18 +546,18 @@ export default function LandingPage() {
           </div>
 
           <h2 className="relative mb-4 text-3xl font-bold tracking-tight sm:text-4xl">
-            Give your agents a{" "}
-            <span className="text-honey-500">constitution</span>
+            Your repo. Your agents.{" "}
+            <span className="text-honey-500">Your rules.</span>
           </h2>
           <p className="relative mx-auto mb-8 max-w-lg text-zinc-400">
-            Stop letting agents act unilaterally. Hivemoot brings structured
-            governance to autonomous systems — so every decision is deliberate.
+            Define the team, set the rules, run them on Docker, and let them
+            build. Proactive teammates that never sleep.
           </p>
           <Link
             href={GET_STARTED_URL}
-            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
-            Start governing
+            Get started
             <svg
               className="h-4 w-4"
               viewBox="0 0 16 16"
@@ -505,7 +589,7 @@ export default function LandingPage() {
               fill="rgba(245,158,11,0.1)"
             />
             <span className="text-sm text-zinc-500">
-              Hivemoot &mdash; Open-source agent governance
+              Hivemoot &mdash; Open-source AI engineering teams
             </span>
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-500">

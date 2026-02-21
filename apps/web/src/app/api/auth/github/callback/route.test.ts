@@ -142,7 +142,7 @@ describe("GET /api/auth/github/callback — happy paths", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/auth/github/callback — rejections", () => {
-  it("returns 400 on state mismatch (CSRF protection)", async () => {
+  it("redirects to /setup?auth=expired on state mismatch (CSRF protection)", async () => {
     vi.mocked(validateOAuthState).mockResolvedValue(null);
 
     const req = makeRequestWithCookie(
@@ -151,9 +151,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
     );
     const res = await GET(req);
 
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
   });
 
   it("returns 503 with a stable code when OAuth state lookup fails", async () => {
@@ -279,23 +280,29 @@ describe("GET /api/auth/github/callback — rejections", () => {
     expect(body.code).toBe("setup_session_create_failed");
   });
 
-  it("rejects callback when state-binding cookie is missing", async () => {
+  it("redirects to /setup?auth=expired when state-binding cookie is missing", async () => {
+    vi.mocked(validateOAuthState).mockResolvedValue(null);
+
     const req = makeRequest({ code: "gh-code", state: "valid-state" });
     const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
   });
 
-  it("rejects callback when state-binding cookie is mismatched", async () => {
+  it("redirects to /setup?auth=expired when state-binding cookie is mismatched", async () => {
+    vi.mocked(validateOAuthState).mockResolvedValue(null);
+
     const req = makeRequestWithCookie(
       { code: "gh-code", state: "valid-state" },
       "wrong-binding",
     );
     const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
   });
 });
 
