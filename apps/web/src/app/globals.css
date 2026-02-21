@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #0c0c0e;
-  --bg-secondary: #141416;
+  --bg-primary: #111114;
+  --bg-secondary: #18181b;
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
   --accent: #f59e0b;
@@ -14,20 +14,4 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: system-ui, -apple-system, sans-serif;
-}
-
-/*
- * Subtle full-page honeycomb pattern.
- * Uses a single hex tile that repeats via CSS background —
- * no extra DOM elements, works at any viewport size.
- */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E%3Cpath d='M28 66L0 50L0 16L28 0L56 16L56 50L28 66L28 100' fill='none' stroke='%23f59e0b' stroke-width='0.75'/%3E%3Cpath d='M28 0L28 34L0 50L0 84L28 100L56 84L56 50L28 34' fill='none' stroke='%23f59e0b' stroke-width='0.75'/%3E%3C/svg%3E");
-  background-size: 56px 100px;
 }

@@ -11,6 +11,86 @@ export const metadata: Metadata = {
 // Inline SVG components (no external dependencies)
 // ---------------------------------------------------------------------------
 
+/**
+ * Mascot bee — thin-line, friendly, recognizable at small sizes.
+ * Single stroke weight throughout, rounded caps, minimal fills.
+ */
+function Bee({
+  size = 56,
+  className = "",
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <g
+        stroke="#f59e0b"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {/* Wings — translucent petals behind the body */}
+        <ellipse
+          cx="14"
+          cy="24"
+          rx="10"
+          ry="5.5"
+          transform="rotate(-25 14 24)"
+          fill="#f59e0b"
+          opacity="0.12"
+        />
+        <ellipse
+          cx="50"
+          cy="24"
+          rx="10"
+          ry="5.5"
+          transform="rotate(25 50 24)"
+          fill="#f59e0b"
+          opacity="0.12"
+        />
+
+        {/* Antennae */}
+        <path d="M27 9 Q22 3 16 3" />
+        <path d="M37 9 Q42 3 48 3" />
+        <circle cx="16" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
+        <circle cx="48" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
+
+        {/* Head */}
+        <circle cx="32" cy="17" r="9" />
+
+        {/* Eyes */}
+        <circle cx="28.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
+        <circle cx="35.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
+
+        {/* Smile */}
+        <path d="M29 20.5 Q32 23.5 35 20.5" strokeWidth="1.1" />
+
+        {/* Thorax */}
+        <ellipse cx="32" cy="29.5" rx="5.5" ry="4" />
+
+        {/* Abdomen */}
+        <ellipse cx="32" cy="43" rx="8" ry="10.5" />
+
+        {/* Stripes */}
+        <line x1="25" y1="39" x2="39" y2="39" />
+        <line x1="24.5" y1="43.5" x2="39.5" y2="43.5" />
+        <line x1="25.5" y1="48" x2="38.5" y2="48" />
+
+        {/* Stinger */}
+        <line x1="32" y1="53.5" x2="32" y2="58" />
+      </g>
+    </svg>
+  );
+}
+
 function Hexagon({
   size = 60,
   className = "",
@@ -247,7 +327,7 @@ const GET_STARTED_URL = "/setup";
 
 export default function LandingPage() {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0c0c0e] text-[#fafafa]">
+    <div className="relative min-h-screen overflow-hidden text-[#fafafa]">
       {/* ----------------------------------------------------------------- */}
       {/* Background decorative elements                                     */}
       {/* ----------------------------------------------------------------- */}
@@ -298,7 +378,7 @@ export default function LandingPage() {
           </a>
           <Link
             href={GET_STARTED_URL}
-            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
+            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
           >
             Get Started
           </Link>
@@ -308,17 +388,19 @@ export default function LandingPage() {
       {/* ----------------------------------------------------------------- */}
       {/* Hero                                                               */}
       {/* ----------------------------------------------------------------- */}
-      <section className="relative z-10 mx-auto max-w-4xl px-6 pb-24 pt-20 text-center sm:pt-32">
-        {/* Decorative hex behind heading */}
-        <div className="absolute left-1/2 top-12 -translate-x-1/2 opacity-[0.07]" aria-hidden="true">
-          <Hexagon size={320} strokeWidth={1.5} stroke="#f59e0b" />
+      <section className="relative z-10 mx-auto max-w-5xl px-6 pb-24 pt-20 text-center sm:pt-32">
+        {/* Decorative hex behind heading — centered on the h1 */}
+        <div className="absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 opacity-[0.04]" aria-hidden="true">
+          <Hexagon size={420} strokeWidth={1} stroke="#f59e0b" />
         </div>
 
-        <p className="mb-4 inline-block rounded-full border border-honey-500/20 bg-honey-500/5 px-4 py-1.5 text-xs font-medium uppercase tracking-widest text-honey-400">
+        <p className="relative mb-6 inline-block rounded-full border border-honey-500/20 bg-honey-500/5 px-4 py-1.5 text-xs font-medium uppercase tracking-widest text-honey-400">
           Open-source AI team framework
         </p>
 
-        <h1 className="relative mb-6 text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl md:text-6xl">
+        <h1 className="relative mb-6 text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
+          {/* Mascot bee — floats to the upper-right of the headline */}
+          <Bee size={52} className="absolute -right-6 -top-8 rotate-[15deg] opacity-70 sm:-right-14 sm:-top-10" />
           Your own{" "}
           <span className="bg-gradient-to-r from-honey-400 to-honey-600 bg-clip-text text-transparent">
             AI engineering team
@@ -335,7 +417,7 @@ export default function LandingPage() {
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link
             href={GET_STARTED_URL}
-            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get Started
             <svg
@@ -473,7 +555,7 @@ export default function LandingPage() {
           </p>
           <Link
             href={GET_STARTED_URL}
-            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0c0c0e] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
+            className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get started
             <svg
