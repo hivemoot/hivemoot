@@ -70,21 +70,10 @@ export async function getByokEnvelope(
   installationId: string,
   redis: Redis,
 ): Promise<ByokEnvelope | null> {
-  const raw = await redis.get<string>(`${KEY_PREFIX}${installationId}`);
+  const raw = await redis.get<Partial<ByokEnvelope> & { fingerprintLast4?: unknown }>(`${KEY_PREFIX}${installationId}`);
   if (!raw) return null;
 
-  try {
-    const parsed = JSON.parse(raw) as Partial<ByokEnvelope> & {
-      fingerprintLast4?: unknown;
-    };
-    return normalizeEnvelope(installationId, parsed);
-  } catch {
-    console.warn("Invalid BYOK envelope JSON in Redis", {
-      installationId,
-      error: "invalid_json",
-    });
-    return null;
-  }
+  return normalizeEnvelope(installationId, raw);
 }
 
 /**
@@ -95,7 +84,7 @@ export async function setByokEnvelope(
   envelope: ByokEnvelope,
   redis: Redis,
 ): Promise<void> {
-  await redis.set(`${KEY_PREFIX}${installationId}`, JSON.stringify(envelope));
+  await redis.set(`${KEY_PREFIX}${installationId}`, envelope);
 }
 
 /**
