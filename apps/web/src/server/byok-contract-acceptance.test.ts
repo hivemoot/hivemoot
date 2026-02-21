@@ -46,14 +46,14 @@ function makeMockRedis() {
   return client as unknown as Redis & { _store: Map<string, string> };
 }
 
-const LIVE_REDIS_URL = process.env.BYOK_ACCEPTANCE_REDIS_URL ?? process.env.REDIS_URL;
+const LIVE_HIVEMOOT_REDIS_URL = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_URL ?? process.env.HIVEMOOT_REDIS_URL;
 
 function makeLiveRedisClient(): Redis {
-  if (!LIVE_REDIS_URL) {
-    throw new Error("LIVE_REDIS_URL is required");
+  if (!LIVE_HIVEMOOT_REDIS_URL) {
+    throw new Error("LIVE_HIVEMOOT_REDIS_URL is required");
   }
 
-  return new IORedis(LIVE_REDIS_URL, {
+  return new IORedis(LIVE_HIVEMOOT_REDIS_URL, {
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
     lazyConnect: false,
@@ -422,7 +422,7 @@ describe("BYOK contract acceptance", () => {
   });
 });
 
-const describeLiveRedis = LIVE_REDIS_URL ? describe : describe.skip;
+const describeLiveRedis = LIVE_HIVEMOOT_REDIS_URL ? describe : describe.skip;
 
 describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
   it("resolves a configured installation through a real Redis transport", async () => {

@@ -110,7 +110,7 @@ describe("GET /api/auth/github/start", () => {
   });
 
   it("returns 503 when env validation fails", async () => {
-    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["REDIS_URL"] });
+    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_URL"] });
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
     const res = await GET(req);
     expect(res.status).toBe(503);

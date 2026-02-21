@@ -28,7 +28,7 @@ interface EnvConfig {
 }
 
 const REQUIRED_IN_PRODUCTION = [
-  "REDIS_URL",
+  "HIVEMOOT_REDIS_URL",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_CLIENT_ID",
@@ -53,7 +53,7 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
   return {
     ok: true,
     config: {
-      redisUrl: process.env.REDIS_URL,
+      redisUrl: process.env.HIVEMOOT_REDIS_URL,
       githubAppId: process.env.GITHUB_APP_ID,
       githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY,
       githubClientId: process.env.GITHUB_CLIENT_ID,

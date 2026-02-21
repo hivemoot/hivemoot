@@ -20,7 +20,7 @@ describe("validateEnv", () => {
   describe("in development", () => {
     it("returns ok when no vars are set", () => {
       delete env().NODE_ENV;
-      delete env().REDIS_URL;
+      delete env().HIVEMOOT_REDIS_URL;
       delete env().GITHUB_APP_ID;
 
       const result = validateEnv();
@@ -51,7 +51,7 @@ describe("validateEnv", () => {
 
     it("passes through optional vars when present", () => {
       delete env().NODE_ENV;
-      env().REDIS_URL = "redis://localhost:6379";
+      env().HIVEMOOT_REDIS_URL = "redis://localhost:6379";
       env().GITHUB_APP_ID = "12345";
 
       const result = validateEnv();
@@ -69,7 +69,7 @@ describe("validateEnv", () => {
     });
 
     it("fails when all required vars are missing", () => {
-      delete env().REDIS_URL;
+      delete env().HIVEMOOT_REDIS_URL;
       delete env().GITHUB_APP_ID;
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
@@ -82,7 +82,7 @@ describe("validateEnv", () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.missing).toEqual([
-          "REDIS_URL",
+          "HIVEMOOT_REDIS_URL",
           "GITHUB_APP_ID",
           "GITHUB_APP_PRIVATE_KEY",
           "GITHUB_CLIENT_ID",
@@ -95,7 +95,7 @@ describe("validateEnv", () => {
     });
 
     it("fails when some required vars are missing", () => {
-      env().REDIS_URL = "redis://prod:6379";
+      env().HIVEMOOT_REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       delete env().GITHUB_APP_PRIVATE_KEY;
       delete env().GITHUB_CLIENT_ID;
@@ -119,7 +119,7 @@ describe("validateEnv", () => {
     });
 
     it("fails when NEXT_PUBLIC_SITE_URL is missing in production", () => {
-      env().REDIS_URL = "redis://prod:6379";
+      env().HIVEMOOT_REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";
@@ -137,7 +137,7 @@ describe("validateEnv", () => {
     });
 
     it("succeeds when all required vars are present", () => {
-      env().REDIS_URL = "redis://prod:6379";
+      env().HIVEMOOT_REDIS_URL = "redis://prod:6379";
       env().GITHUB_APP_ID = "99";
       env().GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----";
       env().GITHUB_CLIENT_ID = "Iv1.test";
