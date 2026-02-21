@@ -243,12 +243,10 @@ const steps = [
 // Page
 // ---------------------------------------------------------------------------
 
-export default function LandingPage() {
-  const appSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG;
-  const installUrl = appSlug
-    ? `https://github.com/apps/${appSlug}/installations/new`
-    : "/setup";
+const GITHUB_APP_INSTALL_URL =
+  "https://github.com/apps/hivemoot/installations/new";
 
+export default function LandingPage() {
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#0a0a0a] text-[#fafafa]">
       {/* ----------------------------------------------------------------- */}
@@ -300,7 +298,7 @@ export default function LandingPage() {
             GitHub
           </a>
           <Link
-            href={installUrl}
+            href={GITHUB_APP_INSTALL_URL}
             className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
           >
             Get Started
@@ -336,7 +334,7 @@ export default function LandingPage() {
 
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link
-            href={installUrl}
+            href={GITHUB_APP_INSTALL_URL}
             className="group inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Get Started
@@ -473,7 +471,7 @@ export default function LandingPage() {
             governance to autonomous systems — so every decision is deliberate.
           </p>
           <Link
-            href={installUrl}
+            href={GITHUB_APP_INSTALL_URL}
             className="relative inline-flex items-center gap-2 rounded-lg bg-honey-500 px-7 py-3.5 text-base font-bold text-[#0a0a0a] transition-all hover:bg-honey-400 hover:shadow-xl hover:shadow-honey-500/25"
           >
             Start governing

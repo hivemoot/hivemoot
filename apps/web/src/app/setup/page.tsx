@@ -200,10 +200,6 @@ export default async function SetupPage({
   const hasSession = !!cookieStore.get(SETUP_SESSION_COOKIE)?.value;
   const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
-  const appSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG;
-  const githubInstallUrl = appSlug
-    ? `https://github.com/apps/${appSlug}/installations/new`
-    : null;
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -340,9 +336,10 @@ export default async function SetupPage({
 
                 <div className="rounded-lg bg-white/[0.02] px-4 py-3">
                   <p className="text-xs leading-relaxed text-zinc-500">
-                    {githubInstallUrl
-                      ? "You'll be redirected to GitHub to install the Hivemoot App on your account or organization. After installation, you'll return here to authorize and configure your API key."
-                      : "You'll be redirected to GitHub to authorize the Hivemoot App for your organization. It works across issues, pull requests, and discussions to help your team discuss, decide, and ship changes."}
+                    You&apos;ll be redirected to GitHub to install the Hivemoot
+                    App on your account or organization. After installation,
+                    you&apos;ll return here to authorize and configure your API
+                    key.
                   </p>
                 </div>
 
@@ -365,9 +362,9 @@ export default async function SetupPage({
                     </svg>
                     Authorize with GitHub
                   </Link>
-                ) : githubInstallUrl ? (
+                ) : (
                   <Link
-                    href={githubInstallUrl}
+                    href="https://github.com/apps/hivemoot/installations/new"
                     className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
                   >
                     <svg
@@ -384,33 +381,6 @@ export default async function SetupPage({
                     </svg>
                     Install GitHub App
                   </Link>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      disabled
-                      className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] opacity-50 cursor-not-allowed transition-colors"
-                      aria-label="Authorize with GitHub — open via the installation redirect link"
-                    >
-                      <svg
-                        className="h-4 w-4"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="7" width="10" height="7" rx="1.5" />
-                        <path d="M5 7V5a3 3 0 0 1 6 0v2" />
-                      </svg>
-                      Authorize with GitHub
-                    </button>
-                    <p className="mt-4 text-center text-xs text-zinc-600">
-                      Open this page via the GitHub App installation link to activate setup
-                    </p>
-                  </>
                 )}
               </div>
             )}
