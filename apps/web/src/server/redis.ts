@@ -18,10 +18,11 @@ declare global {
  */
 export function getRedisClient(redisUrl: string): Redis {
   if (!global.__redis) {
+    const useTls = redisUrl.startsWith("rediss://");
     global.__redis = new Redis(redisUrl, {
-      // Fail fast — don't silently retry forever
       maxRetriesPerRequest: 3,
-      lazyConnect: false,
+      connectTimeout: 5000,
+      ...(useTls ? { tls: { rejectUnauthorized: false } } : {}),
     });
   }
   return global.__redis;
