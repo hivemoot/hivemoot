@@ -304,10 +304,10 @@ export default async function SetupPage({
               {/* Info block */}
               <div className="rounded-lg bg-white/[0.02] px-4 py-3">
                 <p className="text-xs leading-relaxed text-zinc-500">
-                  This step will redirect you to GitHub to authorize the
-                  Hivemoot App for your organization. We request only the
-                  permissions needed for governance workflows -- no write
-                  access to your code.
+                  You&apos;ll be redirected to GitHub to authorize the
+                  Hivemoot App for your organization. It works across
+                  issues, pull requests, and discussions to help your
+                  team discuss, decide, and ship changes.
                 </p>
               </div>
 
