@@ -15,7 +15,7 @@ import { randomBytes } from "crypto";
 import type Redis from "ioredis";
 
 const STATE_TTL_SECONDS = 600;
-const SESSION_TTL_SECONDS = 600;
+export const SESSION_TTL_SECONDS = 1800;
 
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";

@@ -35,7 +35,7 @@ import {
 export const SETUP_SESSION_COOKIE = "setup_session";
 
 /** How long the session cookie lives in the browser (matches Redis TTL) */
-const SESSION_COOKIE_MAX_AGE = 600; // 10 minutes
+const SESSION_COOKIE_MAX_AGE = 1800; // 30 minutes
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
