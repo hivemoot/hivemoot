@@ -25,11 +25,13 @@ import urllib.request
 
 try:
     import yaml  # type: ignore
-except ImportError:
-    # Fallback: install pyyaml then re-import
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml", "--quiet"])
-    import yaml  # type: ignore
+except ImportError as exc:
+    print(
+        "ERROR: pyyaml is not installed. Install it before running this script:\n"
+        "  pip install pyyaml==6.0.2",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 
 
 def load_labels(path: str) -> list[dict]:
