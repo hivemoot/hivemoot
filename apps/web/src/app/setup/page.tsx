@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import Step2Form from "./Step2Form";
+import SetupWizard from "./SetupWizard";
 import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 
 export const metadata: Metadata = {
@@ -222,6 +222,7 @@ export default async function SetupPage({
   const reason = params.reason;
   const cookieStore = await cookies();
   const hasSession = !!cookieStore.get(SETUP_SESSION_COOKIE)?.value;
+
   const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
 
@@ -270,61 +271,32 @@ export default async function SetupPage({
           </p>
         </header>
 
-        {/* Two-column layout: steps sidebar + main card */}
-        <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
-          {/* Step indicator (sidebar) */}
-          <aside className="shrink-0 sm:w-56">
-            <ol className="flex flex-col" aria-label="Setup progress">
-              {STEPS.map((step, i) => (
-                <div key={step.number}>
-                  <StepIndicator step={step} />
-                  {i < STEPS.length - 1 && (
-                    <StepConnector fromStatus={step.status} />
-                  )}
-                </div>
-              ))}
-            </ol>
-          </aside>
-
-          {/* Content area */}
-          <section className="flex flex-1 flex-col gap-6">
-            {isAuthorized && installationId ? (
-              <>
-                {/* Compact Step 1 success */}
-                <div className="flex items-center gap-2.5 px-1 py-1">
-                  <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-500/15">
-                    <svg
-                      className="h-3 w-3 text-green-400"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
-                    </svg>
+        {isAuthorized && installationId ? (
+          /* Steps 2 & 3: client component manages stepper + content */
+          <SetupWizard
+            installationId={installationId}
+            sessionTtlSeconds={SESSION_TTL_SECONDS}
+          />
+        ) : (
+          /* Step 1: static server-rendered */
+          <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
+            <aside className="shrink-0 sm:w-56">
+              <ol className="flex flex-col" aria-label="Setup progress">
+                {STEPS.map((step, i) => (
+                  <div key={step.number}>
+                    <StepIndicator step={step} />
+                    {i < STEPS.length - 1 && (
+                      <StepConnector fromStatus={step.status} />
+                    )}
                   </div>
-                  <span className="text-sm text-zinc-400">
-                    Connected — the Queen is watching your repos
-                    <span className="text-zinc-600"> (Hivemoot GitHub App installed)</span>
-                  </span>
-                </div>
+                ))}
+              </ol>
+            </aside>
 
-                {/* Step 2 form */}
-                <Step2Form
-                  installationId={installationId}
-                  sessionTtlSeconds={SESSION_TTL_SECONDS}
-                />
-              </>
-            ) : (
-              /* Step 1 card */
+            <section className="flex flex-1 flex-col gap-6">
               <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
-                {/* Auth status banner (denied / forbidden) */}
                 {auth && <AuthStatusBanner auth={auth} reason={reason} />}
 
-                {/* GitHub logo centered */}
                 <div className="mb-5 flex justify-center">
                   <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.06]">
                     <svg
@@ -338,7 +310,6 @@ export default async function SetupPage({
                   </div>
                 </div>
 
-                {/* Heading & description centered */}
                 <div className="mb-6 text-center">
                   <h2 className="text-lg font-semibold text-[#fafafa]">
                     Connect your GitHub account
@@ -350,7 +321,6 @@ export default async function SetupPage({
                   </p>
                 </div>
 
-                {/* Actions */}
                 {installationId ? (
                   <Link
                     href={`/api/auth/github/start?installation_id=${encodeURIComponent(installationId)}`}
@@ -387,9 +357,9 @@ export default async function SetupPage({
                   you&apos;ll return here to finish setup.
                 </p>
               </div>
-            )}
-          </section>
-        </div>
+            </section>
+          </div>
+        )}
       </main>
 
       {/* --- Footer --- */}

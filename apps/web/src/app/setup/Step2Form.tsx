@@ -12,6 +12,7 @@ type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 interface Step2FormProps {
   installationId: string;
   sessionTtlSeconds: number;
+  onComplete?: () => void;
 }
 
 interface SuccessData {
@@ -458,6 +459,7 @@ function QueenIntro() {
 export default function Step2Form({
   installationId,
   sessionTtlSeconds,
+  onComplete,
 }: Step2FormProps) {
   // Compute expiry once at mount time. Subtract a 5-second buffer to account
   // for time consumed by the redirect + page load after the session was created.
@@ -668,50 +670,59 @@ export default function Step2Form({
   // -----------------------------------------------------------------------
   if (status === "success" && successData) {
     return (
-      <div className="flex flex-col gap-5">
-        <QueenIntro />
-        <div className="rounded-xl border border-green-500/20 bg-[#141414] p-6 sm:p-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-500/10">
-              <CheckIcon className="h-5 w-5 text-green-400" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-[#fafafa]">
-                API key configured
-              </h2>
-              <p className="mt-0.5 text-sm text-zinc-400">
-                The Queen is ready — powered by {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
-              </p>
-            </div>
+      <div className="rounded-xl border border-green-500/20 bg-[#141414] p-6 sm:p-8">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-500/10">
+            <CheckIcon className="h-5 w-5 text-green-400" />
           </div>
-
-          <div className="my-6 h-px bg-white/[0.06]" />
-
-          <dl className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Provider</dt>
-              <dd className="text-zinc-300">
-                {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Model</dt>
-              <dd className="font-mono text-zinc-300">{successData.model}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Key</dt>
-              <dd className="font-mono text-zinc-300">
-                ···· {successData.fingerprint}
-              </dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Saved</dt>
-              <dd className="text-zinc-300">
-                {new Date(successData.updatedAt).toLocaleString()}
-              </dd>
-            </div>
-          </dl>
+          <div>
+            <h2 className="text-lg font-semibold text-[#fafafa]">
+              API key configured
+            </h2>
+            <p className="mt-0.5 text-sm text-zinc-400">
+              The Queen is ready — powered by {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
+            </p>
+          </div>
         </div>
+
+        <div className="my-6 h-px bg-white/[0.06]" />
+
+        <dl className="space-y-3 text-sm">
+          <div className="flex justify-between">
+            <dt className="text-zinc-500">Provider</dt>
+            <dd className="text-zinc-300">
+              {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}
+            </dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-zinc-500">Model</dt>
+            <dd className="font-mono text-zinc-300">{successData.model}</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-zinc-500">Key</dt>
+            <dd className="font-mono text-zinc-300">
+              ····
+            </dd>
+          </div>
+          <div className="flex justify-between">
+            <dt className="text-zinc-500">Saved</dt>
+            <dd className="text-zinc-300">
+              {new Date(successData.updatedAt).toLocaleString()}
+            </dd>
+          </div>
+        </dl>
+
+        <button
+          type="button"
+          onClick={() => onComplete?.()}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
+        >
+          Continue
+          <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <line x1="3" y1="8" x2="13" y2="8" />
+            <polyline points="9 4 13 8 9 12" />
+          </svg>
+        </button>
       </div>
     );
   }
@@ -721,23 +732,32 @@ export default function Step2Form({
   // -----------------------------------------------------------------------
   if (status === "skipped") {
     return (
-      <div className="flex flex-col gap-5">
-        <QueenIntro />
-        <div className="rounded-xl border border-honey-500/20 bg-[#141414] p-6 sm:p-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-honey-500/10">
-              <CheckIcon className="h-5 w-5 text-honey-400" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-[#fafafa]">
-                Governance automation is running
-              </h2>
-              <p className="mt-0.5 text-sm text-zinc-400">
-                You can add an AI key anytime from your dashboard.
-              </p>
-            </div>
+      <div className="rounded-xl border border-honey-500/20 bg-[#141414] p-6 sm:p-8">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-honey-500/10">
+            <CheckIcon className="h-5 w-5 text-honey-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-[#fafafa]">
+              Governance automation is running
+            </h2>
+            <p className="mt-0.5 text-sm text-zinc-400">
+              You can add an AI key anytime from your dashboard.
+            </p>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => onComplete?.()}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400"
+        >
+          Continue
+          <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <line x1="3" y1="8" x2="13" y2="8" />
+            <polyline points="9 4 13 8 9 12" />
+          </svg>
+        </button>
       </div>
     );
   }
@@ -751,6 +771,28 @@ export default function Step2Form({
 
   return (
     <div className="flex flex-col gap-5">
+      {/* Compact Step 1 success */}
+      <div className="flex items-center gap-2.5 px-1 py-1">
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-500/15">
+          <svg
+            className="h-3 w-3 text-green-400"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
+          </svg>
+        </div>
+        <span className="text-sm text-zinc-400">
+          Connected — the Queen is watching your repos
+          <span className="text-zinc-600"> (Hivemoot GitHub App installed)</span>
+        </span>
+      </div>
+
       <QueenIntro />
 
       <form
