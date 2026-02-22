@@ -13,28 +13,12 @@
 
 import { randomBytes } from "crypto";
 import { type Redis } from "@upstash/redis";
+import { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE, REMEMBERED_USER_COOKIE } from "@/constants/cookies";
+
+export { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE, REMEMBERED_USER_COOKIE };
 
 const STATE_TTL_SECONDS = 600;
 export const SESSION_TTL_SECONDS = 1800;
-
-const STATE_KEY_PREFIX = "oauth-state:";
-const SESSION_KEY_PREFIX = "setup-session:";
-
-/**
- * Browser binding cookie for OAuth state.
- *
- * The callback must present both:
- * - URL `state`
- * - this cookie value
- * and they must match the server-side state record.
- */
-export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
-
-/** Cookie name for the short-lived setup session token. */
-export const SETUP_SESSION_COOKIE = "setup_session";
-
-/** Cookie name for long-lived user recognition on the landing page. */
-export const REMEMBERED_USER_COOKIE = "remembered_user";
 
 /** 90 days in seconds — how long we remember a returning user for the landing page greeting. */
 export const REMEMBERED_USER_TTL_SECONDS = 90 * 24 * 60 * 60;
@@ -44,6 +28,9 @@ export interface RememberedUser {
   login: string;
   userId: number;
 }
+
+const STATE_KEY_PREFIX = "oauth-state:";
+const SESSION_KEY_PREFIX = "setup-session:";
 
 /**
  * Sentinel value used as the installationId in OAuth state when the user
