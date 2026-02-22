@@ -290,25 +290,25 @@ export default async function SetupPage({
           <section className="flex flex-1 flex-col gap-6">
             {isAuthorized && installationId ? (
               <>
-                {/* Compact Step 1 success card */}
-                <div className="flex items-center gap-3 rounded-lg border border-green-500/20 bg-green-500/5 px-4 py-3">
-                  <svg
-                    className="h-4 w-4 shrink-0 text-green-400"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
-                  </svg>
-                  <span className="text-sm font-medium text-green-400">
-                    GitHub connected
-                  </span>
-                  <span className="text-xs text-zinc-500">
-                    Installation {installationId}
+                {/* Compact Step 1 success */}
+                <div className="flex items-center gap-2.5 px-1 py-1">
+                  <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-500/15">
+                    <svg
+                      className="h-3 w-3 text-green-400"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
+                    </svg>
+                  </div>
+                  <span className="text-sm text-zinc-400">
+                    Connected — the Queen is watching your repos
+                    <span className="text-zinc-600"> (Hivemoot GitHub App installed)</span>
                   </span>
                 </div>
 
