@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import LottieBee from "./LottieBee";
 
 export const metadata: Metadata = {
   title: "Hivemoot — Your Own AI Engineering Team",
@@ -10,86 +11,6 @@ export const metadata: Metadata = {
 // ---------------------------------------------------------------------------
 // Inline SVG components (no external dependencies)
 // ---------------------------------------------------------------------------
-
-/**
- * Mascot bee — thin-line, friendly, recognizable at small sizes.
- * Single stroke weight throughout, rounded caps, minimal fills.
- */
-function Bee({
-  size = 56,
-  className = "",
-}: {
-  size?: number;
-  className?: string;
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 64 64"
-      fill="none"
-      className={className}
-      aria-hidden="true"
-    >
-      <g
-        stroke="#f59e0b"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        {/* Wings — translucent petals behind the body */}
-        <ellipse
-          cx="20"
-          cy="30"
-          rx="10"
-          ry="5.5"
-          transform="rotate(-25 20 30)"
-          fill="#f59e0b"
-          opacity="0.12"
-        />
-        <ellipse
-          cx="44"
-          cy="30"
-          rx="10"
-          ry="5.5"
-          transform="rotate(25 44 30)"
-          fill="#f59e0b"
-          opacity="0.12"
-        />
-
-        {/* Antennae */}
-        <path d="M27 9 Q22 3 16 3" />
-        <path d="M37 9 Q42 3 48 3" />
-        <circle cx="16" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
-        <circle cx="48" cy="3" r="1.3" fill="#f59e0b" stroke="none" />
-
-        {/* Head */}
-        <circle cx="32" cy="17" r="9" />
-
-        {/* Eyes */}
-        <circle cx="28.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
-        <circle cx="35.5" cy="16" r="1.4" fill="#f59e0b" stroke="none" />
-
-        {/* Smile */}
-        <path d="M29 20.5 Q32 23.5 35 20.5" strokeWidth="1.1" />
-
-        {/* Thorax */}
-        <ellipse cx="32" cy="29.5" rx="5.5" ry="4" />
-
-        {/* Abdomen */}
-        <ellipse cx="32" cy="43" rx="8" ry="10.5" />
-
-        {/* Stripes */}
-        <line x1="25" y1="39" x2="39" y2="39" />
-        <line x1="24.5" y1="43.5" x2="39.5" y2="43.5" />
-        <line x1="25.5" y1="48" x2="38.5" y2="48" />
-
-        {/* Stinger */}
-        <line x1="32" y1="53.5" x2="32" y2="58" />
-      </g>
-    </svg>
-  );
-}
 
 function Hexagon({
   size = 60,
@@ -399,8 +320,8 @@ export default function LandingPage() {
         </p>
 
         <h1 className="relative mb-6 text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
-          {/* Mascot bee — floats to the upper-right of the headline */}
-          <Bee size={52} className="absolute -right-6 -top-8 rotate-[15deg] opacity-70 sm:-right-14 sm:-top-10" />
+          {/* Mascot bee — lounging Lottie animation floating upper-right */}
+          <LottieBee className="absolute -right-6 -top-10 h-20 w-20 sm:-right-16 sm:-top-14 sm:h-28 sm:w-28" />
           Your own{" "}
           <span className="bg-gradient-to-r from-honey-400 to-honey-600 bg-clip-text text-transparent">
             AI engineering team
@@ -533,6 +454,9 @@ export default function LandingPage() {
             </div>
           ))}
         </div>
+
+        {/* Decorative bee — mirrored, bottom-left of steps */}
+        <LottieBee className="absolute -bottom-6 -left-10 h-20 w-20 -scale-x-100 opacity-60 sm:-left-16 sm:h-24 sm:w-24" />
       </section>
 
       {/* ----------------------------------------------------------------- */}
