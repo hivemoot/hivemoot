@@ -121,3 +121,38 @@ jobs:
           trivyignores: .trivyignore.empty
       - name: Check for stale Trivy suppressions
         run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
+
+  docker-provider-stages:
+    name: Provider Stage Build (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: codex
+            cli: codex
+          - provider: gemini
+            cli: gemini
+          - provider: kilo
+            cli: kilo
+          - provider: opencode
+            cli: opencode
+          - provider: claude
+            cli: claude
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build provider-${{ matrix.provider }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hivemoot-agent:ci-${{ matrix.provider }}
+          build-args: PROVIDER=${{ matrix.provider }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify ${{ matrix.cli }} CLI is present
+        run: |
+          docker run --rm --entrypoint /bin/sh \
+            hivemoot-agent:ci-${{ matrix.provider }} \
+            -c 'command -v ${{ matrix.cli }}'
