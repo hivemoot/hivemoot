@@ -17,7 +17,7 @@ interface Step {
 
 interface SetupWizardProps {
   installationId: string;
-  sessionTtlSeconds: number;
+  initialExpiresAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ docker compose run --rm hivemoot-agent`}</code>
 
 export default function SetupWizard({
   installationId,
-  sessionTtlSeconds,
+  initialExpiresAt,
 }: SetupWizardProps) {
   const [activeStep, setActiveStep] = useState<2 | 3>(2);
   const steps = buildSteps(activeStep);
@@ -329,7 +329,7 @@ export default function SetupWizard({
         {activeStep === 2 ? (
           <Step2Form
             installationId={installationId}
-            sessionTtlSeconds={sessionTtlSeconds}
+            initialExpiresAt={initialExpiresAt}
             onComplete={() => setActiveStep(3)}
           />
         ) : (

@@ -84,6 +84,10 @@ export interface SetupSessionPayload {
   userLogin: string;
 }
 
+export interface SetupSessionResult extends SetupSessionPayload {
+  expiresAt: number;
+}
+
 export async function createSetupSession(
   payload: SetupSessionPayload,
   redis: Redis,
@@ -100,7 +104,7 @@ export async function createSetupSession(
 export async function getSetupSession(
   token: string,
   redis: Redis,
-): Promise<SetupSessionPayload | null> {
+): Promise<SetupSessionResult | null> {
   const data = await redis.get<SetupSessionPayload & { exp: number }>(`${SESSION_KEY_PREFIX}${token}`);
   if (!data) return null;
 
@@ -109,5 +113,5 @@ export async function getSetupSession(
     return null;
   }
 
-  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
+  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin, expiresAt: data.exp };
 }

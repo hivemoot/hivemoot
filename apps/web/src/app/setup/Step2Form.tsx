@@ -11,7 +11,7 @@ type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 
 interface Step2FormProps {
   installationId: string;
-  sessionTtlSeconds: number;
+  initialExpiresAt: number;
   onComplete?: () => void;
 }
 
@@ -458,14 +458,12 @@ function QueenIntro() {
 
 export default function Step2Form({
   installationId,
-  sessionTtlSeconds,
+  initialExpiresAt,
   onComplete,
 }: Step2FormProps) {
-  // Compute expiry once at mount time. Subtract a 5-second buffer to account
-  // for time consumed by the redirect + page load after the session was created.
-  const [sessionExpiresAt] = useState(
-    () => Date.now() + (sessionTtlSeconds - 5) * 1000,
-  );
+  // Use the server-provided expiry timestamp directly — no client-side
+  // estimation needed since the server derives it from the actual Redis TTL.
+  const [sessionExpiresAt] = useState(() => initialExpiresAt);
   // Form state
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
