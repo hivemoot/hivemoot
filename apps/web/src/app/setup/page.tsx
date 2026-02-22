@@ -231,6 +231,7 @@ export default async function SetupPage({
 
   // Resolve actual session expiry from Redis so the client countdown is accurate.
   // Falls back to a freshly-computed window if Redis is unavailable.
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is safe in a Next.js async server component
   let initialExpiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
   if (isAuthorized && sessionToken) {
     const env = validateEnv();
