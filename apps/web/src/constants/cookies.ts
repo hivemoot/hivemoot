@@ -11,3 +11,10 @@ export const SETUP_SESSION_COOKIE = "setup_session";
 
 /** Browser binding cookie for OAuth state CSRF protection. */
 export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
+
+/**
+ * Long-lived cookie that remembers the last successfully authenticated
+ * GitHub username. Contains only the public login string — no credentials.
+ * Used by the landing page to show a "Continue as @username" shortcut.
+ */
+export const REMEMBERED_USER_COOKIE = "hm_remembered_user";

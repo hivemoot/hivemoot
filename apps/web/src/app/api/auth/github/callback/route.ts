@@ -36,6 +36,7 @@ import {
   SETUP_SESSION_COOKIE,
   SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
+import { REMEMBERED_USER_COOKIE } from "@/constants/cookies";
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -224,6 +225,17 @@ export async function GET(request: NextRequest) {
     maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
+
+  // Remember the authenticated user for 30 days so the landing page can show
+  // a "Continue as @username" shortcut on return visits.
+  response.cookies.set(REMEMBERED_USER_COOKIE, user.login, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+  });
+
   clearOAuthStateBindingCookie(response);
 
   return response;
