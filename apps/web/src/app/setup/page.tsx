@@ -168,7 +168,7 @@ function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
           <line x1="8" y1="5" x2="8" y2="8.5" />
           <circle cx="8" cy="11" r="0.5" fill="currentColor" />
         </svg>
-        <p className="text-sm text-honey-400">Your authorization link expired. Click below to try again.</p>
+        <p className="text-sm text-honey-400">Authorization could not be completed. Click below to try again.</p>
       </div>
     );
   }
