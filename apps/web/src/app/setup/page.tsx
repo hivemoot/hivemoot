@@ -72,7 +72,7 @@ interface Step {
 function buildSteps(isAuthorized: boolean): Step[] {
   return [
     { number: 1, label: "Connect GitHub", status: isAuthorized ? "complete" : "active" },
-    { number: 2, label: "Power the Queen", status: isAuthorized ? "active" : "upcoming" },
+    { number: 2, label: "Meet the Queen", status: isAuthorized ? "active" : "upcoming" },
     { number: 3, label: "Launch your team", status: "upcoming" },
   ];
 }

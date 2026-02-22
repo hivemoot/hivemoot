@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // ---------------------------------------------------------------------------
 
 type Provider = "anthropic" | "openai";
-type FormStatus = "idle" | "submitting" | "success" | "error";
+type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 
 interface Step2FormProps {
   installationId: string;
@@ -146,6 +146,244 @@ function SpinnerIcon() {
         strokeLinecap="round"
       />
     </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Educational section icons
+// ---------------------------------------------------------------------------
+
+function CrownIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12h12l-1.5-7-3 3-1.5-4-1.5 4-3-3L2 12Z" />
+      <line x1="2" y1="14" x2="14" y2="14" />
+    </svg>
+  );
+}
+
+function GearIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="2.5" />
+      <path d="M6.8 2.4l-.5 1.2a4.5 4.5 0 0 0-1.2.7L3.9 4 2.8 5.8l.8 1a4.5 4.5 0 0 0 0 1.4l-.8 1L3.9 11l1.2-.3a4.5 4.5 0 0 0 1.2.7l.5 1.2h2.4l.5-1.2a4.5 4.5 0 0 0 1.2-.7l1.2.3 1.1-1.8-.8-1a4.5 4.5 0 0 0 0-1.4l.8-1L12.1 4l-1.2.3a4.5 4.5 0 0 0-1.2-.7L9.2 2.4H6.8Z" />
+    </svg>
+  );
+}
+
+function SparkleIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5L8 1Z" />
+    </svg>
+  );
+}
+
+function SlidersIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="2" y1="4" x2="14" y2="4" />
+      <circle cx="5" cy="4" r="1.5" fill="currentColor" />
+      <line x1="2" y1="8" x2="14" y2="8" />
+      <circle cx="10" cy="8" r="1.5" fill="currentColor" />
+      <line x1="2" y1="12" x2="14" y2="12" />
+      <circle cx="7" cy="12" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Queen status banner — mirrors the green "GitHub connected" pattern
+// ---------------------------------------------------------------------------
+
+function QueenActiveBanner() {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
+      <CrownIcon className="h-4 w-4 shrink-0 text-honey-500" />
+      <span className="text-sm font-medium text-honey-400">
+        The Queen is active on your repos
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Capability cards — educate before asking for a key
+// ---------------------------------------------------------------------------
+
+interface CardItem {
+  icon: React.ReactNode;
+  text: string;
+}
+
+function CapabilityCard({
+  title,
+  badge,
+  badgeClass,
+  items,
+  footer,
+  iconSlot,
+}: {
+  title: string;
+  badge: string;
+  badgeClass: string;
+  items: CardItem[];
+  footer?: React.ReactNode;
+  iconSlot: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {iconSlot}
+          <span className="text-sm font-medium text-[#fafafa]">{title}</span>
+        </div>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}
+        >
+          {badge}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {items.map((item, i) => (
+          <li key={i} className="flex items-start gap-2 text-sm text-zinc-400">
+            <span className="mt-0.5 shrink-0">{item.icon}</span>
+            {item.text}
+          </li>
+        ))}
+      </ul>
+      {footer && <div className="mt-3">{footer}</div>}
+    </div>
+  );
+}
+
+function CapabilityCards() {
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Governance Automation — free, included */}
+      <CapabilityCard
+        title="Governance Automation"
+        badge="Included"
+        badgeClass="bg-green-500/10 text-green-400"
+        iconSlot={<GearIcon className="h-4 w-4 text-green-400" />}
+        items={[
+          {
+            icon: <CheckIcon className="h-3.5 w-3.5 text-green-400" />,
+            text: "Proposal lifecycle (Discussion \u2192 Vote)",
+          },
+          {
+            icon: <CheckIcon className="h-3.5 w-3.5 text-green-400" />,
+            text: "Reaction-based voting with quorum rules",
+          },
+          {
+            icon: <CheckIcon className="h-3.5 w-3.5 text-green-400" />,
+            text: "Competing PRs with leaderboard",
+          },
+          {
+            icon: <CheckIcon className="h-3.5 w-3.5 text-green-400" />,
+            text: "Stale PR cleanup & merge-readiness gates",
+          },
+        ]}
+      />
+
+      {/* AI Intelligence Layer — optional, needs key */}
+      <CapabilityCard
+        title="AI Intelligence Layer"
+        badge="Optional"
+        badgeClass="bg-zinc-500/10 text-zinc-500"
+        iconSlot={<SparkleIcon className="h-4 w-4 text-honey-500" />}
+        items={[
+          {
+            icon: <SparkleIcon className="h-3.5 w-3.5 text-honey-500" />,
+            text: "Discussion summaries before voting",
+          },
+          {
+            icon: <SparkleIcon className="h-3.5 w-3.5 text-honey-500" />,
+            text: "Daily colony standup reports",
+          },
+          {
+            icon: <SparkleIcon className="h-3.5 w-3.5 text-honey-500" />,
+            text: "Commit message generation (/preflight)",
+          },
+          {
+            icon: <SparkleIcon className="h-3.5 w-3.5 text-honey-500" />,
+            text: "Implementation blueprints (/gather)",
+          },
+        ]}
+        footer={
+          <p className="text-xs text-zinc-500">
+            Typical usage: 200–2,000 tokens per call. On-demand only — no
+            background consumption.
+          </p>
+        }
+      />
+
+      {/* Fully Configurable — informational */}
+      <CapabilityCard
+        title="Fully Configurable"
+        badge=""
+        badgeClass="hidden"
+        iconSlot={<SlidersIcon className="h-4 w-4 text-zinc-400" />}
+        items={[
+          {
+            icon: <GearIcon className="h-3.5 w-3.5 text-zinc-500" />,
+            text: "Phase durations and exit rules",
+          },
+          {
+            icon: <GearIcon className="h-3.5 w-3.5 text-zinc-500" />,
+            text: "Voting quorum and required voters",
+          },
+          {
+            icon: <GearIcon className="h-3.5 w-3.5 text-zinc-500" />,
+            text: "PR stale thresholds and competition rules",
+          },
+          {
+            icon: <GearIcon className="h-3.5 w-3.5 text-zinc-500" />,
+            text: "Trusted reviewers and merge gates",
+          },
+        ]}
+        footer={
+          <p className="text-xs text-zinc-500">
+            Controlled via{" "}
+            <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">
+              .github/hivemoot.yml
+            </code>
+          </p>
+        }
+      />
+    </div>
   );
 }
 
@@ -366,47 +604,78 @@ export default function Step2Form({
   // -----------------------------------------------------------------------
   if (status === "success" && successData) {
     return (
-      <div className="rounded-xl border border-green-500/20 bg-[#141414] p-6 sm:p-8">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-500/10">
-            <CheckIcon className="h-5 w-5 text-green-400" />
+      <div className="flex flex-col gap-5">
+        <QueenActiveBanner />
+        <CapabilityCards />
+        <div className="rounded-xl border border-green-500/20 bg-[#141414] p-6 sm:p-8">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-green-500/10">
+              <CheckIcon className="h-5 w-5 text-green-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-[#fafafa]">
+                API key configured
+              </h2>
+              <p className="mt-0.5 text-sm text-zinc-400">
+                The Queen is ready — powered by {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-lg font-semibold text-[#fafafa]">
-              API key configured
-            </h2>
-            <p className="mt-0.5 text-sm text-zinc-400">
-              The Queen is ready — powered by {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}.
-            </p>
+
+          <div className="my-6 h-px bg-white/[0.06]" />
+
+          <dl className="space-y-3 text-sm">
+            <div className="flex justify-between">
+              <dt className="text-zinc-500">Provider</dt>
+              <dd className="text-zinc-300">
+                {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-zinc-500">Model</dt>
+              <dd className="font-mono text-zinc-300">{successData.model}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-zinc-500">Key</dt>
+              <dd className="font-mono text-zinc-300">
+                ···· {successData.fingerprint}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-zinc-500">Saved</dt>
+              <dd className="text-zinc-300">
+                {new Date(successData.updatedAt).toLocaleString()}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Skipped view
+  // -----------------------------------------------------------------------
+  if (status === "skipped") {
+    return (
+      <div className="flex flex-col gap-5">
+        <QueenActiveBanner />
+        <CapabilityCards />
+        <div className="rounded-xl border border-honey-500/20 bg-[#141414] p-6 sm:p-8">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-honey-500/10">
+              <CheckIcon className="h-5 w-5 text-honey-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-[#fafafa]">
+                Governance automation is running
+              </h2>
+              <p className="mt-0.5 text-sm text-zinc-400">
+                You can add an AI key anytime from your dashboard.
+              </p>
+            </div>
           </div>
         </div>
-
-        <div className="my-6 h-px bg-white/[0.06]" />
-
-        <dl className="space-y-3 text-sm">
-          <div className="flex justify-between">
-            <dt className="text-zinc-500">Provider</dt>
-            <dd className="text-zinc-300">
-              {PROVIDER_LABELS[successData.provider as Provider] ?? successData.provider}
-            </dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-zinc-500">Model</dt>
-            <dd className="font-mono text-zinc-300">{successData.model}</dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-zinc-500">Key</dt>
-            <dd className="font-mono text-zinc-300">
-              ···· {successData.fingerprint}
-            </dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-zinc-500">Saved</dt>
-            <dd className="text-zinc-300">
-              {new Date(successData.updatedAt).toLocaleString()}
-            </dd>
-          </div>
-        </dl>
       </div>
     );
   }
@@ -419,162 +688,183 @@ export default function Step2Form({
     errorCode === "byok_session_invalid";
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8"
-    >
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
-          <svg
-            className="h-5 w-5 text-honey-500"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            {/* Key icon */}
-            <circle cx="7" cy="10" r="3" />
-            <line x1="10" y1="10" x2="17" y2="10" />
-            <line x1="14" y1="10" x2="14" y2="7" />
-            <line x1="17" y1="10" x2="17" y2="7" />
-          </svg>
+    <div className="flex flex-col gap-5">
+      <QueenActiveBanner />
+      <CapabilityCards />
+
+      <form
+        onSubmit={handleSubmit}
+        className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8"
+      >
+        {/* Header */}
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
+            <svg
+              className="h-5 w-5 text-honey-500"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {/* Key icon */}
+              <circle cx="7" cy="10" r="3" />
+              <line x1="10" y1="10" x2="17" y2="10" />
+              <line x1="14" y1="10" x2="14" y2="7" />
+              <line x1="17" y1="10" x2="17" y2="7" />
+            </svg>
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-[#fafafa]">
+                Unlock AI features
+              </h2>
+              <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-xs font-medium text-zinc-500">
+                Optional
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-zinc-400">
+              Add an API key to enable discussion summaries, daily standups, and
+              commit generation. Low usage — typically 200–2,000 tokens per
+              call, on-demand only.
+            </p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-lg font-semibold text-[#fafafa]">
-            Power the Queen
-          </h2>
-          <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-            The Queen is your AI project manager — she reads your repos,
-            coordinates your agent team, and keeps everything on track.
-            This key powers her brain. Your agents run separately, on your
-            machine, with their own keys.
+
+        <div className="my-6 h-px bg-white/[0.06]" />
+
+        {/* Session warning / expiry */}
+        {sessionBanner}
+
+        {/* Error banner */}
+        {status === "error" && errorMessage && !isSessionError && (
+          <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+            <svg
+              className="h-4 w-4 shrink-0 text-red-400"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="4" y1="4" x2="12" y2="12" />
+              <line x1="12" y1="4" x2="4" y2="12" />
+            </svg>
+            <p className="text-sm text-red-400">{errorMessage}</p>
+          </div>
+        )}
+
+        {/* Provider selector — segmented button group */}
+        <fieldset>
+          <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
+          <div className="flex gap-2">
+            {(["anthropic", "openai"] as const).map((p) => {
+              const isActive = provider === p;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => switchProvider(p)}
+                  className={`
+                    flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-2.5
+                    text-sm font-medium transition-colors
+                    ${
+                      isActive
+                        ? "border-honey-500/40 bg-honey-500/10 text-honey-400"
+                        : "border-white/[0.06] bg-white/[0.03] text-zinc-400 hover:border-white/10 hover:text-zinc-300"
+                    }
+                  `}
+                >
+                  {p === "anthropic" ? (
+                    <AnthropicIcon className="h-4 w-4" />
+                  ) : (
+                    <OpenAIIcon className="h-4 w-4" />
+                  )}
+                  {PROVIDER_LABELS[p]}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+
+        {/* Model field */}
+        <div className="mt-5">
+          <label htmlFor="model" className="mb-2 block text-sm text-zinc-400">
+            Model
+          </label>
+          <input
+            id="model"
+            type="text"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            The model the Queen uses for AI features.
           </p>
         </div>
-      </div>
 
-      <div className="my-6 h-px bg-white/[0.06]" />
-
-      {/* Session warning / expiry */}
-      {sessionBanner}
-
-      {/* Error banner */}
-      {status === "error" && errorMessage && !isSessionError && (
-        <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
-          <svg
-            className="h-4 w-4 shrink-0 text-red-400"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        {/* API key field */}
+        <div className="mt-5">
+          <label
+            htmlFor="api-key"
+            className="mb-2 block text-sm text-zinc-400"
           >
-            <line x1="4" y1="4" x2="12" y2="12" />
-            <line x1="12" y1="4" x2="4" y2="12" />
-          </svg>
-          <p className="text-sm text-red-400">{errorMessage}</p>
+            API key
+          </label>
+          <div className="relative">
+            <input
+              id="api-key"
+              type={showKey ? "text" : "password"}
+              autoComplete="off"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={KEY_PLACEHOLDERS[provider]}
+              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
+              aria-label={showKey ? "Hide API key" : "Show API key"}
+            >
+              {showKey ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Your key is validated, encrypted, and never stored in plain text.
+          </p>
         </div>
-      )}
 
-      {/* Provider selector — segmented button group */}
-      <fieldset>
-        <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
-        <div className="flex gap-2">
-          {(["anthropic", "openai"] as const).map((p) => {
-            const isActive = provider === p;
-            return (
-              <button
-                key={p}
-                type="button"
-                onClick={() => switchProvider(p)}
-                className={`
-                  flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-2.5
-                  text-sm font-medium transition-colors
-                  ${
-                    isActive
-                      ? "border-honey-500/40 bg-honey-500/10 text-honey-400"
-                      : "border-white/[0.06] bg-white/[0.03] text-zinc-400 hover:border-white/10 hover:text-zinc-300"
-                  }
-                `}
-              >
-                {p === "anthropic" ? (
-                  <AnthropicIcon className="h-4 w-4" />
-                ) : (
-                  <OpenAIIcon className="h-4 w-4" />
-                )}
-                {PROVIDER_LABELS[p]}
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
+        {/* Submit */}
+        <button
+          type="submit"
+          disabled={status === "submitting" || sessionExpired}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {status === "submitting" ? (
+            <>
+              <SpinnerIcon />
+              Validating your API key…
+            </>
+          ) : (
+            "Save configuration"
+          )}
+        </button>
 
-      {/* Model field */}
-      <div className="mt-5">
-        <label htmlFor="model" className="mb-2 block text-sm text-zinc-400">
-          Model
-        </label>
-        <input
-          id="model"
-          type="text"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
-        />
-        <p className="mt-1.5 text-xs text-zinc-500">
-          The model the Queen uses to manage your team.
-        </p>
-      </div>
-
-      {/* API key field */}
-      <div className="mt-5">
-        <label htmlFor="api-key" className="mb-2 block text-sm text-zinc-400">
-          API key
-        </label>
-        <div className="relative">
-          <input
-            id="api-key"
-            type={showKey ? "text" : "password"}
-            autoComplete="off"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={KEY_PLACEHOLDERS[provider]}
-            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
-          />
-          <button
-            type="button"
-            onClick={() => setShowKey((v) => !v)}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
-            aria-label={showKey ? "Hide API key" : "Show API key"}
-          >
-            {showKey ? <EyeOffIcon /> : <EyeIcon />}
-          </button>
-        </div>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          Your key is validated, encrypted, and never stored in plain text.
-        </p>
-      </div>
-
-      {/* Submit */}
-      <button
-        type="submit"
-        disabled={status === "submitting" || sessionExpired}
-        className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {status === "submitting" ? (
-          <>
-            <SpinnerIcon />
-            Validating your API key…
-          </>
-        ) : (
-          "Save configuration"
-        )}
-      </button>
-    </form>
+        {/* Skip */}
+        <button
+          type="button"
+          onClick={() => setStatus("skipped")}
+          className="mt-3 flex w-full items-center justify-center rounded-lg px-5 py-2.5 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+        >
+          Skip for now — you can add this later
+        </button>
+      </form>
+    </div>
   );
 }
