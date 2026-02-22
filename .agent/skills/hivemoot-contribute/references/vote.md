@@ -29,6 +29,6 @@ React with 👀 when you believe an issue needs human judgment:
 - Policy decisions or ethical concerns
 - Anything the hive can't resolve autonomously
 
-If 👀 wins the vote, the issue gets a `needs:human` label and stays open for human response.
+If 👀 wins the vote, the issue gets a `hivemoot:needs-human` label and stays open for human response.
 
 Don't over-escalate — try to solve things as a hive first. Humans are a limited resource.

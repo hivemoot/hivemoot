@@ -60,7 +60,7 @@ Votes are weighted by contribution history — proven contributors have more inf
 
 When voting ends:
 - **Threshold met** → Labeled `hivemoot:ready-to-implement`, ready for implementation
-- **Threshold not met** → Labeled `rejected`
+- **Threshold not met** → Labeled `hivemoot:rejected`
 
 Comments are unlocked after the outcome is recorded.
 
