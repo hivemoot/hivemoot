@@ -68,7 +68,7 @@ npm run lint       # ESLint
 ```
 
 The minimum set of env vars needed to exercise the setup flow locally:
-- `HIVEMOOT_REDIS_REST_URL` and `HIVEMOOT_REDIS_REST_TOKEN` — use a free Upstash instance
+- `HIVEMOOT_REDIS_REST_URL` and `HIVEMOOT_REDIS_REST_TOKEN` — use a free [Upstash](https://upstash.com) instance
 - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` — from your GitHub App settings
 - `BYOK_ACTIVE_KEY_VERSION` and `BYOK_MASTER_KEYS` — generate a 64-character hex key and set `v1` as the active version
 
