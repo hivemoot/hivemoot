@@ -68,7 +68,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAuthSuccess();
   vi.mocked(getByokEnvelope).mockResolvedValue({ ...OLD_ENVELOPE });
-  vi.mocked(decrypt).mockReturnValue("sk-ant-plaintext-key");
+  // Decrypt now returns JSON payload (matching production format)
+  vi.mocked(decrypt).mockReturnValue(
+    JSON.stringify({ apiKey: "sk-ant-plaintext-key", provider: "anthropic", model: "claude-sonnet-4-20250514" }),
+  );
   vi.mocked(encrypt).mockReturnValue({
     ciphertext: "new-encrypted",
     iv: "new-iv",
@@ -81,6 +84,12 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+const MOCK_DECRYPTED_PAYLOAD = JSON.stringify({
+  apiKey: "sk-ant-plaintext-key",
+  provider: "anthropic",
+  model: "claude-sonnet-4-20250514",
+});
 
 describe("POST /api/byok/re-encrypt", () => {
   it("re-encrypts an envelope with the active key version", async () => {
@@ -99,8 +108,22 @@ describe("POST /api/byok/re-encrypt", () => {
       expect.any(Map),
     );
 
-    // Verify encrypt was called with new key version
-    expect(encrypt).toHaveBeenCalledWith("sk-ant-plaintext-key", "v2", expect.any(Map));
+    // Verify encrypt was called with the decrypted JSON payload (passthrough)
+    expect(encrypt).toHaveBeenCalledWith(MOCK_DECRYPTED_PAYLOAD, "v2", expect.any(Map));
+  });
+
+  it("passes the decrypted payload through unchanged to encrypt", async () => {
+    const req = makeRequest();
+    await POST(req);
+
+    // Re-encrypt treats the plaintext as opaque — it must not parse or modify it
+    const encryptedPlaintext = vi.mocked(encrypt).mock.calls[0][0];
+    expect(encryptedPlaintext).toBe(MOCK_DECRYPTED_PAYLOAD);
+    expect(JSON.parse(encryptedPlaintext)).toEqual({
+      apiKey: "sk-ant-plaintext-key",
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+    });
   });
 
   it("skips envelopes already on current key version", async () => {

@@ -157,6 +157,43 @@ describe("POST /api/byok/config", () => {
     expect(bodyStr).not.toContain("sk-ant-secret-key-value");
   });
 
+  it("encrypts a JSON payload containing apiKey, provider, and model", async () => {
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    await POST(req);
+
+    expect(encrypt).toHaveBeenCalledWith(
+      JSON.stringify({
+        apiKey: "sk-ant-test1234",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+      }),
+      "v1",
+      MOCK_KEYRING,
+    );
+  });
+
+  it("does not encrypt the bare API key string", async () => {
+    const req = makeRequest({
+      provider: "openai",
+      model: "gpt-4o",
+      apiKey: "sk-openai-test",
+    });
+    await POST(req);
+
+    // The first argument to encrypt must be parseable JSON with apiKey inside
+    const encryptCall = vi.mocked(encrypt).mock.calls[0];
+    const plaintext = encryptCall[0];
+    expect(() => JSON.parse(plaintext)).not.toThrow();
+    const parsed = JSON.parse(plaintext);
+    expect(parsed).toHaveProperty("apiKey", "sk-openai-test");
+    expect(parsed).toHaveProperty("provider", "openai");
+    expect(parsed).toHaveProperty("model", "gpt-4o");
+  });
+
   it("uses installationId from session, not request body", async () => {
     const req = makeRequest({
       provider: "anthropic",
