@@ -33,6 +33,18 @@ export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
 /** Cookie name for the short-lived setup session token. */
 export const SETUP_SESSION_COOKIE = "setup_session";
 
+/** Cookie name for long-lived user recognition on the landing page. */
+export const REMEMBERED_USER_COOKIE = "remembered_user";
+
+/** 90 days in seconds — how long we remember a returning user for the landing page greeting. */
+export const REMEMBERED_USER_TTL_SECONDS = 90 * 24 * 60 * 60;
+
+/** Non-sensitive payload stored in the remembered-user cookie (both fields are public on GitHub). */
+export interface RememberedUser {
+  login: string;
+  userId: number;
+}
+
 /**
  * Sentinel value used as the installationId in OAuth state when the user
  * starts the "already installed" discovery flow. The callback detects this

@@ -35,7 +35,10 @@ import {
   OAUTH_STATE_BINDING_COOKIE,
   SETUP_SESSION_COOKIE,
   SESSION_TTL_SECONDS,
+  REMEMBERED_USER_COOKIE,
+  REMEMBERED_USER_TTL_SECONDS,
 } from "@/server/setup-session";
+import type { RememberedUser } from "@/server/setup-session";
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -224,6 +227,18 @@ export async function GET(request: NextRequest) {
     maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
+
+  // Remember the user for the landing page greeting across visits.
+  // Only stores public GitHub profile data (username + numeric ID).
+  const rememberedUser: RememberedUser = { login: user.login, userId: user.id };
+  response.cookies.set(REMEMBERED_USER_COOKIE, JSON.stringify(rememberedUser), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: REMEMBERED_USER_TTL_SECONDS,
+    path: "/",
+  });
+
   clearOAuthStateBindingCookie(response);
 
   return response;
