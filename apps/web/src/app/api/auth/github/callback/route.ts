@@ -227,9 +227,10 @@ export async function GET(request: NextRequest) {
   });
 
   // Remember the authenticated user for 30 days so the landing page can show
-  // a "Continue as @username" shortcut on return visits.
+  // a "Continue as @username" shortcut on return visits. Not httpOnly because
+  // the landing page reads it client-side to stay statically rendered. The
+  // value is a public GitHub login — no credentials.
   response.cookies.set(REMEMBERED_USER_COOKIE, user.login, {
-    httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     maxAge: 30 * 24 * 60 * 60,

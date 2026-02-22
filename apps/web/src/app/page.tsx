@@ -1,12 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { cookies } from "next/headers";
 import LottieBee from "./LottieBee";
-import { REMEMBERED_USER_COOKIE, SETUP_SESSION_COOKIE } from "@/constants/cookies";
-
-// GitHub login: alphanumeric + hyphens, 1–39 chars. Validated before use to
-// prevent any cookie-injection attack from reaching the avatar URL or DOM.
-const GITHUB_LOGIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,37}[a-zA-Z0-9]$|^[a-zA-Z0-9]$/;
+import RememberedUserCard from "./RememberedUserCard";
 
 export const metadata: Metadata = {
   title: "Hivemoot — Your Own AI Engineering Team",
@@ -252,12 +247,7 @@ const steps = [
 
 const GET_STARTED_URL = "/setup";
 
-export default async function LandingPage() {
-  const cookieStore = await cookies();
-  const rawLogin = cookieStore.get(REMEMBERED_USER_COOKIE)?.value ?? null;
-  // Validate before any use — the cookie is user-controlled data.
-  const rememberedUser = rawLogin && GITHUB_LOGIN_RE.test(rawLogin) ? rawLogin : null;
-  const hasActiveSession = !!cookieStore.get(SETUP_SESSION_COOKIE)?.value;
+export default function LandingPage() {
   return (
     <div className="relative min-h-screen overflow-hidden text-[#fafafa]">
       {/* ----------------------------------------------------------------- */}
@@ -346,38 +336,7 @@ export default async function LandingPage() {
           professionally, around the clock.
         </p>
 
-        {rememberedUser && (
-          <div className="mb-6 flex justify-center">
-            <Link
-              href={hasActiveSession ? "/dashboard" : "/setup"}
-              className="flex items-center gap-3 rounded-xl border border-zinc-700/60 bg-zinc-900/70 px-5 py-3 text-sm font-medium text-zinc-200 transition-all hover:border-honey-500/40 hover:bg-zinc-900"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={`https://github.com/${rememberedUser}.png?size=64`}
-                alt=""
-                aria-hidden="true"
-                className="h-7 w-7 rounded-full border border-zinc-700"
-              />
-              Continue as{" "}
-              <span className="text-honey-400">@{rememberedUser}</span>
-              <svg
-                className="h-4 w-4 text-zinc-500"
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-              >
-                <path
-                  d="M6 3l5 5-5 5"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </Link>
-          </div>
-        )}
+        <RememberedUserCard />
 
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link

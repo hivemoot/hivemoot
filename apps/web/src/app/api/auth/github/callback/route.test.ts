@@ -119,6 +119,27 @@ describe("GET /api/auth/github/callback — happy paths", () => {
     expect(setCookie).toContain("HttpOnly");
   });
 
+  it("sets a non-httpOnly remembered-user cookie with the GitHub login", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    const setCookie = res.headers.get("set-cookie")!;
+    expect(setCookie).toContain("hm_remembered_user=alice");
+    // Must NOT be HttpOnly — the landing page reads it client-side
+    const rememberedCookie = setCookie
+      .split(", ")
+      .find((c) => c.includes("hm_remembered_user"));
+    expect(rememberedCookie).toBeDefined();
+    expect(rememberedCookie).not.toContain("HttpOnly");
+  });
+
   it("issues session and redirects for an org installation (admin user)", async () => {
     vi.mocked(getInstallation).mockResolvedValue({
       account: { login: "my-org", type: "Organization" },
