@@ -8,7 +8,7 @@ function resolveRoleConfig(teamConfig: TeamConfig, roleName: string): RoleConfig
   if (!Object.hasOwn(teamConfig.roles, roleName)) {
     const available = Object.keys(teamConfig.roles).join(", ");
     throw new CliError(
-      `ROLE_NOT_FOUND: Role '${roleName}' not found. Available: ${available}. Run: hivemoot roles`,
+      `Role '${roleName}' not found. Available: ${available}. Run: hivemoot roles`,
       "ROLE_NOT_FOUND",
       1,
     );

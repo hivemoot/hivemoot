@@ -6,6 +6,8 @@
  * Security sequence:
  * 1. Validate `state` against Redis — reject if unknown/expired (CSRF protection)
  * 2. Exchange `code` for a user access token
+ * 2b. If state held the "discover" sentinel (user started from the "already installed"
+ *     flow), resolve the real installationId via GET /user/installations
  * 3. Fetch authenticated user identity
  * 4. Fetch installation metadata (via App JWT)
  * 5. Authorization check:
@@ -23,19 +25,17 @@ import {
   generateAppJwt,
   getAuthenticatedUser,
   getInstallation,
+  getUserInstallations,
   checkOrgAdmin,
 } from "@/server/github-auth";
 import {
   validateOAuthState,
   createSetupSession,
+  DISCOVER_SENTINEL,
   OAUTH_STATE_BINDING_COOKIE,
+  SETUP_SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
-
-/** Cookie name for the short-lived setup session token */
-export const SETUP_SESSION_COOKIE = "setup_session";
-
-/** How long the session cookie lives in the browser (matches Redis TTL) */
-const SESSION_COOKIE_MAX_AGE = 600; // 10 minutes
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -60,14 +60,15 @@ export async function GET(request: NextRequest) {
     githubClientSecret,
     githubAppId,
     githubAppPrivateKey,
-    redisUrl,
+    redisRestUrl,
+    redisRestToken,
     siteUrl,
   } = env.config;
 
   if (!githubClientId || !githubClientSecret || !githubAppId || !githubAppPrivateKey) {
     return NextResponse.json({ error: "GitHub is not configured on this server" }, { status: 503 });
   }
-  if (!redisUrl) {
+  if (!redisRestUrl || !redisRestToken) {
     return NextResponse.json({ error: "Session storage is not configured" }, { status: 503 });
   }
 
@@ -76,7 +77,7 @@ export async function GET(request: NextRequest) {
   const state = searchParams.get("state");
   const errorParam = searchParams.get("error");
   const oauthStateBinding = request.cookies.get(OAUTH_STATE_BINDING_COOKIE)?.value;
-  const redis = getRedisClient(redisUrl);
+  const redis = getRedisClient(redisRestUrl, redisRestToken);
 
   // GitHub sends `error=access_denied` when the user cancels
   if (errorParam) {
@@ -84,10 +85,11 @@ export async function GET(request: NextRequest) {
     deniedUrl.searchParams.set("auth", "denied");
 
     // Preserve installation context for retry CTA when state+cookie validate.
+    // Skip if the state held the discover sentinel — there's no specific installation to preserve.
     if (state) {
       try {
         const deniedInstallationId = await validateOAuthState(state, oauthStateBinding, redis);
-        if (deniedInstallationId) {
+        if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
           deniedUrl.searchParams.set("installation_id", deniedInstallationId);
         }
       } catch {
@@ -115,10 +117,9 @@ export async function GET(request: NextRequest) {
     );
   }
   if (!installationId) {
-    const response = NextResponse.json(
-      { error: "Invalid or expired OAuth state" },
-      { status: 400 },
-    );
+    const expiredUrl = new URL(`${siteUrl}/setup`);
+    expiredUrl.searchParams.set("auth", "expired");
+    const response = NextResponse.redirect(expiredUrl.toString());
     clearOAuthStateBindingCookie(response);
     return response;
   }
@@ -131,12 +132,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Failed to exchange authorization code" }, { status: 502 });
   }
 
+  // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
+  if (installationId === DISCOVER_SENTINEL) {
+    try {
+      const installations = await getUserInstallations(userToken, githubAppId!);
+      if (installations.length === 0) {
+        const notInstalledUrl = new URL(`${siteUrl}/setup`);
+        notInstalledUrl.searchParams.set("auth", "not_installed");
+        const response = NextResponse.redirect(notInstalledUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
+      installationId = String(installations[0].id);
+    } catch {
+      return NextResponse.json({ error: "Failed to discover installations" }, { status: 502 });
+    }
+  }
+
   let user: { login: string; id: number };
   let installation: { account: { login: string; type: string } };
 
   try {
     // --- Step 3 & 4: Fetch user identity and installation in parallel ---
-    const appJwt = generateAppJwt(githubAppId, githubAppPrivateKey);
+    const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
     [user, installation] = await Promise.all([
       getAuthenticatedUser(userToken),
       getInstallation(installationId, appJwt),
@@ -203,7 +221,7 @@ export async function GET(request: NextRequest) {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: SESSION_COOKIE_MAX_AGE,
+    maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
   clearOAuthStateBindingCookie(response);

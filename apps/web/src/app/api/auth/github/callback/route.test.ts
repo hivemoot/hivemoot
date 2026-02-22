@@ -12,12 +12,16 @@ vi.mock("@/server/github-auth", () => ({
   generateAppJwt: vi.fn(),
   getAuthenticatedUser: vi.fn(),
   getInstallation: vi.fn(),
+  getUserInstallations: vi.fn(),
   checkOrgAdmin: vi.fn(),
 }));
 vi.mock("@/server/setup-session", () => ({
   validateOAuthState: vi.fn(),
   createSetupSession: vi.fn(),
+  DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
+  SETUP_SESSION_COOKIE: "setup_session",
+  SESSION_TTL_SECONDS: 1800,
 }));
 
 import { validateEnv } from "@/server/env";
@@ -27,6 +31,7 @@ import {
   generateAppJwt,
   getAuthenticatedUser,
   getInstallation,
+  getUserInstallations,
   checkOrgAdmin,
 } from "@/server/github-auth";
 import {
@@ -34,7 +39,8 @@ import {
   createSetupSession,
   OAUTH_STATE_BINDING_COOKIE,
 } from "@/server/setup-session";
-import { GET, SETUP_SESSION_COOKIE } from "./route";
+import { SETUP_SESSION_COOKIE } from "@/server/setup-session";
+import { GET } from "./route";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,10 +51,12 @@ const VALID_CONFIG = {
   githubClientSecret: "secret",
   githubAppId: "99",
   githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----",
-  redisUrl: "redis://localhost:6379",
+  redisRestUrl: "https://example.upstash.io",
+  redisRestToken: "test-token",
   siteUrl: "https://example.com",
   nodeEnv: "production",
-  encryptionKey: "a".repeat(64),
+  byokActiveKeyVersion: "v1",
+  byokMasterKeysJson: '{"v1":"' + "a".repeat(64) + '"}',
 };
 
 function makeRequest(params: Record<string, string>) {
@@ -134,7 +142,7 @@ describe("GET /api/auth/github/callback — happy paths", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/auth/github/callback — rejections", () => {
-  it("returns 400 on state mismatch (CSRF protection)", async () => {
+  it("redirects to /setup?auth=expired on state mismatch (CSRF protection)", async () => {
     vi.mocked(validateOAuthState).mockResolvedValue(null);
 
     const req = makeRequestWithCookie(
@@ -143,9 +151,10 @@ describe("GET /api/auth/github/callback — rejections", () => {
     );
     const res = await GET(req);
 
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
   });
 
   it("returns 503 with a stable code when OAuth state lookup fails", async () => {
@@ -271,22 +280,127 @@ describe("GET /api/auth/github/callback — rejections", () => {
     expect(body.code).toBe("setup_session_create_failed");
   });
 
-  it("rejects callback when state-binding cookie is missing", async () => {
+  it("redirects to /setup?auth=expired when state-binding cookie is missing", async () => {
+    vi.mocked(validateOAuthState).mockResolvedValue(null);
+
     const req = makeRequest({ code: "gh-code", state: "valid-state" });
     const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
   });
 
-  it("rejects callback when state-binding cookie is mismatched", async () => {
+  it("redirects to /setup?auth=expired when state-binding cookie is mismatched", async () => {
+    vi.mocked(validateOAuthState).mockResolvedValue(null);
+
     const req = makeRequestWithCookie(
       { code: "gh-code", state: "valid-state" },
       "wrong-binding",
     );
     const res = await GET(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("expired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discovery flow (already-installed users)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/auth/github/callback — discovery flow", () => {
+  beforeEach(() => {
+    // State returns the discover sentinel instead of a numeric installation ID
+    vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+      stateBinding === "binding-cookie" ? "discover" : null
+    ));
+  });
+
+  it("discovers the installation and completes the flow for a user account", async () => {
+    vi.mocked(getUserInstallations).mockResolvedValue([
+      { id: 67890, app_id: 99, account: { login: "alice", type: "User" } },
+    ]);
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location")!;
+    expect(location).toContain("auth=ok");
+    expect(location).toContain("installation_id=67890");
+    expect(getUserInstallations).toHaveBeenCalledWith("user-token", "99");
+    expect(getInstallation).toHaveBeenCalledWith("67890", "app-jwt");
+  });
+
+  it("redirects to not_installed when no installations are found", async () => {
+    vi.mocked(getUserInstallations).mockResolvedValue([]);
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location")!;
+    expect(location).toContain("auth=not_installed");
+    expect(location).not.toContain("installation_id=");
+  });
+
+  it("uses the first installation when multiple exist", async () => {
+    vi.mocked(getUserInstallations).mockResolvedValue([
+      { id: 111, app_id: 99, account: { login: "alice", type: "User" } },
+      { id: 222, app_id: 99, account: { login: "my-org", type: "Organization" } },
+    ]);
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("installation_id=111");
+  });
+
+  it("returns 502 when installation discovery fails", async () => {
+    vi.mocked(getUserInstallations).mockRejectedValue(new Error("GitHub API error"));
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+    expect(res.status).toBe(502);
     const body = await res.json();
-    expect(body.error).toMatch(/state/i);
+    expect(body.error).toMatch(/discover/i);
+  });
+
+  it("does not set installation_id on denied redirect from discovery flow", async () => {
+    vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+      stateBinding === "binding-cookie" ? "discover" : null
+    ));
+
+    const req = makeRequestWithCookie(
+      { error: "access_denied", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location")!;
+    expect(location).toContain("auth=denied");
+    expect(location).not.toContain("installation_id=");
   });
 });

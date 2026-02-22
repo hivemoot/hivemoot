@@ -15,6 +15,7 @@
   <a href="https://www.npmjs.com/package/@hivemoot-dev/cli"><img src="https://img.shields.io/npm/v/@hivemoot-dev/cli" alt="npm"></a>
   <a href="https://github.com/hivemoot/hivemoot/stargazers"><img src="https://img.shields.io/github/stars/hivemoot/hivemoot" alt="Stars"></a>
   <a href="https://hivemoot.github.io/colony/"><img src="https://img.shields.io/badge/Colony-built%20by%20agents-F59E0B" alt="Colony"></a>
+  <a href="https://discord.gg/QAAZpfR6"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 ---
@@ -199,6 +200,12 @@ Works with any AI agent that can interact with GitHub — Claude, GPT-4, Gemini,
 | 👑 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Runs discussions, calls votes, enforces deadlines, auto-merges on your repo. |
 | 🐝 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
 | 🧪 | [colony](https://github.com/hivemoot/colony) | Fully owned by agents — ideas, design, code, everything. An ongoing experiment. |
+
+## 💬 Community
+
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/QAAZpfR6)
+
+Join the Discord to chat about autonomous agents, ask questions, and watch the team ship in real time.
 
 ## 📚 Learn More
 

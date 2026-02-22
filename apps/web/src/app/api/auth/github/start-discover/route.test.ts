@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ---------------------------------------------------------------------------
-// Mocks — must be declared before importing the route
+// Mocks
 // ---------------------------------------------------------------------------
 
 vi.mock("@/server/env", () => ({
@@ -15,6 +15,7 @@ vi.mock("@/server/redis", () => ({
 
 vi.mock("@/server/setup-session", () => ({
   createOAuthState: vi.fn(),
+  DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
 }));
 
@@ -38,11 +39,10 @@ const VALID_CONFIG = {
   githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----",
   byokActiveKeyVersion: "v1",
   byokMasterKeysJson: '{"v1":"' + "a".repeat(64) + '"}',
-  redisClient: {} as ReturnType<typeof getRedisClient>,
 };
 
-function makeRequest(url: string) {
-  return new NextRequest(url);
+function makeRequest() {
+  return new NextRequest("https://example.com/api/auth/github/start-discover");
 }
 
 beforeEach(() => {
@@ -59,9 +59,9 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("GET /api/auth/github/start", () => {
-  it("redirects to GitHub OAuth URL with state when installation_id is valid", async () => {
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=12345");
+describe("GET /api/auth/github/start-discover", () => {
+  it("redirects to GitHub OAuth URL with state — no installation_id required", async () => {
+    const req = makeRequest();
     const res = await GET(req);
 
     expect(res.status).toBe(307);
@@ -76,18 +76,18 @@ describe("GET /api/auth/github/start", () => {
     expect(setCookie).toContain("HttpOnly");
   });
 
-  it("returns 400 when installation_id is missing", async () => {
-    const req = makeRequest("https://example.com/api/auth/github/start");
-    const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/installation_id/);
+  it("passes the discover sentinel as installationId to createOAuthState", async () => {
+    const req = makeRequest();
+    await GET(req);
+
+    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything());
   });
 
-  it("returns 400 when installation_id is not numeric", async () => {
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=abc");
+  it("returns 503 when env validation fails", async () => {
+    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_REST_URL"] });
+    const req = makeRequest();
     const res = await GET(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(503);
   });
 
   it("returns 503 when GitHub OAuth is not configured", async () => {
@@ -95,7 +95,7 @@ describe("GET /api/auth/github/start", () => {
       ok: true,
       config: { ...VALID_CONFIG, githubClientId: undefined, githubClientSecret: undefined },
     });
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
+    const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(503);
   });
@@ -105,22 +105,14 @@ describe("GET /api/auth/github/start", () => {
       ok: true,
       config: { ...VALID_CONFIG, redisRestUrl: undefined, redisRestToken: undefined },
     });
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
+    const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(503);
   });
 
-  it("returns 503 when env validation fails", async () => {
-    vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_REST_URL"] });
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
-    const res = await GET(req);
-    expect(res.status).toBe(503);
-  });
-
-  it("returns 503 with a stable code when OAuth state storage fails", async () => {
+  it("returns 503 with stable code when OAuth state storage fails", async () => {
     vi.mocked(createOAuthState).mockRejectedValue(new Error("redis down"));
-
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
+    const req = makeRequest();
     const res = await GET(req);
     expect(res.status).toBe(503);
     const body = await res.json();
@@ -128,7 +120,7 @@ describe("GET /api/auth/github/start", () => {
   });
 
   it("includes the callback redirect_uri scoped to siteUrl", async () => {
-    const req = makeRequest("https://example.com/api/auth/github/start?installation_id=99");
+    const req = makeRequest();
     const res = await GET(req);
     const location = res.headers.get("location")!;
     expect(location).toContain(encodeURIComponent("https://example.com/api/auth/github/callback"));
