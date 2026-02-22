@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.18.1",
     "@upstash/redis": "^1.36.2",
     "next": "^16.1.6",
     "react": "^19.2.4",

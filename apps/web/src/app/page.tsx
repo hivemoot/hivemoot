@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import LottieBee from "./LottieBee";
 
 export const metadata: Metadata = {
   title: "Hivemoot — Your Own AI Engineering Team",
@@ -399,8 +400,8 @@ export default function LandingPage() {
         </p>
 
         <h1 className="relative mb-6 text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
-          {/* Mascot bee — floats to the upper-right of the headline */}
-          <Bee size={52} className="absolute -right-6 -top-8 rotate-[15deg] opacity-70 sm:-right-14 sm:-top-10" />
+          {/* Mascot bee — lounging Lottie animation floating upper-right */}
+          <LottieBee className="absolute -right-6 -top-10 h-20 w-20 sm:-right-16 sm:-top-14 sm:h-28 sm:w-28" />
           Your own{" "}
           <span className="bg-gradient-to-r from-honey-400 to-honey-600 bg-clip-text text-transparent">
             AI engineering team
@@ -533,6 +534,9 @@ export default function LandingPage() {
             </div>
           ))}
         </div>
+
+        {/* Decorative bee — mirrored, bottom-left of steps */}
+        <LottieBee className="absolute -bottom-6 -left-10 h-20 w-20 -scale-x-100 opacity-60 sm:-left-16 sm:h-24 sm:w-24" />
       </section>
 
       {/* ----------------------------------------------------------------- */}
