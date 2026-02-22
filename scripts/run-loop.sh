@@ -332,25 +332,7 @@ for index in "${!agent_ids[@]}"; do
   aid="${agent_ids[$index]}"
   agent_home="$(resolve_managed_agent_home "$workspace_root" "$aid" "$effective_auth_mode")"
 
-  mkdir -p \
-    "$agent_home/.config" \
-    "$agent_home/.cache" \
-    "$agent_home/.local" \
-    "$agent_home/.local/share"
-  chmod 700 \
-    "$agent_home/.config" \
-    "$agent_home/.cache" \
-    "$agent_home/.local" \
-    "$agent_home/.local/share" 2>/dev/null || true
-
-  # Seed only auth credentials into each agent home; skip session state
-  # (conversation caches, memory, history) to prevent cross-run leakage.
-  seed_provider_auth "$agent_home"
-
-  # Ensure agent subprocesses can find npm-installed binaries
-  # shellcheck disable=SC2016
-  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
-    > "$agent_home/.profile"
+  init_agent_home "$agent_home"
 done
 
 # ── Lock & Run Infrastructure ──────────────────────────────────────

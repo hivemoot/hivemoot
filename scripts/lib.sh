@@ -301,3 +301,33 @@ seed_provider_auth() {
   # OpenCode: auto-generate config and auth.json if missing
   generate_opencode_config "$agent_home"
 }
+
+# Create standard agent home subdirectories, seed provider auth credentials,
+# and write a .profile so agent subprocesses can find npm-installed binaries.
+# Call this once per agent before launching run-once.sh.
+init_agent_home() {
+  local agent_home="$1"
+
+  mkdir -p \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share"
+  chmod 700 \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share" 2>/dev/null || true
+
+  # Seed only auth credentials into each agent home; skip session state
+  # (conversation caches, memory, history) to prevent cross-run leakage.
+  seed_provider_auth "$agent_home"
+
+  # Login shells (bash -lc) reset PATH from /etc/profile, losing the
+  # Docker ENV that includes the npm global bin directory. Write a
+  # .profile so agent subprocesses (codex/gemini/claude CLI tools)
+  # can find hivemoot and other npm-installed binaries.
+  # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
+  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
+    > "$agent_home/.profile"
+}
