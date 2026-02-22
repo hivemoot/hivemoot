@@ -1,10 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-
-// Cookie name for the setup session.
-// Defined as a literal here to avoid pulling Node.js-incompatible modules
-// (crypto, @upstash/redis) into the Edge runtime. Keep in sync with
-// SETUP_SESSION_COOKIE in @/server/setup-session.
-const SETUP_SESSION_COOKIE = "setup_session";
+import { SETUP_SESSION_COOKIE } from "@/constants/cookies";
 
 /**
  * Protect /dashboard from unauthenticated access.
