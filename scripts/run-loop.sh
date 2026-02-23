@@ -340,6 +340,8 @@ mkdir -p "$lock_dir"
 
 # Track all background PIDs for cleanup
 declare -a all_bg_pids=()
+# Scheduler-only PIDs for liveness monitoring (subset of all_bg_pids)
+declare -a scheduler_pids=()
 shutdown_requested=0
 
 # shellcheck disable=SC2317,SC2329  # invoked via trap
@@ -576,139 +578,104 @@ Then read the full thread, research the topic, and take appropriate action with 
 
 # ── Periodic Scheduler ─────────────────────────────────────────────
 
-start_periodic_scheduler() {
-  log "Starting periodic scheduler (interval=${periodic_interval}s +/-${periodic_jitter}s)"
+# Per-agent scheduler subshell: handles offset, interval, jitter, and
+# per-agent failure tracking independently. Each agent exits after
+# max_failures consecutive failures; container stays alive for healthy agents.
+start_agent_periodic_scheduler() {
+  local agent_id="$1"
+  local offset="$2"
 
   (
-    consecutive_failures=0
-    declare -A agent_failure_counts=()
-    declare -A agent_next_retry_at=()
+    trap 'exit 0' TERM INT
 
-    # This subshell terminates via SIGTERM from handle_shutdown, not via
-    # a shared variable (subshells get a frozen copy of parent state).
+    local consecutive_failures=0
+    local next_retry_at=0
+
+    # Initial offset sleep to spread agents across the interval
+    if [ "$offset" -gt 0 ]; then
+      log "Periodic[${agent_id}]: initial offset sleep ${offset}s"
+      sleep "$offset" &
+      wait $! || exit 0
+    fi
+
     while true; do
-      # Sleep first — agents just started, give watchers time to settle
-      effective_jitter="$periodic_jitter"
+      # Sleep interval ± jitter
+      local effective_jitter="$periodic_jitter"
       if [ "$effective_jitter" -ge "$periodic_interval" ]; then
         effective_jitter=$((periodic_interval - 1))
       fi
-      min_delay=$((periodic_interval - effective_jitter))
-      max_delay=$((periodic_interval + effective_jitter))
-      span=$((max_delay - min_delay + 1))
-      delay=$((min_delay + RANDOM % span))
+      local min_delay=$((periodic_interval - effective_jitter))
+      local max_delay=$((periodic_interval + effective_jitter))
+      local span=$((max_delay - min_delay + 1))
+      local delay=$((min_delay + RANDOM % span))
 
-      log "Periodic: sleeping ${delay}s before next cycle"
+      log "Periodic[${agent_id}]: sleeping ${delay}s"
       sleep "$delay" &
-      wait $! || true
+      wait $! || exit 0
 
-      log "Periodic: starting cycle for ${agent_count} agents"
-
-      declare -a cycle_pids=()
-      declare -A pid_to_agent=()
-      cycle_skipped=0
-      cycle_started=0
+      # Check cooldown
+      local now_epoch=""
       now_epoch="$(date +%s)"
-
-      for index in "${!agent_ids[@]}"; do
-        aid="${agent_ids[$index]}"
-        next_retry="${agent_next_retry_at[$aid]:-0}"
-
-        if [ "$next_retry" -gt "$now_epoch" ]; then
-          remaining=$((next_retry - now_epoch))
-          log "Periodic: ${aid} in cooldown (${remaining}s remaining), skipping"
-          cycle_skipped=$((cycle_skipped + 1))
-          continue
-        fi
-
-        try_run_agent "$aid" "$global_extra_prompt" &
-        pid=$!
-        cycle_pids+=("$pid")
-        pid_to_agent["$pid"]="$aid"
-        cycle_started=$((cycle_started + 1))
-      done
-
-      # Wait for all agent runs and track results
-      cycle_failures=0
-      cycle_busy=0
-      cycle_ok=0
-      for pid in "${cycle_pids[@]}"; do
-        aid="${pid_to_agent[$pid]}"
-        if wait "$pid" 2>/dev/null; then
-          run_status=0
-        else
-          run_status=$?
-        fi
-
-        if [ "$run_status" -eq 0 ]; then
-          previous_failures="${agent_failure_counts[$aid]:-0}"
-          if [ "$previous_failures" -gt 0 ]; then
-            log "Periodic: ${aid} recovered after ${previous_failures} failed cycle(s)"
-          fi
-          agent_failure_counts["$aid"]=0
-          agent_next_retry_at["$aid"]=0
-          cycle_ok=1
-          continue
-        fi
-
-        if [ "$run_status" -eq "$agent_run_busy_exit" ]; then
-          cycle_busy=$((cycle_busy + 1))
-          log "Periodic: ${aid} busy; keeping existing failure/backoff state"
-          continue
-        fi
-
-        cycle_failures=$((cycle_failures + 1))
-        current_failures="${agent_failure_counts[$aid]:-0}"
-        current_failures=$((current_failures + 1))
-        agent_failure_counts["$aid"]="$current_failures"
-
-        backoff_delay="$(calculate_agent_backoff_delay "$current_failures")"
-        failure_epoch="$(date +%s)"
-        retry_at=$((failure_epoch + backoff_delay))
-        agent_next_retry_at["$aid"]="$retry_at"
-
-        if [ "$current_failures" -eq 1 ]; then
-          log "Periodic: ${aid} entered failure backoff mode"
-        fi
-
-        if [ "$backoff_delay" -gt 0 ]; then
-          log "Periodic: ${aid} failed (${current_failures}x); cooldown ${backoff_delay}s"
-        else
-          log "Periodic: ${aid} failed (${current_failures}x); retrying next cycle"
-        fi
-      done
-
-      if [ "$cycle_started" -eq 0 ] && [ "$cycle_skipped" -gt 0 ]; then
-        log "Periodic: no agents eligible this cycle (${cycle_skipped} in cooldown)"
+      if [ "$next_retry_at" -gt "$now_epoch" ]; then
+        local remaining=$((next_retry_at - now_epoch))
+        log "Periodic[${agent_id}]: in cooldown (${remaining}s remaining), skipping"
+        continue
       fi
 
-      if [ "$cycle_busy" -gt 0 ]; then
-        log "Periodic: ${cycle_busy} agent(s) were lock-busy this cycle"
-      fi
+      # Run agent
+      local run_status=0
+      try_run_agent "$agent_id" "$global_extra_prompt" || run_status=$?
 
-      if [ "$cycle_ok" -eq 1 ]; then
+      if [ "$run_status" -eq 0 ]; then
+        if [ "$consecutive_failures" -gt 0 ]; then
+          log "Periodic[${agent_id}]: recovered after ${consecutive_failures} failure(s)"
+        fi
         consecutive_failures=0
-        log "Periodic: cycle completed (started=${cycle_started} skipped=${cycle_skipped} busy=${cycle_busy} failed=${cycle_failures})"
+        next_retry_at=0
+        continue
+      fi
+
+      if [ "$run_status" -eq "$agent_run_busy_exit" ]; then
+        log "Periodic[${agent_id}]: busy, keeping backoff state"
+        continue
+      fi
+
+      consecutive_failures=$((consecutive_failures + 1))
+
+      local backoff_delay=""
+      backoff_delay="$(calculate_agent_backoff_delay "$consecutive_failures")"
+      local failure_epoch=""
+      failure_epoch="$(date +%s)"
+      next_retry_at=$((failure_epoch + backoff_delay))
+
+      if [ "$backoff_delay" -gt 0 ]; then
+        log "Periodic[${agent_id}]: failed (${consecutive_failures}x); cooldown ${backoff_delay}s"
       else
-        if [ "$cycle_started" -eq 0 ]; then
-          log "Periodic: cycle had no runnable agents; not counting as a failure streak"
-        elif [ "$cycle_failures" -eq 0 ]; then
-          log "Periodic: cycle had no completed runs (busy=${cycle_busy}); not counting as a failure streak"
-        else
-          consecutive_failures=$((consecutive_failures + 1))
-          log "Periodic: cycle failed (started=${cycle_started} skipped=${cycle_skipped} busy=${cycle_busy} consecutive_failures=${consecutive_failures})"
-          if [ "$consecutive_failures" -ge "$max_failures" ]; then
-            log "Periodic: reached max consecutive failures (${max_failures}); exiting"
-            kill -TERM $$ 2>/dev/null || true
-            exit 1
-          fi
-        fi
+        log "Periodic[${agent_id}]: failed (${consecutive_failures}x); retrying next cycle"
+      fi
+
+      if [ "$consecutive_failures" -ge "$max_failures" ]; then
+        log "Periodic[${agent_id}]: reached max failures (${max_failures}); scheduler exiting"
+        exit 1
       fi
     done
   ) &
 
-  local scheduler_pid=$!
-  all_bg_pids+=("$scheduler_pid")
-  log "Periodic scheduler started (pid=${scheduler_pid})"
+  local pid=$!
+  all_bg_pids+=("$pid")
+  scheduler_pids+=("$pid")
+  log "Periodic scheduler for ${agent_id} started: offset=${offset}s (pid=${pid})"
+}
+
+start_periodic_scheduler() {
+  log "Starting per-agent periodic schedulers (interval=${periodic_interval}s ±${periodic_jitter}s)"
+
+  for index in "${!agent_ids[@]}"; do
+    local aid="${agent_ids[$index]}"
+    local offset=""
+    offset="$(compute_agent_offset "$target_repo" "$aid" "$periodic_interval")"
+    start_agent_periodic_scheduler "$aid" "$offset"
+  done
 }
 
 # ── Main ───────────────────────────────────────────────────────────
@@ -733,9 +700,36 @@ fi
 # Start periodic scheduler
 start_periodic_scheduler
 
-# Wait for all background processes
-log "All background processes running. Waiting..."
-wait
+# Monitor scheduler liveness. If all scheduler subshells exit (e.g.,
+# total API outage triggering max_failures on every agent), exit
+# non-zero so the orchestrator (launchd KeepAlive) can restart us.
+# Mention watchers alone are not enough to justify staying alive.
+log "All background processes running. Monitoring scheduler liveness..."
+while [ "$shutdown_requested" -eq 0 ]; do
+  live_schedulers=0
+  for pid in "${scheduler_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      live_schedulers=$((live_schedulers + 1))
+    fi
+  done
 
-log "Graceful shutdown complete"
-exit 0
+  if [ "${#scheduler_pids[@]}" -gt 0 ] && [ "$live_schedulers" -eq 0 ]; then
+    log "All periodic schedulers have exited; shutting down"
+    break
+  fi
+
+  sleep 5 &
+  wait $! || true
+done
+
+if [ "$shutdown_requested" -ne 0 ]; then
+  wait
+  log "Graceful shutdown complete"
+  exit 0
+fi
+
+# All schedulers died — trigger shutdown of watchers and exit non-zero
+handle_shutdown
+wait
+log "All schedulers failed; exiting for orchestrator restart"
+exit 1

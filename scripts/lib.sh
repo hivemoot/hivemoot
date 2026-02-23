@@ -159,6 +159,46 @@ validate_agent_id() {
   esac
 }
 
+# Deterministic offset within an interval for staggered scheduling.
+# md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
+# they never cluster at the same wake-up time.
+compute_agent_offset() {
+  local repo="$1"
+  local agent_id="$2"
+  local interval="$3"
+  local hash_input="${repo}:${agent_id}"
+  local hash_hex=""
+
+  if [ "$interval" -le 1 ]; then
+    printf '0'
+    return 0
+  fi
+
+  # Use first 8 hex digits (32 bits) — enough for any practical interval.
+  # md5sum on Linux, md5 on macOS.
+  if command -v md5sum >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5sum | cut -c1-8)"
+  elif command -v md5 >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5 -q | cut -c1-8)"
+  else
+    # Fallback: cksum is POSIX and always available
+    local cksum_val=""
+    cksum_val="$(printf '%s' "$hash_input" | cksum | cut -d' ' -f1)"
+    printf '%s' "$((cksum_val % interval))"
+    return 0
+  fi
+
+  # Guard against empty output — an empty hash_hex would cause a bash
+  # arithmetic syntax error in the 16# expansion below.
+  if [ -z "$hash_hex" ]; then
+    printf '0'
+    return 0
+  fi
+
+  # shellcheck disable=SC2004  # 16# prefix requires no $ on hash_hex
+  printf '%s' "$(( 16#${hash_hex} % interval ))"
+}
+
 load_slot_token() {
   local suffix="$1"
   local token_var="AGENT_GITHUB_TOKEN_${suffix}"

@@ -835,6 +835,20 @@ cleanup_temp_tokens() {
   done
 }
 
+stop_schedulers() {
+  local pid=""
+
+  for pid in "${scheduler_pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  for pid in "${scheduler_pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  scheduler_pids=()
+}
+
 handle_shutdown() {
   if [ "$shutdown_requested" -ne 0 ]; then
     return 0
@@ -844,11 +858,13 @@ handle_shutdown() {
   mkdir -p "$(dirname "$shutdown_flag_file")" 2>/dev/null || true
   : > "$shutdown_flag_file"
   log "Shutdown signal received; stopping new launches"
+  stop_schedulers
   stop_watchers
   stop_controller_workers
 }
 
 cleanup() {
+  stop_schedulers
   stop_watchers
   stop_controller_workers
   cleanup_temp_tokens
@@ -1117,10 +1133,42 @@ run_once_mode() {
   fi
 }
 
+start_agent_scheduler() {
+  local agent_id="$1"
+  local offset="$2"
+
+  (
+    trap 'exit 0' TERM INT
+
+    if [ "$offset" -gt 0 ]; then
+      log "Scheduler[${agent_id}]: initial offset sleep ${offset}s"
+      sleep "$offset" &
+      wait $! || exit 0
+    fi
+
+    while [ ! -f "$shutdown_flag_file" ]; do
+      if write_trigger_file "periodic" "$target_repo" "$agent_id" "$global_extra_prompt" "" "" ""; then
+        log "Scheduler[${agent_id}]: queued periodic trigger"
+      else
+        log "Scheduler[${agent_id}]: failed to queue trigger"
+      fi
+
+      local delay=""
+      delay="$(next_cycle_delay)"
+      log "Scheduler[${agent_id}]: next run in ${delay}s"
+      sleep "$delay" &
+      wait $! || exit 0
+    done
+  ) &
+
+  local pid=$!
+  scheduler_pids+=("$pid")
+  log "Agent scheduler started: agent=${agent_id} offset=${offset}s (pid=${pid})"
+}
+
 run_loop_mode() {
-  local next_periodic_at=0
-  local now=0
-  local delay=0
+  local agent_id=""
+  local offset=""
 
   run_queue_maintenance 1
 
@@ -1128,19 +1176,38 @@ run_loop_mode() {
     start_mention_watchers
   fi
 
+  # Launch per-agent schedulers with deterministic hash-based offsets
+  for agent_id in "${agent_ids[@]}"; do
+    offset="$(compute_agent_offset "$target_repo" "$agent_id" "$periodic_interval")"
+    start_agent_scheduler "$agent_id" "$offset"
+  done
+
+  log "Per-agent schedulers running; entering queue processing loop"
+
+  # Main loop: process queue, reap finished jobs, run maintenance.
+  # Also monitors scheduler liveness — if all schedulers exit (e.g.,
+  # total API outage causing max_failures on every agent), break out
+  # so the controller exits non-zero and the orchestrator can restart.
   while [ "$shutdown_requested" -eq 0 ]; do
-    now="$(date +%s)"
-
-    if [ "$now" -ge "$next_periodic_at" ]; then
-      queue_periodic_cycle
-      delay="$(next_cycle_delay)"
-      next_periodic_at=$((now + delay))
-      log "Next periodic cycle in ${delay}s"
-    fi
-
     run_queue_maintenance 0
     process_queue
     reap_finished_jobs
+
+    # Check if any scheduler subshell is still alive
+    local live_schedulers=0
+    local pid=""
+    for pid in "${scheduler_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        live_schedulers=$((live_schedulers + 1))
+      fi
+    done
+
+    if [ "${#scheduler_pids[@]}" -gt 0 ] && [ "$live_schedulers" -eq 0 ]; then
+      log "All periodic schedulers have exited; shutting down"
+      shutdown_requested=1
+      failed_jobs=$((failed_jobs + 1))
+      break
+    fi
 
     sleep 1 &
     wait $! || true
@@ -1206,6 +1273,7 @@ last_queue_maintenance_epoch=0
 declare -a temp_token_files=()
 declare -a running_pids=()
 declare -a watcher_pids=()
+declare -a scheduler_pids=()
 declare -A pid_to_job_id=()
 declare -A pid_to_repo=()
 declare -A pid_to_agent=()
