@@ -143,6 +143,52 @@ export async function getInstallation(
 }
 
 // ---------------------------------------------------------------------------
+// Installation discovery (for users who already have the app installed)
+// ---------------------------------------------------------------------------
+
+export interface UserInstallation {
+  id: number;
+  app_id: number;
+  account: {
+    login: string;
+    type: string;
+  };
+}
+
+/**
+ * Lists the authenticated user's installations of a specific GitHub App.
+ *
+ * Uses `GET /user/installations` which returns all app installations the user
+ * can access, then filters by app_id so we only return our own.
+ */
+export async function getUserInstallations(
+  userToken: string,
+  appId: string,
+): Promise<UserInstallation[]> {
+  const response = await fetch("https://api.github.com/user/installations", {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${userToken}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub /user/installations returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as {
+    installations: Array<{
+      id: number;
+      app_id: number;
+      account: { login: string; type: string };
+    }>;
+  };
+
+  return data.installations.filter((i) => String(i.app_id) === appId);
+}
+
+// ---------------------------------------------------------------------------
 // Authorization checks
 // ---------------------------------------------------------------------------
 

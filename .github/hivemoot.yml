@@ -11,6 +11,8 @@ shared:
     - hivemoot-forager
     - hivemoot-guard
     - hivemoot-nurse
+    - hivemoot-heater
+    - hivemoot-drone
 
 team:
   name: hivemoot
