@@ -1,8 +1,12 @@
 ## What
 
-<!-- One sentence: what changed and why? -->
+<!-- What changed? One or two sentences. -->
 
 Fixes #<!-- issue number -->
+
+## Why
+
+<!-- Why was this needed? What problem does it solve? -->
 
 ## What it looks like
 
