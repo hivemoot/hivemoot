@@ -81,7 +81,6 @@ beforeEach(() => {
 describe("POST /api/byok/config", () => {
   it("creates a BYOK config and returns status", async () => {
     const req = makeRequest({
-      installationId: "123",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       apiKey: "sk-ant-test1234",
@@ -102,13 +101,13 @@ describe("POST /api/byok/config", () => {
 
   it("returns 401 when not authenticated", async () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest({ provider: "anthropic", model: "m", apiKey: "k" });
     const res = await POST(req);
     expect(res.status).toBe(401);
   });
 
   it("returns 400 when required fields are missing", async () => {
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest({ provider: "anthropic" });
     const res = await POST(req);
     expect(res.status).toBe(400);
   });
@@ -123,17 +122,6 @@ describe("POST /api/byok/config", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 403 when installationId does not match session", async () => {
-    const req = makeRequest({
-      installationId: "999",
-      provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
-      apiKey: "sk-ant-test1234",
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(403);
-  });
-
   it("returns 400 with byok_provider_invalid when key validation fails", async () => {
     vi.mocked(validateProviderKey).mockResolvedValue({
       valid: false,
@@ -141,7 +129,6 @@ describe("POST /api/byok/config", () => {
     });
 
     const req = makeRequest({
-      installationId: "123",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       apiKey: "bad-key",
@@ -160,7 +147,6 @@ describe("POST /api/byok/config", () => {
     });
 
     const req = makeRequest({
-      installationId: "123",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       apiKey: "sk-ant-secret-key-value",
@@ -169,5 +155,57 @@ describe("POST /api/byok/config", () => {
     const body = await res.json();
     const bodyStr = JSON.stringify(body);
     expect(bodyStr).not.toContain("sk-ant-secret-key-value");
+  });
+
+  it("encrypts a JSON payload containing apiKey, provider, and model", async () => {
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    await POST(req);
+
+    expect(encrypt).toHaveBeenCalledWith(
+      JSON.stringify({
+        apiKey: "sk-ant-test1234",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+      }),
+      "v1",
+      MOCK_KEYRING,
+    );
+  });
+
+  it("does not encrypt the bare API key string", async () => {
+    const req = makeRequest({
+      provider: "openai",
+      model: "gpt-4o",
+      apiKey: "sk-openai-test",
+    });
+    await POST(req);
+
+    // The first argument to encrypt must be parseable JSON with apiKey inside
+    const encryptCall = vi.mocked(encrypt).mock.calls[0];
+    const plaintext = encryptCall[0];
+    expect(() => JSON.parse(plaintext)).not.toThrow();
+    const parsed = JSON.parse(plaintext);
+    expect(parsed).toHaveProperty("apiKey", "sk-openai-test");
+    expect(parsed).toHaveProperty("provider", "openai");
+    expect(parsed).toHaveProperty("model", "gpt-4o");
+  });
+
+  it("uses installationId from session, not request body", async () => {
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    await POST(req);
+
+    expect(setByokEnvelope).toHaveBeenCalledWith(
+      MOCK_SESSION.installationId,
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

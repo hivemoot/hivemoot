@@ -72,7 +72,6 @@ beforeEach(() => {
 describe("POST /api/byok/rotate", () => {
   it("rotates the key and returns updated status", async () => {
     const req = makeRequest({
-      installationId: "123",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       apiKey: "sk-ant-new-key5678",
@@ -86,17 +85,6 @@ describe("POST /api/byok/rotate", () => {
     expect(setByokEnvelope).toHaveBeenCalled();
   });
 
-  it("returns 403 on cross-installation attempt", async () => {
-    const req = makeRequest({
-      installationId: "999",
-      provider: "anthropic",
-      model: "m",
-      apiKey: "k",
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(403);
-  });
-
   it("returns 400 when provider validation fails", async () => {
     vi.mocked(validateProviderKey).mockResolvedValue({
       valid: false,
@@ -104,7 +92,6 @@ describe("POST /api/byok/rotate", () => {
     });
 
     const req = makeRequest({
-      installationId: "123",
       provider: "anthropic",
       model: "m",
       apiKey: "bad-key",
@@ -117,8 +104,59 @@ describe("POST /api/byok/rotate", () => {
   });
 
   it("returns 400 when required fields are missing", async () => {
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest({ provider: "anthropic" });
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+
+  it("encrypts a JSON payload containing apiKey, provider, and model", async () => {
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-new-key5678",
+    });
+    await POST(req);
+
+    expect(encrypt).toHaveBeenCalledWith(
+      JSON.stringify({
+        apiKey: "sk-ant-new-key5678",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+      }),
+      "v1",
+      expect.any(Map),
+    );
+  });
+
+  it("does not encrypt the bare API key string", async () => {
+    const req = makeRequest({
+      provider: "google",
+      model: "gemini-3-flash-preview",
+      apiKey: "AIzaSyTest",
+    });
+    await POST(req);
+
+    const encryptCall = vi.mocked(encrypt).mock.calls[0];
+    const plaintext = encryptCall[0];
+    expect(() => JSON.parse(plaintext)).not.toThrow();
+    const parsed = JSON.parse(plaintext);
+    expect(parsed).toHaveProperty("apiKey", "AIzaSyTest");
+    expect(parsed).toHaveProperty("provider", "google");
+    expect(parsed).toHaveProperty("model", "gemini-3-flash-preview");
+  });
+
+  it("uses installationId from session, not request body", async () => {
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-new-key5678",
+    });
+    await POST(req);
+
+    expect(setByokEnvelope).toHaveBeenCalledWith(
+      MOCK_SESSION.installationId,
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

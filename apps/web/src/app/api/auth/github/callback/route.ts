@@ -6,13 +6,15 @@
  * Security sequence:
  * 1. Validate `state` against Redis — reject if unknown/expired (CSRF protection)
  * 2. Exchange `code` for a user access token
+ * 2b. If state held the "discover" sentinel (user started from the "already installed"
+ *     flow), resolve the real installationId via GET /user/installations
  * 3. Fetch authenticated user identity
  * 4. Fetch installation metadata (via App JWT)
  * 5. Authorization check:
  *    - Org installations: caller must have admin role in the org
  *    - User installations: authenticated login must match installation account
  * 6. Issue setup session token, store in Redis, set as HttpOnly cookie
- * 7. Redirect back to /setup
+ * 7. Smart redirect: /dashboard if BYOK already configured, otherwise /setup
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,19 +25,19 @@ import {
   generateAppJwt,
   getAuthenticatedUser,
   getInstallation,
+  getUserInstallations,
   checkOrgAdmin,
 } from "@/server/github-auth";
 import {
   validateOAuthState,
   createSetupSession,
+  DISCOVER_SENTINEL,
   OAUTH_STATE_BINDING_COOKIE,
+  SETUP_SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
-
-/** Cookie name for the short-lived setup session token */
-export const SETUP_SESSION_COOKIE = "setup_session";
-
-/** How long the session cookie lives in the browser (matches Redis TTL) */
-const SESSION_COOKIE_MAX_AGE = 600; // 10 minutes
+import { REMEMBERED_USER_COOKIE } from "@/constants/cookies";
+import { hasByokEnvelope } from "@/server/byok-store";
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -60,14 +62,15 @@ export async function GET(request: NextRequest) {
     githubClientSecret,
     githubAppId,
     githubAppPrivateKey,
-    redisUrl,
+    redisRestUrl,
+    redisRestToken,
     siteUrl,
   } = env.config;
 
   if (!githubClientId || !githubClientSecret || !githubAppId || !githubAppPrivateKey) {
     return NextResponse.json({ error: "GitHub is not configured on this server" }, { status: 503 });
   }
-  if (!redisUrl) {
+  if (!redisRestUrl || !redisRestToken) {
     return NextResponse.json({ error: "Session storage is not configured" }, { status: 503 });
   }
 
@@ -76,7 +79,7 @@ export async function GET(request: NextRequest) {
   const state = searchParams.get("state");
   const errorParam = searchParams.get("error");
   const oauthStateBinding = request.cookies.get(OAUTH_STATE_BINDING_COOKIE)?.value;
-  const redis = getRedisClient(redisUrl);
+  const redis = getRedisClient(redisRestUrl, redisRestToken);
 
   // GitHub sends `error=access_denied` when the user cancels
   if (errorParam) {
@@ -84,10 +87,11 @@ export async function GET(request: NextRequest) {
     deniedUrl.searchParams.set("auth", "denied");
 
     // Preserve installation context for retry CTA when state+cookie validate.
+    // Skip if the state held the discover sentinel — there's no specific installation to preserve.
     if (state) {
       try {
         const deniedInstallationId = await validateOAuthState(state, oauthStateBinding, redis);
-        if (deniedInstallationId) {
+        if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
           deniedUrl.searchParams.set("installation_id", deniedInstallationId);
         }
       } catch {
@@ -115,10 +119,9 @@ export async function GET(request: NextRequest) {
     );
   }
   if (!installationId) {
-    const response = NextResponse.json(
-      { error: "Invalid or expired OAuth state" },
-      { status: 400 },
-    );
+    const expiredUrl = new URL(`${siteUrl}/setup`);
+    expiredUrl.searchParams.set("auth", "expired");
+    const response = NextResponse.redirect(expiredUrl.toString());
     clearOAuthStateBindingCookie(response);
     return response;
   }
@@ -131,12 +134,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Failed to exchange authorization code" }, { status: 502 });
   }
 
+  // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
+  if (installationId === DISCOVER_SENTINEL) {
+    try {
+      const installations = await getUserInstallations(userToken, githubAppId!);
+      if (installations.length === 0) {
+        const notInstalledUrl = new URL(`${siteUrl}/setup`);
+        notInstalledUrl.searchParams.set("auth", "not_installed");
+        const response = NextResponse.redirect(notInstalledUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
+      installationId = String(installations[0].id);
+    } catch {
+      return NextResponse.json({ error: "Failed to discover installations" }, { status: 502 });
+    }
+  }
+
   let user: { login: string; id: number };
   let installation: { account: { login: string; type: string } };
 
   try {
     // --- Step 3 & 4: Fetch user identity and installation in parallel ---
-    const appJwt = generateAppJwt(githubAppId, githubAppPrivateKey);
+    const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
     [user, installation] = await Promise.all([
       getAuthenticatedUser(userToken),
       getInstallation(installationId, appJwt),
@@ -193,19 +213,44 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // --- Step 7: Redirect to setup page with session cookie ---
-  const successUrl = new URL(`${siteUrl}/setup`);
-  successUrl.searchParams.set("installation_id", installationId);
-  successUrl.searchParams.set("auth", "ok");
+  // --- Step 7: Smart redirect based on setup completion ---
+  // Returning users who already configured BYOK go straight to the dashboard.
+  // New users (or failed checks) go to the setup wizard.
+  let setupComplete = false;
+  try {
+    setupComplete = await hasByokEnvelope(installationId, redis);
+  } catch {
+    // Fail closed — default to setup wizard if the check fails.
+  }
+
+  const successUrl = setupComplete
+    ? new URL(`${siteUrl}/dashboard`)
+    : new URL(`${siteUrl}/setup`);
+  if (!setupComplete) {
+    successUrl.searchParams.set("installation_id", installationId);
+    successUrl.searchParams.set("auth", "ok");
+  }
   const response = NextResponse.redirect(successUrl.toString());
 
   response.cookies.set(SETUP_SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: SESSION_COOKIE_MAX_AGE,
+    maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
+
+  // Remember the authenticated user for 30 days so the landing page can show
+  // a "Continue as @username" shortcut on return visits. Not httpOnly because
+  // the landing page reads it client-side to stay statically rendered. The
+  // value is a public GitHub login — no credentials.
+  response.cookies.set(REMEMBERED_USER_COOKIE, user.login, {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+  });
+
   clearOAuthStateBindingCookie(response);
 
   return response;

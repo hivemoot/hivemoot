@@ -7,15 +7,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { getSetupSession } from "@/server/setup-session";
+import { getSetupSession, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 import { parseKeyring } from "@/server/crypto";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
 import type { SetupSessionPayload } from "@/server/setup-session";
-
-const SETUP_SESSION_COOKIE = "setup_session";
 
 type AuthSuccess = {
   ok: true;
@@ -34,7 +32,8 @@ export type ByokAuthResult = AuthSuccess | AuthFailure;
 
 type RuntimeConfigSuccess = {
   ok: true;
-  redisUrl: string;
+  redisRestUrl: string;
+  redisRestToken: string;
   keyring: Map<string, Buffer>;
   activeKeyVersion: string;
 };
@@ -53,6 +52,9 @@ let cachedRuntimeConfig: RuntimeConfig | null = null;
 function loadRuntimeConfig(): RuntimeConfig {
   const env = validateEnv();
   if (!env.ok) {
+    console.error("[byok-auth] Server misconfiguration: env validation failed", {
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.SERVER_MISCONFIGURATION,
@@ -61,9 +63,12 @@ function loadRuntimeConfig(): RuntimeConfig {
     };
   }
 
-  const { redisUrl, byokActiveKeyVersion, byokMasterKeysJson } = env.config;
+  const { redisRestUrl, redisRestToken, byokActiveKeyVersion, byokMasterKeysJson } = env.config;
 
-  if (!redisUrl) {
+  if (!redisRestUrl || !redisRestToken) {
+    console.error("[byok-auth] Session storage not configured: REDIS_REST_URL or REDIS_REST_TOKEN missing", {
+      code: BYOK_ERROR.SESSION_STORAGE_NOT_CONFIGURED,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.SESSION_STORAGE_NOT_CONFIGURED,
@@ -73,6 +78,9 @@ function loadRuntimeConfig(): RuntimeConfig {
   }
 
   if (!byokActiveKeyVersion || !byokMasterKeysJson) {
+    console.error("[byok-auth] Encryption not configured: BYOK_ACTIVE_KEY_VERSION or BYOK_MASTER_KEYS missing", {
+      code: BYOK_ERROR.ENCRYPTION_NOT_CONFIGURED,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ENCRYPTION_NOT_CONFIGURED,
@@ -84,7 +92,11 @@ function loadRuntimeConfig(): RuntimeConfig {
   let keyring: Map<string, Buffer>;
   try {
     keyring = parseKeyring(byokMasterKeysJson);
-  } catch {
+  } catch (err) {
+    console.error("[byok-auth] Failed to parse BYOK_MASTER_KEYS keyring", {
+      code: BYOK_ERROR.ENCRYPTION_CONFIG_INVALID,
+      error: err,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ENCRYPTION_CONFIG_INVALID,
@@ -94,6 +106,10 @@ function loadRuntimeConfig(): RuntimeConfig {
   }
 
   if (!keyring.has(byokActiveKeyVersion)) {
+    console.error("[byok-auth] Active key version not found in keyring", {
+      code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,
+      activeKeyVersion: byokActiveKeyVersion,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,
@@ -104,7 +120,8 @@ function loadRuntimeConfig(): RuntimeConfig {
 
   return {
     ok: true,
-    redisUrl,
+    redisRestUrl,
+    redisRestToken,
     keyring,
     activeKeyVersion: byokActiveKeyVersion,
   };
@@ -133,7 +150,7 @@ export async function authenticateByokRequest(
     };
   }
 
-  const redis = getRedisClient(runtimeConfig.redisUrl);
+  const redis = getRedisClient(runtimeConfig.redisRestUrl, runtimeConfig.redisRestToken);
   const token = request.cookies.get(SETUP_SESSION_COOKIE)?.value;
 
   if (!token) {

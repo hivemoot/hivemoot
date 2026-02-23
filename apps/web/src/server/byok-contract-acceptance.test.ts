@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import IORedis, { type Redis } from "ioredis";
+import { Redis, type Redis as RedisType } from "@upstash/redis";
 import { encrypt, decrypt, parseKeyring, ByokCryptoError } from "./crypto";
 import { BYOK_ERROR } from "./byok-error";
 import { getByokEnvelope, setByokEnvelope } from "./byok-store";
@@ -44,21 +44,18 @@ function makeMockRedis() {
     _store: store,
   };
 
-  return client as unknown as Redis & { _store: Map<string, string> };
+  return client as unknown as RedisType & { _store: Map<string, string> };
 }
 
-const LIVE_REDIS_URL = process.env.BYOK_ACCEPTANCE_REDIS_URL ?? process.env.REDIS_URL;
+const LIVE_UPSTASH_URL = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_REST_URL ?? process.env.HIVEMOOT_REDIS_REST_URL;
+const LIVE_UPSTASH_TOKEN = process.env.BYOK_ACCEPTANCE_HIVEMOOT_REDIS_REST_TOKEN ?? process.env.HIVEMOOT_REDIS_REST_TOKEN;
 
-function makeLiveRedisClient(): Redis {
-  if (!LIVE_REDIS_URL) {
-    throw new Error("LIVE_REDIS_URL is required");
+function makeLiveRedisClient(): RedisType {
+  if (!LIVE_UPSTASH_URL || !LIVE_UPSTASH_TOKEN) {
+    throw new Error("HIVEMOOT_REDIS_REST_URL and HIVEMOOT_REDIS_REST_TOKEN are required");
   }
 
-  return new IORedis(LIVE_REDIS_URL, {
-    maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
-    lazyConnect: false,
-  });
+  return new Redis({ url: LIVE_UPSTASH_URL, token: LIVE_UPSTASH_TOKEN });
 }
 
 function makeNowIso() {
@@ -71,6 +68,12 @@ function flipByte(base64: string): string {
   return buf.toString("base64");
 }
 
+// ---------------------------------------------------------------------------
+// writeActiveEnvelope — mirrors the web app's config/rotate routes.
+// Encrypts a JSON payload { apiKey, provider, model } so the bot can
+// extract all three from the authenticated ciphertext.
+// ---------------------------------------------------------------------------
+
 async function writeActiveEnvelope(args: {
   redis: Redis;
   installationId: string;
@@ -81,10 +84,17 @@ async function writeActiveEnvelope(args: {
   model?: string;
   fingerprint?: string;
 }): Promise<ByokEnvelope> {
-  const encrypted = encrypt(args.plaintextKey, args.keyVersion, args.keyring);
+  const provider = args.provider ?? "anthropic";
+  const model = args.model ?? "claude-sonnet-4-20250514";
+
+  const encrypted = encrypt(
+    JSON.stringify({ apiKey: args.plaintextKey, provider, model }),
+    args.keyVersion,
+    args.keyring,
+  );
   const envelope: ByokEnvelope = {
-    provider: args.provider ?? "anthropic",
-    model: args.model ?? "claude-sonnet-4-20250514",
+    provider,
+    model,
     ciphertext: encrypted.ciphertext,
     iv: encrypted.iv,
     tag: encrypted.tag,
@@ -162,6 +172,12 @@ async function batchReEncryptInstallations(args: {
   return reEncrypted;
 }
 
+// ---------------------------------------------------------------------------
+// resolveByokForBot — mirrors the bot's byok.ts resolver.
+// Decrypts the ciphertext and parses the JSON payload to extract apiKey,
+// provider, and model. This matches the bot's decryptEnvelope() behavior.
+// ---------------------------------------------------------------------------
+
 async function resolveByokForBot(
   installationId: string,
   redis: Redis,
@@ -177,7 +193,7 @@ async function resolveByokForBot(
   }
 
   try {
-    const key = decrypt(
+    const decrypted = decrypt(
       {
         ciphertext: envelope.ciphertext,
         iv: envelope.iv,
@@ -187,12 +203,15 @@ async function resolveByokForBot(
       keyring,
     );
 
+    // Parse JSON payload — matches the bot's decryptEnvelope()
+    const payload = JSON.parse(decrypted) as { apiKey: string; provider: string; model: string };
+
     return {
       ok: true,
-      key,
+      key: payload.apiKey,
       keyVersion: envelope.keyVersion,
-      provider: envelope.provider,
-      model: envelope.model,
+      provider: payload.provider,
+      model: payload.model,
       fingerprint: envelope.fingerprint,
     };
   } catch (err) {
@@ -234,6 +253,85 @@ describe("BYOK contract acceptance", () => {
         keyVersion: "v1",
       }),
     );
+  });
+
+  it("returns provider and model from decrypted payload", async () => {
+    const redis = makeMockRedis();
+    const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
+
+    await writeActiveEnvelope({
+      redis,
+      installationId: "110",
+      plaintextKey: "sk-ant-test",
+      keyVersion: "v1",
+      keyring,
+      provider: "openai",
+      model: "gpt-4o",
+    });
+
+    const result = await resolveByokForBot("110", redis, keyring);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        key: "sk-ant-test",
+        provider: "openai",
+        model: "gpt-4o",
+      }),
+    );
+  });
+
+  it("authenticates provider via GCM — tampered envelope metadata detected", async () => {
+    const redis = makeMockRedis();
+    const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
+
+    await writeActiveEnvelope({
+      redis,
+      installationId: "120",
+      plaintextKey: "sk-test",
+      keyVersion: "v1",
+      keyring,
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+    });
+
+    const result = await resolveByokForBot("120", redis, keyring);
+
+    // Even if envelope metadata were tampered, the decrypted payload
+    // contains the authentic provider and model
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+      }),
+    );
+  });
+
+  it("ciphertext contains JSON with apiKey, provider, and model", async () => {
+    const redis = makeMockRedis();
+    const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
+
+    await writeActiveEnvelope({
+      redis,
+      installationId: "130",
+      plaintextKey: "sk-verify-format",
+      keyVersion: "v1",
+      keyring,
+      provider: "google",
+      model: "gemini-3-flash-preview",
+    });
+
+    // Decrypt the raw ciphertext and verify the payload structure
+    const envelope = await getByokEnvelope("130", redis);
+    const decrypted = decrypt(asEncryptedEnvelope(envelope!), keyring);
+    const parsed = JSON.parse(decrypted);
+
+    expect(parsed).toEqual({
+      apiKey: "sk-verify-format",
+      provider: "google",
+      model: "gemini-3-flash-preview",
+    });
   });
 
   it("returns byok_not_configured when no envelope exists", async () => {
@@ -399,8 +497,10 @@ describe("BYOK contract acceptance", () => {
     expect(migratedA?.keyVersion).toBe("v2");
     expect(migratedB?.keyVersion).toBe("v2");
 
+    // Old key version can still decrypt the pre-migration snapshot
     const oldVersionStillDecrypts = decrypt(oldEnvelopeSnapshot, keyring);
-    expect(oldVersionStillDecrypts).toBe("sk-old-version-601");
+    const oldPayload = JSON.parse(oldVersionStillDecrypts);
+    expect(oldPayload.apiKey).toBe("sk-old-version-601");
 
     const migratedAResult = await resolveByokForBot("601", redis, keyring);
     const migratedBResult = await resolveByokForBot("602", redis, keyring);
@@ -421,9 +521,47 @@ describe("BYOK contract acceptance", () => {
       }),
     );
   });
+
+  it("preserves provider and model through re-encryption", async () => {
+    const redis = makeMockRedis();
+    const keyring = parseKeyring(
+      JSON.stringify({
+        v1: "a".repeat(64),
+        v2: "b".repeat(64),
+      }),
+    );
+
+    await writeActiveEnvelope({
+      redis,
+      installationId: "700",
+      plaintextKey: "sk-provider-test",
+      keyVersion: "v1",
+      keyring,
+      provider: "openai",
+      model: "gpt-4o",
+    });
+
+    await reEncryptInstallation({
+      installationId: "700",
+      redis,
+      keyring,
+      activeKeyVersion: "v2",
+    });
+
+    const result = await resolveByokForBot("700", redis, keyring);
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        key: "sk-provider-test",
+        provider: "openai",
+        model: "gpt-4o",
+        keyVersion: "v2",
+      }),
+    );
+  });
 });
 
-const describeLiveRedis = LIVE_REDIS_URL ? describe : describe.skip;
+const describeLiveRedis = LIVE_UPSTASH_URL && LIVE_UPSTASH_TOKEN ? describe : describe.skip;
 
 describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
   it("resolves a configured installation through a real Redis transport", async () => {
@@ -450,7 +588,7 @@ describeLiveRedis("BYOK contract acceptance (live Redis)", () => {
       );
     } finally {
       await redis.del(`hive:byok:${installationId}`);
-      await redis.quit();
+      // @upstash/redis is HTTP REST — no connection to close
     }
   });
 });

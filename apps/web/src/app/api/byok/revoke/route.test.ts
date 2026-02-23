@@ -71,16 +71,16 @@ beforeEach(() => {
 
 describe("POST /api/byok/revoke", () => {
   it("revokes the BYOK config and clears ciphertext", async () => {
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest({});
     const res = await POST(req);
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("revoked");
 
-    // Verify ciphertext was cleared
+    // Verify ciphertext was cleared for the session installation
     expect(setByokEnvelope).toHaveBeenCalledWith(
-      "123",
+      MOCK_SESSION.installationId,
       expect.objectContaining({
         status: "revoked",
         ciphertext: "",
@@ -94,26 +94,11 @@ describe("POST /api/byok/revoke", () => {
   it("returns 404 with byok_not_configured when no envelope exists", async () => {
     vi.mocked(getByokEnvelope).mockResolvedValue(null);
 
-    const req = makeRequest({ installationId: "123" });
+    const req = makeRequest({});
     const res = await POST(req);
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe("byok_not_configured");
     expect(body.message).toBe("BYOK is not configured");
-  });
-
-  it("returns 403 on cross-installation attempt", async () => {
-    const req = makeRequest({ installationId: "999" });
-    const res = await POST(req);
-    expect(res.status).toBe(403);
-  });
-
-  it("returns 400 when installationId is missing", async () => {
-    const req = makeRequest({});
-    const res = await POST(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.code).toBe("byok_missing_fields");
-    expect(body.message).toBe("Missing required fields: installationId");
   });
 });

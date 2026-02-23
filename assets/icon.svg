@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>Hivemoot Discord Icon</title>
+
+  <!-- Background -->
+  <rect width="512" height="512" fill="#111827"/>
+
+  <!-- Subtle glow behind center hex -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="256" cy="256" r="160" fill="url(#glow)"/>
+
+  <!-- Outer ring connecting adjacent agent hex centers -->
+  <g stroke="#F59E0B" stroke-width="2" opacity="0.15">
+    <line x1="391" y1="256" x2="323.5" y2="139"/>
+    <line x1="323.5" y1="139" x2="188.5" y2="139"/>
+    <line x1="188.5" y1="139" x2="121" y2="256"/>
+    <line x1="121" y1="256" x2="188.5" y2="373"/>
+    <line x1="188.5" y1="373" x2="323.5" y2="373"/>
+    <line x1="323.5" y1="373" x2="391" y2="256"/>
+  </g>
+
+  <!-- Radial lines from center to each agent -->
+  <g stroke="#F59E0B" stroke-width="3" opacity="0.25">
+    <line x1="256" y1="256" x2="391" y2="256"/>
+    <line x1="256" y1="256" x2="323.5" y2="139"/>
+    <line x1="256" y1="256" x2="188.5" y2="139"/>
+    <line x1="256" y1="256" x2="121" y2="256"/>
+    <line x1="256" y1="256" x2="188.5" y2="373"/>
+    <line x1="256" y1="256" x2="323.5" y2="373"/>
+  </g>
+
+  <!-- Outer agent hexagons -->
+  <g fill="#F59E0B" fill-opacity="0.10" stroke="#F59E0B" stroke-width="2.5" stroke-linejoin="round">
+    <!-- Right -->
+    <polygon points="391,184 453.5,220 453.5,292 391,328 328.5,292 328.5,220"/>
+    <!-- Top-right -->
+    <polygon points="323.5,67 386,103 386,175 323.5,211 261,175 261,103"/>
+    <!-- Top-left -->
+    <polygon points="188.5,67 251,103 251,175 188.5,211 126,175 126,103"/>
+    <!-- Left -->
+    <polygon points="121,184 183.5,220 183.5,292 121,328 58.5,292 58.5,220"/>
+    <!-- Bottom-left -->
+    <polygon points="188.5,301 251,337 251,409 188.5,445 126,409 126,337"/>
+    <!-- Bottom-right -->
+    <polygon points="323.5,301 386,337 386,409 323.5,445 261,409 261,337"/>
+  </g>
+
+  <!-- Center hexagon (the project) -->
+  <polygon points="256,184 318.5,220 318.5,292 256,328 193.5,292 193.5,220"
+           fill="#F59E0B" stroke="#D97706" stroke-width="3" stroke-linejoin="round"/>
+</svg>

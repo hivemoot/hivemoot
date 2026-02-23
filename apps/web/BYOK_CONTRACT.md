@@ -78,7 +78,7 @@ Required in this repo (`apps/web`):
 
 | Var | Purpose |
 |---|---|
-| `REDIS_URL` | Redis connection for BYOK envelope storage |
+| `HIVEMOOT_REDIS_URL` | Redis connection for BYOK envelope storage |
 | `BYOK_ACTIVE_KEY_VERSION` | Key version used for new encryptions |
 | `BYOK_MASTER_KEYS` | JSON keyring map (`{"version":"hexKey"}`) |
 
@@ -86,7 +86,7 @@ Required in bot runtime (`hivemoot/hivemoot-bot`):
 
 | Var | Purpose |
 |---|---|
-| `REDIS_URL` | Same Redis instance that stores BYOK envelopes |
+| `HIVEMOOT_REDIS_URL` | Same Redis instance that stores BYOK envelopes |
 | `BYOK_MASTER_KEYS_JSON` | JSON keyring map used for runtime decryption |
 
 Keyring data contract is identical between `BYOK_MASTER_KEYS` and `BYOK_MASTER_KEYS_JSON`.
@@ -135,6 +135,6 @@ Contract behavior is covered by:
 These tests cover configured resolution, absent/revoked states, tamper detection, key version failures, cross-installation isolation, and migration compatibility.
 
 Real Redis execution path:
-- Set `BYOK_ACCEPTANCE_REDIS_URL` (or `REDIS_URL`) and run:
+- Set `BYOK_ACCEPTANCE_HIVEMOOT_REDIS_URL` (or `HIVEMOOT_REDIS_URL`) and run:
   - `npm test -- src/server/byok-contract-acceptance.test.ts`
 - The live-Redis block verifies resolver behavior through actual Redis transport rather than an in-memory mock.

@@ -1,24 +1,26 @@
 /**
- * GET /api/auth/github/start
+ * GET /api/auth/github/start-discover
  *
- * Initiates the GitHub OAuth flow for a given installation.
+ * Initiates the GitHub OAuth flow for the "already installed" discovery path.
  *
- * Expects: ?installation_id=<numeric id>
- *
- * - Validates the installation_id is present
- * - Generates a cryptographically random state nonce bound to the installation
- * - Stores the state in Redis with a 10-minute TTL
- * - Redirects the browser to GitHub's OAuth authorization URL
+ * Unlike /api/auth/github/start, this route does NOT require an installation_id.
+ * It stores a "discover" sentinel in the OAuth state. After the user authorizes,
+ * the callback detects the sentinel and resolves the real installation_id via
+ * GET /user/installations.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
+import {
+  createOAuthState,
+  DISCOVER_SENTINEL,
+  OAUTH_STATE_BINDING_COOKIE,
+} from "@/server/setup-session";
 
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
-const OAUTH_STATE_COOKIE_MAX_AGE = 600; // 10 minutes, aligned with Redis state TTL
+const OAUTH_STATE_COOKIE_MAX_AGE = 600;
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -41,21 +43,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { searchParams } = new URL(request.url);
-  const installationId = searchParams.get("installation_id");
-
-  if (!installationId || !/^\d+$/.test(installationId)) {
-    return NextResponse.json(
-      { error: "Missing or invalid installation_id" },
-      { status: 400 },
-    );
-  }
-
   const redis = getRedisClient(redisRestUrl, redisRestToken);
 
   let stateRecord: { state: string; stateBinding: string };
   try {
-    stateRecord = await createOAuthState(installationId, redis);
+    stateRecord = await createOAuthState(DISCOVER_SENTINEL, redis);
   } catch {
     return NextResponse.json(
       { error: "Failed to store OAuth state", code: OAUTH_STATE_STORE_FAILED_CODE },
@@ -68,7 +60,6 @@ export async function GET(request: NextRequest) {
   authorizeUrl.searchParams.set("client_id", githubClientId);
   authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
   authorizeUrl.searchParams.set("state", stateRecord.state);
-  // Request minimum scopes: we only need to read org membership
   authorizeUrl.searchParams.set("scope", "read:org");
 
   const response = NextResponse.redirect(authorizeUrl.toString());
@@ -79,5 +70,10 @@ export async function GET(request: NextRequest) {
     maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
     path: "/",
   });
+
+  // Suppress Next.js static rendering check — request param is used
+  // only to satisfy the dynamic route handler signature.
+  void request;
+
   return response;
 }

@@ -1,21 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
-import type Redis from "ioredis";
+import { type Redis } from "@upstash/redis";
 import {
   getByokEnvelope,
   setByokEnvelope,
+  hasByokEnvelope,
   listByokInstallationIds,
 } from "./byok-store";
 import type { ByokEnvelope } from "./byok-store";
 
 // ---------------------------------------------------------------------------
-// Minimal Redis mock — mirrors the pattern from setup-session.test.ts
+// Minimal Redis mock — mirrors @upstash/redis auto-deserialization behavior:
+// values are stored and returned as-is (the SDK handles JSON internally).
 // ---------------------------------------------------------------------------
 
 function makeMockRedis() {
-  const store = new Map<string, string>();
+  const store = new Map<string, unknown>();
 
   const client = {
-    set: vi.fn(async (key: string, value: string) => {
+    set: vi.fn(async (key: string, value: unknown) => {
       store.set(key, value);
       return "OK";
     }),
@@ -24,6 +26,9 @@ function makeMockRedis() {
       const existed = store.has(key);
       store.delete(key);
       return existed ? 1 : 0;
+    }),
+    exists: vi.fn(async (...keys: string[]) => {
+      return keys.filter((k) => store.has(k)).length;
     }),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     scan: vi.fn(async (cursor: string, ..._args: unknown[]) => {
@@ -36,7 +41,7 @@ function makeMockRedis() {
     }),
     _store: store,
   };
-  return client as unknown as Redis & { _store: Map<string, string> };
+  return client as unknown as Redis & { _store: Map<string, unknown> };
 }
 
 // ---------------------------------------------------------------------------
@@ -79,9 +84,10 @@ describe("getByokEnvelope", () => {
     expect(result).toEqual(envelope);
   });
 
-  it("returns null for corrupted JSON in Redis", async () => {
+  it("returns null for corrupted (non-object) data in Redis", async () => {
     const redis = makeMockRedis();
-    redis._store.set("hive:byok:456", "not-valid-json{{{");
+    // Simulate corrupted Redis data by storing a non-object directly
+    redis._store.set("hive:byok:456", "not-valid-data");
 
     const result = await getByokEnvelope("456", redis);
     expect(result).toBeNull();
@@ -89,21 +95,18 @@ describe("getByokEnvelope", () => {
 
   it("reads legacy envelopes that still use fingerprintLast4", async () => {
     const redis = makeMockRedis();
-    redis._store.set(
-      "hive:byok:789",
-      JSON.stringify({
-        provider: "anthropic",
-        model: "claude-sonnet-4-20250514",
-        ciphertext: "Y2lwaGVydGV4dA==",
-        iv: "aXYtdGVzdA==",
-        tag: "dGFnLXRlc3Q=",
-        keyVersion: "v1",
-        status: "active",
-        updatedAt: "2026-02-19T12:00:00Z",
-        updatedBy: "alice",
-        fingerprintLast4: "c0de",
-      }),
-    );
+    redis._store.set("hive:byok:789", {
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      ciphertext: "Y2lwaGVydGV4dA==",
+      iv: "aXYtdGVzdA==",
+      tag: "dGFnLXRlc3Q=",
+      keyVersion: "v1",
+      status: "active",
+      updatedAt: "2026-02-19T12:00:00Z",
+      updatedBy: "alice",
+      fingerprintLast4: "c0de",
+    });
 
     const result = await getByokEnvelope("789", redis);
     expect(result).toEqual(
@@ -115,14 +118,14 @@ describe("getByokEnvelope", () => {
 });
 
 describe("setByokEnvelope", () => {
-  it("stores the envelope as JSON", async () => {
+  it("stores the envelope", async () => {
     const redis = makeMockRedis();
     const envelope = makeEnvelope();
     await setByokEnvelope("123", envelope, redis);
 
-    const raw = redis._store.get("hive:byok:123");
-    expect(raw).toBeDefined();
-    expect(JSON.parse(raw!)).toEqual(envelope);
+    const stored = redis._store.get("hive:byok:123");
+    expect(stored).toBeDefined();
+    expect(stored).toEqual(envelope);
   });
 
   it("overwrites an existing envelope", async () => {
@@ -161,6 +164,20 @@ describe("setByokEnvelope + getByokEnvelope lifecycle", () => {
   });
 });
 
+describe("hasByokEnvelope", () => {
+  it("returns true when an envelope exists", async () => {
+    const redis = makeMockRedis();
+    await setByokEnvelope("100", makeEnvelope(), redis);
+
+    expect(await hasByokEnvelope("100", redis)).toBe(true);
+  });
+
+  it("returns false when no envelope exists", async () => {
+    const redis = makeMockRedis();
+    expect(await hasByokEnvelope("999", redis)).toBe(false);
+  });
+});
+
 describe("listByokInstallationIds", () => {
   it("returns empty array when no envelopes exist", async () => {
     const redis = makeMockRedis();
@@ -180,8 +197,8 @@ describe("listByokInstallationIds", () => {
 
   it("does not include non-BYOK keys", async () => {
     const redis = makeMockRedis();
-    redis._store.set("setup-session:abc", "{}");
-    redis._store.set("oauth-state:xyz", "{}");
+    redis._store.set("setup-session:abc", {});
+    redis._store.set("oauth-state:xyz", {});
     await setByokEnvelope("100", makeEnvelope(), redis);
 
     const ids = await listByokInstallationIds(redis);
