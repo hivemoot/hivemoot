@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 export const BYOK_ERROR = {
   ACTIVE_KEY_VERSION_UNAVAILABLE: "byok_key_version_unavailable",
+  DECRYPT_FAILED: "byok_decrypt_failed",
   ENCRYPTION_CONFIG_INVALID: "byok_encryption_config_invalid",
   ENCRYPTION_NOT_CONFIGURED: "byok_encryption_not_configured",
   INSTALLATION_MISMATCH: "byok_installation_mismatch",

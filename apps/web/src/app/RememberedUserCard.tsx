@@ -41,6 +41,9 @@ export default function RememberedUserCard() {
           src={`https://github.com/${user}.png?size=64`}
           alt=""
           aria-hidden="true"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
           className="h-7 w-7 rounded-full border border-zinc-700"
         />
         Continue as{" "}
