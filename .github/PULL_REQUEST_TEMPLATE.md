@@ -1,12 +1,31 @@
 ## What
 
-<!-- What does this PR change and why? -->
-
-## Issue
+<!-- One sentence: what changed and why? -->
 
 Fixes #<!-- issue number -->
 
-<!-- Closing keywords that create links: Fixes #N, Closes #N, Resolves #N -->
+## What it looks like
+
+<!-- Show the OUTCOME of this change, not the code.
+
+     Pick the format that fits:
+     • UI change       → before/after ASCII mockup or screenshot
+     • Config change   → before/after YAML/JSON snippet
+     • API change      → before/after request/response
+     • CLI change      → before/after terminal output
+     • Error message   → before/after of what the user sees
+     • Behavior change → table with scenario × before/after columns
+
+     Delete this section ONLY for purely internal changes
+     with zero user-visible effect (dep bumps, refactors). -->
+
+**Before:**
+```
+```
+
+**After:**
+```
+```
 
 ## Notes
 
