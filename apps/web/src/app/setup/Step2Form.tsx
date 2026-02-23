@@ -637,7 +637,10 @@ export default function Step2Form({
 
   const sessionBanner =
     sessionExpired ? (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+      // role="alert" triggers an assertive screen-reader announcement when the
+      // banner appears, so users who are mid-typing hear the expiry immediately
+      // (WCAG 4.1.3 Status Messages).
+      <div role="alert" className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
         <svg
           className="h-4 w-4 shrink-0 text-red-400"
           viewBox="0 0 16 16"
@@ -870,7 +873,8 @@ export default function Step2Form({
         )}
 
         {/* Provider selector — 2×2 grid */}
-        <fieldset>
+        {/* disabled={sessionExpired} propagates to all descendant buttons via HTML spec */}
+        <fieldset disabled={sessionExpired}>
           <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
           <div className="grid grid-cols-3 gap-2">
             {(["anthropic", "openai", "google"] as const).map((p) => {
@@ -884,6 +888,7 @@ export default function Step2Form({
                   className={`
                     flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5
                     text-sm font-medium transition-colors
+                    disabled:cursor-not-allowed disabled:opacity-50
                     ${
                       isActive
                         ? "border-honey-500/40 bg-honey-500/10 text-honey-400"
@@ -909,7 +914,8 @@ export default function Step2Form({
             type="text"
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+            disabled={sessionExpired}
+            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           />
           <p className="mt-1.5 text-xs text-zinc-500">
             The model the Queen uses for AI features.
@@ -932,12 +938,14 @@ export default function Step2Form({
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={KEY_PLACEHOLDERS[provider]}
-              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+              disabled={sessionExpired}
+              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             />
             <button
               type="button"
               onClick={() => setShowKey((v) => !v)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
+              disabled={sessionExpired}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={showKey ? "Hide API key" : "Show API key"}
             >
               {showKey ? <EyeOffIcon /> : <EyeIcon />}
