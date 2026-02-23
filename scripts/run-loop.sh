@@ -30,7 +30,6 @@ done
 # ── Configuration ──────────────────────────────────────────────────
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
 provider="${AGENT_PROVIDER:-claude}"
@@ -402,7 +401,6 @@ try_run_agent() {
     export LOG_DIR="$agent_log_dir"
     export AGENT_GITHUB_TOKEN_FILE="$token_file"
     export AGENT_GIT_NAME="$agent_id"
-    export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$extra_prompt"
     export AGENT_SESSION_KEY="$session_key"

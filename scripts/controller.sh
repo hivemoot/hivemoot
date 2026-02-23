@@ -230,7 +230,6 @@ spawn_worker() {
     -e AGENT_ID_01="${agent_id}"
     -e AGENT_GITHUB_TOKEN_01_FILE=/run/secrets/agent_github_token
     -e AGENT_GIT_NAME="${agent_id}"
-    -e AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     -e HIVEMOOT_BUZZ_ROLE="${agent_id}"
     -e HIVEMOOT_CLI_UPDATE=skip
     -e FRESH_CLONE="${FRESH_CLONE:-1}"
@@ -1194,7 +1193,6 @@ queue_root="${workspace_root}/queue"
 watch_state_root="${workspace_root}/watch-state"
 lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
 target_repo="${TARGET_REPO:-}"
