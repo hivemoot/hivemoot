@@ -8,7 +8,13 @@ function getCookie(name: string): string | null {
   const match = document.cookie.match(
     new RegExp(`(?:^|; )${name}=([^;]*)`),
   );
-  return match ? decodeURIComponent(match[1]) : null;
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // Malformed percent-encoding (e.g. %XY) would throw URIError; treat as missing.
+    return null;
+  }
 }
 
 const GET_STARTED_URL = "/setup";
@@ -16,10 +22,14 @@ const GET_STARTED_URL = "/setup";
 /**
  * Client component that renders the right side of the landing-page navbar.
  *
- * Reads the remembered-user cookie after mount (same hydration-safe pattern
- * as RememberedUserCard). Both server and client initially render the default
- * Sign in / Get Started buttons — no hydration mismatch. After mount, if the
- * cookie is present, the buttons are replaced with the user's GitHub avatar.
+ * Hydration approach: state starts null, so server and client both render the
+ * Sign in / Get Started buttons on initial render — no mismatch. After mount,
+ * if the cookie is present and valid, the buttons are replaced with the user's
+ * GitHub avatar chip.
+ *
+ * Note: unlike RememberedUserCard (which renders null before mount and hides
+ * entirely), this component always shows the Sign in / Get Started fallback on
+ * initial render. Both are hydration-safe, but via different initial states.
  */
 export default function NavActions() {
   const [user, setUser] = useState<string | null>(null);
@@ -45,6 +55,9 @@ export default function NavActions() {
           aria-hidden="true"
           className="h-6 w-6 rounded-full border border-zinc-700"
           onError={(e) => {
+            // Hide on CDN failure rather than showing a broken-image icon.
+            // The @username chip adjacent to the avatar already identifies the
+            // user; a generic placeholder image would add no useful information.
             (e.currentTarget as HTMLImageElement).style.display = "none";
           }}
         />
