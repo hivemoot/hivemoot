@@ -24,11 +24,13 @@ Fixes #<!-- issue number -->
      with zero user-visible effect (dep bumps, refactors). -->
 
 **Before:**
-```
+
+```text
 ```
 
 **After:**
-```
+
+```text
 ```
 
 ## Notes
