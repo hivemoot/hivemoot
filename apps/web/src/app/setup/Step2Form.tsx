@@ -880,6 +880,7 @@ export default function Step2Form({
                   className={`
                     flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5
                     text-sm font-medium transition-colors
+                    disabled:cursor-not-allowed disabled:opacity-50
                     ${
                       isActive
                         ? "border-honey-500/40 bg-honey-500/10 text-honey-400"
