@@ -55,6 +55,26 @@ def test_denied_package_lock():
     assert matches("package-lock.json", DENIED)
 
 
+def test_denied_pnpm_lock():
+    # pnpm-lock.yaml uses .yaml extension — not caught by *.lock
+    assert matches("pnpm-lock.yaml", DENIED)
+
+
+def test_denied_go_sum():
+    # go.sum has no .lock extension
+    assert matches("go.sum", DENIED)
+
+
+def test_denied_bun_lockb():
+    # bun.lockb uses .lockb binary format
+    assert matches("bun.lockb", DENIED)
+
+
+def test_denied_go_work_sum():
+    # go.work.sum is the Go workspace sum file
+    assert matches("go.work.sum", DENIED)
+
+
 def test_not_denied_readme():
     assert matches("README.md", DENIED) is False
 
@@ -101,6 +121,39 @@ def test_denied_denylist_github_workflow():
     eligible, reason = classify(files)
     assert eligible is False
     assert "denied:denylist" in reason
+
+
+def test_denied_denylist_pnpm_lock():
+    # pnpm-lock.yaml must produce denied:denylist, not denied:allowlist
+    files = [_file("pnpm-lock.yaml")]
+    eligible, reason = classify(files)
+    assert eligible is False
+    assert "denied:denylist" in reason
+    assert "pnpm-lock.yaml" in reason
+
+
+def test_denied_denylist_go_sum():
+    files = [_file("go.sum")]
+    eligible, reason = classify(files)
+    assert eligible is False
+    assert "denied:denylist" in reason
+    assert "go.sum" in reason
+
+
+def test_denied_denylist_bun_lockb():
+    files = [_file("bun.lockb")]
+    eligible, reason = classify(files)
+    assert eligible is False
+    assert "denied:denylist" in reason
+    assert "bun.lockb" in reason
+
+
+def test_denied_denylist_go_work_sum():
+    files = [_file("go.work.sum")]
+    eligible, reason = classify(files)
+    assert eligible is False
+    assert "denied:denylist" in reason
+    assert "go.work.sum" in reason
 
 
 def test_denied_denylist_bypass_attempt_adjacent():

@@ -185,11 +185,16 @@ governance:
         - "docs/**"
       # Hard denylist: any PR touching these paths is ineligible, regardless of allowedPaths.
       # Fail closed: classifier errors or config parse failures default to standard governance.
+      # Explicit entries for lockfiles that don't match *.lock (non-standard extensions):
       denyPaths:
         - ".github/**"
         - "package.json"
         - "package-lock.json"
         - "*.lock"
+        - "pnpm-lock.yaml"  # pnpm lockfile (.yaml extension, not caught by *.lock)
+        - "go.sum"          # Go module verification file
+        - "bun.lockb"       # Bun lockfile (binary, .lockb extension)
+        - "go.work.sum"     # Go workspace sum file
       # Size limits: PRs exceeding either threshold are ineligible.
       maxFiles: 5
       maxChangedLines: 80

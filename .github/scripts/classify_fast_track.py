@@ -14,7 +14,16 @@ import os
 import sys
 
 ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
-DENIED = [".github/**", "package.json", "package-lock.json", "*.lock"]
+DENIED = [
+    ".github/**",
+    "package.json",
+    "package-lock.json",
+    "*.lock",
+    "pnpm-lock.yaml",  # pnpm uses .yaml extension, not caught by *.lock
+    "go.sum",          # Go module verification file, no .lock extension
+    "bun.lockb",       # Bun lockfile uses .lockb binary format
+    "go.work.sum",     # Go workspace sum file, same extension gap as go.sum
+]
 MAX_FILES = 5
 MAX_LINES = 80
 
