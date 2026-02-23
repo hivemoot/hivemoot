@@ -168,11 +168,12 @@ def test_denied_denylist_bypass_attempt_adjacent():
 def test_denied_denylist_bypass_attempt_traversal():
     # Path that looks like it could escape denylist matching
     files = [_file(".github/../README.md")]
-    # PurePath normalizes this — .github/../README.md resolves to README.md
-    # This should be eligible since it resolves to README.md
+    # fnmatch does not normalize paths — ".github/../README.md" matches ".github/**"
+    # because fnmatch treats "*" as matching any character including "/" and ".".
+    # The traversal attempt is denied by the denylist, not passed through.
     eligible, reason = classify(files)
-    # Either outcome is acceptable as long as denylist is not bypassed for actual .github paths
-    assert isinstance(eligible, bool)
+    assert eligible is False
+    assert "denied:denylist" in reason
 
 
 def test_denied_mixed_allowed_and_source():

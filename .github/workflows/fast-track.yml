@@ -60,9 +60,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          REASON: ${{ steps.classify.outputs.REASON }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "hivemoot:fast-track" || true
-          echo "Labeled as fast-track. Reason: ${{ steps.classify.outputs.REASON }}"
+          echo "Labeled as fast-track. Reason: $REASON"
 
       - name: Remove stale fast-track label
         if: steps.classify.outputs.ELIGIBLE == 'false'
