@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LottieBee from "./LottieBee";
+import RememberedUserCard from "./RememberedUserCard";
 
 export const metadata: Metadata = {
   title: "Hivemoot — Your Own AI Engineering Team",
@@ -297,6 +298,12 @@ export default function LandingPage() {
           >
             GitHub
           </a>
+          <a
+            href="/api/auth/github/start-discover"
+            className="text-sm text-zinc-400 transition-colors hover:text-[#fafafa]"
+          >
+            Sign in
+          </a>
           <Link
             href={GET_STARTED_URL}
             className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
@@ -334,6 +341,8 @@ export default function LandingPage() {
           approaches, write code, review PRs, and ship — proactively,
           professionally, around the clock.
         </p>
+
+        <RememberedUserCard />
 
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <Link

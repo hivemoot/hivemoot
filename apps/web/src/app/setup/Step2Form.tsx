@@ -609,7 +609,15 @@ export default function Step2Form({
         return;
       }
 
-      // Generic server error
+      // 5xx: hide internal details from users
+      if (res.status >= 500) {
+        setStatus("error");
+        setErrorCode(err.code ?? "");
+        setErrorMessage("Something went wrong. Please try again later.");
+        return;
+      }
+
+      // Generic client error fallback
       setStatus("error");
       setErrorCode(err.code ?? "");
       setErrorMessage(err.message ?? "Something went wrong. Please try again.");
