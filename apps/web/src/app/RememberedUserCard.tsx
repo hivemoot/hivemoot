@@ -1,28 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { REMEMBERED_USER_COOKIE, GITHUB_LOGIN_RE } from "@/constants/cookies";
 
 function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
   const match = document.cookie.match(
     new RegExp(`(?:^|; )${name}=([^;]*)`),
   );
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function readRememberedUser(): string | null {
-  const raw = getCookie(REMEMBERED_USER_COOKIE);
-  return raw && GITHUB_LOGIN_RE.test(raw) ? raw : null;
-}
-
 /**
  * Client component that reads the remembered-user cookie and renders a
  * "Continue as @username" card. Runs client-side so the landing page can
  * remain statically generated.
+ *
+ * Uses useEffect so both server and client initially render null (no
+ * hydration mismatch). The cookie is read once after mount.
  */
 export default function RememberedUserCard() {
-  const [user] = useState(readRememberedUser);
+  const [user, setUser] = useState<string | null>(null);
+
+  useEffect(() => {
+    const raw = getCookie(REMEMBERED_USER_COOKIE);
+    if (raw && GITHUB_LOGIN_RE.test(raw)) {
+      setUser(raw); // eslint-disable-line react-hooks/set-state-in-effect -- browser-only init after hydration; empty deps = runs once
+    }
+  }, []);
 
   if (!user) return null;
 
