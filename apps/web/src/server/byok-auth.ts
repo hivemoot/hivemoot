@@ -111,9 +111,13 @@ function loadRuntimeConfig(): RuntimeConfig {
 }
 
 function getRuntimeConfig(): RuntimeConfig {
-  if (!cachedRuntimeConfig) {
-    // Parse env + keyring once per server process to keep request auth path lean.
-    cachedRuntimeConfig = loadRuntimeConfig();
+  if (!cachedRuntimeConfig || !cachedRuntimeConfig.ok) {
+    // Only cache successful config. Failure states are not cached so transient
+    // misconfiguration during deployment doesn't permanently break the server —
+    // each request retries until config stabilizes, then caches the success.
+    const result = loadRuntimeConfig();
+    if (result.ok) cachedRuntimeConfig = result;
+    return result;
   }
   return cachedRuntimeConfig;
 }
