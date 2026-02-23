@@ -13,6 +13,8 @@ import json
 import os
 import sys
 
+# Authoritative source: .github/hivemoot.yml -> governance.pr.fastTrack
+# Phase 2 TODO: read thresholds from config at runtime instead of hardcoding.
 ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
 DENIED = [".github/**", "package.json", "package-lock.json", "*.lock"]
 MAX_FILES = 5

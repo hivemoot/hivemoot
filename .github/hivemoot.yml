@@ -196,7 +196,10 @@ governance:
       maxFiles: 5
       maxChangedLines: 80
       # Gate: standard quality checks still required even on the fast-track path.
+      # minApprovals counts approvals from trustedReviewers only (see trustedReviewers above).
       minApprovals: 2
+      # requireCI: bot must wait for all required status checks to pass before merging.
+      # Phase 2 TODO: replace with an explicit list of check names (e.g. [lint, test]).
       requireCI: true
 
 standup:
