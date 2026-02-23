@@ -1,14 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useState } from "react";
 import { REMEMBERED_USER_COOKIE, GITHUB_LOGIN_RE } from "@/constants/cookies";
 
 function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
   const match = document.cookie.match(
     new RegExp(`(?:^|; )${name}=([^;]*)`),
   );
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function readRememberedUser(): string | null {
+  const raw = getCookie(REMEMBERED_USER_COOKIE);
+  return raw && GITHUB_LOGIN_RE.test(raw) ? raw : null;
 }
 
 /**
@@ -17,21 +22,14 @@ function getCookie(name: string): string | null {
  * remain statically generated.
  */
 export default function RememberedUserCard() {
-  const [user, setUser] = useState<string | null>(null);
-
-  useEffect(() => {
-    const raw = getCookie(REMEMBERED_USER_COOKIE);
-    if (raw && GITHUB_LOGIN_RE.test(raw)) {
-      setUser(raw);
-    }
-  }, []);
+  const [user] = useState(readRememberedUser);
 
   if (!user) return null;
 
   return (
     <div className="mb-6 flex justify-center">
-      <Link
-        href="/setup"
+      <a
+        href="/api/auth/github/start-discover"
         className="flex items-center gap-3 rounded-xl border border-zinc-700/60 bg-zinc-900/70 px-5 py-3 text-sm font-medium text-zinc-200 transition-all hover:border-honey-500/40 hover:bg-zinc-900"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -57,7 +55,7 @@ export default function RememberedUserCard() {
             strokeLinejoin="round"
           />
         </svg>
-      </Link>
+      </a>
     </div>
   );
 }

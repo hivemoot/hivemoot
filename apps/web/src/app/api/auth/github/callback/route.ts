@@ -14,7 +14,7 @@
  *    - Org installations: caller must have admin role in the org
  *    - User installations: authenticated login must match installation account
  * 6. Issue setup session token, store in Redis, set as HttpOnly cookie
- * 7. Redirect back to /setup
+ * 7. Smart redirect: /dashboard if BYOK already configured, otherwise /setup
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -37,6 +37,7 @@ import {
   SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
 import { REMEMBERED_USER_COOKIE } from "@/constants/cookies";
+import { hasByokEnvelope } from "@/server/byok-store";
 const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
 const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
@@ -212,10 +213,23 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // --- Step 7: Redirect to setup page with session cookie ---
-  const successUrl = new URL(`${siteUrl}/setup`);
-  successUrl.searchParams.set("installation_id", installationId);
-  successUrl.searchParams.set("auth", "ok");
+  // --- Step 7: Smart redirect based on setup completion ---
+  // Returning users who already configured BYOK go straight to the dashboard.
+  // New users (or failed checks) go to the setup wizard.
+  let setupComplete = false;
+  try {
+    setupComplete = await hasByokEnvelope(installationId, redis);
+  } catch {
+    // Fail closed — default to setup wizard if the check fails.
+  }
+
+  const successUrl = setupComplete
+    ? new URL(`${siteUrl}/dashboard`)
+    : new URL(`${siteUrl}/setup`);
+  if (!setupComplete) {
+    successUrl.searchParams.set("installation_id", installationId);
+    successUrl.searchParams.set("auth", "ok");
+  }
   const response = NextResponse.redirect(successUrl.toString());
 
   response.cookies.set(SETUP_SESSION_COOKIE, token, {
