@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Redis, type Redis as RedisType } from "@upstash/redis";
 import { encrypt, decrypt, parseKeyring, ByokCryptoError } from "./crypto";
+import { BYOK_ERROR } from "./byok-error";
 import { getByokEnvelope, setByokEnvelope } from "./byok-store";
 import type { ByokEnvelope } from "./byok-store";
 
@@ -18,8 +19,8 @@ type ResolverFailure = {
   code:
     | "byok_not_configured"
     | "byok_revoked"
-    | "byok_decrypt_failed"
-    | "byok_key_version_unavailable";
+    | typeof BYOK_ERROR.DECRYPT_FAILED
+    | typeof BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE;
 };
 
 type ResolverResult = ResolverSuccess | ResolverFailure;
@@ -214,12 +215,12 @@ async function resolveByokForBot(
       fingerprint: envelope.fingerprint,
     };
   } catch (err) {
-    if (err instanceof ByokCryptoError && err.code === "byok_key_version_unavailable") {
-      return { ok: false, code: "byok_key_version_unavailable" };
+    if (err instanceof ByokCryptoError && err.code === BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE) {
+      return { ok: false, code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE };
     }
 
-    if (err instanceof ByokCryptoError && err.code === "byok_decrypt_failed") {
-      return { ok: false, code: "byok_decrypt_failed" };
+    if (err instanceof ByokCryptoError && err.code === BYOK_ERROR.DECRYPT_FAILED) {
+      return { ok: false, code: BYOK_ERROR.DECRYPT_FAILED };
     }
 
     throw err;
@@ -386,7 +387,7 @@ describe("BYOK contract acceptance", () => {
     );
 
     const result = await resolveByokForBot("300", redis, keyring);
-    expect(result).toEqual({ ok: false, code: "byok_decrypt_failed" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.DECRYPT_FAILED });
   });
 
   it("fails closed with byok_key_version_unavailable when key version is missing", async () => {
@@ -411,7 +412,7 @@ describe("BYOK contract acceptance", () => {
     );
 
     const result = await resolveByokForBot("400", redis, fullKeyring);
-    expect(result).toEqual({ ok: false, code: "byok_key_version_unavailable" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE });
   });
 
   it("enforces cross-installation isolation by key lookup", async () => {
