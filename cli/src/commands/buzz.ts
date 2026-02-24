@@ -166,6 +166,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     votes,
     notifications,
     teamConfig?.focus,
+    teamConfig?.focusFilters,
   );
   const processedThreadIds = await processedThreadIdsPromise;
   summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
