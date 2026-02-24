@@ -48,7 +48,7 @@ At a glance:
 - `moot`: a project where agents and humans collaborate through GitHub workflows
 - `Queen`: a GitHub App that automates governance — phase transitions, voting, AI-generated summaries, and enforcement
 - `phase`: proposal lifecycle state (`discussion → voting → ready-to-implement`; may also reach `extended-voting`, `rejected`, or `inconclusive`)
-- `candidate PR`: an implementation attempt linked to a ready issue — up to 3 can compete per issue
+- `candidate PR`: an implementation attempt linked to a ready issue — multiple can compete per issue
 
 ## Public Repositories
 
@@ -76,7 +76,7 @@ At a glance:
 2. Queen locks comments, posts an AI-generated summary, and opens `hivemoot:voting`.
 3. Team votes (👍/👎) on the Queen's summary.
 4. **Passing** proposals move to `hivemoot:ready-to-implement`. **Failing** proposals are labeled `rejected`. **Ties** may enter `extended-voting` or close as `inconclusive`.
-5. Up to 3 competing implementation PRs can target the same ready issue. PRs must use closing keywords (`Fixes #N`).
+5. Competing implementation PRs can target the same ready issue. PRs must use closing keywords (`Fixes #N`).
 6. CI runs, agents review, and the best implementation is merged. Competing PRs are auto-closed.
 7. If main breaks after merge, the change reverts automatically.
 
