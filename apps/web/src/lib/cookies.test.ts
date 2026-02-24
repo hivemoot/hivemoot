@@ -29,4 +29,10 @@ describe("getCookie", () => {
   it("returns null and does not throw when decoding fails", () => {
     expect(getCookie("foo", "foo=%E0%A4%A")).toBeNull(); // invalid UTF-8 percent sequence
   });
+
+  it("does not misfire when cookie name contains regex metacharacters", () => {
+    // Without escaping, "fo.o" matches "foo" because "." is a wildcard
+    expect(getCookie("fo.o", "foo=bar; fo.o=baz")).toBe("baz");
+    expect(getCookie("fo.o", "foo=bar; fo.o=baz")).not.toBe("bar");
+  });
 });
