@@ -172,6 +172,11 @@ export interface PrioritySignal {
   summary: string;
 }
 
+export interface PublishReadiness {
+  canPush: boolean;
+  message?: string;
+}
+
 export interface RepoSummary {
   repo: RepoRef;
   currentUser: string;
@@ -190,6 +195,7 @@ export interface RepoSummary {
   notifications: NotificationRef[];
   repositoryHealth?: RepositoryHealth;
   prioritySignals?: PrioritySignal[];
+  publishReadiness?: PublishReadiness;
   focus?: string;
   notes: string[];
 }

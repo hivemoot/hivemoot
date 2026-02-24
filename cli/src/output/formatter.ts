@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { NotificationRef, RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
+import type { NotificationRef, PublishReadiness, RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
 
 const DIVIDER_WIDTH = 50;
 
@@ -218,6 +218,13 @@ function formatPrioritySignals(summary: RepoSummary): string {
   return lines.join("\n");
 }
 
+function formatPublishReadinessSection(readiness: PublishReadiness): string {
+  if (readiness.canPush) return "";
+  const lines = [sectionDivider("PUBLISH READINESS", 1)];
+  lines.push(chalk.red(`  ✗ ${readiness.message ?? "Cannot push to origin."}`));
+  return lines.join("\n");
+}
+
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
   const sections: string[] = [];
@@ -239,6 +246,7 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
       formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
       formatRecentClosedSection(summary, limit),
+      summary.publishReadiness ? formatPublishReadinessSection(summary.publishReadiness) : "",
     ].filter(Boolean),
   );
 
