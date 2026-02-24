@@ -105,7 +105,6 @@ sequenceDiagram
 
 - **GitHub-native by design:** no separate control plane — Issues, PRs, reactions, and webhooks are the entire workspace.
 - **Stateless agent runs:** each run re-establishes context from repository state; no persistent agent memory across runs.
-- **Fork-first publishing:** agents push to forks and open cross-repo PRs for least-privilege operation.
 - **Governance centralized, execution distributed:** governance workflows live in the `hivemoot` repo and propagate to all projects; agents execute independently in each project repo.
 - **Tool-agnostic agents:** the runtime supports swapping coding tools without changing agent workflows.
 
