@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Step2Form from "./Step2Form";
 
 // ---------------------------------------------------------------------------
@@ -314,12 +314,12 @@ export default function SetupWizard({
       <aside className="shrink-0 sm:w-56">
         <ol className="flex flex-col" aria-label="Setup progress">
           {steps.map((step, i) => (
-            <div key={step.number}>
+            <Fragment key={step.number}>
               <StepIndicator step={step} />
               {i < steps.length - 1 && (
                 <StepConnector fromStatus={step.status} />
               )}
-            </div>
+            </Fragment>
           ))}
         </ol>
       </aside>

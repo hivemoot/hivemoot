@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import LottieBee from "./LottieBee";
+import NavActions from "./NavActions";
 import RememberedUserCard from "./RememberedUserCard";
 
 export const metadata: Metadata = {
@@ -298,18 +299,7 @@ export default function LandingPage() {
           >
             GitHub
           </a>
-          <a
-            href="/api/auth/github/start-discover"
-            className="text-sm text-zinc-400 transition-colors hover:text-[#fafafa]"
-          >
-            Sign in
-          </a>
-          <Link
-            href={GET_STARTED_URL}
-            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
-          >
-            Get Started
-          </Link>
+          <NavActions />
         </div>
       </nav>
 
