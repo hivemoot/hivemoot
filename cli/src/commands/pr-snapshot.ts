@@ -14,8 +14,8 @@ function formatRepo(repo: RepoRef): string {
 function formatSnapshot(snapshot: PullRequestSnapshotResult): string {
   const linked = snapshot.linkedIssues.length > 0
     ? snapshot.linkedIssues.map((issue) => {
-      const ready = issue.isReadyToImplement ? "ready" : "not-ready";
-      return `#${issue.number} (${ready})`;
+      const labels = issue.labels.length > 0 ? issue.labels.join(", ") : "no-labels";
+      return `#${issue.number} (${labels})`;
     }).join(", ")
     : "none";
 

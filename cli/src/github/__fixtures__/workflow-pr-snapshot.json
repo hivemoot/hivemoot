@@ -28,8 +28,7 @@
       "state": "OPEN",
       "labels": [
         "hivemoot:ready-to-implement"
-      ],
-      "isReadyToImplement": true
+      ]
     },
     {
       "number": 43,
@@ -38,8 +37,7 @@
       "state": "OPEN",
       "labels": [
         "hivemoot:discussion"
-      ],
-      "isReadyToImplement": false
+      ]
     }
   ],
   "checks": {

@@ -8,7 +8,6 @@ import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
-import { issueVoteCommand } from "./commands/issue-vote.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -172,33 +171,6 @@ Examples:
     Evaluate blockers/warnings with deterministic codes`,
   )
   .action(prPreflightCommand);
-
-const issueProgram = program
-  .command("issue")
-  .description("Issue workflow helpers for autonomous agents");
-
-issueProgram
-  .command("vote")
-  .description("Vote on the active Queen voting comment for an issue")
-  .argument("<issue>", "Issue number or URL")
-  .requiredOption(
-    "--vote <choice>",
-    "Vote choice: support | oppose | needs-discussion | needs-human",
-  )
-  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
-  .option("--json", "Output as JSON")
-  .addHelpText(
-    "after",
-    `
-
-Examples:
-  $ hivemoot issue vote 23 --vote support --repo hivemoot/hivemoot
-    React with 👍 on the active voting comment
-
-  $ hivemoot issue vote https://github.com/hivemoot/hivemoot/issues/23 --vote needs-human --json
-    React with 👀 and output machine-readable result`,
-  )
-  .action(issueVoteCommand);
 
 program
   .command("ack")

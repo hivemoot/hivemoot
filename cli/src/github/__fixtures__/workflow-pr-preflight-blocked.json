@@ -57,7 +57,7 @@
   "blockers": [
     {
       "code": "no_linked_issue",
-      "message": "Pull request must link an approved issue via closing keyword."
+      "message": "Pull request must link an issue via closing keyword."
     },
     {
       "code": "merge_conflict",
