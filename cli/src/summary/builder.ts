@@ -1,4 +1,5 @@
 import type {
+  FocusFilters,
   GitHubIssue,
   GitHubPR,
   NotificationRef,
@@ -44,6 +45,113 @@ const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set<string>([
 
 const OMITTED_PIPELINE_NOTE =
   "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.";
+
+const FOCUS_SECTION_MAP = {
+  "needs-human": "needsHuman",
+  "drive-discussion": "driveDiscussion",
+  "drive-implementation": "driveImplementation",
+  "voting": "voteOn",
+  "discussion": "discuss",
+  "ready-to-implement": "implement",
+  "unclassified": "unclassified",
+  "review-prs": "reviewPRs",
+  "draft-prs": "draftPRs",
+  "address-feedback": "addressFeedback",
+} as const;
+
+type SuppressSectionKey = keyof typeof FOCUS_SECTION_MAP;
+
+interface NormalizedFocusFilters {
+  labelInclude?: Set<string>;
+  labelExclude?: Set<string>;
+  authorInclude?: Set<string>;
+  authorExclude?: Set<string>;
+  suppressSections: Set<SuppressSectionKey>;
+  unknownSuppressSections: string[];
+}
+
+function normalizeFilterValues(values?: string[]): Set<string> | undefined {
+  if (!values || values.length === 0) return undefined;
+  const normalized = values
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  if (normalized.length === 0) return undefined;
+  return new Set(normalized);
+}
+
+function normalizeFocusFilters(focusFilters?: FocusFilters): NormalizedFocusFilters {
+  const labelInclude = normalizeFilterValues(focusFilters?.labels?.include);
+  const labelExclude = normalizeFilterValues(focusFilters?.labels?.exclude);
+  const authorInclude = normalizeFilterValues(focusFilters?.authors?.include);
+  const authorExclude = normalizeFilterValues(focusFilters?.authors?.exclude);
+
+  const suppressSections = new Set<SuppressSectionKey>();
+  const unknownSuppressSections: string[] = [];
+  const unknownSeen = new Set<string>();
+
+  for (const rawSection of focusFilters?.suppressSections ?? []) {
+    const key = rawSection.trim().toLowerCase();
+    if (!key) continue;
+    if (Object.hasOwn(FOCUS_SECTION_MAP, key)) {
+      suppressSections.add(key as SuppressSectionKey);
+      continue;
+    }
+
+    if (!unknownSeen.has(key)) {
+      unknownSeen.add(key);
+      unknownSuppressSections.push(rawSection);
+    }
+  }
+
+  return {
+    labelInclude,
+    labelExclude,
+    authorInclude,
+    authorExclude,
+    suppressSections,
+    unknownSuppressSections,
+  };
+}
+
+function hasItemFilters(filters: NormalizedFocusFilters): boolean {
+  return Boolean(
+    filters.labelInclude ||
+    filters.labelExclude ||
+    filters.authorInclude ||
+    filters.authorExclude,
+  );
+}
+
+function matchesFocusFilters(
+  labels: Array<{ name: string }>,
+  authorLogin: string | undefined,
+  filters: NormalizedFocusFilters,
+): boolean {
+  if (!hasItemFilters(filters)) return true;
+
+  const normalizedLabels = labels.map((label) => label.name.toLowerCase());
+  const normalizedAuthor = authorLogin?.toLowerCase();
+
+  if (filters.labelExclude && normalizedLabels.some((label) => filters.labelExclude?.has(label))) {
+    return false;
+  }
+
+  if (filters.labelInclude && !normalizedLabels.some((label) => filters.labelInclude?.has(label))) {
+    return false;
+  }
+
+  if (filters.authorExclude && normalizedAuthor && filters.authorExclude.has(normalizedAuthor)) {
+    return false;
+  }
+
+  if (filters.authorInclude) {
+    if (!normalizedAuthor || !filters.authorInclude.has(normalizedAuthor)) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 function isMergeReadyPR(pr: GitHubPR): boolean {
   if (pr.isDraft) return false;
@@ -319,6 +427,7 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  focusFilters?: FocusFilters,
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -330,7 +439,18 @@ export function buildSummary(
   const addressFeedback: SummaryItem[] = [];
   const notes: string[] = [];
 
-  for (const issue of issues) {
+  const normalizedFocusFilters = normalizeFocusFilters(focusFilters);
+  const shouldFilterItems = hasItemFilters(normalizedFocusFilters);
+  const visibleIssues = shouldFilterItems
+    ? issues.filter((issue) =>
+      matchesFocusFilters(issue.labels, issue.author?.login ?? undefined, normalizedFocusFilters))
+    : issues;
+  const visiblePRs = shouldFilterItems
+    ? prs.filter((pr) =>
+      matchesFocusFilters(pr.labels, pr.author?.login ?? undefined, normalizedFocusFilters))
+    : prs;
+
+  for (const issue of visibleIssues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
@@ -349,7 +469,7 @@ export function buildSummary(
   }
 
   // Annotate implement items with competing PR counts
-  const competitionMap = currentUser ? buildCompetitionMap(prs, currentUser) : new Map<number, number>();
+  const competitionMap = currentUser ? buildCompetitionMap(visiblePRs, currentUser) : new Map<number, number>();
   for (const item of implement) {
     const count = competitionMap.get(item.number) ?? 0;
     if (count > 0) {
@@ -357,7 +477,7 @@ export function buildSummary(
     }
   }
 
-  for (const pr of prs) {
+  for (const pr of visiblePRs) {
     const { bucket, item } = classifyPR(pr, now);
     const ctx = reviewContext(pr, currentUser, now);
     if (ctx) {
@@ -408,6 +528,33 @@ export function buildSummary(
     return true;
   });
 
+  if (normalizedFocusFilters.suppressSections.size > 0) {
+    const sectionData = {
+      needsHuman,
+      driveDiscussion,
+      driveImplementation,
+      voteOn: filteredVoteOn,
+      discuss: filteredDiscuss,
+      implement,
+      unclassified,
+      reviewPRs: filteredReviewPRs,
+      draftPRs,
+      addressFeedback: filteredAddressFeedback,
+    };
+
+    for (const sectionKey of normalizedFocusFilters.suppressSections) {
+      const sectionName = FOCUS_SECTION_MAP[sectionKey];
+      sectionData[sectionName].length = 0;
+    }
+  }
+
+  if (normalizedFocusFilters.unknownSuppressSections.length > 0) {
+    const validSections = Object.keys(FOCUS_SECTION_MAP).join(", ");
+    notes.push(
+      `Ignoring unknown focus filters.suppressSections value(s): ${normalizedFocusFilters.unknownSuppressSections.join(", ")}. Valid values: ${validSections}.`,
+    );
+  }
+
   const sectionEntries: [string, SummaryItem[]][] = [
     ["needsHuman", needsHuman],
     ["driveDiscussion", driveDiscussion],
@@ -424,6 +571,9 @@ export function buildSummary(
   // Annotate all items with unread notification status and collect notification refs
   const notificationRefs: NotificationRef[] = [];
   const matchedNumbers = new Set<number>();
+  const fetchedOpenNumbers = new Set<number>();
+  for (const issue of issues) fetchedOpenNumbers.add(issue.number);
+  for (const pr of prs) fetchedOpenNumbers.add(pr.number);
 
   for (const [section, items] of sectionEntries) {
     for (const item of items) {
@@ -458,6 +608,7 @@ export function buildSummary(
   // open items (e.g. closed threads or items beyond fetch limit).
   for (const [number, n] of notifications.entries()) {
     if (matchedNumbers.has(number)) continue;
+    if (fetchedOpenNumbers.has(number)) continue;
 
     const ackKey = `${n.threadId}:${n.updatedAt}`;
     notificationRefs.push({
@@ -480,7 +631,7 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
-  const hasDefaultPhaseLabels = issues.some((issue) =>
+  const hasDefaultPhaseLabels = visibleIssues.some((issue) =>
     issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
@@ -490,8 +641,8 @@ export function buildSummary(
         readyToImplement: implement.length,
       }
     : undefined;
-  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
-  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
+  const repositoryHealth = buildRepositoryHealth(visibleIssues, visiblePRs, currentUser, now, issuePipeline);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(visiblePRs));
   if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
 
   return {

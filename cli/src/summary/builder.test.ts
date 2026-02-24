@@ -1292,4 +1292,137 @@ describe("buildSummary()", () => {
       "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
     );
   });
+
+  it("filters issues by label include rules before classification", () => {
+    const issues = [
+      makeIssue({ number: 700, labels: [{ name: "bug" }, { name: "hivemoot:ready-to-implement" }] }),
+      makeIssue({ number: 701, labels: [{ name: "enhancement" }, { name: "hivemoot:ready-to-implement" }] }),
+    ];
+
+    const summary = buildSummary(
+      repo,
+      issues,
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { labels: { include: ["bug"] } },
+    );
+
+    expect(summary.implement.map((item) => item.number)).toEqual([700]);
+  });
+
+  it("uses exclude-wins precedence when include and exclude both match", () => {
+    const issues = [
+      makeIssue({
+        number: 710,
+        labels: [{ name: "bug" }, { name: "wontfix" }, { name: "hivemoot:ready-to-implement" }],
+      }),
+    ];
+
+    const summary = buildSummary(
+      repo,
+      issues,
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { labels: { include: ["bug"], exclude: ["wontfix"] } },
+    );
+
+    expect(summary.implement).toHaveLength(0);
+  });
+
+  it("filters items by author include/exclude rules", () => {
+    const issues = [
+      makeIssue({ number: 720, author: { login: "dependabot[bot]" } }),
+      makeIssue({ number: 721, author: { login: "alice" } }),
+    ];
+    const prs = [
+      makePR({ number: 722, author: { login: "alice" } }),
+      makePR({ number: 723, author: { login: "bob" } }),
+    ];
+
+    const summary = buildSummary(
+      repo,
+      issues,
+      prs,
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { authors: { include: ["alice", "dependabot[bot]"], exclude: ["dependabot[bot]"] } },
+    );
+
+    expect(summary.implement.map((item) => item.number)).toEqual([721]);
+    expect(summary.reviewPRs.map((item) => item.number)).toEqual([722]);
+  });
+
+  it("suppresses configured sections and skips their notifications", () => {
+    const discussionIssue = makeIssue({ number: 730, labels: [{ name: "hivemoot:discussion" }] });
+    const readyIssue = makeIssue({ number: 731, labels: [{ name: "hivemoot:ready-to-implement" }] });
+    const notifications = new Map([
+      [730, { threadId: "T730", reason: "comment", updatedAt: "2025-06-15T11:00:00Z" }],
+      [999, {
+        threadId: "T999",
+        reason: "mention",
+        updatedAt: "2025-06-15T12:00:00Z",
+        title: "Still unread",
+        url: "https://github.com/hivemoot/colony/issues/999",
+        itemType: "Issue" as const,
+      }],
+    ]);
+
+    const summary = buildSummary(
+      repo,
+      [discussionIssue, readyIssue],
+      [],
+      "testuser",
+      now,
+      new Map(),
+      notifications,
+      undefined,
+      { suppressSections: ["discussion", "ready-to-implement"] },
+    );
+
+    expect(summary.discuss).toHaveLength(0);
+    expect(summary.implement).toHaveLength(0);
+    expect(summary.notifications).toEqual([
+      {
+        number: 999,
+        title: "Still unread",
+        url: "https://github.com/hivemoot/colony/issues/999",
+        itemType: "Issue",
+        threadId: "T999",
+        reason: "mention",
+        timestamp: "2025-06-15T12:00:00Z",
+        age: "just now",
+        ackKey: "T999:2025-06-15T12:00:00Z",
+        section: "other",
+      },
+    ]);
+  });
+
+  it("adds a note for unknown suppress section keys", () => {
+    const summary = buildSummary(
+      repo,
+      [],
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { suppressSections: ["discussion", "does-not-exist"] },
+    );
+
+    expect(summary.notes).toContain(
+      "Ignoring unknown focus filters.suppressSections value(s): does-not-exist. Valid values: needs-human, drive-discussion, drive-implementation, voting, discussion, ready-to-implement, unclassified, review-prs, draft-prs, address-feedback.",
+    );
+  });
 });

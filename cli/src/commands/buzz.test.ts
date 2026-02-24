@@ -378,6 +378,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
@@ -401,6 +402,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
@@ -423,6 +425,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -466,6 +469,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -564,6 +568,7 @@ describe("buzzCommand", () => {
       voteMap,
       expect.any(Map),
       undefined,
+      undefined,
     );
   });
 
@@ -658,6 +663,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       notificationMap,
+      undefined,
       undefined,
     );
   });
@@ -933,6 +939,32 @@ describe("buzzCommand", () => {
     expect(focusArg).toBe("Focus on PR reviews first.");
   });
 
+  it("passes focus filters from team config to buildSummary", async () => {
+    const teamWithFocusFilters = {
+      ...testTeamConfig,
+      focus: "Fix bugs first.",
+      focusFilters: {
+        labels: { include: ["bug"] },
+        authors: { exclude: ["dependabot[bot]"] },
+        suppressSections: ["ready-to-implement"],
+      },
+    };
+    mockedLoadTeamConfig.mockResolvedValue(teamWithFocusFilters);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const focusArg = mockedBuildSummary.mock.calls[0][7];
+    const focusFiltersArg = mockedBuildSummary.mock.calls[0][8];
+    expect(focusArg).toBe("Fix bugs first.");
+    expect(focusFiltersArg).toEqual({
+      labels: { include: ["bug"] },
+      authors: { exclude: ["dependabot[bot]"] },
+      suppressSections: ["ready-to-implement"],
+    });
+  });
+
   it("passes undefined focus when team config has no focus", async () => {
     mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
     mockedFormatStatus.mockReturnValue("output");
@@ -941,6 +973,7 @@ describe("buzzCommand", () => {
 
     const focusArg = mockedBuildSummary.mock.calls[0][7];
     expect(focusArg).toBeUndefined();
+    expect(mockedBuildSummary.mock.calls[0][8]).toBeUndefined();
   });
 
   it("passes focus to buildSummary when using --role", async () => {
