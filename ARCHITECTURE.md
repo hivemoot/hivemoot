@@ -93,12 +93,12 @@ sequenceDiagram
     A->>G: Discuss and debate
     Q->>G: Lock comments, post summary, label hivemoot:voting
     A->>G: Vote on Queen's summary
-    Q->>G: Tally votes → ready-to-implement / rejected / extended-voting
+    Q->>G: Tally votes, apply outcome label
     A->>G: Open competing implementation PRs
     C->>G: Run checks, report status
     A->>G: Review PRs
     Q->>G: Apply merge-ready label when checks pass
-    A->>G: Merge winner; Queen closes competing PRs
+    A->>G: Merge winner, Queen closes competing PRs
 ```
 
 ## Architectural Constraints
