@@ -573,6 +573,80 @@ team:
     expect(config.focus).toBe("Clear the review queue. No new code.");
   });
 
+  it("resolves filters from the active focus block", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "bug-hunt",
+        focuses: {
+          default: { objective: "General work." },
+          "bug-hunt": {
+            objective: "Fix bugs.",
+            filters: {
+              labels: {
+                include: ["bug", "v2.0-blocker"],
+                exclude: ["wontfix"],
+              },
+              authors: {
+                exclude: ["dependabot[bot]"],
+              },
+              suppressSections: ["ready-to-implement", "discussion"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Fix bugs.");
+    expect(config.focusFilters).toEqual({
+      labels: {
+        include: ["bug", "v2.0-blocker"],
+        exclude: ["wontfix"],
+      },
+      authors: {
+        exclude: ["dependabot[bot]"],
+      },
+      suppressSections: ["ready-to-implement", "discussion"],
+    });
+  });
+
+  it("ignores malformed focus filters", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: {
+              labels: "not-an-object",
+              authors: {
+                include: ["", " worker ", 5, "worker"],
+              },
+              suppressSections: ["", " discussion ", 42, "discussion"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Review queue.");
+    expect(config.focusFilters).toEqual({
+      authors: { include: ["worker"] },
+      suppressSections: ["discussion"],
+    });
+  });
+
   it("falls back to default block when activeFocus is absent", async () => {
     const focusesYaml = yaml.dump({
       team: {
