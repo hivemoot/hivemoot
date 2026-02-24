@@ -50,7 +50,8 @@ function createYamlSecurityGuard(
   };
 }
 
-function parseTeamFocus(rawFocus: unknown): string | undefined {
+// Parses the legacy focus.default string format.
+function parseLegacyFocus(rawFocus: unknown): string | undefined {
   if (!rawFocus || typeof rawFocus !== "object" || Array.isArray(rawFocus)) return undefined;
 
   const focusObj = rawFocus as Record<string, unknown>;
@@ -59,6 +60,55 @@ function parseTeamFocus(rawFocus: unknown): string | undefined {
 
   const focusValue = defaultValue.trim();
   return focusValue || undefined;
+}
+
+const MAX_OBJECTIVE_LENGTH = 2_000;
+const MAX_FOCUS_NAME_LENGTH = 64;
+
+// Resolves focus from the team config. Handles two formats:
+// 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
+// 2. Legacy: team.focus.default (plain string)
+// The new format takes precedence when team.focuses is present.
+function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
+  const rawFocuses = rawTeam.focuses;
+
+  if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
+    const focuses = rawFocuses as Record<string, unknown>;
+
+    // Determine which block is active.
+    const rawActiveFocus = rawTeam.activeFocus;
+    const rawDefaultFocus = rawTeam.defaultFocus;
+
+    const candidates: Array<string | undefined> = [
+      typeof rawActiveFocus === "string" ? rawActiveFocus.trim() || undefined : undefined,
+      typeof rawDefaultFocus === "string" ? rawDefaultFocus.trim() || undefined : undefined,
+      "default",
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      if (candidate.length > MAX_FOCUS_NAME_LENGTH) continue;
+
+      const block = focuses[candidate];
+      if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+
+      const b = block as Record<string, unknown>;
+      if (typeof b.objective !== "string") continue;
+
+      const objective = b.objective.trim();
+      if (!objective) continue;
+      // Silently skip rather than error: config parsing degrades gracefully,
+      // and the next candidate (or undefined) is returned.
+      if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
+
+      return objective;
+    }
+
+    return undefined;
+  }
+
+  // Fall back to the legacy focus.default format.
+  return parseLegacyFocus(rawTeam.focus);
 }
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
@@ -157,7 +207,7 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
-  const focus = parseTeamFocus(team.focus);
+  const focus = resolveFocus(team as unknown as Record<string, unknown>);
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,

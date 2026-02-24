@@ -18,6 +18,7 @@ const PROVIDER_VALIDATION_TIMEOUT_REASON = "Provider validation timed out";
 const PROVIDER_VALIDATORS: Record<string, ProviderValidator> = {
   anthropic: validateAnthropic,
   openai: validateOpenAI,
+  google: validateGoogle,
 };
 
 function isAbortError(error: unknown): boolean {
@@ -97,5 +98,23 @@ async function validateOpenAI(apiKey: string): Promise<ValidationResult> {
       return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
     }
     return { valid: false, reason: "Failed to reach OpenAI API" };
+  }
+}
+
+async function validateGoogle(apiKey: string): Promise<ValidationResult> {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+    const response = await fetchWithTimeout(url, {});
+
+    if (response.ok) return { valid: true };
+    if (response.status === 400 || response.status === 403) {
+      return { valid: false, reason: "Invalid API key" };
+    }
+    return { valid: false, reason: `Provider returned ${response.status}` };
+  } catch (error) {
+    if (isAbortError(error)) {
+      return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
+    }
+    return { valid: false, reason: "Failed to reach Google AI API" };
   }
 }

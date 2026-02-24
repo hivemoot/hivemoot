@@ -51,8 +51,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Encrypt and store
-  const encrypted = encrypt(apiKey, auth.activeKeyVersion, auth.keyring);
+  // Encrypt the full payload so provider and model are GCM-authenticated
+  const encrypted = encrypt(
+    JSON.stringify({ apiKey, provider, model }),
+    auth.activeKeyVersion,
+    auth.keyring,
+  );
   const envelope: ByokEnvelope = {
     provider,
     model,

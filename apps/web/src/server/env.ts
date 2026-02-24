@@ -30,8 +30,8 @@ interface EnvConfig {
 }
 
 const REQUIRED_IN_PRODUCTION = [
-  "UPSTASH_REDIS_REST_URL",
-  "UPSTASH_REDIS_REST_TOKEN",
+  "HIVEMOOT_REDIS_REST_URL",
+  "HIVEMOOT_REDIS_REST_TOKEN",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_CLIENT_ID",
@@ -56,8 +56,8 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
   return {
     ok: true,
     config: {
-      redisRestUrl: process.env.UPSTASH_REDIS_REST_URL,
-      redisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN,
+      redisRestUrl: process.env.HIVEMOOT_REDIS_REST_URL,
+      redisRestToken: process.env.HIVEMOOT_REDIS_REST_TOKEN,
       githubAppId: process.env.GITHUB_APP_ID,
       githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY,
       githubClientId: process.env.GITHUB_CLIENT_ID,

@@ -13,6 +13,9 @@
 
 import { randomBytes } from "crypto";
 import { type Redis } from "@upstash/redis";
+import { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE } from "@/constants/cookies";
+
+export { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE };
 
 const STATE_TTL_SECONDS = 600;
 export const SESSION_TTL_SECONDS = 1800;
@@ -21,17 +24,11 @@ const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
 
 /**
- * Browser binding cookie for OAuth state.
- *
- * The callback must present both:
- * - URL `state`
- * - this cookie value
- * and they must match the server-side state record.
+ * Sentinel value used as the installationId in OAuth state when the user
+ * starts the "already installed" discovery flow. The callback detects this
+ * and resolves the real installationId via `GET /user/installations`.
  */
-export const OAUTH_STATE_BINDING_COOKIE = "oauth_state_binding";
-
-/** Cookie name for the short-lived setup session token. */
-export const SETUP_SESSION_COOKIE = "setup_session";
+export const DISCOVER_SENTINEL = "discover";
 
 interface OAuthStatePayload {
   installationId: string;

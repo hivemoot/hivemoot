@@ -77,6 +77,18 @@ export async function getByokEnvelope(
 }
 
 /**
+ * Returns true if a BYOK envelope exists for the given installation.
+ * Uses a single Redis EXISTS command — no deserialization, no crypto data in memory.
+ */
+export async function hasByokEnvelope(
+  installationId: string,
+  redis: Redis,
+): Promise<boolean> {
+  const count = await redis.exists(`${KEY_PREFIX}${installationId}`);
+  return count > 0;
+}
+
+/**
  * Stores (creates or overwrites) the BYOK envelope for an installation.
  */
 export async function setByokEnvelope(

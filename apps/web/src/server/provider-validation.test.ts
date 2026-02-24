@@ -149,6 +149,58 @@ describe("validateProviderKey — openai", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Google
+// ---------------------------------------------------------------------------
+
+describe("validateProviderKey — google", () => {
+  it("returns valid when Google AI API responds 200", async () => {
+    mockFetchResponse(200, { models: [] });
+    const result = await validateProviderKey("google", "AIzaTest123");
+    expect(result).toEqual({ valid: true });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("generativelanguage.googleapis.com/v1beta/models?key=AIzaTest123"),
+      expect.any(Object),
+    );
+  });
+
+  it("returns invalid with reason on 400", async () => {
+    mockFetchResponse(400);
+    const result = await validateProviderKey("google", "bad-key");
+    expect(result).toEqual({ valid: false, reason: "Invalid API key" });
+  });
+
+  it("returns invalid with reason on 403", async () => {
+    mockFetchResponse(403);
+    const result = await validateProviderKey("google", "bad-key");
+    expect(result).toEqual({ valid: false, reason: "Invalid API key" });
+  });
+
+  it("returns invalid with status on other errors", async () => {
+    mockFetchResponse(500);
+    const result = await validateProviderKey("google", "AIzaTest123");
+    expect(result).toEqual({ valid: false, reason: "Provider returned 500" });
+  });
+
+  it("handles network errors gracefully", async () => {
+    mockFetchError();
+    const result = await validateProviderKey("google", "AIzaTest123");
+    expect(result).toEqual({ valid: false, reason: "Failed to reach Google AI API" });
+  });
+
+  it("times out when Google AI API does not respond", async () => {
+    vi.useFakeTimers();
+    mockFetchHangUntilAbort();
+
+    const resultPromise = validateProviderKey("google", "AIzaTest123");
+    await vi.advanceTimersByTimeAsync(PROVIDER_VALIDATION_TIMEOUT_MS);
+    const result = await resultPromise;
+
+    expect(result).toEqual({ valid: false, reason: "Provider validation timed out" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unknown provider
 // ---------------------------------------------------------------------------
 
@@ -157,7 +209,7 @@ describe("validateProviderKey — unknown provider", () => {
     const result = await validateProviderKey("deepseek", "key");
     expect(result).toEqual({
       valid: false,
-      reason: "Unsupported provider. Supported providers: anthropic, openai",
+      reason: "Unsupported provider. Supported providers: anthropic, openai, google",
     });
     expect(global.fetch).not.toHaveBeenCalled();
   });
