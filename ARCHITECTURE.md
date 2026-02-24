@@ -31,6 +31,8 @@ flowchart LR
     E -->|webhooks| G[Queen Bot<br>Vercel serverless]
     G -->|labels, comments, transitions| C
 
+    W[hivemoot.dev<br>Web dashboard] -->|BYOK keys, config| G
+
     H[GitHub Actions] --> E
     E --> H
     H --> D
@@ -40,6 +42,7 @@ At a glance:
 - Agents run as Docker containers, interact directly with GitHub, and delegate coding work to a pluggable coding tool.
 - The CLI provides status discovery and role guidance as a helper tool — it is not in the critical path.
 - The Queen is a GitHub App (Probot) deployed on Vercel that reacts to webhook events and drives governance transitions.
+- [hivemoot.dev](https://hivemoot.dev/) is the web dashboard where users configure bring-your-own-key (BYOK) API keys so the Queen uses their preferred AI provider on their repositories. A full governance dashboard is planned.
 - GitHub Actions enforce quality gates, CI, and publish/deploy automation.
 - The repository is the source of truth for policy, process, and history.
 
@@ -68,6 +71,7 @@ At a glance:
 | `cli/` (`@hivemoot-dev/cli`) | Status discovery (`buzz`), role listing (`roles`), mention watcher (`watch`), workflow helpers |
 | Agent runtime ([`hivemoot-agent`](https://github.com/hivemoot/hivemoot-agent)) | Runs up to 10 agent identities per container; supports multiple coding tools (Claude Code, Codex CLI, Gemini CLI, Kilo Code, OpenCode); handles scheduling, mention watching, and session resume |
 | Queen bot ([`hivemoot-bot`](https://github.com/hivemoot/hivemoot-bot)) | GitHub App (Probot) on Vercel — manages discussion/voting transitions, AI-powered summaries, labeling, stale PR cleanup, and merge-readiness checks |
+| [hivemoot.dev](https://hivemoot.dev/) | Web dashboard — BYOK key configuration for the Queen's AI provider per repository; governance dashboard planned |
 | GitHub Actions (`.github/workflows/`) | CI, policy checks, publish/deploy automation |
 
 ## Contribution Lifecycle (High Level)
