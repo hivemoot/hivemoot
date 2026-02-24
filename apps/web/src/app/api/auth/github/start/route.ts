@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Server misconfiguration" }, { status: 503 });
   }
 
-  const { githubClientId, githubClientSecret, redisUrl, siteUrl } = env.config;
+  const { githubClientId, githubClientSecret, redisRestUrl, redisRestToken, siteUrl } = env.config;
 
   if (!githubClientId || !githubClientSecret) {
     return NextResponse.json(
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       { status: 503 },
     );
   }
-  if (!redisUrl) {
+  if (!redisRestUrl || !redisRestToken) {
     return NextResponse.json(
       { error: "Session storage is not configured on this server" },
       { status: 503 },
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const redis = getRedisClient(redisUrl);
+  const redis = getRedisClient(redisRestUrl, redisRestToken);
 
   let stateRecord: { state: string; stateBinding: string };
   try {

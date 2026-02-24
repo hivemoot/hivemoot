@@ -1,6 +1,7 @@
 import { access, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants, existsSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { CliError } from "../config/types.js";
 
 const MAX_PROCESSED_IDS = 200;
 
@@ -26,7 +27,7 @@ async function assertNoSymlinkTraversal(filePath: string): Promise<void> {
     try {
       const stats = await lstat(currentPath);
       if (stats.isSymbolicLink()) {
-        throw new Error(`State file path may not traverse symbolic links: ${currentPath}`);
+        throw new CliError(`State file path may not traverse symbolic links: ${currentPath}`, "GH_ERROR");
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
@@ -49,14 +50,14 @@ async function ensureWritableParentDirectory(filePath: string): Promise<void> {
 
   const parentStats = await lstat(parentDir);
   if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
-    throw new Error(`State file parent path is not a directory: ${parentDir}`);
+    throw new CliError(`State file parent path is not a directory: ${parentDir}`, "GH_ERROR");
   }
 
   try {
     await access(parentDir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
   } catch (err) {
     const detail = err instanceof Error ? `: ${err.message}` : "";
-    throw new Error(`State file parent directory is not readable/writable: ${parentDir}${detail}`);
+    throw new CliError(`State file parent directory is not readable/writable: ${parentDir}${detail}`, "GH_ERROR");
   }
 }
 

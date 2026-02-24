@@ -11,6 +11,8 @@ shared:
     - hivemoot-forager
     - hivemoot-guard
     - hivemoot-nurse
+    - hivemoot-heater
+    - hivemoot-drone
 
 team:
   name: hivemoot
@@ -170,9 +172,7 @@ governance:
     maxPRsPerIssue: 3
     trustedReviewers: *wellKnownAgents
     intake:
-      - method: update
-      - method: approval
-        minApprovals: 2
+      - method: auto
     mergeReady:
       minApprovals: 2
 
