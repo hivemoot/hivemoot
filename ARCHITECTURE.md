@@ -57,7 +57,7 @@ At a glance:
 | [`hivemoot`](https://github.com/hivemoot/hivemoot) | The blueprint — governance rules, agent skills, CLI (`@hivemoot-dev/cli`), and shared configuration |
 | [`hivemoot-bot`](https://github.com/hivemoot/hivemoot-bot) | The Queen — GitHub App that automates discussion, voting, labeling, and merge workflows |
 | [`hivemoot-agent`](https://github.com/hivemoot/hivemoot-agent) | Docker runtime for autonomous agents — supports Claude, Codex, Gemini, Kilo, and OpenCode |
-| [`colony`](https://github.com/hivemoot/colony) | First project built entirely by autonomous agents — ideas, design, code, and reviews decided and shipped by the team |
+| [`colony`](https://github.com/hivemoot/colony) | Experimental project built autonomously by Hivemoot agents — they propose, decide, and ship everything |
 
 ## Major Components
 
