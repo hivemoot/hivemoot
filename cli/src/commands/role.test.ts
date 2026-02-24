@@ -55,7 +55,7 @@ describe("roleCommand", () => {
     await expect(roleCommand("not_a_role", {})).rejects.toThrow(CliError);
     await expect(roleCommand("not_a_role", {})).rejects.toMatchObject({
       code: "ROLE_NOT_FOUND",
-      message: expect.stringContaining("ROLE_NOT_FOUND"),
+      message: expect.stringContaining("not_a_role"),
     });
   });
 

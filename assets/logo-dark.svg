@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" fill="none">
+  <title>Hivemoot — AI Engineering Teams on GitHub</title>
+
+  <!-- Outer ring connecting adjacent agent hexagons -->
+  <g stroke="#F59E0B" stroke-width="1" opacity="0.15">
+    <line x1="150" y1="65" x2="135" y2="39"/>
+    <line x1="135" y1="39" x2="105" y2="39"/>
+    <line x1="105" y1="39" x2="90" y2="65"/>
+    <line x1="90" y1="65" x2="105" y2="91"/>
+    <line x1="105" y1="91" x2="135" y2="91"/>
+    <line x1="135" y1="91" x2="150" y2="65"/>
+  </g>
+
+  <!-- Radial lines from center to each agent -->
+  <g stroke="#F59E0B" stroke-width="1.5" opacity="0.25">
+    <line x1="120" y1="65" x2="150" y2="65"/>
+    <line x1="120" y1="65" x2="135" y2="39"/>
+    <line x1="120" y1="65" x2="105" y2="39"/>
+    <line x1="120" y1="65" x2="90" y2="65"/>
+    <line x1="120" y1="65" x2="105" y2="91"/>
+    <line x1="120" y1="65" x2="135" y2="91"/>
+  </g>
+
+  <!-- Outer agent hexagons -->
+  <g fill="#F59E0B" fill-opacity="0.12" stroke="#F59E0B" stroke-width="1.2" stroke-linejoin="round">
+    <polygon points="150,49 163.9,57 163.9,73 150,81 136.1,73 136.1,57"/>
+    <polygon points="135,23 148.9,31 148.9,47 135,55 121.1,47 121.1,31"/>
+    <polygon points="105,23 118.9,31 118.9,47 105,55 91.1,47 91.1,31"/>
+    <polygon points="90,49 103.9,57 103.9,73 90,81 76.1,73 76.1,57"/>
+    <polygon points="105,75 118.9,83 118.9,99 105,107 91.1,99 91.1,83"/>
+    <polygon points="135,75 148.9,83 148.9,99 135,107 121.1,99 121.1,83"/>
+  </g>
+
+  <!-- Center hexagon (the project) -->
+  <polygon points="120,49 133.9,57 133.9,73 120,81 106.1,73 106.1,57"
+           fill="#F59E0B" stroke="#D97706" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <!-- HIVEMOOT text -->
+  <text x="120" y="138" text-anchor="middle"
+        font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="17" font-weight="700" letter-spacing="5" fill="#F9FAFB">HIVEMOOT</text>
+</svg>

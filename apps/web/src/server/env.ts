@@ -7,8 +7,10 @@
  */
 
 interface EnvConfig {
-  /** Redis connection string for BYOK key storage */
-  redisUrl: string | undefined;
+  /** Upstash Redis REST URL */
+  redisRestUrl: string | undefined;
+  /** Upstash Redis REST token */
+  redisRestToken: string | undefined;
   /** GitHub App numeric ID */
   githubAppId: string | undefined;
   /** GitHub App private key (PEM) */
@@ -17,8 +19,10 @@ interface EnvConfig {
   githubClientId: string | undefined;
   /** GitHub App OAuth Client Secret — for code exchange */
   githubClientSecret: string | undefined;
-  /** 32-byte hex string for AES-256-GCM envelope encryption */
-  encryptionKey: string | undefined;
+  /** Active master key version for new BYOK encryptions (e.g. "v1") */
+  byokActiveKeyVersion: string | undefined;
+  /** JSON keyring mapping version → 64-char hex key (e.g. {"v1":"abcd..."}) */
+  byokMasterKeysJson: string | undefined;
   /** Public-facing site URL */
   siteUrl: string;
   /** Current environment */
@@ -26,16 +30,16 @@ interface EnvConfig {
 }
 
 const REQUIRED_IN_PRODUCTION = [
-  "REDIS_URL",
+  "HIVEMOOT_REDIS_REST_URL",
+  "HIVEMOOT_REDIS_REST_TOKEN",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_CLIENT_ID",
   "GITHUB_CLIENT_SECRET",
-  "ENCRYPTION_KEY",
+  "BYOK_ACTIVE_KEY_VERSION",
+  "BYOK_MASTER_KEYS",
   "NEXT_PUBLIC_SITE_URL",
 ] as const;
-const ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
-const ENCRYPTION_KEY_FORMAT_ERROR = "ENCRYPTION_KEY (must be 64 hex chars for AES-256-GCM)";
 
 export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; missing: string[] } {
   const nodeEnv = process.env.NODE_ENV ?? "development";
@@ -43,10 +47,6 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
 
   if (isProduction) {
     const missing: string[] = REQUIRED_IN_PRODUCTION.filter((key) => !process.env[key]);
-    const encryptionKey = process.env.ENCRYPTION_KEY;
-    if (encryptionKey && !ENCRYPTION_KEY_PATTERN.test(encryptionKey)) {
-      missing.push(ENCRYPTION_KEY_FORMAT_ERROR);
-    }
 
     if (missing.length > 0) {
       return { ok: false, missing };
@@ -56,12 +56,14 @@ export function validateEnv(): { ok: true; config: EnvConfig } | { ok: false; mi
   return {
     ok: true,
     config: {
-      redisUrl: process.env.REDIS_URL,
+      redisRestUrl: process.env.HIVEMOOT_REDIS_REST_URL,
+      redisRestToken: process.env.HIVEMOOT_REDIS_REST_TOKEN,
       githubAppId: process.env.GITHUB_APP_ID,
       githubAppPrivateKey: process.env.GITHUB_APP_PRIVATE_KEY,
       githubClientId: process.env.GITHUB_CLIENT_ID,
       githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
-      encryptionKey: process.env.ENCRYPTION_KEY,
+      byokActiveKeyVersion: process.env.BYOK_ACTIVE_KEY_VERSION,
+      byokMasterKeysJson: process.env.BYOK_MASTER_KEYS,
       siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
       nodeEnv,
     },

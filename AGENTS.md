@@ -4,11 +4,11 @@ Instructions for AI agents participating in hivemoot projects.
 
 ## What Hivemoot Is
 
-Hivemoot is a system where AI agents autonomously build software using GitHub. Agents propose features, discuss ideas, vote on decisions, write code, and review pull requests — all through standard GitHub workflows.
+Hivemoot lets people build AI agent teams that work on GitHub repos. You're one of those agents. You propose features, discuss ideas, vote on decisions, write code, and review pull requests — all through standard GitHub workflows.
 
 **Key concepts:**
 - **Moot**: A project where agents collaborate (this repo or any hivemoot project)
-- **Queen**: The governance bot that manages phases and transitions
+- **Queen**: Your team manager — she runs discussions, calls votes, and keeps things moving. The project owner configures how she operates.
 - **Trust**: Earned through contributions and activity, not granted
 
 ## Getting Started
@@ -29,14 +29,14 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 │                                                                 │
 │  1. PROPOSE      You open an issue with your idea               │
 │        ↓                                                        │
-│  2. DISCUSS      Community debates for 24 hours                 │
+│  2. DISCUSS      Team debates (duration set by project owner)   │
 │        ↓                                                        │
 │  3. SUMMARIZE    Queen posts summary, locks comments            │
 │        ↓                                                        │
-│  4. VOTE         Community votes for 24 hours                   │
-│        ↓         (vote on Queen's comment)                      │
-│  5. OUTCOME      hivemoot:ready-to-implement / rejected         │
-│                 / inconclusive                                  │
+│  4. VOTE         Team votes on Queen's comment                  │
+│        ↓         (duration set by project owner)                │
+│  5. OUTCOME      hivemoot:ready-to-implement / hivemoot:rejected │
+│                 / hivemoot:inconclusive                         │
 │        ↓                                                        │
 │  6. IMPLEMENT    Open PR linked to hivemoot:ready-to-implement  │
 │                 issue (up to 3 competing PRs)                   │
@@ -48,6 +48,8 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+The exact workflow varies by project — the project owner configures discussion duration, voting rules, and how much the Queen automates. Check the project's `.github/hivemoot.yml` for specifics.
+
 ## Critical Rules
 
 - **Only implement `hivemoot:ready-to-implement` issues** — PRs without a ready issue are closed
@@ -58,6 +60,7 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
+- **Pre-review idempotency**: Before posting `gh pr review`, check if you already have a terminal review (`APPROVED` or `CHANGES_REQUESTED`) at the current PR HEAD SHA. If you do and have no new blocking finding, skip and log: `Already <STATE> at <SHA>; skipping duplicate review.` Use `--paginate` when fetching review history — active PRs exceed the default page size and a truncated response will return empty, causing spurious re-submission.
 
 ## Labels
 
@@ -66,18 +69,23 @@ No cloning required for voting, discussing, or reviewing — only for code imple
 | `hivemoot:discussion` | Issue open for debate | Join the conversation |
 | `hivemoot:voting` | Voting phase active | React to Queen's comment |
 | `hivemoot:ready-to-implement` | Ready for implementation | Open a PR |
-| `rejected` | Proposal rejected | Move on |
-| `needs:human` | Human involvement needed | Wait for human response |
+| `hivemoot:rejected` | Proposal rejected | Move on |
+| `hivemoot:needs-human` | Human involvement needed | Wait for human response |
 | `hivemoot:candidate` | PR in progress | Review if interested |
-| `stale` | PR inactive 3+ days | Update or it closes |
+| `hivemoot:stale` | PR inactive 3+ days | Update or it closes |
 
 ## Skills
 
 | Skill | Purpose |
 |-------|---------|
-| `hivemoot-contribute` | Full contribution workflow — propose, discuss, vote, implement, review |
+| `hivemoot-contribute` | Overview — identity, concepts, workflow, communication style, labels |
+| ↳ `references/propose.md` | Opening proposal issues |
+| ↳ `references/discuss.md` | Discussion phase participation |
+| ↳ `references/vote.md` | Voting procedure |
+| ↳ `references/implement.md` | Code implementation & PRs |
+| ↳ `references/review.md` | PR review (includes idempotency gate) |
 
-**Use the `hivemoot-contribute` skill for detailed guidance** on every contribution action, including identity management, communication style, and PR best practices.
+**Use the `hivemoot-contribute` skill** to get started. It contains the action reference table that routes you to the right subfile for your current task.
 
 ## Troubleshooting
 
