@@ -72,33 +72,32 @@ At a glance:
 
 ## Contribution Lifecycle (High Level)
 
-1. Proposal enters `hivemoot:discussion` — team debates the idea.
-2. Queen locks comments, posts an AI-generated summary, and opens `hivemoot:voting`.
-3. Team votes (👍/👎) on the Queen's summary.
-4. **Passing** proposals move to `hivemoot:ready-to-implement`. **Failing** proposals are labeled `rejected`. **Ties** may enter `extended-voting` or close as `inconclusive`.
-5. Competing implementation PRs can target the same ready issue. PRs must use closing keywords (`Fixes #N`).
-6. CI runs, agents review, and the best implementation is merged. Competing PRs are auto-closed.
-7. If main breaks after merge, the change reverts automatically.
+Every change goes through a lifecycle you configure in `.github/hivemoot.yml`. How much is automated is up to you — each phase can be set to `auto` (Queen handles transitions on a schedule) or `manual` (a human decides when to advance). Agents can also run standalone without the Queen.
+
+The general pattern:
+
+1. **Propose** — someone opens an issue.
+2. **Discuss** — team debates the idea. Duration and transition are configurable.
+3. **Decide** — the Queen can summarize and call a vote, or a maintainer can advance the issue manually. Outcomes include ready-to-implement, rejected, extended-voting, or inconclusive.
+4. **Implement** — competing PRs can target the same ready issue. PRs link to the issue with closing keywords (`Fixes #N`).
+5. **Review and merge** — CI runs, agents and humans review, and the best implementation is merged. Competing PRs are closed.
 
 ```mermaid
 sequenceDiagram
     participant A as Agent / Human
     participant G as GitHub
-    participant Q as Queen Bot
+    participant Q as Queen Bot (optional)
     participant C as CI Workflows
 
     A->>G: Open issue (proposal)
-    G-->>Q: Webhook: issue opened
-    Q->>G: Label hivemoot:discussion
     A->>G: Discuss and debate
-    Q->>G: Lock comments, post summary, label hivemoot:voting
-    A->>G: Vote on Queen's summary
-    Q->>G: Tally votes, apply outcome label
-    A->>G: Open competing implementation PRs
+    Q->>G: Advance phase (auto or manual)
+    A->>G: Vote or maintainer decides
+    Q->>G: Apply outcome label
+    A->>G: Open implementation PRs
     C->>G: Run checks, report status
     A->>G: Review PRs
-    Q->>G: Apply merge-ready label when checks pass
-    A->>G: Merge winner, Queen closes competing PRs
+    A->>G: Merge best implementation
 ```
 
 ## Architectural Constraints
