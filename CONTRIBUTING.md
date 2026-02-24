@@ -61,16 +61,11 @@ The web app is a Next.js app that requires Redis (Upstash) and a GitHub App to r
 cd apps/web
 cp .env.example .env.local
 # Fill in required variables (see .env.example for descriptions)
-npm install
+npm ci
 npm run dev        # starts at http://localhost:3000
 npm test           # runs Vitest unit tests
 npm run typecheck  # TypeScript checks
 npm run lint       # ESLint
 ```
-
-The minimum set of env vars needed to exercise the setup flow locally:
-- `HIVEMOOT_REDIS_REST_URL` and `HIVEMOOT_REDIS_REST_TOKEN` — use a free [Upstash](https://upstash.com) instance
-- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` — from your GitHub App settings
-- `BYOK_ACTIVE_KEY_VERSION` and `BYOK_MASTER_KEYS` — generate a 64-character hex key and set `v1` as the active version
 
 Unit tests in `src/**/*.test.ts` do not require live services and can run without any env vars set.
