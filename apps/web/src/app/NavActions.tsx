@@ -3,19 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { REMEMBERED_USER_COOKIE, GITHUB_LOGIN_RE } from "@/constants/cookies";
-
-function getCookie(name: string): string | null {
-  const match = document.cookie.match(
-    new RegExp(`(?:^|; )${name}=([^;]*)`),
-  );
-  if (!match) return null;
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    // Malformed percent-encoding (e.g. %XY) would throw URIError; treat as missing.
-    return null;
-  }
-}
+import { getCookie } from "@/lib/cookies";
 
 const GET_STARTED_URL = "/setup";
 
