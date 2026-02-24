@@ -308,6 +308,7 @@ try_run_agent() {
   local ack_key="${3:-}"
   local state_file="${4:-}"
   local session_key="${5:-}"
+  local consecutive_failures_count="${6:-0}"
   local lock_file="${lock_dir}/${agent_id}.lock"
   local token_file="${agent_token_files[$agent_id]}"
   local agent_workspace="${workspace_root}/agents/${agent_id}"
@@ -333,6 +334,7 @@ try_run_agent() {
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$extra_prompt"
     export AGENT_SESSION_KEY="$session_key"
+    export AGENT_CONSECUTIVE_FAILURES="$consecutive_failures_count"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
 
@@ -551,7 +553,7 @@ start_agent_periodic_scheduler() {
 
       # Run agent
       local run_status=0
-      try_run_agent "$agent_id" "$global_extra_prompt" || run_status=$?
+      try_run_agent "$agent_id" "$global_extra_prompt" "" "" "" "$consecutive_failures" || run_status=$?
 
       if [ "$run_status" -eq 0 ]; then
         if [ "$consecutive_failures" -gt 0 ]; then

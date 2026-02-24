@@ -457,3 +457,42 @@ init_agent_home() {
   printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
     > "$agent_home/.profile"
 }
+
+# Append a structured JSON event to an NDJSON events file.
+# Each call emits one JSON object per line (newline-delimited JSON).
+# Usage: log_event <events_file> <event_name> <agent_id> <run_id> <event_seq> [extra_fields]
+# extra_fields: raw JSON field list (no outer braces), e.g. '"duration_secs":42,"outcome":"success"'
+log_event() {
+  local events_file="$1"
+  local event_name="$2"
+  local agent_id="$3"
+  local run_id="$4"
+  local event_seq="$5"
+  local extra="${6:-}"
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [ -n "$extra" ]; then
+    printf '{"event":"%s","agent_id":"%s","run_id":"%s","event_seq":%d,"timestamp":"%s",%s}\n' \
+      "$event_name" "$agent_id" "$run_id" "$event_seq" "$ts" "$extra" >> "$events_file"
+  else
+    printf '{"event":"%s","agent_id":"%s","run_id":"%s","event_seq":%d,"timestamp":"%s"}\n' \
+      "$event_name" "$agent_id" "$run_id" "$event_seq" "$ts" >> "$events_file"
+  fi
+}
+
+# Write an agent health snapshot atomically via temp-file + mv.
+# Readers never observe a partial write. Overwrites the previous snapshot.
+# Usage: write_health_snapshot <health_file> <agent_id> <run_id> <last_event> <consecutive_failures>
+write_health_snapshot() {
+  local health_file="$1"
+  local agent_id="$2"
+  local run_id="$3"
+  local last_event="$4"
+  local consecutive_failures="${5:-0}"
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  local tmp_file="${health_file}.tmp.$$"
+  printf '{"agent_id":"%s","run_id":"%s","last_event":"%s","consecutive_failures":%d,"updated_at":"%s"}\n' \
+    "$agent_id" "$run_id" "$last_event" "$consecutive_failures" "$ts" > "$tmp_file"
+  mv "$tmp_file" "$health_file"
+}
