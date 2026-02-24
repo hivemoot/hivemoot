@@ -97,6 +97,8 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
 
       const objective = b.objective.trim();
       if (!objective) continue;
+      // Silently skip rather than error: config parsing degrades gracefully,
+      // and the next candidate (or undefined) is returned.
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
       return objective;
