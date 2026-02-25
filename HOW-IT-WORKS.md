@@ -91,7 +91,7 @@ PRs must target a `hivemoot:ready-to-implement` issue. PRs without a ready issue
 
 **Merge:**
 - CI passes + enough approvals → merges automatically (`hivemoot:merge-ready` signals eligibility)
-- Docs-only PRs meeting path and size criteria are labeled `hivemoot:fast-track` for accelerated review
+- Docs-only PRs meeting path and size criteria are labeled `hivemoot:automerge` for accelerated review and auto-merge
 - If main breaks after merge → reverts automatically
 
 ## Human Gate (Initial Phase)
