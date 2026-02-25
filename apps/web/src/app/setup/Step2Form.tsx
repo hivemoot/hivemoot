@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // Types & constants
 // ---------------------------------------------------------------------------
 
-type Provider = "anthropic" | "openai" | "google";
+type Provider = "anthropic" | "openai" | "google" | "openrouter";
 type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 
 interface Step2FormProps {
@@ -26,18 +26,21 @@ const DEFAULT_MODELS: Record<Provider, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-5.2",
   google: "gemini-3-flash-preview",
+  openrouter: "anthropic/claude-3.5-sonnet",
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",
+  openrouter: "OpenRouter",
 };
 
 const KEY_PLACEHOLDERS: Record<Provider, string> = {
   anthropic: "sk-ant-...",
   openai: "sk-...",
   google: "AIza...",
+  openrouter: "sk-or-v1-...",
 };
 
 // ---------------------------------------------------------------------------
@@ -87,10 +90,24 @@ function GoogleIcon({ className }: { className?: string }) {
   );
 }
 
+function OpenRouterIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICONS: Record<Provider, typeof AnthropicIcon> = {
   anthropic: AnthropicIcon,
   openai: OpenAIIcon,
   google: GoogleIcon,
+  openrouter: OpenRouterIcon,
 };
 
 function EyeIcon() {
@@ -874,8 +891,8 @@ export default function Step2Form({
         {/* disabled={sessionExpired} propagates to all descendant buttons via HTML spec */}
         <fieldset disabled={sessionExpired}>
           <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
-          <div className="grid grid-cols-3 gap-2">
-            {(["anthropic", "openai", "google"] as const).map((p) => {
+          <div className="grid grid-cols-2 gap-2">
+            {(["anthropic", "openai", "google", "openrouter"] as const).map((p) => {
               const isActive = provider === p;
               const Icon = PROVIDER_ICONS[p];
               return (
