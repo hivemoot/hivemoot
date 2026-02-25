@@ -5,6 +5,9 @@ import { NextRequest, NextResponse } from "next/server";
 // Mocks
 // ---------------------------------------------------------------------------
 
+vi.mock("@/server/byok-auth", () => ({
+  authenticateByokRequest: vi.fn(),
+}));
 vi.mock("@/server/agent-health-auth", () => ({
   authenticateAgentRequest: vi.fn(),
 }));
@@ -14,8 +17,11 @@ vi.mock("@/server/agent-health-store", () => ({
   recordHealthReport: vi.fn(),
   reserveHealthReportIdempotency: vi.fn(),
   releaseHealthReportIdempotency: vi.fn(),
+  getOverview: vi.fn(),
+  getHistory: vi.fn(),
 }));
 
+import { authenticateByokRequest } from "@/server/byok-auth";
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
 import {
   validateReport,
@@ -23,14 +29,24 @@ import {
   recordHealthReport,
   reserveHealthReportIdempotency,
   releaseHealthReportIdempotency,
+  getOverview,
+  getHistory,
 } from "@/server/agent-health-store";
-import { POST } from "./route";
+import { POST, GET } from "./route";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mockAuthSuccess(installationId = "inst-1") {
+const MOCK_SESSION = {
+  installationId: "inst-1",
+  userId: 1,
+  userLogin: "alice",
+};
+
+const MOCK_KEYRING = new Map([["v1", Buffer.alloc(32)]]);
+
+function mockAgentAuthSuccess(installationId = "inst-1") {
   vi.mocked(authenticateAgentRequest).mockResolvedValue({
     ok: true,
     installationId,
@@ -38,8 +54,25 @@ function mockAuthSuccess(installationId = "inst-1") {
   });
 }
 
-function mockAuthFailure(status: number, code: string, message: string) {
+function mockAgentAuthFailure(status: number, code: string, message: string) {
   vi.mocked(authenticateAgentRequest).mockResolvedValue({
+    ok: false,
+    response: NextResponse.json({ code, message }, { status }),
+  });
+}
+
+function mockSessionAuthSuccess() {
+  vi.mocked(authenticateByokRequest).mockResolvedValue({
+    ok: true,
+    session: MOCK_SESSION,
+    keyring: MOCK_KEYRING,
+    activeKeyVersion: "v1",
+    redis: {} as never,
+  });
+}
+
+function mockSessionAuthFailure(status: number, code: string, message: string) {
+  vi.mocked(authenticateByokRequest).mockResolvedValue({
     ok: false,
     response: NextResponse.json({ code, message }, { status }),
   });
@@ -68,6 +101,16 @@ function makeRawPostRequest(bodyText: string, extraHeaders?: Record<string, stri
   });
 }
 
+function makeGetRequest(params?: Record<string, string>) {
+  const url = new URL("https://example.com/api/agent-health");
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+  }
+  return new NextRequest(url.toString(), { method: "GET" });
+}
+
 const VALID_REQUEST_BODY = {
   agent_id: "bee-1",
   repo: "hivemoot/sandbox",
@@ -84,7 +127,8 @@ const VALID_REPORT = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockAuthSuccess();
+  mockAgentAuthSuccess();
+  mockSessionAuthSuccess();
   vi.mocked(validateReport).mockReturnValue({
     ok: true,
     report: VALID_REPORT,
@@ -96,6 +140,8 @@ beforeEach(() => {
   vi.mocked(checkRateLimit).mockResolvedValue(true);
   vi.mocked(recordHealthReport).mockResolvedValue(undefined);
   vi.mocked(releaseHealthReportIdempotency).mockResolvedValue(undefined);
+  vi.mocked(getOverview).mockResolvedValue([]);
+  vi.mocked(getHistory).mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -123,14 +169,14 @@ describe("POST /api/agent-health", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    mockAuthFailure(401, "agent_health_not_authenticated", "Invalid token");
+    mockAgentAuthFailure(401, "agent_health_not_authenticated", "Invalid token");
 
     const res = await POST(makePostRequest(VALID_REQUEST_BODY));
     expect(res.status).toBe(401);
   });
 
   it("returns 400 when body is not valid JSON", async () => {
-    mockAuthSuccess();
+    mockAgentAuthSuccess();
 
     const req = makeRawPostRequest("not-json{{{");
 
@@ -252,5 +298,134 @@ describe("POST /api/agent-health", () => {
       VALID_REPORT,
       expect.anything(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — GET
+// ---------------------------------------------------------------------------
+
+describe("GET /api/agent-health", () => {
+  it("returns overview when no query params are provided", async () => {
+    vi.mocked(getOverview).mockResolvedValue([
+      {
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "20260224-100000-claude-bee-1",
+        outcome: "success",
+        duration_secs: 42,
+        consecutive_failures: 0,
+        received_at: "2026-02-24T10:00:00Z",
+        online: true,
+      },
+    ]);
+
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.agents).toHaveLength(1);
+    expect(body.agents[0].agent_id).toBe("bee-1");
+  });
+
+  it("returns history when agent_id and repo are provided", async () => {
+    vi.mocked(getHistory).mockResolvedValue([
+      {
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "20260224-100000-claude-bee-1",
+        outcome: "success",
+        duration_secs: 42,
+        consecutive_failures: 0,
+        received_at: "2026-02-24T10:00:00Z",
+      },
+    ]);
+
+    const res = await GET(makeGetRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+    }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.agent_id).toBe("bee-1");
+    expect(body.repo).toBe("hivemoot/sandbox");
+    expect(body.history).toHaveLength(1);
+    expect(body.runs).toHaveLength(1);
+  });
+
+  it("returns history when history=true is provided", async () => {
+    vi.mocked(getHistory).mockResolvedValue([
+      {
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "20260224-100000-claude-bee-1",
+        outcome: "success",
+        duration_secs: 42,
+        consecutive_failures: 0,
+        received_at: "2026-02-24T10:00:00Z",
+      },
+    ]);
+
+    const res = await GET(makeGetRequest({
+      history: "true",
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+    }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.history).toHaveLength(1);
+    expect(body.runs).toHaveLength(1);
+  });
+
+  it("returns 400 when history=true is missing agent_id", async () => {
+    const res = await GET(makeGetRequest({
+      history: "true",
+      repo: "hivemoot/sandbox",
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_missing_fields");
+  });
+
+  it("returns 400 when history=true is missing repo", async () => {
+    const res = await GET(makeGetRequest({
+      history: "true",
+      agent_id: "bee-1",
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_missing_fields");
+  });
+
+  it("returns 400 when only agent_id is provided", async () => {
+    const res = await GET(makeGetRequest({ agent_id: "bee-1" }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_missing_fields");
+  });
+
+  it("returns 400 when only repo is provided", async () => {
+    const res = await GET(makeGetRequest({ repo: "hivemoot/sandbox" }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_missing_fields");
+  });
+
+  it("returns auth error when session is invalid", async () => {
+    mockSessionAuthFailure(401, "byok_not_authenticated", "Not authenticated");
+
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(401);
+  });
+
+  it("passes installationId from session to getOverview", async () => {
+    await GET(makeGetRequest());
+    expect(getOverview).toHaveBeenCalledWith("inst-1", expect.anything());
   });
 });
