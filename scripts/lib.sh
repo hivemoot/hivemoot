@@ -122,6 +122,25 @@ load_secret_from_file() {
   export "$var_name"
 }
 
+# Load all provider API secrets from their corresponding *_FILE env vars.
+# Called at startup in every entrypoint (entrypoint.sh, run-loop.sh,
+# run-multi.sh, run-once.sh) so new provider keys only need adding here.
+load_provider_secrets() {
+  local secret_var
+  for secret_var in \
+    OPENAI_API_KEY \
+    GOOGLE_API_KEY \
+    GEMINI_API_KEY \
+    ANTHROPIC_API_KEY \
+    OPENROUTER_API_KEY \
+    CLAUDE_CODE_OAUTH_TOKEN \
+    KILOCODE_TOKEN \
+    ZAI_API_KEY
+  do
+    load_secret_from_file "$secret_var"
+  done
+}
+
 validate_target_repo() {
   local target_repo="$1"
 
