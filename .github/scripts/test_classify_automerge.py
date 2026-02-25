@@ -7,9 +7,6 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import io
-import tempfile
-
 from classify_automerge import classify, matches, write_output, _sanitize_output_value, ALLOWED, DENIED
 
 # --- matches() tests ---
