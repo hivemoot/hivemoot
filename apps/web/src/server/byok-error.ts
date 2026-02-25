@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-export { BYOK_ERROR, type ByokErrorCode } from "@/constants/byok-errors";
-import type { ByokErrorCode } from "@/constants/byok-errors";
+
+import { BYOK_ERROR, type ByokErrorCode } from "@/constants/byok-errors";
+
+export { BYOK_ERROR, type ByokErrorCode };
 
 export function byokError(
   code: ByokErrorCode,
