@@ -56,10 +56,27 @@ function makeMockRedis() {
       return existed ? 1 : 0;
     }),
     eval: vi.fn(async (_script: string, keys: string[], args: string[]) => {
-      const lockKey = keys[0];
-      const expectedOwner = args[0];
-      if (store.get(lockKey) === expectedOwner) {
-        store.delete(lockKey);
+      // RELEASE_LOCK_SCRIPT: 1 key, 1 arg
+      if (keys.length === 1 && args.length === 1) {
+        const lockKey = keys[0];
+        const expectedOwner = args[0];
+        if (store.get(lockKey) === expectedOwner) {
+          store.delete(lockKey);
+          return 1;
+        }
+        return 0;
+      }
+      // ROTATE_TOKEN_SCRIPT: 3 keys, 3 args
+      if (keys.length === 3 && args.length === 3) {
+        if (args[0] === "1") store.delete(keys[0]);
+        store.set(keys[1], JSON.parse(args[1]));
+        store.set(keys[2], JSON.parse(args[2]));
+        return 1;
+      }
+      // REVOKE_TOKEN_SCRIPT: 2 keys, 0 args
+      if (keys.length === 2 && args.length === 0) {
+        store.delete(keys[0]);
+        store.delete(keys[1]);
         return 1;
       }
       return 0;
@@ -126,6 +143,39 @@ describe("generateAgentToken", () => {
     // Old hash removed, new hash present
     expect(redis._store.has(`agent-token-hash:${hash1}`)).toBe(false);
     expect(redis._store.has(`agent-token-hash:${hash2}`)).toBe(true);
+  });
+
+  it("leaves original token intact when rotate script fails (no partial write)", async () => {
+    const token1 = await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis);
+    const hash1 = hashToken(token1);
+
+    (redis.eval as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_s: string, keys: string[], args: string[]) => {
+        // Keep lock-release working (1 key, 1 arg)
+        if (keys.length === 1 && args.length === 1) {
+          if (redis._store.get(keys[0]) === args[0]) {
+            redis._store.delete(keys[0]);
+            return 1;
+          }
+          return 0;
+        }
+        throw new Error("simulated Redis write failure");
+      },
+    );
+
+    await expect(
+      generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis),
+    ).rejects.toThrow();
+
+    // Original token and hash index must still be intact
+    const hashKeys = [...redis._store.keys()].filter((k) =>
+      k.startsWith("agent-token-hash:"),
+    );
+    expect(hashKeys).toHaveLength(1);
+    expect(redis._store.has(`agent-token-hash:${hash1}`)).toBe(true);
+
+    const current = await getAgentToken("inst-1", MOCK_KEYRING, redis);
+    expect(current!.token).toBe(token1);
   });
 
   it("keeps exactly one valid token after concurrent rotations", async () => {
@@ -232,6 +282,33 @@ describe("revokeAgentToken", () => {
     expect(result).toBe(true);
     expect(redis._store.has("hive:agent-token:inst-1")).toBe(false);
     expect(redis._store.has(`agent-token-hash:${hash}`)).toBe(false);
+  });
+
+  it("leaves token intact when revoke script fails (no partial write)", async () => {
+    const token = await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis);
+    const hash = hashToken(token);
+
+    (redis.eval as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_s: string, keys: string[], args: string[]) => {
+        // Keep lock-release working (1 key, 1 arg)
+        if (keys.length === 1 && args.length === 1) {
+          if (redis._store.get(keys[0]) === args[0]) {
+            redis._store.delete(keys[0]);
+            return 1;
+          }
+          return 0;
+        }
+        throw new Error("simulated Redis write failure");
+      },
+    );
+
+    await expect(revokeAgentToken("inst-1", redis)).rejects.toThrow();
+
+    // Both envelope and hash index must still be intact
+    expect(redis._store.has("hive:agent-token:inst-1")).toBe(true);
+    expect(redis._store.has(`agent-token-hash:${hash}`)).toBe(true);
+    const resolved = await resolveTokenToInstallation(token, redis);
+    expect(resolved).toBe("inst-1");
   });
 
   it("token cannot be resolved after revocation", async () => {
