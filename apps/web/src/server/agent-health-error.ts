@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 
 export const AGENT_HEALTH_ERROR = {
   INVALID_JSON: "agent_health_invalid_json",
+  PAYLOAD_TOO_LARGE: "agent_health_payload_too_large",
   MISSING_FIELDS: "agent_health_missing_fields",
   NOT_AUTHENTICATED: "agent_health_not_authenticated",
   SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",

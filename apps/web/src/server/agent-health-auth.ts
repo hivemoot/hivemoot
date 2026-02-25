@@ -26,6 +26,17 @@ type AgentAuthFailure = {
 
 export type AgentAuthResult = AgentAuthSuccess | AgentAuthFailure;
 
+function unauthenticatedResponse() {
+  return {
+    ok: false as const,
+    response: agentHealthError(
+      AGENT_HEALTH_ERROR.NOT_AUTHENTICATED,
+      "Invalid or missing agent token",
+      401,
+    ),
+  };
+}
+
 /**
  * Authenticates an incoming agent request via Bearer token.
  * Returns the installationId on success or a pre-built error response.
@@ -58,42 +69,15 @@ export async function authenticateAgentRequest(
   }
 
   const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return {
-      ok: false,
-      response: agentHealthError(
-        AGENT_HEALTH_ERROR.NOT_AUTHENTICATED,
-        "Missing or invalid Authorization header",
-        401,
-      ),
-    };
-  }
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return unauthenticatedResponse();
 
-  const rawToken = authHeader.slice("Bearer ".length);
-  if (!rawToken) {
-    return {
-      ok: false,
-      response: agentHealthError(
-        AGENT_HEALTH_ERROR.NOT_AUTHENTICATED,
-        "Empty Bearer token",
-        401,
-      ),
-    };
-  }
+  const rawToken = authHeader.slice("Bearer ".length).trim();
+  if (!rawToken) return unauthenticatedResponse();
 
   const redis = getRedisClient(redisRestUrl, redisRestToken);
   const installationId = await resolveTokenToInstallation(rawToken, redis);
 
-  if (!installationId) {
-    return {
-      ok: false,
-      response: agentHealthError(
-        AGENT_HEALTH_ERROR.NOT_AUTHENTICATED,
-        "Invalid or revoked token",
-        401,
-      ),
-    };
-  }
+  if (!installationId) return unauthenticatedResponse();
 
   return { ok: true, installationId, redis };
 }

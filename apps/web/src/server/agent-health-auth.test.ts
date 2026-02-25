@@ -108,6 +108,7 @@ describe("authenticateAgentRequest", () => {
       expect(result.response.status).toBe(401);
       const body = await result.response.json();
       expect(body.code).toBe("agent_health_not_authenticated");
+      expect(body.message).toBe("Invalid or missing agent token");
     }
   });
 
@@ -135,7 +136,32 @@ describe("authenticateAgentRequest", () => {
     if (!result.ok) {
       expect(result.response.status).toBe(401);
       const body = await result.response.json();
-      expect(body.message).toContain("Invalid or revoked");
+      expect(body.message).toBe("Invalid or missing agent token");
+    }
+  });
+
+  it("returns identical 401 response body for all auth failures", async () => {
+    vi.mocked(resolveTokenToInstallation).mockResolvedValue(null);
+
+    const missingHeader = await authenticateAgentRequest(makeRequest());
+    const wrongScheme = await authenticateAgentRequest(makeRequest("Basic abc"));
+    const emptyToken = await authenticateAgentRequest(makeRequest("Bearer   "));
+    const unknownToken = await authenticateAgentRequest(makeRequest("Bearer unknown-token"));
+
+    expect(missingHeader.ok).toBe(false);
+    expect(wrongScheme.ok).toBe(false);
+    expect(emptyToken.ok).toBe(false);
+    expect(unknownToken.ok).toBe(false);
+
+    if (!missingHeader.ok && !wrongScheme.ok && !emptyToken.ok && !unknownToken.ok) {
+      const missingBody = await missingHeader.response.json();
+      const wrongSchemeBody = await wrongScheme.response.json();
+      const emptyBody = await emptyToken.response.json();
+      const unknownBody = await unknownToken.response.json();
+
+      expect(wrongSchemeBody).toStrictEqual(missingBody);
+      expect(emptyBody).toStrictEqual(missingBody);
+      expect(unknownBody).toStrictEqual(missingBody);
     }
   });
 

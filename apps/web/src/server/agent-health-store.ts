@@ -26,6 +26,7 @@ import { type Redis } from "@upstash/redis";
 const LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
 const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,10 +35,12 @@ const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 export interface HealthReport {
   agent_id: string;
   repo: string;
-  status: "idle" | "working" | "error";
-  current_issue?: number;
-  summary?: string;
-  error_message?: string;
+  run_id: string;
+  outcome: "success" | "failure" | "timeout";
+  duration_secs: number;
+  consecutive_failures: number;
+  error?: string;
+  exit_code?: number;
   received_at: string; // ISO 8601, server-assigned
 }
 
@@ -65,7 +68,17 @@ function rateLimitKey(installId: string, agentId: string, repo: string): string 
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_STATUSES = new Set(["idle", "working", "error"]);
+const VALID_OUTCOMES = new Set(["success", "failure", "timeout"]);
+const ALLOWED_FIELDS = new Set([
+  "agent_id",
+  "repo",
+  "run_id",
+  "outcome",
+  "duration_secs",
+  "consecutive_failures",
+  "error",
+  "exit_code",
+]);
 
 export type ValidationResult = {
   ok: true;
@@ -82,36 +95,94 @@ export function validateReport(body: unknown): ValidationResult {
 
   const obj = body as Record<string, unknown>;
 
-  if (typeof obj.agent_id !== "string" || obj.agent_id.length === 0) {
-    return { ok: false, message: "agent_id is required and must be a non-empty string" };
-  }
-  if (typeof obj.repo !== "string" || obj.repo.length === 0) {
-    return { ok: false, message: "repo is required and must be a non-empty string" };
-  }
-  if (typeof obj.status !== "string" || !VALID_STATUSES.has(obj.status)) {
-    return { ok: false, message: "status must be one of: idle, working, error" };
+  for (const key of Object.keys(obj)) {
+    if (!ALLOWED_FIELDS.has(key)) {
+      return { ok: false, message: `Unknown field: ${key}` };
+    }
   }
 
-  if (obj.current_issue !== undefined && typeof obj.current_issue !== "number") {
-    return { ok: false, message: "current_issue must be a number if provided" };
+  if (
+    typeof obj.agent_id !== "string"
+    || obj.agent_id.length < 1
+    || obj.agent_id.length > 64
+    || !AGENT_ID_PATTERN.test(obj.agent_id)
+  ) {
+    return {
+      ok: false,
+      message: "agent_id must be 1-64 chars and match [a-z0-9_-]",
+    };
   }
-  if (obj.summary !== undefined && typeof obj.summary !== "string") {
-    return { ok: false, message: "summary must be a string if provided" };
+
+  if (
+    typeof obj.repo !== "string"
+    || obj.repo.length < 1
+    || obj.repo.length > 200
+    || !obj.repo.includes("/")
+  ) {
+    return {
+      ok: false,
+      message: "repo must be 1-200 chars in owner/name format",
+    };
   }
-  if (obj.error_message !== undefined && typeof obj.error_message !== "string") {
-    return { ok: false, message: "error_message must be a string if provided" };
+
+  if (
+    typeof obj.run_id !== "string"
+    || obj.run_id.length < 1
+    || obj.run_id.length > 128
+  ) {
+    return {
+      ok: false,
+      message: "run_id must be a string (1-128 chars)",
+    };
+  }
+
+  if (typeof obj.outcome !== "string" || !VALID_OUTCOMES.has(obj.outcome)) {
+    return { ok: false, message: "outcome must be one of: success, failure, timeout" };
+  }
+
+  if (
+    typeof obj.duration_secs !== "number"
+    || !Number.isInteger(obj.duration_secs)
+    || obj.duration_secs < 0
+    || obj.duration_secs > 86400
+  ) {
+    return { ok: false, message: "duration_secs must be an integer between 0 and 86400" };
+  }
+
+  if (
+    typeof obj.consecutive_failures !== "number"
+    || !Number.isInteger(obj.consecutive_failures)
+    || obj.consecutive_failures < 0
+  ) {
+    return { ok: false, message: "consecutive_failures must be an integer >= 0" };
+  }
+
+  if (
+    obj.error !== undefined
+    && (typeof obj.error !== "string" || obj.error.length < 1 || obj.error.length > 256)
+  ) {
+    return { ok: false, message: "error must be a string (1-256 chars) if provided" };
+  }
+
+  if (
+    obj.exit_code !== undefined
+    && (typeof obj.exit_code !== "number" || !Number.isInteger(obj.exit_code))
+  ) {
+    return { ok: false, message: "exit_code must be an integer if provided" };
   }
 
   const report: HealthReport = {
     agent_id: obj.agent_id,
     repo: obj.repo,
-    status: obj.status as HealthReport["status"],
+    run_id: obj.run_id,
+    outcome: obj.outcome as HealthReport["outcome"],
+    duration_secs: obj.duration_secs,
+    consecutive_failures: obj.consecutive_failures,
     received_at: new Date().toISOString(),
   };
 
-  if (typeof obj.current_issue === "number") report.current_issue = obj.current_issue;
-  if (typeof obj.summary === "string") report.summary = obj.summary;
-  if (typeof obj.error_message === "string") report.error_message = obj.error_message;
+  if (typeof obj.error === "string") report.error = obj.error;
+  if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
 
   return { ok: true, report };
 }
@@ -154,28 +225,24 @@ export async function recordHealthReport(
 ): Promise<void> {
   const { agent_id, repo, received_at } = report;
   const score = new Date(received_at).getTime();
-
-  // SET latest with TTL
-  await redis.set(
-    latestKey(installId, agent_id, repo),
-    report,
-    { ex: LATEST_TTL_SECONDS },
-  );
-
-  // ZADD to sorted set (score = epoch ms)
-  await redis.zadd(
-    runsKey(installId, agent_id, repo),
-    { score, member: JSON.stringify(report) },
-  );
-
-  // SADD to index
-  await redis.sadd(indexKey(installId), `${agent_id}:${repo}`);
-
-  // Trim runs older than 24 hours
   const cutoff = score - HISTORY_RETENTION_MS;
-  await redis.zremrangebyscore(
-    runsKey(installId, agent_id, repo),
-    "-inf",
-    cutoff,
-  );
+
+  await redis
+    .multi()
+    .set(
+      latestKey(installId, agent_id, repo),
+      report,
+      { ex: LATEST_TTL_SECONDS },
+    )
+    .zadd(
+      runsKey(installId, agent_id, repo),
+      { score, member: JSON.stringify(report) },
+    )
+    .sadd(indexKey(installId), `${agent_id}:${repo}`)
+    .zremrangebyscore(
+      runsKey(installId, agent_id, repo),
+      "-inf",
+      cutoff,
+    )
+    .exec();
 }
