@@ -551,6 +551,244 @@ team:
     expect(config.focus).toBeUndefined();
   });
 
+  // ── team.focuses (new format) ────────────────────────────────────
+
+  it("resolves focus from activeFocus + focuses block", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "routine-maintenance",
+        focuses: {
+          default: { objective: "Work on any ready-to-implement issue." },
+          "routine-maintenance": { objective: "Clear the review queue. No new code." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Clear the review queue. No new code.");
+  });
+
+  it("falls back to default block when activeFocus is absent", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        focuses: {
+          default: { objective: "Work on any ready-to-implement issue." },
+          "routine-maintenance": { objective: "Clear the review queue." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Work on any ready-to-implement issue.");
+  });
+
+  it("falls back to defaultFocus when activeFocus block is missing", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "nonexistent",
+        defaultFocus: "routine-maintenance",
+        focuses: {
+          "routine-maintenance": { objective: "Clear the review queue." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Clear the review queue.");
+  });
+
+  it("returns undefined when focuses is present but all candidates are missing", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "nonexistent",
+        focuses: {
+          other: { objective: "Something else." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("trims whitespace from focus block objective", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "  Review PRs first.  " },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Review PRs first.");
+  });
+
+  it("ignores focuses block with non-object entries", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: "not an object",
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("prefers focuses over legacy focus.default when both are present", async () => {
+    const bothYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "New format objective." },
+        },
+        focus: { default: "Old format objective." },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(bothYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("New format objective.");
+  });
+
+  it("accepts focus objective at exactly max length (2000 chars)", async () => {
+    const obj = "x".repeat(2_000);
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: obj },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe(obj);
+  });
+
+  it("skips focus objective exceeding max length (2001 chars)", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "x".repeat(2_001) },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("skips focus block with name exceeding max length (65 chars)", async () => {
+    const longName = "a".repeat(65);
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: longName,
+        focuses: {
+          [longName]: { objective: "Something." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("ignores legacy focus.default when focuses is present but all candidates miss", async () => {
+    // focuses takes precedence when present; if all candidates miss, the result
+    // is undefined rather than falling back to legacy focus.default.
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "nonexistent",
+        focuses: {
+          other: { objective: "Something else." },
+        },
+        focus: { default: "This valid legacy value is intentionally ignored." },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBeUndefined();
+  });
+
+  it("resolves from default key when activeFocus misses and defaultFocus is absent", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "nonexistent",
+        focuses: {
+          default: { objective: "Fallback via default key." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Fallback via default key.");
+  });
+
   it("re-throws non-404 gh errors", async () => {
     const otherError = new CliError("Rate limited", "RATE_LIMITED");
     mockedGh.mockRejectedValue(otherError);

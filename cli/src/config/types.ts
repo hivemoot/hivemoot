@@ -5,6 +5,10 @@ export interface RoleConfig {
   instructions: string;
 }
 
+export interface FocusBlock {
+  objective: string;
+}
+
 export interface TeamConfig {
   name?: string;
   onboarding?: string;

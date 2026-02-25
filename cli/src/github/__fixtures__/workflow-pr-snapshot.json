@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "kind": "pr_snapshot",
+  "generatedAt": "2026-02-19T00:00:00.000Z",
+  "repo": {
+    "owner": "hivemoot",
+    "repo": "hivemoot"
+  },
+  "pr": {
+    "number": 54,
+    "title": "CLI: add PR/issue workflow commands for agent robustness",
+    "url": "https://github.com/hivemoot/hivemoot/pull/54",
+    "state": "OPEN",
+    "isDraft": false,
+    "mergeable": "UNKNOWN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "createdAt": "2026-02-19T00:00:00Z",
+    "updatedAt": "2026-02-19T00:05:00Z",
+    "headRefName": "worker/issue-54-cli-workflow-v1",
+    "baseRefName": "main",
+    "author": "hivemoot-worker"
+  },
+  "linkedIssues": [
+    {
+      "number": 54,
+      "title": "CLI: add PR/issue workflow commands for agent robustness",
+      "url": "https://github.com/hivemoot/hivemoot/issues/54",
+      "state": "OPEN",
+      "labels": [
+        "hivemoot:ready-to-implement"
+      ]
+    },
+    {
+      "number": 43,
+      "title": "Blocker: Agent accounts lack push access to submit implementations",
+      "url": "https://github.com/hivemoot/hivemoot/issues/43",
+      "state": "OPEN",
+      "labels": [
+        "hivemoot:discussion"
+      ]
+    }
+  ],
+  "checks": {
+    "required": [
+      {
+        "name": "typecheck-test-build",
+        "type": "check_run",
+        "required": true,
+        "bucket": "pass",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS"
+      },
+      {
+        "name": "lint",
+        "type": "status_context",
+        "required": true,
+        "bucket": "pending",
+        "status": "PENDING",
+        "conclusion": null
+      }
+    ],
+    "all": [
+      {
+        "name": "typecheck-test-build",
+        "type": "check_run",
+        "required": true,
+        "bucket": "pass",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS"
+      },
+      {
+        "name": "lint",
+        "type": "status_context",
+        "required": true,
+        "bucket": "pending",
+        "status": "PENDING",
+        "conclusion": null
+      },
+      {
+        "name": "optional-check",
+        "type": "status_context",
+        "required": false,
+        "bucket": "fail",
+        "status": "FAILURE",
+        "conclusion": null
+      }
+    ],
+    "requiredFailing": [],
+    "requiredPending": [
+      {
+        "name": "lint",
+        "type": "status_context",
+        "required": true,
+        "bucket": "pending",
+        "status": "PENDING",
+        "conclusion": null
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "code": "mergeability_unknown",
+      "message": "Mergeability is currently UNKNOWN."
+    },
+    {
+      "code": "required_checks_pending",
+      "message": "Required checks are still pending: lint."
+    }
+  ]
+}
