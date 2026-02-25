@@ -20,6 +20,17 @@ import { encrypt, decrypt, type EncryptedEnvelope } from "@/server/crypto";
 
 const TOKEN_PREFIX = "hive:agent-token:";
 const HASH_PREFIX = "agent-token-hash:";
+const LOCK_PREFIX = "hive:agent-token-lock:";
+const LOCK_TTL_SECONDS = 5;
+const LOCK_MAX_WAIT_MS = 1000;
+const LOCK_RETRY_MIN_MS = 8;
+const LOCK_RETRY_MAX_MS = 20;
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+`;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +54,13 @@ export interface AgentTokenMeta {
   hasToken: true;
 }
 
+export interface AgentTokenRecord {
+  token: string;
+  fingerprint: string;
+  createdAt: string;
+  createdBy: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -57,6 +75,63 @@ function redisTokenKey(installationId: string): string {
 
 function redisHashKey(hash: string): string {
   return `${HASH_PREFIX}${hash}`;
+}
+
+function redisLockKey(installationId: string): string {
+  return `${LOCK_PREFIX}${installationId}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomRetryDelayMs(): number {
+  return LOCK_RETRY_MIN_MS + Math.floor(Math.random() * (LOCK_RETRY_MAX_MS - LOCK_RETRY_MIN_MS + 1));
+}
+
+async function releaseInstallationLock(
+  lockKey: string,
+  lockOwnerToken: string,
+  redis: Redis,
+): Promise<void> {
+  await redis.eval(RELEASE_LOCK_SCRIPT, [lockKey], [lockOwnerToken]);
+}
+
+async function withInstallationLock<T>(
+  installationId: string,
+  redis: Redis,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lockKey = redisLockKey(installationId);
+  const lockOwnerToken = randomBytes(16).toString("hex");
+  const deadline = Date.now() + LOCK_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const acquired = await redis.set(lockKey, lockOwnerToken, {
+      nx: true,
+      ex: LOCK_TTL_SECONDS,
+    });
+
+    if (acquired === "OK") {
+      try {
+        return await fn();
+      } finally {
+        try {
+          await releaseInstallationLock(lockKey, lockOwnerToken, redis);
+        } catch (error) {
+          // Lock cleanup is best-effort so we never hide the primary operation result.
+          console.error("[agent-token] Failed to release installation lock", {
+            installationId,
+            error,
+          });
+        }
+      }
+    }
+
+    await sleep(randomRetryDelayMs());
+  }
+
+  throw new Error(`Timed out acquiring agent-token lock for installation ${installationId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,32 +151,33 @@ export async function generateAgentToken(
   keyring: Map<string, Buffer>,
   redis: Redis,
 ): Promise<string> {
-  // Remove old hash index if a token already exists
-  const existing = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
-  if (existing && typeof existing.tokenHash === "string") {
-    await redis.del(redisHashKey(existing.tokenHash));
-  }
+  return withInstallationLock(installationId, redis, async () => {
+    // Remove old hash index if a token already exists.
+    const existing = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+    if (existing && typeof existing.tokenHash === "string") {
+      await redis.del(redisHashKey(existing.tokenHash));
+    }
 
-  const rawToken = randomBytes(32).toString("hex");
-  const hash = hashToken(rawToken);
-  const encrypted = encrypt(rawToken, activeKeyVersion, keyring);
+    const rawToken = randomBytes(32).toString("hex");
+    const hash = hashToken(rawToken);
+    const encrypted = encrypt(rawToken, activeKeyVersion, keyring);
 
-  const envelope: AgentTokenEnvelope = {
-    ciphertext: encrypted.ciphertext,
-    iv: encrypted.iv,
-    tag: encrypted.tag,
-    keyVersion: encrypted.keyVersion,
-    tokenHash: hash,
-    fingerprint: rawToken.slice(-8),
-    createdAt: new Date().toISOString(),
-    createdBy,
-  };
+    const envelope: AgentTokenEnvelope = {
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+      tag: encrypted.tag,
+      keyVersion: encrypted.keyVersion,
+      tokenHash: hash,
+      fingerprint: rawToken.slice(-8),
+      createdAt: new Date().toISOString(),
+      createdBy,
+    };
 
-  // Pipeline: store envelope + create hash reverse index
-  await redis.set(redisTokenKey(installationId), envelope);
-  await redis.set(redisHashKey(hash), { installationId });
+    await redis.set(redisTokenKey(installationId), envelope);
+    await redis.set(redisHashKey(hash), { installationId });
 
-  return rawToken;
+    return rawToken;
+  });
 }
 
 /**
@@ -123,6 +199,46 @@ export async function getAgentTokenMeta(
 }
 
 /**
+ * Returns the current raw token and metadata for an installation, or null.
+ * Used by admins to copy/recover the current token from encrypted storage.
+ */
+export async function getAgentToken(
+  installationId: string,
+  keyring: Map<string, Buffer>,
+  redis: Redis,
+): Promise<AgentTokenRecord | null> {
+  const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+  if (
+    !envelope ||
+    typeof envelope.ciphertext !== "string" ||
+    typeof envelope.iv !== "string" ||
+    typeof envelope.tag !== "string" ||
+    typeof envelope.keyVersion !== "string" ||
+    typeof envelope.fingerprint !== "string" ||
+    typeof envelope.createdAt !== "string" ||
+    typeof envelope.createdBy !== "string"
+  ) {
+    return null;
+  }
+
+  const encryptedEnvelope: EncryptedEnvelope = {
+    ciphertext: envelope.ciphertext,
+    iv: envelope.iv,
+    tag: envelope.tag,
+    keyVersion: envelope.keyVersion,
+  };
+
+  const token = decrypt(encryptedEnvelope, keyring);
+
+  return {
+    token,
+    fingerprint: envelope.fingerprint,
+    createdAt: envelope.createdAt,
+    createdBy: envelope.createdBy,
+  };
+}
+
+/**
  * Revokes (deletes) the agent token for an installation.
  * Removes both the encrypted envelope and the hash reverse index.
  */
@@ -130,12 +246,14 @@ export async function revokeAgentToken(
   installationId: string,
   redis: Redis,
 ): Promise<boolean> {
-  const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
-  if (!envelope || typeof envelope.tokenHash !== "string") return false;
+  return withInstallationLock(installationId, redis, async () => {
+    const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+    if (!envelope || typeof envelope.tokenHash !== "string") return false;
 
-  await redis.del(redisHashKey(envelope.tokenHash));
-  await redis.del(redisTokenKey(installationId));
-  return true;
+    await redis.del(redisHashKey(envelope.tokenHash));
+    await redis.del(redisTokenKey(installationId));
+    return true;
+  });
 }
 
 /**
@@ -148,29 +266,31 @@ export async function reEncryptAgentToken(
   keyring: Map<string, Buffer>,
   redis: Redis,
 ): Promise<boolean> {
-  const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
-  if (!envelope) return false;
+  return withInstallationLock(installationId, redis, async () => {
+    const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+    if (!envelope) return false;
 
-  const encryptedEnvelope: EncryptedEnvelope = {
-    ciphertext: envelope.ciphertext,
-    iv: envelope.iv,
-    tag: envelope.tag,
-    keyVersion: envelope.keyVersion,
-  };
+    const encryptedEnvelope: EncryptedEnvelope = {
+      ciphertext: envelope.ciphertext,
+      iv: envelope.iv,
+      tag: envelope.tag,
+      keyVersion: envelope.keyVersion,
+    };
 
-  const rawToken = decrypt(encryptedEnvelope, keyring);
-  const reEncrypted = encrypt(rawToken, newKeyVersion, keyring);
+    const rawToken = decrypt(encryptedEnvelope, keyring);
+    const reEncrypted = encrypt(rawToken, newKeyVersion, keyring);
 
-  const updated: AgentTokenEnvelope = {
-    ...envelope,
-    ciphertext: reEncrypted.ciphertext,
-    iv: reEncrypted.iv,
-    tag: reEncrypted.tag,
-    keyVersion: reEncrypted.keyVersion,
-  };
+    const updated: AgentTokenEnvelope = {
+      ...envelope,
+      ciphertext: reEncrypted.ciphertext,
+      iv: reEncrypted.iv,
+      tag: reEncrypted.tag,
+      keyVersion: reEncrypted.keyVersion,
+    };
 
-  await redis.set(redisTokenKey(installationId), updated);
-  return true;
+    await redis.set(redisTokenKey(installationId), updated);
+    return true;
+  });
 }
 
 /**

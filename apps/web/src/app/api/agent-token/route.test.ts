@@ -10,14 +10,14 @@ vi.mock("@/server/byok-auth", () => ({
 }));
 vi.mock("@/server/agent-token", () => ({
   generateAgentToken: vi.fn(),
-  getAgentTokenMeta: vi.fn(),
+  getAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
 }));
 
 import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   generateAgentToken,
-  getAgentTokenMeta,
+  getAgentToken,
   revokeAgentToken,
 } from "@/server/agent-token";
 import { POST, GET, DELETE } from "./route";
@@ -75,7 +75,7 @@ describe("POST /api/agent-token", () => {
     const body = await res.json();
     expect(body.token).toBe(fakeToken);
     expect(body.fingerprint).toBe(fakeToken.slice(-8));
-    expect(body.message).toContain("cannot be retrieved");
+    expect(body.message).toContain("Store this token securely");
   });
 
   it("passes session context to generateAgentToken", async () => {
@@ -103,25 +103,37 @@ describe("POST /api/agent-token", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/agent-token", () => {
-  it("returns token metadata", async () => {
-    vi.mocked(getAgentTokenMeta).mockResolvedValue({
+  it("returns token and metadata", async () => {
+    vi.mocked(getAgentToken).mockResolvedValue({
+      token: "a".repeat(64),
       fingerprint: "abcd1234",
       createdAt: "2026-02-24T00:00:00Z",
       createdBy: "alice",
-      hasToken: true,
     });
 
     const res = await GET(makeRequest("GET"));
     expect(res.status).toBe(200);
 
     const body = await res.json();
+    expect(body.token).toBe("a".repeat(64));
     expect(body.fingerprint).toBe("abcd1234");
     expect(body.createdBy).toBe("alice");
-    expect(body.hasToken).toBe(true);
+  });
+
+  it("passes keyring context to getAgentToken", async () => {
+    vi.mocked(getAgentToken).mockResolvedValue({
+      token: "b".repeat(64),
+      fingerprint: "bbbbbbbb",
+      createdAt: "2026-02-24T00:00:00Z",
+      createdBy: "alice",
+    });
+
+    await GET(makeRequest("GET"));
+    expect(getAgentToken).toHaveBeenCalledWith("123", MOCK_KEYRING, expect.anything());
   });
 
   it("returns 404 when no token exists", async () => {
-    vi.mocked(getAgentTokenMeta).mockResolvedValue(null);
+    vi.mocked(getAgentToken).mockResolvedValue(null);
     const res = await GET(makeRequest("GET"));
     expect(res.status).toBe(404);
 

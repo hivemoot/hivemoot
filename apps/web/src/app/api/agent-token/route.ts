@@ -4,9 +4,8 @@
  * Manages per-installation agent bearer tokens used to authenticate health
  * reports. All three methods require a valid setup session (cookie auth).
  *
- * POST   — Generate a new token (rotates if one exists). Returns the raw
- *          token once — it cannot be retrieved again.
- * GET    — Return non-sensitive metadata (fingerprint, createdAt).
+ * POST   — Generate a new token (rotates if one exists).
+ * GET    — Return the current token and metadata so admins can copy/recover it.
  * DELETE — Revoke the token.
  */
 
@@ -14,7 +13,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   generateAgentToken,
-  getAgentTokenMeta,
+  getAgentToken,
   revokeAgentToken,
 } from "@/server/agent-token";
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
@@ -34,7 +33,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     token,
     fingerprint: token.slice(-8),
-    message: "Store this token securely — it cannot be retrieved again.",
+    message: "Store this token securely and rotate it immediately if compromised.",
   });
 }
 
@@ -42,8 +41,8 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  const meta = await getAgentTokenMeta(auth.session.installationId, auth.redis);
-  if (!meta) {
+  const record = await getAgentToken(auth.session.installationId, auth.keyring, auth.redis);
+  if (!record) {
     return agentHealthError(
       AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
       "No agent token configured for this installation",
@@ -51,7 +50,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  return NextResponse.json(meta);
+  return NextResponse.json(record);
 }
 
 export async function DELETE(request: NextRequest) {

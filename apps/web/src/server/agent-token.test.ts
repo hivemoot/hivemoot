@@ -24,6 +24,7 @@ vi.mock("@/server/crypto", () => ({
 
 import {
   generateAgentToken,
+  getAgentToken,
   getAgentTokenMeta,
   revokeAgentToken,
   reEncryptAgentToken,
@@ -38,7 +39,13 @@ function makeMockRedis() {
   const store = new Map<string, unknown>();
 
   const client = {
-    set: vi.fn(async (key: string, value: unknown) => {
+    set: vi.fn(async (
+      key: string,
+      value: unknown,
+      opts?: { nx?: boolean; xx?: boolean },
+    ) => {
+      if (opts?.nx && store.has(key)) return null;
+      if (opts?.xx && !store.has(key)) return null;
       store.set(key, value);
       return "OK";
     }),
@@ -47,6 +54,15 @@ function makeMockRedis() {
       const existed = store.has(key);
       store.delete(key);
       return existed ? 1 : 0;
+    }),
+    eval: vi.fn(async (_script: string, keys: string[], args: string[]) => {
+      const lockKey = keys[0];
+      const expectedOwner = args[0];
+      if (store.get(lockKey) === expectedOwner) {
+        store.delete(lockKey);
+        return 1;
+      }
+      return 0;
     }),
     _store: store,
   };
@@ -111,6 +127,29 @@ describe("generateAgentToken", () => {
     expect(redis._store.has(`agent-token-hash:${hash1}`)).toBe(false);
     expect(redis._store.has(`agent-token-hash:${hash2}`)).toBe(true);
   });
+
+  it("keeps exactly one valid token after concurrent rotations", async () => {
+    const tokens = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis),
+      ),
+    );
+
+    const hashKeys = [...redis._store.keys()].filter((k) => k.startsWith("agent-token-hash:"));
+    expect(hashKeys).toHaveLength(1);
+
+    const current = await getAgentToken("inst-1", MOCK_KEYRING, redis);
+    expect(current).not.toBeNull();
+
+    for (const token of tokens) {
+      const resolved = await resolveTokenToInstallation(token, redis);
+      if (token === current!.token) {
+        expect(resolved).toBe("inst-1");
+      } else {
+        expect(resolved).toBeNull();
+      }
+    }
+  });
 });
 
 describe("getAgentTokenMeta", () => {
@@ -144,6 +183,31 @@ describe("getAgentTokenMeta", () => {
     const metaStr = JSON.stringify(meta);
     expect(metaStr).not.toContain("ciphertext");
     expect(metaStr).not.toContain("tokenHash");
+  });
+});
+
+describe("getAgentToken", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  it("returns null when no token exists", async () => {
+    const record = await getAgentToken("unknown", MOCK_KEYRING, redis);
+    expect(record).toBeNull();
+  });
+
+  it("decrypts and returns the current token with metadata", async () => {
+    const token = await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis);
+    const record = await getAgentToken("inst-1", MOCK_KEYRING, redis);
+
+    expect(record).not.toBeNull();
+    expect(record!.token).toBe(token);
+    expect(record!.fingerprint).toBe(token.slice(-8));
+    expect(record!.createdBy).toBe("alice");
+    expect(record!.createdAt).toBeDefined();
   });
 });
 
