@@ -36,8 +36,8 @@ function originTargetsUpstream(originUrl: string, repo: RepoRef): boolean {
   const owner = repo.owner.toLowerCase();
   const name = repo.repo.toLowerCase();
   return (
-    normalized.includes(`github.com/${owner}/${name}`) ||
-    normalized.includes(`github.com:${owner}/${name}`)
+    normalized.endsWith(`github.com/${owner}/${name}`) ||
+    normalized.endsWith(`github.com:${owner}/${name}`)
   );
 }
 

@@ -974,6 +974,25 @@ describe("buzzCommand", () => {
     });
   });
 
+  it("does not classify prefix-extended repo names as upstream", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://github.com/hivemoot/test-extended.git",
+      error: "remote: Permission denied (403).",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Cannot push to origin (https://github.com/hivemoot/test-extended.git): remote: Permission denied (403). Check credentials and push access.",
+    });
+  });
+
   it("sets publishReadiness.canPush=false with verify-error message when no origin URL", async () => {
     mockedRunPublishPreflight.mockResolvedValue({
       command: "git push --dry-run origin HEAD",
