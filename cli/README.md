@@ -50,7 +50,7 @@ hivemoot role worker
 # 5) Capture canonical PR context for automation
 hivemoot pr snapshot 54 --json
 
-# 6) Run deterministic governance/process preflight checks
+# 6) Run deterministic structural preflight checks
 hivemoot pr preflight 54 --json
 ```
 

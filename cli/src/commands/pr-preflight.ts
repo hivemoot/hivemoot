@@ -12,11 +12,28 @@ function formatRepo(repo: RepoRef): string {
 }
 
 function formatPreflight(result: PullRequestPreflightResult): string {
+  const linkedIssueRefs =
+    result.linkedIssues.length > 0
+      ? result.linkedIssues.map((issue) => `#${issue.number}`).join(", ")
+      : "none";
+  const requiredChecks = result.checks.required;
+  const requiredPassed = requiredChecks.filter((check) => check.bucket === "pass");
+  const requiredFailing = requiredChecks.filter((check) => check.bucket === "fail");
+  const requiredPending = requiredChecks.filter((check) => check.bucket === "pending");
+
   const lines = [
     `PR PREFLIGHT — ${formatRepo(result.repo)}#${result.pr.number}`,
     `${result.pr.title}`,
     `result: ${result.pass ? "pass" : "blocked"}`,
+    `linked issues: ${linkedIssueRefs}`,
+    `required checks: ${requiredChecks.length} total (${requiredPassed.length} passed, ${requiredFailing.length} failing, ${requiredPending.length} pending)`,
   ];
+
+  if (requiredPassed.length > 0) {
+    lines.push(`checks passed: ${requiredPassed.map((check) => check.name).join(", ")}`);
+  } else if (requiredChecks.length === 0) {
+    lines.push("checks passed: none required");
+  }
 
   if (result.blockers.length > 0) {
     lines.push("blockers:");

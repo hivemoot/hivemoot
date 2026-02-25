@@ -153,7 +153,7 @@ Examples:
 
 prProgram
   .command("preflight")
-  .description("Check governance/process blockers for a PR")
+  .description("Check structural blockers for a PR")
   .argument("<pr>", "Pull request number, URL, or branch")
   .option("--repo <owner/repo>", "Target repository (default: detect from git)")
   .option("--json", "Output as JSON")
