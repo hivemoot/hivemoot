@@ -177,9 +177,12 @@ governance:
         minApprovals: 2
     mergeReady:
       minApprovals: 2
-    fastTrack:
+    automerge:
       enabled: true
-      # Path-based allowlist: only these globs qualify for fast-track eligibility.
+      # Phase 1 is classify-and-label only (no automatic merge).
+      # Phase 2 can flip this to false once merge-time revalidation lands.
+      dryRun: true
+      # Path-based allowlist: only these globs qualify for automerge eligibility.
       # Evaluation is path+size only — no title or prefix shortcuts.
       allowedPaths:
         - "**/*.md"
@@ -195,7 +198,7 @@ governance:
       # Size limits: PRs exceeding either threshold are ineligible.
       maxFiles: 5
       maxChangedLines: 80
-      # Gate: standard quality checks still required even on the fast-track path.
+      # Gate: standard quality checks still required even on the automerge path.
       # minApprovals counts approvals from trustedReviewers only (see trustedReviewers above).
       minApprovals: 2
       # requireCI: bot must wait for all required status checks to pass before merging.

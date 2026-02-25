@@ -1,14 +1,15 @@
-name: Fast Track Classifier
+name: Automerge Classifier
 
-# Classifies PRs as fast-track eligible based on file paths and change size.
+# Classifies PRs as automerge-eligible based on file paths and change size.
 # Phase 1 scope: docs/markdown-only, bounded size, no .github or dependency files.
 # Fail closed: any classifier error leaves the PR on the standard governance path.
 #
-# Thresholds mirror governance.pr.fastTrack in hivemoot.yml:
+# Thresholds mirror governance.pr.automerge in hivemoot.yml:
 #   allowedPaths: ["**/*.md", "**/*.txt", "docs/**"]
 #   denyPaths:   [".github/**", "package.json", "package-lock.json", "*.lock"]
 #   maxFiles: 5
 #   maxChangedLines: 80
+#   dryRun: true (phase 1 labels only; merge automation is phase 2)
 
 on:
   pull_request:
@@ -26,7 +27,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Evaluate fast-track eligibility
+      - name: Evaluate automerge eligibility
         id: classify
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,14 +48,14 @@ jobs:
             }
 
           echo "$FILES_JSON" \
-            | python3 .github/scripts/classify_fast_track.py \
+            | python3 .github/scripts/classify_automerge.py \
             || {
               echo "ELIGIBLE=false" >> "$GITHUB_OUTPUT"
               echo "REASON=fallback:error classifier exited non-zero" >> "$GITHUB_OUTPUT"
               exit 0
             }
 
-      - name: Apply fast-track label
+      - name: Apply automerge label
         if: steps.classify.outputs.ELIGIBLE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,10 +63,10 @@ jobs:
           REPO: ${{ github.repository }}
           REASON: ${{ steps.classify.outputs.REASON }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "hivemoot:fast-track" || true
-          echo "Labeled as fast-track. Reason: $REASON"
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "hivemoot:automerge" || true
+          echo "Labeled as automerge. Reason: $REASON"
 
-      - name: Remove stale fast-track label
+      - name: Remove stale automerge label
         if: steps.classify.outputs.ELIGIBLE == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,9 +75,9 @@ jobs:
           REASON: ${{ steps.classify.outputs.REASON }}
         run: |
           LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name]')
-          if echo "$LABELS" | grep -q "hivemoot:fast-track"; then
-            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "hivemoot:fast-track" || true
-            echo "Removed fast-track label. Reason: $REASON"
+          if echo "$LABELS" | grep -q "hivemoot:automerge"; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "hivemoot:automerge" || true
+            echo "Removed automerge label. Reason: $REASON"
           else
             echo "Not eligible. Reason: $REASON"
           fi

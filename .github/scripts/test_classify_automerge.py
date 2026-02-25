@@ -1,6 +1,6 @@
 """
-Tests for the fast-track classifier.
-Run with: python3 -m pytest .github/scripts/test_classify_fast_track.py -v
+Tests for the automerge eligibility classifier.
+Run with: python3 -m pytest .github/scripts/test_classify_automerge.py -v
 """
 import sys
 import os
@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import io
 import tempfile
 
-from classify_fast_track import classify, matches, write_output, _sanitize_output_value, ALLOWED, DENIED
+from classify_automerge import classify, matches, write_output, _sanitize_output_value, ALLOWED, DENIED
 
 # --- matches() tests ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fast-track classifier for hivemoot PRs.
+Automerge eligibility classifier for hivemoot PRs.
 
 Reads a JSON array of {path, additions, deletions} from stdin.
 Writes ELIGIBLE and REASON to $GITHUB_OUTPUT.
@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-# Authoritative source: .github/hivemoot.yml -> governance.pr.fastTrack
+# Authoritative source: .github/hivemoot.yml -> governance.pr.automerge
 # Phase 2 TODO: read thresholds from config at runtime instead of hardcoding.
 ALLOWED = ["**/*.md", "**/*.txt", "docs/**"]
 DENIED = [".github/**", "package.json", "package-lock.json", "*.lock"]
