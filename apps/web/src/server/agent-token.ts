@@ -32,6 +32,24 @@ end
 return 0
 `;
 
+// Atomic rotate: DEL old hash (if any), SET envelope, SET new hash index.
+// KEYS: [oldHashKey, envelopeKey, newHashKey]
+// ARGV: [deleteOld ("1"|"0"), envelopeJSON, hashRecordJSON]
+const ROTATE_TOKEN_SCRIPT = `
+if ARGV[1] == "1" then redis.call("del", KEYS[1]) end
+redis.call("set", KEYS[2], ARGV[2])
+redis.call("set", KEYS[3], ARGV[3])
+return 1
+`;
+
+// Atomic revoke: DEL hash index and envelope together.
+// KEYS: [hashKey, envelopeKey]
+const REVOKE_TOKEN_SCRIPT = `
+redis.call("del", KEYS[1])
+redis.call("del", KEYS[2])
+return 1
+`;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -152,11 +170,8 @@ export async function generateAgentToken(
   redis: Redis,
 ): Promise<string> {
   return withInstallationLock(installationId, redis, async () => {
-    // Remove old hash index if a token already exists.
     const existing = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
-    if (existing && typeof existing.tokenHash === "string") {
-      await redis.del(redisHashKey(existing.tokenHash));
-    }
+    const hasExisting = existing != null && typeof existing.tokenHash === "string";
 
     const rawToken = randomBytes(32).toString("hex");
     const hash = hashToken(rawToken);
@@ -173,8 +188,19 @@ export async function generateAgentToken(
       createdBy,
     };
 
-    await redis.set(redisTokenKey(installationId), envelope);
-    await redis.set(redisHashKey(hash), { installationId });
+    await redis.eval(
+      ROTATE_TOKEN_SCRIPT,
+      [
+        hasExisting ? redisHashKey(existing!.tokenHash) : "",
+        redisTokenKey(installationId),
+        redisHashKey(hash),
+      ],
+      [
+        hasExisting ? "1" : "0",
+        JSON.stringify(envelope),
+        JSON.stringify({ installationId }),
+      ],
+    );
 
     return rawToken;
   });
@@ -250,8 +276,11 @@ export async function revokeAgentToken(
     const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
     if (!envelope || typeof envelope.tokenHash !== "string") return false;
 
-    await redis.del(redisHashKey(envelope.tokenHash));
-    await redis.del(redisTokenKey(installationId));
+    await redis.eval(
+      REVOKE_TOKEN_SCRIPT,
+      [redisHashKey(envelope.tokenHash), redisTokenKey(installationId)],
+      [],
+    );
     return true;
   });
 }
