@@ -919,6 +919,28 @@ export default function Step2Form({
           </div>
         </fieldset>
 
+        {provider === "openrouter" && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <svg
+              className="h-4 w-4 shrink-0 mt-0.5 text-amber-400"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6" />
+              <path d="M8 5v3" />
+              <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+            </svg>
+            <p className="text-xs text-amber-300/90">
+              Requests route through <span className="font-medium">OpenRouter</span> before reaching the model provider.
+            </p>
+          </div>
+        )}
+
         {/* Model field */}
         <div className="mt-5">
           <label htmlFor="model" className="mb-2 block text-sm text-zinc-400">
@@ -932,9 +954,23 @@ export default function Step2Form({
             disabled={sessionExpired}
             className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            The model the Queen uses for AI features.
-          </p>
+          {provider === "openrouter" ? (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Format: <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">provider/model-name</code> (e.g. <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">anthropic/claude-3.5-sonnet</code>).{" "}
+              <a
+                href="https://openrouter.ai/models"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-honey-400 hover:underline"
+              >
+                Browse models
+              </a>.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              The model the Queen uses for AI features.
+            </p>
+          )}
         </div>
 
         {/* API key field */}
