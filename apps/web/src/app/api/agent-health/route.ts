@@ -5,6 +5,7 @@
  * token (agent token, not session cookie).
  *
  * Rate-limited to one report per agent per repo per 60 seconds.
+ * Retries for the same run_id are idempotent.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -13,6 +14,8 @@ import {
   validateReport,
   checkRateLimit,
   recordHealthReport,
+  reserveHealthReportIdempotency,
+  releaseHealthReportIdempotency,
 } from "@/server/agent-health-store";
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
 
@@ -79,6 +82,28 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const { report } = validation;
+  const idempotency = await reserveHealthReportIdempotency(
+    auth.installationId,
+    report,
+    auth.redis,
+  );
+
+  if (idempotency.kind === "duplicate") {
+    return NextResponse.json({
+      received: true,
+      received_at: idempotency.receivedAt,
+      duplicate: true,
+    });
+  }
+
+  if (idempotency.kind === "conflict") {
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.IDEMPOTENCY_CONFLICT,
+      "run_id already exists with a different payload",
+      409,
+    );
+  }
+
   const allowed = await checkRateLimit(
     auth.installationId,
     report.agent_id,
@@ -87,6 +112,11 @@ export async function POST(request: NextRequest) {
   );
 
   if (!allowed) {
+    try {
+      await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
+    } catch {
+      // Best-effort cleanup only; preserve the rate-limit response.
+    }
     return agentHealthError(
       AGENT_HEALTH_ERROR.RATE_LIMITED,
       "Rate limited — one report per agent per repo per 60 seconds",
@@ -94,7 +124,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  await recordHealthReport(auth.installationId, report, auth.redis);
+  try {
+    await recordHealthReport(auth.installationId, report, auth.redis);
+  } catch (error) {
+    try {
+      await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
+    } catch {
+      // Preserve the original storage error when cleanup fails.
+    }
+    throw error;
+  }
 
   return NextResponse.json({ received: true, received_at: report.received_at });
 }

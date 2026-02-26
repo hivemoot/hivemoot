@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
   validateReport,
+  reserveHealthReportIdempotency,
+  releaseHealthReportIdempotency,
   checkRateLimit,
   recordHealthReport,
   type HealthReport,
@@ -284,6 +286,77 @@ describe("validateReport", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("Unknown field");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests - idempotency
+// ---------------------------------------------------------------------------
+
+describe("reserveHealthReportIdempotency", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  const baseReport: HealthReport = {
+    agent_id: "bee-1",
+    repo: "hivemoot/sandbox",
+    run_id: "run-42",
+    outcome: "success",
+    duration_secs: 42,
+    consecutive_failures: 0,
+    received_at: "2026-02-24T10:00:00Z",
+  };
+
+  it("reserves a new run_id on first write", async () => {
+    const reservation = await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    expect(reservation).toStrictEqual({
+      kind: "new",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
+  });
+
+  it("returns duplicate for same run payload and preserves original received_at", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const retryReport: HealthReport = {
+      ...baseReport,
+      received_at: "2026-02-24T10:01:00Z",
+    };
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", retryReport, redis);
+    expect(reservation).toStrictEqual({
+      kind: "duplicate",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
+  });
+
+  it("returns conflict for same run_id with different payload", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const conflicting: HealthReport = {
+      ...baseReport,
+      outcome: "failure",
+      error: "timeout",
+      received_at: "2026-02-24T10:02:00Z",
+    };
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", conflicting, redis);
+    expect(reservation).toStrictEqual({ kind: "conflict" });
+  });
+
+  it("releasing reservation allows reprocessing", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    await releaseHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    expect(reservation).toStrictEqual({
+      kind: "new",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
   });
 });
 

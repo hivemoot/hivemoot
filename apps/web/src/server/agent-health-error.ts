@@ -15,6 +15,7 @@ export const AGENT_HEALTH_ERROR = {
   SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
   TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
   TOKEN_NOT_FOUND: "agent_health_token_not_found",
+  IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
   RATE_LIMITED: "agent_health_rate_limited",
   VALIDATION_FAILED: "agent_health_validation_failed",
 } as const;

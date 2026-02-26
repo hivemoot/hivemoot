@@ -15,8 +15,12 @@
  *
  *   agent-health:ratelimit:{installId}:{agentId}:{repo}
  *     → NX/EX guard — one report per agent per repo per 60 seconds
+ *
+ *   agent-health:idempotency:{installId}:{digest}
+ *     → Run-id reservation for 24h dedupe/conflict checks
  */
 
+import { createHash } from "node:crypto";
 import { type Redis } from "@upstash/redis";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +30,7 @@ import { type Redis } from "@upstash/redis";
 const LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
 const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
 const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,78 @@ function indexKey(installId: string): string {
 function rateLimitKey(installId: string, agentId: string, repo: string): string {
   return `agent-health:ratelimit:${installId}:${agentId}:${repo}`;
 }
+
+function idempotencyKey(
+  installId: string,
+  agentId: string,
+  repo: string,
+  runId: string,
+): string {
+  const digest = createHash("sha256")
+    .update(`${agentId}\u0000${repo}\u0000${runId}`)
+    .digest("hex");
+  return `agent-health:idempotency:${installId}:${digest}`;
+}
+
+type StoredIdempotencyRecord = {
+  payload_hash: string;
+  received_at: string;
+};
+
+function idempotencyPayloadHash(report: HealthReport): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      agent_id: report.agent_id,
+      repo: report.repo,
+      run_id: report.run_id,
+      outcome: report.outcome,
+      duration_secs: report.duration_secs,
+      consecutive_failures: report.consecutive_failures,
+      error: report.error ?? null,
+      exit_code: report.exit_code ?? null,
+    }))
+    .digest("hex");
+}
+
+function parseIdempotencyRecord(value: unknown): StoredIdempotencyRecord | null {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "string") {
+    try {
+      return parseIdempotencyRecord(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+
+  const maybe = value as Record<string, unknown>;
+  if (typeof maybe.payload_hash !== "string" || typeof maybe.received_at !== "string") {
+    return null;
+  }
+
+  return {
+    payload_hash: maybe.payload_hash,
+    received_at: maybe.received_at,
+  };
+}
+
+async function getIdempotencyRecord(
+  installId: string,
+  report: HealthReport,
+  redis: Redis,
+): Promise<StoredIdempotencyRecord | null> {
+  const existing = await redis.get(
+    idempotencyKey(installId, report.agent_id, report.repo, report.run_id),
+  );
+  return parseIdempotencyRecord(existing);
+}
+
+export type IdempotencyReservation =
+  | { kind: "new"; receivedAt: string }
+  | { kind: "duplicate"; receivedAt: string }
+  | { kind: "conflict" };
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -185,6 +262,65 @@ export function validateReport(body: unknown): ValidationResult {
   if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
 
   return { ok: true, report };
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserves a run_id for this installation+agent+repo tuple.
+ * - first time: kind "new"
+ * - exact retry: kind "duplicate" (same payload hash)
+ * - conflicting retry: kind "conflict" (same run_id, different payload)
+ */
+export async function reserveHealthReportIdempotency(
+  installId: string,
+  report: HealthReport,
+  redis: Redis,
+): Promise<IdempotencyReservation> {
+  const payloadHash = idempotencyPayloadHash(report);
+
+  const existing = await getIdempotencyRecord(installId, report, redis);
+  if (existing) {
+    if (existing.payload_hash === payloadHash) {
+      return { kind: "duplicate", receivedAt: existing.received_at };
+    }
+    return { kind: "conflict" };
+  }
+
+  const record: StoredIdempotencyRecord = {
+    payload_hash: payloadHash,
+    received_at: report.received_at,
+  };
+
+  const key = idempotencyKey(installId, report.agent_id, report.repo, report.run_id);
+  const reserved = await redis.set(
+    key,
+    JSON.stringify(record),
+    { nx: true, ex: IDEMPOTENCY_TTL_SECONDS },
+  );
+
+  if (reserved === "OK") {
+    return { kind: "new", receivedAt: report.received_at };
+  }
+
+  const raced = await getIdempotencyRecord(installId, report, redis);
+  if (!raced) return { kind: "conflict" };
+
+  if (raced.payload_hash === payloadHash) {
+    return { kind: "duplicate", receivedAt: raced.received_at };
+  }
+
+  return { kind: "conflict" };
+}
+
+export async function releaseHealthReportIdempotency(
+  installId: string,
+  report: HealthReport,
+  redis: Redis,
+): Promise<void> {
+  await redis.del(idempotencyKey(installId, report.agent_id, report.repo, report.run_id));
 }
 
 // ---------------------------------------------------------------------------

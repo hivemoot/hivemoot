@@ -12,6 +12,8 @@ vi.mock("@/server/agent-health-store", () => ({
   validateReport: vi.fn(),
   checkRateLimit: vi.fn(),
   recordHealthReport: vi.fn(),
+  reserveHealthReportIdempotency: vi.fn(),
+  releaseHealthReportIdempotency: vi.fn(),
 }));
 
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
@@ -19,6 +21,8 @@ import {
   validateReport,
   checkRateLimit,
   recordHealthReport,
+  reserveHealthReportIdempotency,
+  releaseHealthReportIdempotency,
 } from "@/server/agent-health-store";
 import { POST } from "./route";
 
@@ -85,8 +89,13 @@ beforeEach(() => {
     ok: true,
     report: VALID_REPORT,
   });
+  vi.mocked(reserveHealthReportIdempotency).mockResolvedValue({
+    kind: "new",
+    receivedAt: VALID_REPORT.received_at,
+  });
   vi.mocked(checkRateLimit).mockResolvedValue(true);
   vi.mocked(recordHealthReport).mockResolvedValue(undefined);
+  vi.mocked(releaseHealthReportIdempotency).mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -190,5 +199,58 @@ describe("POST /api/agent-health", () => {
     await POST(makePostRequest(VALID_REQUEST_BODY));
 
     expect(recordHealthReport).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 duplicate=true when run_id is retried with same payload", async () => {
+    vi.mocked(reserveHealthReportIdempotency).mockResolvedValue({
+      kind: "duplicate",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(true);
+    expect(body.received_at).toBe("2026-02-24T10:00:00Z");
+    expect(body.duplicate).toBe(true);
+    expect(checkRateLimit).not.toHaveBeenCalled();
+    expect(recordHealthReport).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when run_id is reused with a different payload", async () => {
+    vi.mocked(reserveHealthReportIdempotency).mockResolvedValue({
+      kind: "conflict",
+    });
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_idempotency_conflict");
+    expect(recordHealthReport).not.toHaveBeenCalled();
+  });
+
+  it("releases idempotency reservation when rate-limited", async () => {
+    vi.mocked(checkRateLimit).mockResolvedValue(false);
+
+    await POST(makePostRequest(VALID_REQUEST_BODY));
+
+    expect(releaseHealthReportIdempotency).toHaveBeenCalledWith(
+      "inst-1",
+      VALID_REPORT,
+      expect.anything(),
+    );
+  });
+
+  it("releases idempotency reservation when write fails", async () => {
+    vi.mocked(recordHealthReport).mockRejectedValue(new Error("redis write failed"));
+
+    await expect(POST(makePostRequest(VALID_REQUEST_BODY))).rejects.toThrow(
+      "redis write failed",
+    );
+    expect(releaseHealthReportIdempotency).toHaveBeenCalledWith(
+      "inst-1",
+      VALID_REPORT,
+      expect.anything(),
+    );
   });
 });
