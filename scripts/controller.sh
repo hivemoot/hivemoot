@@ -255,7 +255,11 @@ spawn_worker() {
   append_env_if_set KILO_MODEL
   append_env_if_set OPENCODE_PROVIDER
   append_env_if_set OPENCODE_MODEL
+  append_env_if_set HEALTH_REPORT_URL
+  append_env_if_set HEALTH_REPORT_TIMEOUT_SECS
+  append_env_if_set HEALTH_REPORT_MAX_RETRIES
 
+  append_secret_env HEALTH_REPORT_TOKEN
   append_secret_env OPENAI_API_KEY
   append_secret_env GOOGLE_API_KEY
   append_secret_env GEMINI_API_KEY

@@ -26,61 +26,54 @@ HEALTH_REPORT_MAX_RETRIES="${HEALTH_REPORT_MAX_RETRIES:-2}"
 _HEALTH_PAYLOAD_MAX_BYTES=10240
 
 # Valid enum values for local validation.
-_VALID_STATUSES="active idle error offline"
-_VALID_OUTCOMES="success failure skipped"
+_VALID_OUTCOMES="success failure timeout"
 
-# Derive the installation identifier from TARGET_REPO owner.
-# Override via HIVEMOOT_INSTALLATION env var.
-_resolve_installation() {
-  local target_repo="$1"
-  local override="${HIVEMOOT_INSTALLATION:-}"
-
-  if [ -n "$override" ]; then
-    printf '%s' "$override"
-    return 0
-  fi
-
-  # Extract owner from owner/repo format
-  printf '%s' "${target_repo%%/*}"
-}
+# Allowed payload fields (sorted). Must match backend HealthReport.
+_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code outcome repo run_id"
 
 # Build the JSON payload for the health report.
 # Requires jq.
 _build_health_payload() {
   local agent_id="$1"
-  local installation="$2"
-  local status="$3"
-  local last_run="$4"
-  local last_outcome="$5"
-  local run_count="$6"
-  local error_count="$7"
-  local consecutive_failures="$8"
-  local duration_secs="$9"
-  local current_repos="${10}"
+  local repo="$2"
+  local run_id="$3"
+  local outcome="$4"
+  local duration_secs="$5"
+  local consecutive_failures="$6"
+  local exit_code="${7:-}"
+  local error_msg="${8:-}"
 
-  jq -n \
-    --arg agent_id "$agent_id" \
-    --arg installation "$installation" \
-    --arg status "$status" \
-    --arg last_run "$last_run" \
-    --arg last_outcome "$last_outcome" \
-    --argjson run_count "$run_count" \
-    --argjson error_count "$error_count" \
-    --argjson consecutive_failures "$consecutive_failures" \
-    --argjson duration_secs "$duration_secs" \
-    --arg current_repos "$current_repos" \
-    '{
-      agent_id: $agent_id,
-      installation: $installation,
-      status: $status,
-      last_run: $last_run,
-      last_outcome: $last_outcome,
-      run_count: $run_count,
-      error_count: $error_count,
-      consecutive_failures: $consecutive_failures,
-      duration_secs: $duration_secs,
-      current_repos: ($current_repos | split(",") | map(select(length > 0)))
-    }'
+  local jq_args=(
+    -n
+    --arg agent_id "$agent_id"
+    --arg repo "$repo"
+    --arg run_id "$run_id"
+    --arg outcome "$outcome"
+    --argjson duration_secs "$duration_secs"
+    --argjson consecutive_failures "$consecutive_failures"
+  )
+
+  # shellcheck disable=SC2016  # jq placeholders ($agent_id, etc.) must stay literal in the jq program string.
+  local jq_filter='{
+    agent_id: $agent_id,
+    repo: $repo,
+    run_id: $run_id,
+    outcome: $outcome,
+    duration_secs: $duration_secs,
+    consecutive_failures: $consecutive_failures
+  }'
+
+  # Optional fields: only include when non-empty.
+  if [ -n "$exit_code" ]; then
+    jq_args+=(--argjson exit_code "$exit_code")
+    jq_filter="${jq_filter} + {exit_code: \$exit_code}"
+  fi
+  if [ -n "$error_msg" ]; then
+    jq_args+=(--arg error "$error_msg")
+    jq_filter="${jq_filter} + {error: \$error}"
+  fi
+
+  jq "${jq_args[@]}" "$jq_filter"
 }
 
 # Validate the payload before sending.
@@ -90,7 +83,7 @@ _validate_health_payload() {
 
   # Required string fields must be non-empty
   local field
-  for field in agent_id installation status last_run last_outcome; do
+  for field in agent_id repo run_id outcome; do
     local value
     value="$(printf '%s' "$payload" | jq -r ".$field // empty")"
     if [ -z "$value" ]; then
@@ -99,54 +92,28 @@ _validate_health_payload() {
     fi
   done
 
-  # Enum: status
-  local status_val
-  status_val="$(printf '%s' "$payload" | jq -r '.status')"
+  # Enum: outcome
+  local outcome_val
+  outcome_val="$(printf '%s' "$payload" | jq -r '.outcome')"
   local valid=0
   local s
-  for s in $_VALID_STATUSES; do
-    if [ "$status_val" = "$s" ]; then valid=1; break; fi
-  done
-  if [ "$valid" -eq 0 ]; then
-    echo "health-report: validation failed — invalid status: ${status_val} (expected: ${_VALID_STATUSES})" >&2
-    return 1
-  fi
-
-  # Enum: last_outcome
-  local outcome_val
-  outcome_val="$(printf '%s' "$payload" | jq -r '.last_outcome')"
-  valid=0
   for s in $_VALID_OUTCOMES; do
     if [ "$outcome_val" = "$s" ]; then valid=1; break; fi
   done
   if [ "$valid" -eq 0 ]; then
-    echo "health-report: validation failed — invalid last_outcome: ${outcome_val} (expected: ${_VALID_OUTCOMES})" >&2
+    echo "health-report: validation failed — invalid outcome: ${outcome_val} (expected: ${_VALID_OUTCOMES})" >&2
     return 1
   fi
 
   # Non-negative numeric fields
   local num_field
-  for num_field in run_count error_count consecutive_failures duration_secs; do
+  for num_field in consecutive_failures duration_secs; do
     local num_val
     num_val="$(printf '%s' "$payload" | jq -r ".$num_field")"
     if ! printf '%s' "$num_val" | grep -Eq '^[0-9]+$'; then
       echo "health-report: validation failed — ${num_field} must be a non-negative integer: ${num_val}" >&2
       return 1
     fi
-  done
-
-  # current_repos entries must be owner/repo format
-  local repo_count
-  repo_count="$(printf '%s' "$payload" | jq '.current_repos | length')"
-  local i=0
-  while [ "$i" -lt "$repo_count" ]; do
-    local repo_entry
-    repo_entry="$(printf '%s' "$payload" | jq -r ".current_repos[$i]")"
-    if ! printf '%s' "$repo_entry" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-      echo "health-report: validation failed — malformed current_repos entry: ${repo_entry}" >&2
-      return 1
-    fi
-    i=$((i + 1))
   done
 
   # Size budget
@@ -158,13 +125,19 @@ _validate_health_payload() {
   fi
 
   # Verify no unexpected fields (contract guardrail)
-  local expected_fields="agent_id consecutive_failures current_repos duration_secs error_count installation last_outcome last_run run_count status"
   local actual_fields
   actual_fields="$(printf '%s' "$payload" | jq -r 'keys | .[]' | sort | tr '\n' ' ' | sed 's/ $//')"
-  if [ "$actual_fields" != "$expected_fields" ]; then
-    echo "health-report: validation failed — unexpected fields in payload (expected: ${expected_fields}, got: ${actual_fields})" >&2
-    return 1
-  fi
+  for field in $actual_fields; do
+    local found=0
+    local allowed
+    for allowed in $_ALLOWED_FIELDS; do
+      if [ "$field" = "$allowed" ]; then found=1; break; fi
+    done
+    if [ "$found" -eq 0 ]; then
+      echo "health-report: validation failed — unexpected field: ${field}" >&2
+      return 1
+    fi
+  done
 
   return 0
 }
@@ -275,21 +248,25 @@ _sleep_with_jitter() {
 # with || true from run-once.sh.
 #
 # Args:
-#   agent_id        — agent identifier (e.g. "forager")
-#   target_repo     — current repo in owner/repo format
-#   token_file      — path to GitHub token file (may be empty)
-#   run_outcome     — "success" | "failure" | "skipped"
-#   duration_secs   — run duration in seconds
+#   agent_id             — agent identifier (e.g. "forager")
+#   repo                 — current repo in owner/repo format
+#   token_file           — path to bearer token file (may be empty)
+#   run_id               — unique run identifier for idempotency
+#   outcome              — "success" | "failure" | "timeout"
+#   duration_secs        — run duration in seconds
 #   consecutive_failures — current streak of consecutive failures
-#   stats_file      — path to agent-stats.json
+#   exit_code            — process exit code (optional)
+#   error                — error message (optional)
 report_health_to_backend() {
   local agent_id="$1"
-  local target_repo="$2"
+  local repo="$2"
   local token_file="${3:-}"
-  local run_outcome="$4"
-  local duration_secs="$5"
-  local consecutive_failures="${6:-0}"
-  local stats_file="$7"
+  local run_id="$4"
+  local outcome="$5"
+  local duration_secs="$6"
+  local consecutive_failures="${7:-0}"
+  local exit_code="${8:-}"
+  local error_msg="${9:-}"
 
   if [ -z "$HEALTH_REPORT_URL" ]; then
     return 0
@@ -305,38 +282,16 @@ report_health_to_backend() {
     return 1
   fi
 
-  local installation
-  installation="$(_resolve_installation "$target_repo")"
-
-  local last_run
-  last_run="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-
-  # Determine status from outcome and failure streak
-  local status="active"
-  if [ "$consecutive_failures" -gt 0 ] && [ "$run_outcome" != "success" ]; then
-    status="error"
-  fi
-
-  # Read current stats
-  local run_count=0
-  local error_count=0
-  if [ -f "$stats_file" ]; then
-    run_count="$(jq -r '.run_count // 0' "$stats_file" 2>/dev/null || printf '0')"
-    error_count="$(jq -r '.error_count // 0' "$stats_file" 2>/dev/null || printf '0')"
-  fi
-
   local payload
   payload="$(_build_health_payload \
     "$agent_id" \
-    "$installation" \
-    "$status" \
-    "$last_run" \
-    "$run_outcome" \
-    "$run_count" \
-    "$error_count" \
-    "$consecutive_failures" \
+    "$repo" \
+    "$run_id" \
+    "$outcome" \
     "$duration_secs" \
-    "$target_repo"
+    "$consecutive_failures" \
+    "$exit_code" \
+    "$error_msg"
   )"
 
   if ! _validate_health_payload "$payload"; then

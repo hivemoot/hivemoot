@@ -1102,11 +1102,15 @@ _stats_line="$(update_agent_stats "$stats_file" "$_is_error")"
 # Best-effort health report (never affects exit code).
 if [ -n "${HEALTH_REPORT_URL:-}" ]; then
   _run_outcome="success"
-  [ "$exit_code" -ne 0 ] && _run_outcome="failure"
+  if [ "$exit_code" -eq 124 ]; then
+    _run_outcome="timeout"
+  elif [ "$exit_code" -ne 0 ]; then
+    _run_outcome="failure"
+  fi
   report_health_to_backend \
-    "$agent_name" "$target_repo" "${AGENT_GITHUB_TOKEN_FILE:-}" \
-    "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
-    "$stats_file" || true
+    "$agent_name" "$target_repo" "${HEALTH_REPORT_TOKEN_FILE:-${AGENT_GITHUB_TOKEN_FILE:-}}" \
+    "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
+    "$exit_code" "${_run_error:-}" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

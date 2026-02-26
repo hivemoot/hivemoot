@@ -70,44 +70,12 @@ MOCK
   printf '%s' "$mock_path"
 }
 
-# Create a mock curl that counts invocations and returns different codes.
-make_mock_curl_sequence() {
-  local mock_path="${TEST_TMP}/mock-curl-seq"
-  local counter_file="${TEST_TMP}/curl-call-count"
-  printf '0' > "$counter_file"
-
-  # Write the response codes to a file, one per line
-  local codes_file="${TEST_TMP}/curl-codes"
-  local code
-  for code in "$@"; do
-    echo "$code" >> "$codes_file"
-  done
-
-  cat > "$mock_path" <<'MOCK'
-#!/usr/bin/env bash
-COUNTER_FILE="$(dirname "$0")/curl-call-count"
-CODES_FILE="$(dirname "$0")/curl-codes"
-count="$(cat "$COUNTER_FILE")"
-count=$((count + 1))
-printf '%d' "$count" > "$COUNTER_FILE"
-# Get the code for this call (1-indexed line)
-code="$(sed -n "${count}p" "$CODES_FILE")"
-if [ -z "$code" ]; then
-  # Past the end of sequence — return last code
-  code="$(tail -n 1 "$CODES_FILE")"
-fi
-echo "$code"
-MOCK
-  chmod +x "$mock_path"
-  printf '%s' "$mock_path"
-}
-
-# Build a valid payload for testing
+# Build a valid payload for testing (matches backend HealthReport schema)
 build_test_payload() {
   source_reporter
   _build_health_payload \
-    "test-agent" "hivemoot" "active" "2026-02-26T12:00:00Z" \
-    "success" "42" "3" "0" "1234" "hivemoot/sandbox"
+    "test-agent" "hivemoot/sandbox" "20260226-120000-codex-test-agent" \
+    "success" "1234" "0"
 }
 
 # ── update_agent_stats tests ─────────────────────────────────────
@@ -164,48 +132,61 @@ test_stats_has_updated_at() {
 
 # ── payload builder tests ────────────────────────────────────────
 
-test_payload_has_exactly_required_fields() {
+test_payload_has_required_fields() {
   source_reporter
   local payload
   payload="$(build_test_payload)"
   local actual_fields
   actual_fields="$(printf '%s' "$payload" | jq -r 'keys | .[]' | sort | tr '\n' ' ' | sed 's/ $//')"
-  local expected="agent_id consecutive_failures current_repos duration_secs error_count installation last_outcome last_run run_count status"
+  local expected="agent_id consecutive_failures duration_secs outcome repo run_id"
   [ "$actual_fields" = "$expected" ] || fail "field mismatch: expected [${expected}], got [${actual_fields}]"
   pass "payload has exactly required fields"
 }
 
-test_payload_no_extra_fields() {
+test_payload_field_count() {
   source_reporter
   local payload
   payload="$(build_test_payload)"
   local field_count
   field_count="$(printf '%s' "$payload" | jq 'keys | length')"
-  [ "$field_count" -eq 10 ] || fail "expected exactly 10 fields, got ${field_count}"
-  pass "payload has no extra fields"
+  [ "$field_count" -eq 6 ] || fail "expected exactly 6 fields, got ${field_count}"
+  pass "payload has correct field count"
 }
 
-test_payload_current_repos_is_array() {
+test_payload_optional_exit_code() {
   source_reporter
   local payload
-  payload="$(_build_health_payload "a" "b" "active" "2026-01-01T00:00:00Z" "success" "1" "0" "0" "10" "owner/repo")"
-  local repo_type
-  repo_type="$(printf '%s' "$payload" | jq -r '.current_repos | type')"
-  [ "$repo_type" = "array" ] || fail "expected current_repos to be array, got ${repo_type}"
-  local first
-  first="$(printf '%s' "$payload" | jq -r '.current_repos[0]')"
-  [ "$first" = "owner/repo" ] || fail "expected first repo to be owner/repo, got ${first}"
-  pass "payload current_repos is array"
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "failure" "10" "1" "1")"
+  local has_exit
+  has_exit="$(printf '%s' "$payload" | jq 'has("exit_code")')"
+  [ "$has_exit" = "true" ] || fail "expected exit_code field when provided"
+  local exit_val
+  exit_val="$(printf '%s' "$payload" | jq '.exit_code')"
+  [ "$exit_val" = "1" ] || fail "expected exit_code=1, got ${exit_val}"
+  pass "payload includes optional exit_code"
 }
 
-test_payload_empty_repos() {
+test_payload_optional_error() {
   source_reporter
   local payload
-  payload="$(_build_health_payload "a" "b" "active" "2026-01-01T00:00:00Z" "success" "1" "0" "0" "10" "")"
-  local repo_count
-  repo_count="$(printf '%s' "$payload" | jq '.current_repos | length')"
-  [ "$repo_count" -eq 0 ] || fail "expected empty repos array, got ${repo_count} entries"
-  pass "payload handles empty repos"
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "failure" "10" "1" "1" "timeout exceeded")"
+  local has_error
+  has_error="$(printf '%s' "$payload" | jq 'has("error")')"
+  [ "$has_error" = "true" ] || fail "expected error field when provided"
+  local error_val
+  error_val="$(printf '%s' "$payload" | jq -r '.error')"
+  [ "$error_val" = "timeout exceeded" ] || fail "expected error='timeout exceeded', got '${error_val}'"
+  pass "payload includes optional error"
+}
+
+test_payload_omits_empty_optionals() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "")"
+  local field_count
+  field_count="$(printf '%s' "$payload" | jq 'keys | length')"
+  [ "$field_count" -eq 6 ] || fail "expected 6 fields without optionals, got ${field_count}"
+  pass "payload omits empty optional fields"
 }
 
 # ── validation tests ─────────────────────────────────────────────
@@ -221,136 +202,26 @@ test_validates_missing_agent_id() {
   pass "rejects missing agent_id"
 }
 
-test_validates_invalid_status_enum() {
+test_validates_missing_repo() {
   source_reporter
   local payload
   payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.status = "running"')"
+  payload="$(printf '%s' "$payload" | jq '.repo = ""')"
   if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject invalid status"
+    fail "validation should reject empty repo"
   fi
-  pass "rejects invalid status enum"
+  pass "rejects missing repo"
 }
 
-test_validates_valid_status_values() {
-  source_reporter
-  local payload_base
-  payload_base="$(build_test_payload)"
-  local status
-  for status in active idle error offline; do
-    local payload
-    payload="$(printf '%s' "$payload_base" | jq --arg s "$status" '.status = $s')"
-    if ! _validate_health_payload "$payload" 2>/dev/null; then
-      fail "validation should accept status=${status}"
-    fi
-  done
-  pass "accepts all valid status values"
-}
-
-test_validates_invalid_outcome_enum() {
+test_validates_missing_run_id() {
   source_reporter
   local payload
   payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.last_outcome = "crashed"')"
+  payload="$(printf '%s' "$payload" | jq '.run_id = ""')"
   if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject invalid last_outcome"
+    fail "validation should reject empty run_id"
   fi
-  pass "rejects invalid last_outcome enum"
-}
-
-test_validates_timeout_not_valid_outcome() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.last_outcome = "timeout"')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject 'timeout' — not in backend contract"
-  fi
-  pass "rejects 'timeout' as last_outcome (not in contract)"
-}
-
-test_validates_valid_outcome_values() {
-  source_reporter
-  local payload_base
-  payload_base="$(build_test_payload)"
-  local outcome
-  for outcome in success failure skipped; do
-    local payload
-    payload="$(printf '%s' "$payload_base" | jq --arg o "$outcome" '.last_outcome = $o')"
-    if ! _validate_health_payload "$payload" 2>/dev/null; then
-      fail "validation should accept last_outcome=${outcome}"
-    fi
-  done
-  pass "accepts all valid last_outcome values"
-}
-
-test_validates_negative_run_count() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.run_count = -1')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject negative run_count"
-  fi
-  pass "rejects negative run_count"
-}
-
-test_validates_negative_error_count() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.error_count = -5')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject negative error_count"
-  fi
-  pass "rejects negative error_count"
-}
-
-test_validates_negative_consecutive_failures() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.consecutive_failures = -1')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject negative consecutive_failures"
-  fi
-  pass "rejects negative consecutive_failures"
-}
-
-test_validates_negative_duration_secs() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.duration_secs = -100')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject negative duration_secs"
-  fi
-  pass "rejects negative duration_secs"
-}
-
-test_validates_malformed_repo() {
-  source_reporter
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq '.current_repos = ["not-a-repo"]')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject malformed repo"
-  fi
-  pass "rejects malformed current_repos entry"
-}
-
-test_validates_size_budget() {
-  source_reporter
-  # Build an oversized payload by stuffing agent_id
-  local big_id
-  big_id="$(printf 'x%.0s' $(seq 1 12000))"
-  local payload
-  payload="$(build_test_payload)"
-  payload="$(printf '%s' "$payload" | jq --arg id "$big_id" '.agent_id = $id')"
-  if _validate_health_payload "$payload" 2>/dev/null; then
-    fail "validation should reject oversized payload"
-  fi
-  pass "rejects payload exceeding size budget"
+  pass "rejects missing run_id"
 }
 
 test_validates_extra_fields() {
@@ -374,23 +245,93 @@ test_valid_payload_passes() {
   pass "valid payload passes validation"
 }
 
-# ── installation derivation tests ────────────────────────────────
-
-test_installation_from_target_repo() {
+test_valid_payload_with_optionals_passes() {
   source_reporter
-  local result
-  result="$(_resolve_installation "hivemoot/sandbox")"
-  [ "$result" = "hivemoot" ] || fail "expected 'hivemoot', got '${result}'"
-  pass "installation derived from TARGET_REPO owner"
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "failure" "10" "1" "1" "some error")"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid payload with optionals should pass validation"
+  fi
+  pass "valid payload with optionals passes validation"
 }
 
-test_installation_override() {
+# ── validation — enums ───────────────────────────────────────────
+
+test_validates_invalid_outcome_enum() {
   source_reporter
-  local result
-  # shellcheck disable=SC2034  # HIVEMOOT_INSTALLATION is read by the sourced _resolve_installation
-  HIVEMOOT_INSTALLATION="custom-org" result="$(_resolve_installation "hivemoot/sandbox")"
-  [ "$result" = "custom-org" ] || fail "expected 'custom-org', got '${result}'"
-  pass "HIVEMOOT_INSTALLATION overrides derived value"
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '.outcome = "crashed"')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject invalid outcome"
+  fi
+  pass "rejects invalid outcome enum"
+}
+
+test_validates_valid_outcome_values() {
+  source_reporter
+  local payload_base
+  payload_base="$(build_test_payload)"
+  local outcome
+  for outcome in success failure timeout; do
+    local payload
+    payload="$(printf '%s' "$payload_base" | jq --arg o "$outcome" '.outcome = $o')"
+    if ! _validate_health_payload "$payload" 2>/dev/null; then
+      fail "validation should accept outcome=${outcome}"
+    fi
+  done
+  pass "accepts all valid outcome values"
+}
+
+test_validates_skipped_not_valid_outcome() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '.outcome = "skipped"')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject 'skipped' — not in backend contract"
+  fi
+  pass "rejects 'skipped' as outcome (not in contract)"
+}
+
+# ── validation — numerics ────────────────────────────────────────
+
+test_validates_negative_consecutive_failures() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '.consecutive_failures = -1')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject negative consecutive_failures"
+  fi
+  pass "rejects negative consecutive_failures"
+}
+
+test_validates_negative_duration_secs() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '.duration_secs = -100')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject negative duration_secs"
+  fi
+  pass "rejects negative duration_secs"
+}
+
+# ── validation — size budget ─────────────────────────────────────
+
+test_validates_size_budget() {
+  source_reporter
+  # Build an oversized payload by stuffing agent_id
+  local big_id
+  big_id="$(printf 'x%.0s' $(seq 1 12000))"
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq --arg id "$big_id" '.agent_id = $id')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject oversized payload"
+  fi
+  pass "rejects payload exceeding size budget"
 }
 
 # ── response handling tests ──────────────────────────────────────
@@ -623,18 +564,16 @@ MOCK
 test_skips_when_url_empty() {
   source_reporter
   HEALTH_REPORT_URL=""
-  local stats_file="${TEST_TMP}/stats-skip.json"
-  printf '{"run_count":1,"error_count":0,"updated_at":"2026-01-01T00:00:00Z"}\n' > "$stats_file"
   # Should return 0 without doing anything
-  if ! report_health_to_backend "agent" "owner/repo" "" "success" "10" "0" "$stats_file" 2>/dev/null; then
+  if ! report_health_to_backend "agent" "owner/repo" "" "run-1" "success" "10" "0" 2>/dev/null; then
     fail "should return 0 when URL is empty"
   fi
   pass "skips when HEALTH_REPORT_URL is empty"
 }
 
-test_status_derives_active_on_success() {
+test_sends_correct_payload() {
   source_reporter
-  local mock_dir="${TEST_TMP}/mock-status-active"
+  local mock_dir="${TEST_TMP}/mock-integration"
   mkdir -p "$mock_dir"
 
   # Mock curl that captures the payload
@@ -652,31 +591,34 @@ echo "200"
 MOCK
   chmod +x "${mock_dir}/curl"
 
-  local stats_file="${TEST_TMP}/stats-active.json"
-  printf '{"run_count":5,"error_count":0,"updated_at":"2026-01-01T00:00:00Z"}\n' > "$stats_file"
-
   local original_path="$PATH"
   PATH="${mock_dir}:$PATH"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
-  report_health_to_backend "agent" "hivemoot/sandbox" "" "success" "10" "0" "$stats_file" 2>/dev/null || true
+  report_health_to_backend "forager" "hivemoot/sandbox" "" "20260226-run-1" "success" "120" "0" "0" 2>/dev/null || true
 
   PATH="$original_path"
 
   if [ -f "$captured_file" ]; then
-    local status_val
-    status_val="$(jq -r '.status' "$captured_file")"
-    [ "$status_val" = "active" ] || fail "expected status=active, got ${status_val}"
+    local agent_val repo_val run_id_val outcome_val
+    agent_val="$(jq -r '.agent_id' "$captured_file")"
+    repo_val="$(jq -r '.repo' "$captured_file")"
+    run_id_val="$(jq -r '.run_id' "$captured_file")"
+    outcome_val="$(jq -r '.outcome' "$captured_file")"
+    [ "$agent_val" = "forager" ] || fail "expected agent_id=forager, got ${agent_val}"
+    [ "$repo_val" = "hivemoot/sandbox" ] || fail "expected repo=hivemoot/sandbox, got ${repo_val}"
+    [ "$run_id_val" = "20260226-run-1" ] || fail "expected run_id=20260226-run-1, got ${run_id_val}"
+    [ "$outcome_val" = "success" ] || fail "expected outcome=success, got ${outcome_val}"
   else
     fail "payload was not captured"
   fi
-  pass "status is 'active' on success"
+  pass "sends correct payload fields"
 }
 
-test_status_derives_error_on_failure_streak() {
+test_sends_optional_fields_on_failure() {
   source_reporter
-  local mock_dir="${TEST_TMP}/mock-status-error"
+  local mock_dir="${TEST_TMP}/mock-failure"
   mkdir -p "$mock_dir"
 
   local captured_file="${mock_dir}/captured-payload"
@@ -692,26 +634,25 @@ echo "200"
 MOCK
   chmod +x "${mock_dir}/curl"
 
-  local stats_file="${TEST_TMP}/stats-error.json"
-  printf '{"run_count":10,"error_count":3,"updated_at":"2026-01-01T00:00:00Z"}\n' > "$stats_file"
-
   local original_path="$PATH"
   PATH="${mock_dir}:$PATH"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
-  report_health_to_backend "agent" "hivemoot/sandbox" "" "failure" "10" "3" "$stats_file" 2>/dev/null || true
+  report_health_to_backend "guard" "hivemoot/bot" "" "20260226-run-2" "failure" "60" "3" "1" "provider timeout" 2>/dev/null || true
 
   PATH="$original_path"
 
   if [ -f "$captured_file" ]; then
-    local status_val
-    status_val="$(jq -r '.status' "$captured_file")"
-    [ "$status_val" = "error" ] || fail "expected status=error, got ${status_val}"
+    local exit_val error_val
+    exit_val="$(jq '.exit_code' "$captured_file")"
+    error_val="$(jq -r '.error' "$captured_file")"
+    [ "$exit_val" = "1" ] || fail "expected exit_code=1, got ${exit_val}"
+    [ "$error_val" = "provider timeout" ] || fail "expected error='provider timeout', got '${error_val}'"
   else
     fail "payload was not captured"
   fi
-  pass "status is 'error' on failure streak"
+  pass "includes exit_code and error on failure"
 }
 
 # ── run all tests ────────────────────────────────────────────────
@@ -729,44 +670,35 @@ run_test test_stats_has_updated_at
 echo ""
 
 echo "  Payload builder:"
-run_test test_payload_has_exactly_required_fields
-run_test test_payload_no_extra_fields
-run_test test_payload_current_repos_is_array
-run_test test_payload_empty_repos
+run_test test_payload_has_required_fields
+run_test test_payload_field_count
+run_test test_payload_optional_exit_code
+run_test test_payload_optional_error
+run_test test_payload_omits_empty_optionals
 echo ""
 
 echo "  Validation — required fields:"
 run_test test_validates_missing_agent_id
+run_test test_validates_missing_repo
+run_test test_validates_missing_run_id
 run_test test_validates_extra_fields
 run_test test_valid_payload_passes
+run_test test_valid_payload_with_optionals_passes
 echo ""
 
 echo "  Validation — enums:"
-run_test test_validates_invalid_status_enum
-run_test test_validates_valid_status_values
 run_test test_validates_invalid_outcome_enum
-run_test test_validates_timeout_not_valid_outcome
 run_test test_validates_valid_outcome_values
+run_test test_validates_skipped_not_valid_outcome
 echo ""
 
 echo "  Validation — numerics:"
-run_test test_validates_negative_run_count
-run_test test_validates_negative_error_count
 run_test test_validates_negative_consecutive_failures
 run_test test_validates_negative_duration_secs
 echo ""
 
-echo "  Validation — repo format:"
-run_test test_validates_malformed_repo
-echo ""
-
 echo "  Validation — size budget:"
 run_test test_validates_size_budget
-echo ""
-
-echo "  Installation derivation:"
-run_test test_installation_from_target_repo
-run_test test_installation_override
 echo ""
 
 echo "  Response handling:"
@@ -782,8 +714,8 @@ echo ""
 
 echo "  Integration:"
 run_test test_skips_when_url_empty
-run_test test_status_derives_active_on_success
-run_test test_status_derives_error_on_failure_streak
+run_test test_sends_correct_payload
+run_test test_sends_optional_fields_on_failure
 echo ""
 
 teardown

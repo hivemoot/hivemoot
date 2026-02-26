@@ -206,11 +206,15 @@ agent status without requiring direct host or container access.
 
 **How it works:**
 
-1. After each run completes (success or failure), the agent builds a JSON payload
-   with run outcome, duration, cumulative stats, and the current target repo.
-2. The payload is validated locally (field set, enums, size budget) before sending.
-3. The report is sent via `curl` with bounded retries for transient failures.
-4. Reporting is best-effort — it never blocks or affects the run exit code.
+1. After each run completes, the agent builds a per-run payload:
+   `agent_id`, `repo`, `run_id`, `outcome`, `duration_secs`, `consecutive_failures`,
+   with optional `exit_code` and `error`.
+2. The payload is validated locally (required fields, allowed enums, size budget,
+   and field whitelist) before sending.
+3. Auth uses `HEALTH_REPORT_TOKEN_FILE` when set, and falls back to
+   `AGENT_GITHUB_TOKEN_FILE` when unset.
+4. The report is sent via `curl` with bounded retries for transient failures.
+5. Reporting is best-effort and never affects the run exit code.
 
 **Enable it** by setting `HEALTH_REPORT_URL` in `.env`:
 
@@ -223,15 +227,15 @@ HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
 | Variable | Default | Description |
 |---|---|---|
 | `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
+| `HEALTH_REPORT_TOKEN_FILE` | *(empty)* | Optional bearer token file for health reporting; falls back to `AGENT_GITHUB_TOKEN_FILE` |
 | `HEALTH_REPORT_TIMEOUT_SECS` | `10` | Per-request timeout |
 | `HEALTH_REPORT_MAX_RETRIES` | `2` | Retry attempts for 5xx/network errors |
-| `HIVEMOOT_INSTALLATION` | *(derived from TARGET_REPO owner)* | Override installation identifier |
 
 **Failure behavior:**
 
 - 200: logged as success
 - 400/413: logged with details, no retry
-- 401: logged with actionable message ("check token/installation access")
+- 401: logged with actionable message ("check token file and backend access")
 - 429: logged, remaining retries skipped
 - 5xx/network: retried up to `HEALTH_REPORT_MAX_RETRIES` with bounded backoff (1–4s + jitter)
 
@@ -574,7 +578,7 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | Subscription auth errors | Use `docker-compose.subscription.local.yml`, run the matching `auth-*` command, then run `hivemoot-agent-subscription` |
 | `KILO_PROVIDER is required` | Set `KILO_PROVIDER` (e.g. `openrouter`) or `KILOCODE_TOKEN` |
 | Kilo permission prompts in `--auto` mode | The `--auto` flag should bypass all prompts; check Kilo CLI version (`kilo --version`) |
-| `health-report: authentication failed (401)` | Backend rejected the token — verify `AGENT_GITHUB_TOKEN_FILE` and installation access |
+| `health-report: authentication failed (401)` | Backend rejected the token — verify `HEALTH_REPORT_TOKEN_FILE` (or fallback `AGENT_GITHUB_TOKEN_FILE`) and backend access |
 | `health-report: rate limited (429)` | Backend rate limit hit — reduce run frequency or check `HEALTH_REPORT_URL` configuration |
 
 ## Related Repos
