@@ -17,7 +17,8 @@
  *     → NX/EX guard — one report per agent per repo per 60 seconds
  *
  *   agent-health:idempotency:{installId}:{digest}
- *     → Run-id reservation for 24h dedupe/conflict checks
+ *     → Run-id reservation for 24h dedupe/conflict checks, with
+ *       pending/committed state to avoid false duplicate acknowledgements
  */
 
 import { createHash } from "node:crypto";
@@ -98,6 +99,7 @@ function idempotencyKey(
 type StoredIdempotencyRecord = {
   payload_hash: string;
   received_at: string;
+  state: "pending" | "committed";
 };
 
 function idempotencyPayloadHash(report: HealthReport): string {
@@ -133,9 +135,18 @@ function parseIdempotencyRecord(value: unknown): StoredIdempotencyRecord | null 
     return null;
   }
 
+  // Backward compatibility: records written before state tracking are treated as
+  // committed because they only existed for accepted reports.
+  let state: StoredIdempotencyRecord["state"] = "committed";
+  if (maybe.state !== undefined) {
+    if (maybe.state !== "pending" && maybe.state !== "committed") return null;
+    state = maybe.state;
+  }
+
   return {
     payload_hash: maybe.payload_hash,
     received_at: maybe.received_at,
+    state,
   };
 }
 
@@ -153,6 +164,7 @@ async function getIdempotencyRecord(
 export type IdempotencyReservation =
   | { kind: "new"; receivedAt: string }
   | { kind: "duplicate"; receivedAt: string }
+  | { kind: "pending" }
   | { kind: "conflict" };
 
 // ---------------------------------------------------------------------------
@@ -298,7 +310,10 @@ export async function reserveHealthReportIdempotency(
   const existing = await getIdempotencyRecord(installId, report, redis);
   if (existing) {
     if (existing.payload_hash === payloadHash) {
-      return { kind: "duplicate", receivedAt: existing.received_at };
+      if (existing.state === "committed") {
+        return { kind: "duplicate", receivedAt: existing.received_at };
+      }
+      return { kind: "pending" };
     }
     return { kind: "conflict" };
   }
@@ -306,6 +321,7 @@ export async function reserveHealthReportIdempotency(
   const record: StoredIdempotencyRecord = {
     payload_hash: payloadHash,
     received_at: report.received_at,
+    state: "pending",
   };
 
   const key = idempotencyKey(installId, report.agent_id, report.repo, report.run_id);
@@ -323,10 +339,27 @@ export async function reserveHealthReportIdempotency(
   if (!raced) return { kind: "conflict" };
 
   if (raced.payload_hash === payloadHash) {
-    return { kind: "duplicate", receivedAt: raced.received_at };
+    if (raced.state === "committed") {
+      return { kind: "duplicate", receivedAt: raced.received_at };
+    }
+    return { kind: "pending" };
   }
 
   return { kind: "conflict" };
+}
+
+export async function commitHealthReportIdempotency(
+  installId: string,
+  report: HealthReport,
+  redis: Redis,
+): Promise<void> {
+  const key = idempotencyKey(installId, report.agent_id, report.repo, report.run_id);
+  const record: StoredIdempotencyRecord = {
+    payload_hash: idempotencyPayloadHash(report),
+    received_at: report.received_at,
+    state: "committed",
+  };
+  await redis.set(key, JSON.stringify(record), { ex: IDEMPOTENCY_TTL_SECONDS });
 }
 
 export async function releaseHealthReportIdempotency(

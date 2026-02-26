@@ -3,6 +3,7 @@ import { type Redis } from "@upstash/redis";
 import {
   validateReport,
   reserveHealthReportIdempotency,
+  commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
   checkRateLimit,
   recordHealthReport,
@@ -373,8 +374,23 @@ describe("reserveHealthReportIdempotency", () => {
     });
   });
 
-  it("returns duplicate for same run payload and preserves original received_at", async () => {
+  it("returns pending for same run payload while first write is in-flight", async () => {
     await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const retryReport: HealthReport = {
+      ...baseReport,
+      received_at: "2026-02-24T10:01:00Z",
+    };
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", retryReport, redis);
+    expect(reservation).toStrictEqual({
+      kind: "pending",
+    });
+  });
+
+  it("returns duplicate for same run payload after commit and preserves original received_at", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    await commitHealthReportIdempotency("inst-1", baseReport, redis);
 
     const retryReport: HealthReport = {
       ...baseReport,

@@ -21,6 +21,7 @@ import {
   checkRateLimit,
   recordHealthReport,
   reserveHealthReportIdempotency,
+  commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
   getOverview,
   getHistory,
@@ -112,6 +113,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (idempotency.kind === "pending") {
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.IDEMPOTENCY_PENDING,
+      "run_id is currently being processed; retry shortly",
+      409,
+    );
+  }
+
   const allowed = await checkRateLimit(
     auth.installationId,
     report.agent_id,
@@ -132,13 +141,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  let persisted = false;
   try {
     await recordHealthReport(auth.installationId, report, auth.redis);
+    persisted = true;
+    await commitHealthReportIdempotency(auth.installationId, report, auth.redis);
   } catch (error) {
-    try {
-      await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
-    } catch {
-      // Preserve the original storage error when cleanup fails.
+    if (!persisted) {
+      try {
+        await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
+      } catch {
+        // Preserve the original storage error when cleanup fails.
+      }
     }
     throw error;
   }

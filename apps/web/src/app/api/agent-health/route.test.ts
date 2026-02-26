@@ -16,6 +16,7 @@ vi.mock("@/server/agent-health-store", () => ({
   checkRateLimit: vi.fn(),
   recordHealthReport: vi.fn(),
   reserveHealthReportIdempotency: vi.fn(),
+  commitHealthReportIdempotency: vi.fn(),
   releaseHealthReportIdempotency: vi.fn(),
   getOverview: vi.fn(),
   getHistory: vi.fn(),
@@ -28,6 +29,7 @@ import {
   checkRateLimit,
   recordHealthReport,
   reserveHealthReportIdempotency,
+  commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
   getOverview,
   getHistory,
@@ -139,6 +141,7 @@ beforeEach(() => {
   });
   vi.mocked(checkRateLimit).mockResolvedValue(true);
   vi.mocked(recordHealthReport).mockResolvedValue(undefined);
+  vi.mocked(commitHealthReportIdempotency).mockResolvedValue(undefined);
   vi.mocked(releaseHealthReportIdempotency).mockResolvedValue(undefined);
   vi.mocked(getOverview).mockResolvedValue([]);
   vi.mocked(getHistory).mockResolvedValue([]);
@@ -162,6 +165,16 @@ describe("POST /api/agent-health", () => {
     await POST(makePostRequest(VALID_REQUEST_BODY));
 
     expect(recordHealthReport).toHaveBeenCalledWith(
+      "inst-1",
+      VALID_REPORT,
+      expect.anything(),
+    );
+  });
+
+  it("commits idempotency after a successful write", async () => {
+    await POST(makePostRequest(VALID_REQUEST_BODY));
+
+    expect(commitHealthReportIdempotency).toHaveBeenCalledWith(
       "inst-1",
       VALID_REPORT,
       expect.anything(),
@@ -275,6 +288,19 @@ describe("POST /api/agent-health", () => {
     expect(recordHealthReport).not.toHaveBeenCalled();
   });
 
+  it("returns 409 when a matching run_id is still pending commit", async () => {
+    vi.mocked(reserveHealthReportIdempotency).mockResolvedValue({
+      kind: "pending",
+    });
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_idempotency_pending");
+    expect(checkRateLimit).not.toHaveBeenCalled();
+    expect(recordHealthReport).not.toHaveBeenCalled();
+  });
+
   it("releases idempotency reservation when rate-limited", async () => {
     vi.mocked(checkRateLimit).mockResolvedValue(false);
 
@@ -298,6 +324,17 @@ describe("POST /api/agent-health", () => {
       VALID_REPORT,
       expect.anything(),
     );
+  });
+
+  it("does not release reservation when write succeeded but commit update fails", async () => {
+    vi.mocked(commitHealthReportIdempotency).mockRejectedValue(
+      new Error("idempotency commit failed"),
+    );
+
+    await expect(POST(makePostRequest(VALID_REQUEST_BODY))).rejects.toThrow(
+      "idempotency commit failed",
+    );
+    expect(releaseHealthReportIdempotency).not.toHaveBeenCalled();
   });
 });
 
