@@ -515,3 +515,38 @@ write_health_snapshot() {
     "$agent_id" "$run_id" "$last_event" "$consecutive_failures" "$ts" > "$tmp_file"
   mv "$tmp_file" "$health_file"
 }
+
+# Atomically increment persistent agent run/error counters.
+# Uses the same temp+mv pattern as write_health_snapshot.
+# Prints "run_count\terror_count" after the increment so callers can
+# capture the updated values without a second read.
+# Usage: update_agent_stats <stats_file> <is_error>
+#   is_error: 1 if the run failed, 0 otherwise
+update_agent_stats() {
+  local stats_file="$1"
+  local is_error="${2:-0}"
+  local run_count=0
+  local error_count=0
+  local ts
+
+  if [ -f "$stats_file" ] && command -v jq >/dev/null 2>&1; then
+    run_count="$(jq -r '.run_count // 0' "$stats_file" 2>/dev/null || printf '0')"
+    error_count="$(jq -r '.error_count // 0' "$stats_file" 2>/dev/null || printf '0')"
+  fi
+
+  run_count=$((run_count + 1))
+  if [ "$is_error" -eq 1 ]; then
+    error_count=$((error_count + 1))
+  fi
+
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  local stats_dir
+  stats_dir="$(dirname "$stats_file")"
+  mkdir -p "$stats_dir"
+  local tmp_file="${stats_file}.tmp.$$"
+  printf '{"run_count":%d,"error_count":%d,"updated_at":"%s"}\n' \
+    "$run_count" "$error_count" "$ts" > "$tmp_file"
+  mv "$tmp_file" "$stats_file"
+
+  printf '%d\t%d' "$run_count" "$error_count"
+}

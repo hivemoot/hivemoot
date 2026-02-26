@@ -198,6 +198,46 @@ Requires `TARGET_REPO` and user tokens (not installation tokens). Additional set
 
 Both `codex` and `claude` providers support mention-triggered session resume. Each provider keeps one session per GitHub notification thread and resumes follow-up mentions with the saved session UUID. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
+## Health Reporting
+
+When `HEALTH_REPORT_URL` is set, the agent sends a terminal health report to the
+backend after each run via `POST /api/agent-health`. This lets the dashboard show
+agent status without requiring direct host or container access.
+
+**How it works:**
+
+1. After each run completes (success or failure), the agent builds a JSON payload
+   with run outcome, duration, cumulative stats, and the current target repo.
+2. The payload is validated locally (field set, enums, size budget) before sending.
+3. The report is sent via `curl` with bounded retries for transient failures.
+4. Reporting is best-effort — it never blocks or affects the run exit code.
+
+**Enable it** by setting `HEALTH_REPORT_URL` in `.env`:
+
+```bash
+HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
+```
+
+**Configuration:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
+| `HEALTH_REPORT_TIMEOUT_SECS` | `10` | Per-request timeout |
+| `HEALTH_REPORT_MAX_RETRIES` | `2` | Retry attempts for 5xx/network errors |
+| `HIVEMOOT_INSTALLATION` | *(derived from TARGET_REPO owner)* | Override installation identifier |
+
+**Failure behavior:**
+
+- 200: logged as success
+- 400/413: logged with details, no retry
+- 401: logged with actionable message ("check token/installation access")
+- 429: logged, remaining retries skipped
+- 5xx/network: retried up to `HEALTH_REPORT_MAX_RETRIES` with bounded backoff (1–4s + jitter)
+
+Persistent run/error counters are tracked in `agent-stats.json` alongside `health.json`,
+independent of whether health reporting is enabled.
+
 ## Host Controller (Phase 2 MVP)
 
 `scripts/controller.sh` runs on the host and spawns one isolated worker container per job (`RUN_MODE=once`), instead of running all agents as background processes in a shared container.
@@ -534,6 +574,8 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | Subscription auth errors | Use `docker-compose.subscription.local.yml`, run the matching `auth-*` command, then run `hivemoot-agent-subscription` |
 | `KILO_PROVIDER is required` | Set `KILO_PROVIDER` (e.g. `openrouter`) or `KILOCODE_TOKEN` |
 | Kilo permission prompts in `--auto` mode | The `--auto` flag should bypass all prompts; check Kilo CLI version (`kilo --version`) |
+| `health-report: authentication failed (401)` | Backend rejected the token — verify `AGENT_GITHUB_TOKEN_FILE` and installation access |
+| `health-report: rate limited (429)` | Backend rate limit hit — reduce run frequency or check `HEALTH_REPORT_URL` configuration |
 
 ## Related Repos
 
