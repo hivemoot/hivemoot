@@ -32,7 +32,8 @@ export default async function SetupErrorPage({
   searchParams: Promise<SearchParams>;
 }) {
   const params = await searchParams;
-  const code = params.code ?? "server_error";
+  const rawCode = params.code ?? "";
+  const code = rawCode in ERROR_MESSAGES ? rawCode : "server_error";
   const installationId = params.installation_id;
 
   const retryUrl = installationId
@@ -62,9 +63,9 @@ export default async function SetupErrorPage({
         <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
           {/* Left: icon column */}
           <aside className="flex shrink-0 items-start justify-center sm:w-56 sm:justify-start sm:pt-1">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-honey-500/10">
               <svg
-                className="h-7 w-7 text-red-400"
+                className="h-7 w-7 text-honey-400"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
