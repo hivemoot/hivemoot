@@ -10,7 +10,7 @@ interface SearchParams {
   installation_id?: string;
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
+const ERROR_MESSAGES = {
   server_misconfiguration: "The server isn't configured correctly. Contact the site administrator.",
   oauth_state_store_failed:
     "We couldn't start the authorization flow. This is usually a temporary issue.",
@@ -20,10 +20,21 @@ const ERROR_MESSAGES: Record<string, string> = {
     "We couldn't create your setup session. This is usually a temporary issue.",
   server_error:
     "Something went wrong on our end. This is usually a temporary issue.",
-};
+} as const;
 
-function getErrorMessage(code: string): string {
-  return ERROR_MESSAGES[code] ?? "Something went wrong during setup.";
+type ErrorCode = keyof typeof ERROR_MESSAGES;
+
+function isErrorCode(code: string): code is ErrorCode {
+  return code in ERROR_MESSAGES;
+}
+
+export function normalizeErrorCode(code?: string): ErrorCode {
+  if (!code) return "server_error";
+  return isErrorCode(code) ? code : "server_error";
+}
+
+export function getErrorMessage(code: ErrorCode): string {
+  return ERROR_MESSAGES[code];
 }
 
 export default async function SetupErrorPage({
@@ -32,7 +43,7 @@ export default async function SetupErrorPage({
   searchParams: Promise<SearchParams>;
 }) {
   const params = await searchParams;
-  const code = params.code ?? "server_error";
+  const code = normalizeErrorCode(params.code);
   const installationId = params.installation_id;
 
   const retryUrl = installationId
@@ -62,9 +73,9 @@ export default async function SetupErrorPage({
         <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
           {/* Left: icon column */}
           <aside className="flex shrink-0 items-start justify-center sm:w-56 sm:justify-start sm:pt-1">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-honey-500/10">
               <svg
-                className="h-7 w-7 text-red-400"
+                className="h-7 w-7 text-honey-400"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
