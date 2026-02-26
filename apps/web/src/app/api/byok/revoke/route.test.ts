@@ -15,6 +15,7 @@ vi.mock("@/server/byok-store", () => ({
 
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
+import { BYOK_ERROR } from "@/server/byok-error";
 import { POST } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ describe("POST /api/byok/revoke", () => {
     const res = await POST(req);
     expect(res.status).toBe(404);
     const body = await res.json();
-    expect(body.code).toBe("byok_not_configured");
+    expect(body.code).toBe(BYOK_ERROR.NOT_CONFIGURED);
     expect(body.message).toBe("BYOK is not configured");
   });
 });
