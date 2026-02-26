@@ -191,6 +191,40 @@ describe("validateReport", () => {
     }
   });
 
+  it("accepts optional model field for provider-native identifiers", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "20260224-100002-model-attribution",
+      outcome: "success",
+      duration_secs: 12,
+      consecutive_failures: 0,
+      model: "openrouter/anthropic/claude-3.5-sonnet",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.model).toBe("openrouter/anthropic/claude-3.5-sonnet");
+    }
+  });
+
+  it("rejects invalid model field values", () => {
+    const invalidModels = ["", "x".repeat(129), "bad char!", "mødel"];
+
+    for (const model of invalidModels) {
+      const result = validateReport({
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "20260224-100003-invalid-model",
+        outcome: "success",
+        duration_secs: 10,
+        consecutive_failures: 0,
+        model,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.message).toContain("model");
+    }
+  });
+
   it("rejects non-object body", () => {
     expect(validateReport("string").ok).toBe(false);
     expect(validateReport(null).ok).toBe(false);
@@ -404,6 +438,23 @@ describe("reserveHealthReportIdempotency", () => {
     });
   });
 
+  it("treats model as non-identity metadata for idempotency", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    await commitHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const retryWithModel: HealthReport = {
+      ...baseReport,
+      model: "llama3.1:8b",
+      received_at: "2026-02-24T10:01:00Z",
+    };
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", retryWithModel, redis);
+    expect(reservation).toStrictEqual({
+      kind: "duplicate",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
+  });
+
   it("returns conflict for same run_id with different payload", async () => {
     await reserveHealthReportIdempotency("inst-1", baseReport, redis);
 
@@ -606,6 +657,7 @@ describe("getOverview", () => {
       outcome: "failure",
       duration_secs: 33,
       consecutive_failures: 2,
+      model: "openai/gpt-4o",
       error: "timeout",
       received_at: "2026-02-24T10:00:00Z",
     };
@@ -620,6 +672,7 @@ describe("getOverview", () => {
     expect(result[0].repo).toBe("hivemoot/sandbox");
     expect(result[0].outcome).toBe("failure");
     expect(result[0].consecutive_failures).toBe(2);
+    expect(result[0].model).toBe("openai/gpt-4o");
     expect(result[0].online).toBe(true);
   });
 

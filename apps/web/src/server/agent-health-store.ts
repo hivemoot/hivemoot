@@ -34,6 +34,7 @@ const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_HISTORY_ENTRIES = 1440; // 24h at 1/min
 const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
 const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
+const MODEL_PATTERN = /^[a-zA-Z0-9._:/-]{1,128}$/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +47,7 @@ export interface HealthReport {
   outcome: "success" | "failure" | "timeout";
   duration_secs: number;
   consecutive_failures: number;
+  model?: string;
   error?: string;
   exit_code?: number;
   received_at: string; // ISO 8601, server-assigned
@@ -58,6 +60,7 @@ export interface HealthOverviewEntry {
   outcome?: HealthReport["outcome"];
   duration_secs?: number;
   consecutive_failures?: number;
+  model?: string;
   error?: string;
   exit_code?: number;
   received_at: string;
@@ -179,6 +182,7 @@ const ALLOWED_FIELDS = new Set([
   "outcome",
   "duration_secs",
   "consecutive_failures",
+  "model",
   "error",
   "exit_code",
 ]);
@@ -261,6 +265,16 @@ export function validateReport(body: unknown): ValidationResult {
   }
 
   if (
+    obj.model !== undefined
+    && (typeof obj.model !== "string" || !MODEL_PATTERN.test(obj.model))
+  ) {
+    return {
+      ok: false,
+      message: "model must be 1-128 chars and match [a-zA-Z0-9._:/-]+ if provided",
+    };
+  }
+
+  if (
     obj.error !== undefined
     && (typeof obj.error !== "string" || obj.error.length < 1 || obj.error.length > 256)
   ) {
@@ -285,6 +299,7 @@ export function validateReport(body: unknown): ValidationResult {
   };
 
   if (typeof obj.error === "string") report.error = obj.error;
+  if (typeof obj.model === "string") report.model = obj.model;
   if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
 
   return { ok: true, report };
@@ -496,6 +511,7 @@ export async function getOverview(
           consecutive_failures: typeof report.consecutive_failures === "number"
             ? report.consecutive_failures
             : undefined,
+          model: typeof report.model === "string" ? report.model : undefined,
           error: typeof report.error === "string" ? report.error : undefined,
           exit_code: typeof report.exit_code === "number" ? report.exit_code : undefined,
           received_at: report.received_at,
