@@ -142,6 +142,7 @@ describe("buildIssueVoteResult", () => {
       const result = await buildIssueVoteResult(repo, ISSUE, "up", false);
 
       expect(result.code).toBe("no_voting_target");
+      expect(mockedFetchCurrentUser).not.toHaveBeenCalled();
     });
 
     it("returns no_voting_target when voting comment is not from trusted author", async () => {
