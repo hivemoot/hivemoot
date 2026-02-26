@@ -221,7 +221,7 @@ function formatPrioritySignals(summary: RepoSummary): string {
 function formatPublishReadinessSection(readiness: PublishReadiness): string {
   if (readiness.canPush) return "";
   const lines = [sectionDivider("PUBLISH READINESS", 1)];
-  lines.push(chalk.red(`  ✗ ${readiness.message ?? "Cannot push to origin."}`));
+  lines.push(chalk.red(`  ✗ ${readiness.message}`));
   return lines.join("\n");
 }
 

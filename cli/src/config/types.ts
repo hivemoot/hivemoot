@@ -172,10 +172,9 @@ export interface PrioritySignal {
   summary: string;
 }
 
-export interface PublishReadiness {
-  canPush: boolean;
-  message?: string;
-}
+export type PublishReadiness =
+  | { canPush: true }
+  | { canPush: false; message: string };
 
 export interface RepoSummary {
   repo: RepoRef;
@@ -201,6 +200,11 @@ export interface RepoSummary {
 }
 
 // ── CLI Options ────────────────────────────────────────────────────
+
+export interface PrCommandOptions {
+  repo?: string;
+  json?: boolean;
+}
 
 export interface BuzzOptions {
   role?: string;

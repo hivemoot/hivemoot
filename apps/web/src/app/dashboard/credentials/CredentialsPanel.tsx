@@ -210,7 +210,7 @@ async function parseErrorResponse(res: Response): Promise<Record<string, unknown
   try {
     return (await res.json()) as Record<string, unknown>;
   } catch {
-    return {};
+    return { message: `Server returned an unexpected response (HTTP ${res.status})` };
   }
 }
 
@@ -672,6 +672,7 @@ function AgentTokenSection({
   const [generating, setGenerating] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   // Tracks whether the current token was just generated (raw token available
   // from the POST response). Existing tokens fetched via GET are also decrypted
   // and returned, but distinguishing "fresh" helps guide the user to copy it.
@@ -771,13 +772,18 @@ function AgentTokenSection({
   }
 
   function handleCopy(token: string) {
+    setCopyFailed(false);
+    if (!navigator.clipboard?.writeText) {
+      setCopyFailed(true);
+      return;
+    }
     navigator.clipboard.writeText(token).then(
       () => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       },
       () => {
-        // clipboard unavailable (insecure context) — user can manually select
+        setCopyFailed(true);
       },
     );
   }
@@ -862,6 +868,11 @@ function AgentTokenSection({
                 )}
               </button>
             </div>
+            {copyFailed && (
+              <p className="mt-1.5 text-xs text-red-400">
+                Could not copy to clipboard. Please select the token manually and copy it.
+              </p>
+            )}
           </div>
 
           <dl className="space-y-3 text-sm">

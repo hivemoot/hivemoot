@@ -46,7 +46,7 @@ function normalizeEnvelope(
     typeof rawEnvelope.updatedAt !== "string" ||
     typeof rawEnvelope.updatedBy !== "string"
   ) {
-    console.warn("Invalid BYOK envelope shape in Redis", { installationId });
+    console.error("[byok-store] Invalid BYOK envelope shape in Redis — possible data corruption", { installationId });
     return null;
   }
 

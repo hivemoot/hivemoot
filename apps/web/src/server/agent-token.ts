@@ -160,7 +160,8 @@ async function withInstallationLock<T>(
  * Generates a new agent token for an installation. If one already exists the
  * old hash index is cleaned up first (effectively a rotate).
  *
- * Returns the raw token — this is the only time it's available in plaintext.
+ * Returns the raw token. Admins can also recover the plaintext later
+ * via getAgentToken(), which decrypts the stored envelope on demand.
  */
 export async function generateAgentToken(
   installationId: string,
@@ -191,7 +192,9 @@ export async function generateAgentToken(
     await redis.eval(
       ROTATE_TOKEN_SCRIPT,
       [
-        hasExisting ? redisHashKey(existing!.tokenHash) : "",
+        // When no existing token, use envelope key as a no-op placeholder
+        // (the DEL is guarded by ARGV[1]=="1" so this key is never deleted).
+        hasExisting ? redisHashKey(existing!.tokenHash) : redisTokenKey(installationId),
         redisTokenKey(installationId),
         redisHashKey(hash),
       ],
