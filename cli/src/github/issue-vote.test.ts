@@ -129,6 +129,7 @@ describe("buildIssueVoteResult", () => {
       expect(result.kind).toBe("issue_vote");
       expect(result.schemaVersion).toBe(1);
       expect(result.trustedQueenLogins).toEqual(["hivemoot", "hivemoot[bot]"]);
+      expect(mockedFetchCurrentUser).not.toHaveBeenCalled();
     });
 
     it("returns no_voting_target when comments exist but none are voting type", async () => {
@@ -140,6 +141,7 @@ describe("buildIssueVoteResult", () => {
       const result = await buildIssueVoteResult(repo, ISSUE, "up", false);
 
       expect(result.code).toBe("no_voting_target");
+      expect(mockedFetchCurrentUser).not.toHaveBeenCalled();
     });
 
     it("returns no_voting_target when voting comment is not from trusted author", async () => {
