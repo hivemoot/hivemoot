@@ -13,8 +13,8 @@ vi.mock("@/server/agent-token", () => ({
   getAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
 }));
-vi.mock("@/server/agent-health-error", () => {
-  const { NextResponse } = require("next/server");
+vi.mock("@/server/agent-health-error", async () => {
+  const { NextResponse } = await import("next/server");
   return {
     AGENT_HEALTH_ERROR: {
       INVALID_JSON: "agent_health_invalid_json",

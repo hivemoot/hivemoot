@@ -155,7 +155,7 @@ describe("buzzCommand", () => {
     expect(mockedFormatBuzz).toHaveBeenCalledWith(
       "engineer",
       testTeamConfig.roles.engineer,
-      testSummary,
+      expect.objectContaining(testSummary),
       undefined,
       undefined,
     );
@@ -170,7 +170,7 @@ describe("buzzCommand", () => {
     expect(mockedJsonBuzz).toHaveBeenCalledWith(
       "engineer",
       testTeamConfig.roles.engineer,
-      testSummary,
+      expect.objectContaining(testSummary),
       undefined,
     );
     expect(console.log).toHaveBeenCalledWith('{"role":{"name":"engineer"}}');
@@ -182,7 +182,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({});
 
-    expect(mockedFormatStatus).toHaveBeenCalledWith(testSummary, undefined);
+    expect(mockedFormatStatus).toHaveBeenCalledWith(expect.objectContaining(testSummary), undefined);
     expect(mockedFormatBuzz).not.toHaveBeenCalled();
     expect(mockedLoadTeamConfig).toHaveBeenCalledWith(testRepo);
     expect(console.log).toHaveBeenCalledWith("REPO SUMMARY — hivemoot/test\n...");
@@ -193,7 +193,7 @@ describe("buzzCommand", () => {
 
     await buzzCommand({ json: true });
 
-    expect(mockedJsonStatus).toHaveBeenCalledWith(testSummary);
+    expect(mockedJsonStatus).toHaveBeenCalledWith(expect.objectContaining(testSummary));
     expect(console.log).toHaveBeenCalledWith('{"repo":"hivemoot/test"}');
     expect(mockedJsonBuzz).not.toHaveBeenCalled();
     expect(mockedLoadTeamConfig).toHaveBeenCalledWith(testRepo);
@@ -207,7 +207,7 @@ describe("buzzCommand", () => {
     expect(mockedFormatBuzz).toHaveBeenCalledWith(
       "engineer",
       testTeamConfig.roles.engineer,
-      testSummary,
+      expect.objectContaining(testSummary),
       5,
       undefined,
     );
@@ -234,7 +234,7 @@ describe("buzzCommand", () => {
     expect(mockedFormatBuzz).toHaveBeenCalledWith(
       "engineer",
       teamWithOnboarding.roles.engineer,
-      testSummary,
+      expect.objectContaining(testSummary),
       undefined,
       "Read CONTRIBUTING.md first.",
     );
@@ -253,7 +253,7 @@ describe("buzzCommand", () => {
     expect(mockedJsonBuzz).toHaveBeenCalledWith(
       "engineer",
       teamWithOnboarding.roles.engineer,
-      testSummary,
+      expect.objectContaining(testSummary),
       "Read CONTRIBUTING.md first.",
     );
   });
@@ -925,7 +925,7 @@ describe("buzzCommand", () => {
 
   // ── Publish preflight ─────────────────────────────────────────────
 
-  it("does not set publishReadiness when preflight succeeds", async () => {
+  it("sets publishReadiness.canPush=true when preflight succeeds", async () => {
     mockedRunPublishPreflight.mockResolvedValue({ command: "git push --dry-run origin HEAD", ok: true, originUrl: "https://github.com/hivemoot-guard/test.git" });
     mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
     mockedFormatStatus.mockReturnValue("output");
@@ -933,7 +933,7 @@ describe("buzzCommand", () => {
     await buzzCommand({});
 
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
-    expect(summaryArg.publishReadiness).toBeUndefined();
+    expect(summaryArg.publishReadiness).toEqual({ canPush: true });
   });
 
   it("sets publishReadiness.canPush=false with upstream message when origin targets upstream", async () => {
