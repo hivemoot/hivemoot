@@ -31,8 +31,8 @@ describe("getCookie", () => {
   });
 
   it("does not misfire when cookie name contains regex metacharacters", () => {
-    // Without escaping, "fo.o" matches "foo" because "." is a wildcard
-    expect(getCookie("fo.o", "foo=bar; fo.o=baz")).toBe("baz");
-    expect(getCookie("fo.o", "foo=bar; fo.o=baz")).not.toBe("bar");
+    // Without escaping, "fo+o" matches "fooo" because "+" is a quantifier.
+    expect(getCookie("fo+o", "fooo=bar; fo+o=baz")).toBe("baz");
+    expect(getCookie("fo+o", "fooo=bar; fo+o=baz")).not.toBe("bar");
   });
 });
