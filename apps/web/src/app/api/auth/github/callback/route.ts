@@ -15,6 +15,9 @@
  *    - User installations: authenticated login must match installation account
  * 6. Issue setup session token, store in Redis, set as HttpOnly cookie
  * 7. Smart redirect: /dashboard if BYOK already configured, otherwise /setup
+ *
+ * Error paths that occur during a browser-initiated flow redirect to
+ * /setup/error with a code param instead of returning raw JSON.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -38,8 +41,6 @@ import {
 } from "@/server/setup-session";
 import { REMEMBERED_USER_COOKIE } from "@/constants/cookies";
 import { hasByokEnvelope } from "@/server/byok-store";
-const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
-const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
 
 function clearOAuthStateBindingCookie(response: NextResponse) {
   response.cookies.set(OAUTH_STATE_BINDING_COOKIE, "", {
@@ -51,10 +52,25 @@ function clearOAuthStateBindingCookie(response: NextResponse) {
   });
 }
 
+function setupErrorRedirect(
+  siteUrl: string,
+  code: string,
+  installationId?: string | null,
+): NextResponse {
+  const url = new URL(`${siteUrl}/setup/error`);
+  url.searchParams.set("code", code);
+  if (installationId) url.searchParams.set("installation_id", installationId);
+  return NextResponse.redirect(url.toString());
+}
+
 export async function GET(request: NextRequest) {
   const env = validateEnv();
   if (!env.ok) {
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 503 });
+    // Can't construct absolute URL without siteUrl — use request origin as fallback
+    const origin = new URL(request.url).origin;
+    const url = new URL(`${origin}/setup/error`);
+    url.searchParams.set("code", "server_misconfiguration");
+    return NextResponse.redirect(url.toString());
   }
 
   const {
@@ -68,10 +84,10 @@ export async function GET(request: NextRequest) {
   } = env.config;
 
   if (!githubClientId || !githubClientSecret || !githubAppId || !githubAppPrivateKey) {
-    return NextResponse.json({ error: "GitHub is not configured on this server" }, { status: 503 });
+    return setupErrorRedirect(siteUrl, "server_misconfiguration");
   }
   if (!redisRestUrl || !redisRestToken) {
-    return NextResponse.json({ error: "Session storage is not configured" }, { status: 503 });
+    return setupErrorRedirect(siteUrl, "server_misconfiguration");
   }
 
   const { searchParams } = new URL(request.url);
@@ -105,7 +121,8 @@ export async function GET(request: NextRequest) {
   }
 
   if (!code || !state) {
-    return NextResponse.json({ error: "Missing code or state" }, { status: 400 });
+    // Malformed callback — redirect to setup root
+    return NextResponse.redirect(new URL(`${siteUrl}/setup`).toString());
   }
 
   // --- Step 1: Validate state (CSRF check) ---
@@ -113,10 +130,9 @@ export async function GET(request: NextRequest) {
   try {
     installationId = await validateOAuthState(state, oauthStateBinding, redis);
   } catch {
-    return NextResponse.json(
-      { error: "Failed to read OAuth state", code: OAUTH_STATE_READ_FAILED_CODE },
-      { status: 503 },
-    );
+    const errResponse = setupErrorRedirect(siteUrl, "oauth_state_read_failed");
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
   if (!installationId) {
     const expiredUrl = new URL(`${siteUrl}/setup`);
@@ -131,7 +147,9 @@ export async function GET(request: NextRequest) {
     // --- Step 2: Exchange code for user access token ---
     userToken = await exchangeOAuthCode(code, githubClientId, githubClientSecret);
   } catch {
-    return NextResponse.json({ error: "Failed to exchange authorization code" }, { status: 502 });
+    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
@@ -147,7 +165,9 @@ export async function GET(request: NextRequest) {
       }
       installationId = String(installations[0].id);
     } catch {
-      return NextResponse.json({ error: "Failed to discover installations" }, { status: 502 });
+      const errResponse = setupErrorRedirect(siteUrl, "server_error");
+      clearOAuthStateBindingCookie(errResponse);
+      return errResponse;
     }
   }
 
@@ -162,7 +182,9 @@ export async function GET(request: NextRequest) {
       getInstallation(installationId, appJwt),
     ]);
   } catch {
-    return NextResponse.json({ error: "Failed to verify identity" }, { status: 502 });
+    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 5: Authorization check ---
@@ -175,7 +197,9 @@ export async function GET(request: NextRequest) {
     try {
       isAdmin = await checkOrgAdmin(userToken, accountLogin);
     } catch {
-      return NextResponse.json({ error: "Failed to check org membership" }, { status: 502 });
+      const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+      clearOAuthStateBindingCookie(errResponse);
+      return errResponse;
     }
     if (!isAdmin) {
       const forbiddenUrl = new URL(`${siteUrl}/setup`);
@@ -207,10 +231,9 @@ export async function GET(request: NextRequest) {
       redis,
     );
   } catch {
-    return NextResponse.json(
-      { error: "Failed to create setup session", code: SETUP_SESSION_CREATE_FAILED_CODE },
-      { status: 503 },
-    );
+    const errResponse = setupErrorRedirect(siteUrl, "setup_session_create_failed", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 7: Smart redirect based on setup completion ---
