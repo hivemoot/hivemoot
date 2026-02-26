@@ -32,10 +32,11 @@ Each Redis value at `hive:byok:{installationId}` is a JSON object with this sche
 | `status` | `"active" \| "revoked"` | yes | Runtime state gate |
 | `updatedAt` | string | yes | ISO-8601 timestamp |
 | `updatedBy` | string | yes | GitHub login of actor |
-| `fingerprint` | string | yes | Non-sensitive key fingerprint |
+| `fingerprint` | string | yes | Always empty string `""` — stored for schema compatibility but never populated or exposed via API |
 
 Compatibility note:
 - Legacy envelopes may include `fingerprintLast4`; web runtime normalizes it to `fingerprint`.
+- The `fingerprint` field was historically populated with the last 4 characters of the API key. It is now always `""` and never returned in API responses, to prevent any accidental key material leakage.
 
 ## 3. Encryption and Decryption Contract
 

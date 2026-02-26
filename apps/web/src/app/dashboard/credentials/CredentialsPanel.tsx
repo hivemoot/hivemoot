@@ -13,7 +13,6 @@ interface ByokStatus {
   status: "active" | "revoked";
   provider: string;
   model: string;
-  fingerprint: string;
   updatedAt: string;
 }
 
@@ -478,7 +477,6 @@ function LlmCredentialsSection({
             status: "revoked",
             provider: String(err.provider ?? ""),
             model: String(err.model ?? ""),
-            fingerprint: String(err.fingerprint ?? ""),
             updatedAt: String(err.updatedAt ?? ""),
           },
         });
@@ -508,7 +506,6 @@ function LlmCredentialsSection({
             status: "revoked",
             provider: String(body.provider ?? ""),
             model: String(body.model ?? ""),
-            fingerprint: "",
             updatedAt: String(body.updatedAt ?? new Date().toISOString()),
           },
         });
@@ -576,10 +573,6 @@ function LlmCredentialsSection({
             <div className="flex justify-between">
               <dt className="text-zinc-500">Model</dt>
               <dd className="font-mono text-zinc-300">{state.data.model}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Key</dt>
-              <dd className="font-mono text-zinc-300">····{state.data.fingerprint}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-zinc-500">Last updated</dt>

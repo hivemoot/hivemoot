@@ -74,7 +74,7 @@ describe("GET /api/byok/status", () => {
     expect(body.status).toBe("active");
     expect(body.provider).toBe("anthropic");
     expect(body.model).toBe("claude-sonnet-4-20250514");
-    expect(body.fingerprint).toBe("1234");
+    expect(body.fingerprint).toBeUndefined();
     expect(body.updatedAt).toBe("2026-02-19T12:00:00Z");
 
     // Must NOT include sensitive fields
