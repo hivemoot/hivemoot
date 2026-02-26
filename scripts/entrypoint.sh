@@ -25,6 +25,15 @@ JSON
   chmod 600 "${HOME}/.claude.json"
 fi
 
+docker_provider="${DOCKER_PROVIDER:-all}"
+agent_provider="${AGENT_PROVIDER:-claude}"
+if [ "$docker_provider" != "all" ] && [ "$docker_provider" != "$agent_provider" ]; then
+  echo "Provider mismatch: image built for '${docker_provider}' but AGENT_PROVIDER='${agent_provider}'." >&2
+  echo "  Use baked provider: set AGENT_PROVIDER=${docker_provider} in .env" >&2
+  echo "  Switch providers:   PROVIDER=${agent_provider} docker compose build hivemoot-agent" >&2
+  exit 1
+fi
+
 mode="${RUN_MODE:-once}"
 case "$mode" in
   once)

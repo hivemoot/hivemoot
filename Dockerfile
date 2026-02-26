@@ -165,6 +165,13 @@ RUN mkdir -p \
 # hadolint ignore=DL3006
 FROM provider-${PROVIDER} AS runtime
 
+# Persist the build-time PROVIDER as a runtime env so entrypoint.sh can
+# detect mismatches between the baked image and AGENT_PROVIDER at startup.
+# Global ARGs (before first FROM) are not visible in ENV instructions;
+# re-declare here so Docker resolves the value into this stage.
+ARG PROVIDER=all
+ENV DOCKER_PROVIDER=${PROVIDER}
+
 WORKDIR /workspace
 
 COPY --chown=node:node scripts /opt/hivemoot-agent/scripts
