@@ -10,7 +10,7 @@ interface SearchParams {
   installation_id?: string;
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
+const ERROR_MESSAGES = {
   server_misconfiguration: "The server isn't configured correctly. Contact the site administrator.",
   oauth_state_store_failed:
     "We couldn't start the authorization flow. This is usually a temporary issue.",
@@ -20,10 +20,21 @@ const ERROR_MESSAGES: Record<string, string> = {
     "We couldn't create your setup session. This is usually a temporary issue.",
   server_error:
     "Something went wrong on our end. This is usually a temporary issue.",
-};
+} as const;
 
-function getErrorMessage(code: string): string {
-  return ERROR_MESSAGES[code] ?? "Something went wrong during setup.";
+type ErrorCode = keyof typeof ERROR_MESSAGES;
+
+function isErrorCode(code: string): code is ErrorCode {
+  return Object.hasOwn(ERROR_MESSAGES, code);
+}
+
+export function normalizeErrorCode(code?: string): ErrorCode {
+  if (!code) return "server_error";
+  return isErrorCode(code) ? code : "server_error";
+}
+
+export function getErrorMessage(code: ErrorCode): string {
+  return ERROR_MESSAGES[code];
 }
 
 export default async function SetupErrorPage({
@@ -32,8 +43,7 @@ export default async function SetupErrorPage({
   searchParams: Promise<SearchParams>;
 }) {
   const params = await searchParams;
-  const rawCode = params.code ?? "";
-  const code = rawCode in ERROR_MESSAGES ? rawCode : "server_error";
+  const code = normalizeErrorCode(params.code);
   const installationId = params.installation_id;
 
   const retryUrl = installationId
