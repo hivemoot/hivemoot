@@ -23,74 +23,99 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  let token: string;
   try {
-    token = await generateAgentToken(
+    const token = await generateAgentToken(
       auth.session.installationId,
       auth.session.userLogin,
       auth.activeKeyVersion,
       auth.keyring,
       auth.redis,
     );
-  } catch (error) {
-    if (error instanceof LockTimeoutError) {
+
+    return NextResponse.json({
+      token,
+      fingerprint: token.slice(-8),
+      message: "Store this token securely and rotate it immediately if compromised.",
+    });
+  } catch (err) {
+    if (err instanceof LockTimeoutError) {
       return agentHealthError(
         AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
         "Another token operation is already in progress. Retry in a moment.",
         503,
       );
     }
-    throw error;
+    console.error("[agent-token] Failed to generate token", {
+      installationId: auth.session.installationId,
+      error: err,
+    });
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to generate agent token. Please try again.",
+      500,
+    );
   }
-
-  return NextResponse.json({
-    token,
-    fingerprint: token.slice(-8),
-    message: "Store this token securely and rotate it immediately if compromised.",
-  });
 }
 
 export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  const record = await getAgentToken(auth.session.installationId, auth.keyring, auth.redis);
-  if (!record) {
+  try {
+    const record = await getAgentToken(auth.session.installationId, auth.keyring, auth.redis);
+    if (!record) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
+        "No agent token configured for this installation",
+        404,
+      );
+    }
+
+    return NextResponse.json(record);
+  } catch (err) {
+    console.error("[agent-token] Failed to retrieve token", {
+      installationId: auth.session.installationId,
+      error: err,
+    });
     return agentHealthError(
-      AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
-      "No agent token configured for this installation",
-      404,
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to retrieve agent token. Please try again.",
+      500,
     );
   }
-
-  return NextResponse.json(record);
 }
 
 export async function DELETE(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  let revoked: boolean;
   try {
-    revoked = await revokeAgentToken(auth.session.installationId, auth.redis);
-  } catch (error) {
-    if (error instanceof LockTimeoutError) {
+    const revoked = await revokeAgentToken(auth.session.installationId, auth.redis);
+    if (!revoked) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
+        "No agent token to revoke",
+        404,
+      );
+    }
+
+    return NextResponse.json({ revoked: true });
+  } catch (err) {
+    if (err instanceof LockTimeoutError) {
       return agentHealthError(
         AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
         "Another token operation is already in progress. Retry in a moment.",
         503,
       );
     }
-    throw error;
-  }
-
-  if (!revoked) {
+    console.error("[agent-token] Failed to revoke token", {
+      installationId: auth.session.installationId,
+      error: err,
+    });
     return agentHealthError(
-      AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
-      "No agent token to revoke",
-      404,
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to revoke agent token. Please try again.",
+      500,
     );
   }
-
-  return NextResponse.json({ revoked: true });
 }

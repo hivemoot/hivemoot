@@ -11,7 +11,6 @@ type ResolverSuccess = {
   keyVersion: string;
   provider: string;
   model: string;
-  fingerprint: string;
 };
 
 type ResolverFailure = {
@@ -82,7 +81,6 @@ async function writeActiveEnvelope(args: {
   keyring: Map<string, Buffer>;
   provider?: string;
   model?: string;
-  fingerprint?: string;
 }): Promise<ByokEnvelope> {
   const provider = args.provider ?? "anthropic";
   const model = args.model ?? "claude-sonnet-4-20250514";
@@ -102,7 +100,7 @@ async function writeActiveEnvelope(args: {
     status: "active",
     updatedAt: makeNowIso(),
     updatedBy: "guard",
-    fingerprint: args.fingerprint ?? "abcd",
+    fingerprint: "",
   };
 
   await setByokEnvelope(args.installationId, envelope, args.redis);
@@ -212,7 +210,6 @@ async function resolveByokForBot(
       keyVersion: envelope.keyVersion,
       provider: payload.provider,
       model: payload.model,
-      fingerprint: envelope.fingerprint,
     };
   } catch (err) {
     if (err instanceof ByokCryptoError && err.code === BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE) {
@@ -356,7 +353,7 @@ describe("BYOK contract acceptance", () => {
       status: "revoked",
       updatedAt: makeNowIso(),
       updatedBy: "guard",
-      fingerprint: "abcd",
+      fingerprint: "",
     };
 
     await setByokEnvelope("200", revokedEnvelope, redis);
@@ -425,7 +422,6 @@ describe("BYOK contract acceptance", () => {
       plaintextKey: "sk-installation-a",
       keyVersion: "v1",
       keyring,
-      fingerprint: "1111",
     });
 
     await writeActiveEnvelope({
@@ -434,7 +430,6 @@ describe("BYOK contract acceptance", () => {
       plaintextKey: "sk-installation-b",
       keyVersion: "v1",
       keyring,
-      fingerprint: "2222",
     });
 
     const installationA = await resolveByokForBot("501", redis, keyring);
@@ -444,7 +439,6 @@ describe("BYOK contract acceptance", () => {
       expect.objectContaining({
         ok: true,
         key: "sk-installation-a",
-        fingerprint: "1111",
       }),
     );
 
@@ -452,7 +446,6 @@ describe("BYOK contract acceptance", () => {
       expect.objectContaining({
         ok: true,
         key: "sk-installation-b",
-        fingerprint: "2222",
       }),
     );
   });

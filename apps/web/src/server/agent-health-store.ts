@@ -31,9 +31,9 @@ import { type Redis } from "@upstash/redis";
 const LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
 const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MAX_HISTORY_ENTRIES = 1440; // 24h at 1/min
+const MAX_HISTORY_ENTRIES = 1440; // read-side cap; ~24h at 1 report/min
 const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
-const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
+export const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,7 +60,7 @@ export interface HealthOverviewEntry {
   consecutive_failures?: number;
   error?: string;
   exit_code?: number;
-  received_at: string;
+  received_at: string | null; // null when latest key is missing/corrupt
   online: boolean; // true if latest key still has TTL remaining
 }
 
@@ -123,7 +123,11 @@ function parseIdempotencyRecord(value: unknown): StoredIdempotencyRecord | null 
   if (typeof value === "string") {
     try {
       return parseIdempotencyRecord(JSON.parse(value));
-    } catch {
+    } catch (err) {
+      console.error("[agent-health] Failed to parse idempotency record from Redis", {
+        valueLength: value.length,
+        error: err,
+      });
       return null;
     }
   }
@@ -135,8 +139,8 @@ function parseIdempotencyRecord(value: unknown): StoredIdempotencyRecord | null 
     return null;
   }
 
-  // Backward compatibility: records written before state tracking are treated as
-  // committed because they only existed for accepted reports.
+  // Defensive default: if state field is absent (e.g. hand-edited record or
+  // future schema change drops it), treat as committed rather than failing.
   let state: StoredIdempotencyRecord["state"] = "committed";
   if (maybe.state !== undefined) {
     if (maybe.state !== "pending" && maybe.state !== "committed") return null;
@@ -394,12 +398,12 @@ export async function checkRateLimit(
 }
 
 // ---------------------------------------------------------------------------
-// Write pipeline
+// Write transaction
 // ---------------------------------------------------------------------------
 
 /**
  * Records a validated health report in Redis.
- * Pipeline: SET latest (30min TTL) + ZADD runs + SADD index + trim old runs.
+ * Transaction: SET latest (30min TTL) + ZADD runs + SADD index + trim old runs.
  */
 export async function recordHealthReport(
   installId: string,
@@ -506,18 +510,23 @@ export async function getOverview(
     }
 
     // Agent existed but latest key is missing/corrupt — show as offline fallback.
+    console.warn("[agent-health] Latest report missing or corrupt for indexed agent", {
+      agentId: indexed[i].agentId,
+      repo: indexed[i].repo,
+      reportRawType: typeof reportRaw,
+    });
     entries.push({
       agent_id: indexed[i].agentId,
       repo: indexed[i].repo,
-      received_at: "",
+      received_at: null,
       online: false,
     });
   }
 
-  // Sort by received_at descending (most recent first)
+  // Sort by received_at descending (most recent first); null entries sink to bottom
   entries.sort((a, b) => {
-    if (!a.received_at) return 1;
-    if (!b.received_at) return -1;
+    if (a.received_at === null) return 1;
+    if (b.received_at === null) return -1;
     return b.received_at.localeCompare(a.received_at);
   });
 
@@ -547,14 +556,32 @@ export async function getHistory(
 
   return raw
     .map((entry) => {
+      let parsed: unknown;
       if (typeof entry === "string") {
         try {
-          return JSON.parse(entry) as HealthReport;
-        } catch {
+          parsed = JSON.parse(entry);
+        } catch (err) {
+          console.warn("[agent-health] Corrupt history entry in Redis, skipping", {
+            error: err,
+            entryPreview: entry.slice(0, 100),
+          });
           return null;
         }
+      } else {
+        parsed = entry;
       }
-      return entry as HealthReport;
+
+      if (
+        typeof parsed === "object" && parsed !== null
+        && typeof (parsed as Record<string, unknown>).agent_id === "string"
+        && typeof (parsed as Record<string, unknown>).received_at === "string"
+      ) {
+        return parsed as HealthReport;
+      }
+      console.warn("[agent-health] Malformed history entry in Redis, skipping", {
+        entryType: typeof parsed,
+      });
+      return null;
     })
     .filter((report): report is HealthReport => report !== null);
 }

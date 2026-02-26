@@ -61,7 +61,8 @@ export async function GET(request: NextRequest) {
   let stateRecord: { state: string; stateBinding: string };
   try {
     stateRecord = await createOAuthState(installationId, redis);
-  } catch {
+  } catch (err) {
+    console.error("[oauth-start] Failed to store OAuth state", { installationId, error: err });
     return setupErrorRedirect(request, "oauth_state_store_failed", installationId);
   }
 
