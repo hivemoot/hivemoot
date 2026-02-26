@@ -191,6 +191,22 @@ describe("buildIssueVoteResult", () => {
       expect(result.code).toBe("vote_applied");
       expect(mockedGh).toHaveBeenCalledTimes(3); // 2 page fetches + 1 reaction POST
     });
+
+    it("selects the latest trusted voting comment when multiple are on one page", async () => {
+      mockedGh.mockResolvedValueOnce(makeCommentsResponse([
+        { body: makeVotingCommentBody(ISSUE), author: "hivemoot", databaseId: 2001, id: "old-id" },
+        { body: makeVotingCommentBody(ISSUE), author: "hivemoot[bot]", databaseId: 2002, id: "new-id" },
+      ]));
+      mockedGh.mockResolvedValueOnce(makeAddReactionResponse());
+
+      const result = await buildIssueVoteResult(repo, ISSUE, "up", false);
+
+      expect(result.code).toBe("vote_applied");
+      expect(result.targetComment?.databaseId).toBe(2002);
+      expect(result.targetComment?.id).toBe("new-id");
+      const reactionArgs = mockedGh.mock.calls[1][0] as string[];
+      expect(reactionArgs).toContain("/repos/hivemoot/hivemoot/issues/comments/2002/reactions");
+    });
   });
 
   describe("vote_applied", () => {
