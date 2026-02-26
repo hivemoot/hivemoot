@@ -28,7 +28,7 @@ import { type Redis } from "@upstash/redis";
 // Constants
 // ---------------------------------------------------------------------------
 
-const LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
+const DEFAULT_LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
 const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_HISTORY_ENTRIES = 1440; // read-side cap; ~24h at 1 report/min
@@ -50,8 +50,11 @@ export interface HealthReport {
   model?: string;
   error?: string;
   exit_code?: number;
+  next_run_at?: string; // ISO 8601, optional — when the next scheduled run is expected
   received_at: string; // ISO 8601, server-assigned
 }
+
+export type AgentStatus = "ok" | "failed" | "late" | "unknown";
 
 export interface HealthOverviewEntry {
   agent_id: string;
@@ -64,7 +67,8 @@ export interface HealthOverviewEntry {
   error?: string;
   exit_code?: number;
   received_at: string | null; // null when latest key is missing/corrupt
-  online: boolean; // true if latest key still has TTL remaining
+  status: AgentStatus;
+  next_run_at?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +120,7 @@ function idempotencyPayloadHash(report: HealthReport): string {
       consecutive_failures: report.consecutive_failures,
       error: report.error ?? null,
       exit_code: report.exit_code ?? null,
+      next_run_at: report.next_run_at ?? null,
     }))
     .digest("hex");
 }
@@ -189,6 +194,7 @@ const ALLOWED_FIELDS = new Set([
   "model",
   "error",
   "exit_code",
+  "next_run_at",
 ]);
 
 export type ValidationResult = {
@@ -292,6 +298,23 @@ export function validateReport(body: unknown): ValidationResult {
     return { ok: false, message: "exit_code must be an integer if provided" };
   }
 
+  if (obj.next_run_at !== undefined) {
+    if (typeof obj.next_run_at !== "string" || obj.next_run_at.length > 64) {
+      return { ok: false, message: "next_run_at must be a string (max 64 chars) if provided" };
+    }
+    const ts = new Date(obj.next_run_at).getTime();
+    if (Number.isNaN(ts)) {
+      return { ok: false, message: "next_run_at must be a valid ISO 8601 timestamp" };
+    }
+    const now = Date.now();
+    if (ts < now - 5 * 60 * 1000) {
+      return { ok: false, message: "next_run_at must not be more than 5 minutes in the past" };
+    }
+    if (ts > now + 48 * 60 * 60 * 1000) {
+      return { ok: false, message: "next_run_at must not be more than 48 hours in the future" };
+    }
+  }
+
   const report: HealthReport = {
     agent_id: obj.agent_id,
     repo: obj.repo,
@@ -305,6 +328,7 @@ export function validateReport(body: unknown): ValidationResult {
   if (typeof obj.error === "string") report.error = obj.error;
   if (typeof obj.model === "string") report.model = obj.model;
   if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
+  if (typeof obj.next_run_at === "string") report.next_run_at = obj.next_run_at;
 
   return { ok: true, report };
 }
@@ -413,12 +437,34 @@ export async function checkRateLimit(
 }
 
 // ---------------------------------------------------------------------------
+// TTL computation
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes the TTL for the latest-report key.
+ * When next_run_at is provided, extends to 2x the time until next run
+ * so the key survives through the expected gap between runs.
+ */
+function computeLatestTtl(report: HealthReport): number {
+  if (typeof report.next_run_at === "string") {
+    const nextRunMs = new Date(report.next_run_at).getTime();
+    if (!Number.isNaN(nextRunMs)) {
+      const secondsUntilNextRun = Math.ceil((nextRunMs - Date.now()) / 1000);
+      if (secondsUntilNextRun > 0) {
+        return Math.max(DEFAULT_LATEST_TTL_SECONDS, secondsUntilNextRun * 2);
+      }
+    }
+  }
+  return DEFAULT_LATEST_TTL_SECONDS;
+}
+
+// ---------------------------------------------------------------------------
 // Write transaction
 // ---------------------------------------------------------------------------
 
 /**
  * Records a validated health report in Redis.
- * Transaction: SET latest (30min TTL) + ZADD runs + SADD index + trim old runs.
+ * Transaction: SET latest (dynamic TTL) + ZADD runs + SADD index + trim old runs.
  */
 export async function recordHealthReport(
   installId: string,
@@ -428,13 +474,14 @@ export async function recordHealthReport(
   const { agent_id, repo, received_at } = report;
   const score = new Date(received_at).getTime();
   const cutoff = score - HISTORY_RETENTION_MS;
+  const ttl = computeLatestTtl(report);
 
   await redis
     .multi()
     .set(
       latestKey(installId, agent_id, repo),
       report,
-      { ex: LATEST_TTL_SECONDS },
+      { ex: ttl },
     )
     .zadd(
       runsKey(installId, agent_id, repo),
@@ -450,12 +497,48 @@ export async function recordHealthReport(
 }
 
 // ---------------------------------------------------------------------------
+// Status derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives the 4-state agent status from the latest report.
+ * - No valid report → "unknown"
+ * - Last outcome failure/timeout → "failed"
+ * - Last outcome success + past next_run_at + 50% buffer → "late"
+ * - Last outcome success (all other cases) → "ok"
+ */
+function deriveStatus(report: Partial<HealthReport> | null): AgentStatus {
+  if (!report || typeof report.outcome !== "string") return "unknown";
+
+  if (report.outcome === "failure" || report.outcome === "timeout") return "failed";
+
+  if (report.outcome === "success") {
+    const nextRunAt = report.next_run_at;
+    if (typeof nextRunAt === "string") {
+      const nextRunMs = new Date(nextRunAt).getTime();
+      if (!Number.isNaN(nextRunMs)) {
+        const receivedMs = typeof report.received_at === "string"
+          ? new Date(report.received_at).getTime()
+          : 0;
+        const intervalMs = nextRunMs - receivedMs;
+        // 50% buffer beyond next_run_at before marking late
+        const bufferMs = intervalMs > 0 ? intervalMs * 0.5 : 0;
+        if (Date.now() > nextRunMs + bufferMs) return "late";
+      }
+    }
+    return "ok";
+  }
+
+  return "unknown";
+}
+
+// ---------------------------------------------------------------------------
 // Read functions (used by GET endpoint)
 // ---------------------------------------------------------------------------
 
 /**
  * Returns an overview of all agents for an installation.
- * One entry per agent+repo combo, with online status derived from TTL.
+ * One entry per agent+repo combo, with status derived from latest report.
  */
 export async function getOverview(
   installId: string,
@@ -484,17 +567,13 @@ export async function getOverview(
   const pipeline = redis.pipeline();
   for (const entry of indexed) {
     pipeline.get(entry.key);
-    pipeline.ttl(entry.key);
   }
   const results = await pipeline.exec();
 
   const entries: HealthOverviewEntry[] = [];
 
   for (let i = 0; i < indexed.length; i += 1) {
-    const reportRaw = results[i * 2] ?? null;
-    const ttlRaw = results[(i * 2) + 1];
-    const ttl = typeof ttlRaw === "number" ? ttlRaw : Number(ttlRaw);
-    const online = Number.isFinite(ttl) && ttl > 0;
+    const reportRaw = results[i] ?? null;
 
     if (typeof reportRaw === "object" && reportRaw !== null && !Array.isArray(reportRaw)) {
       const report = reportRaw as Partial<HealthReport>;
@@ -519,13 +598,14 @@ export async function getOverview(
           error: typeof report.error === "string" ? report.error : undefined,
           exit_code: typeof report.exit_code === "number" ? report.exit_code : undefined,
           received_at: report.received_at,
-          online,
+          status: deriveStatus(report),
+          next_run_at: typeof report.next_run_at === "string" ? report.next_run_at : undefined,
         });
         continue;
       }
     }
 
-    // Agent existed but latest key is missing/corrupt — show as offline fallback.
+    // Agent existed but latest key is missing/corrupt — show as unknown fallback.
     console.warn("[agent-health] Latest report missing or corrupt for indexed agent", {
       agentId: indexed[i].agentId,
       repo: indexed[i].repo,
@@ -535,7 +615,7 @@ export async function getOverview(
       agent_id: indexed[i].agentId,
       repo: indexed[i].repo,
       received_at: null,
-      online: false,
+      status: "unknown",
     });
   }
 

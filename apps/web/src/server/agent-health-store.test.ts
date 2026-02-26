@@ -381,6 +381,96 @@ describe("validateReport", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("Unknown field");
   });
+
+  it("accepts a valid next_run_at", () => {
+    const futureIso = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      next_run_at: futureIso,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.next_run_at).toBe(futureIso);
+    }
+  });
+
+  it("rejects next_run_at more than 5 minutes in the past", () => {
+    const pastIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      next_run_at: pastIso,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("past");
+  });
+
+  it("rejects next_run_at more than 48 hours in the future", () => {
+    const farFuture = new Date(Date.now() + 49 * 60 * 60 * 1000).toISOString();
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      next_run_at: farFuture,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("48 hours");
+  });
+
+  it("rejects invalid ISO 8601 next_run_at", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      next_run_at: "not-a-date",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("ISO 8601");
+  });
+
+  it("rejects overly long next_run_at", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      next_run_at: "x".repeat(65),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("next_run_at");
+  });
+
+  it("omits next_run_at from report when not provided", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.next_run_at).toBeUndefined();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -550,7 +640,7 @@ describe("recordHealthReport", () => {
     expect(redis.multi).toHaveBeenCalledTimes(1);
   });
 
-  it("stores the latest report with TTL", async () => {
+  it("stores the latest report with default TTL when no next_run_at", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
       repo: "hivemoot/sandbox",
@@ -568,6 +658,31 @@ describe("recordHealthReport", () => {
       report,
       { ex: 1800 },
     );
+  });
+
+  it("uses dynamic TTL when next_run_at is provided", async () => {
+    const nextRunAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    const report: HealthReport = {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 42,
+      consecutive_failures: 0,
+      next_run_at: nextRunAt,
+      received_at: new Date().toISOString(),
+    };
+
+    await recordHealthReport("inst-1", report, redis);
+
+    // TTL should be 2x the time until next run (~16 hours = ~57600s), not default 1800
+    const setCall = vi.mocked(redis.set).mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("latest"),
+    );
+    expect(setCall).toBeDefined();
+    const ttl = (setCall![2] as { ex: number }).ex;
+    expect(ttl).toBeGreaterThan(1800);
+    expect(ttl).toBeLessThanOrEqual(8 * 60 * 60 * 2); // ~2x 8h
   });
 
   it("adds to the runs sorted set", async () => {
@@ -678,7 +793,7 @@ describe("getOverview", () => {
     expect(result[0].outcome).toBe("failure");
     expect(result[0].consecutive_failures).toBe(2);
     expect(result[0].model).toBe("openai/gpt-4o");
-    expect(result[0].online).toBe(true);
+    expect(result[0].status).toBe("failed");
   });
 
   it("uses Redis pipeline for overview reads", async () => {
@@ -697,18 +812,106 @@ describe("getOverview", () => {
 
     expect(redis.pipeline).toHaveBeenCalledTimes(1);
     expect(redis.get).toHaveBeenCalledTimes(1);
-    expect(redis.ttl).toHaveBeenCalledTimes(1);
   });
 
-  it("marks agents as offline when latest key has expired", async () => {
+  it("returns unknown status when latest key has expired", async () => {
     redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
     // No latest key stored → expired
-    vi.mocked(redis.ttl).mockResolvedValue(-2);
 
     const result = await getOverview("inst-1", redis);
     expect(result).toHaveLength(1);
-    expect(result[0].online).toBe(false);
+    expect(result[0].status).toBe("unknown");
     expect(result[0].agent_id).toBe("bee-1");
+  });
+
+  it("derives ok status for successful outcome without next_run_at", async () => {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 42,
+      consecutive_failures: 0,
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("ok");
+  });
+
+  it("derives ok status for successful outcome with future next_run_at", async () => {
+    const futureIso = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 42,
+      consecutive_failures: 0,
+      next_run_at: futureIso,
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("ok");
+    expect(result[0].next_run_at).toBe(futureIso);
+  });
+
+  it("derives late status when past next_run_at plus buffer", async () => {
+    // received_at 2h ago, next_run_at 1h ago → interval was 1h, buffer 30min, now past both
+    const receivedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const nextRunAt = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 42,
+      consecutive_failures: 0,
+      next_run_at: nextRunAt,
+      received_at: receivedAt,
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("late");
+  });
+
+  it("derives failed status for failure outcome regardless of next_run_at", async () => {
+    const futureIso = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "failure",
+      duration_secs: 42,
+      consecutive_failures: 1,
+      error: "timeout",
+      next_run_at: futureIso,
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("failed");
+  });
+
+  it("derives failed status for timeout outcome", async () => {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "timeout",
+      duration_secs: 3600,
+      consecutive_failures: 1,
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("failed");
   });
 
   it("sorts entries by received_at descending", async () => {

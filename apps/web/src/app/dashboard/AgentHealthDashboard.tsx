@@ -26,6 +26,7 @@ interface AgentOverviewEntry {
   received_at: string | null;
   online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
+  next_run_at?: string;
 }
 
 interface HealthHistoryEntry {
@@ -119,6 +120,18 @@ function relativeTime(iso: string | null): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function relativeTimeUntil(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return "now";
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (remainingMinutes === 0) return `${hours}h`;
+  return `${hours}h ${remainingMinutes}m`;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +467,7 @@ export default function AgentHealthDashboard() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {group.entries.map((agent) => {
                 const resolvedStatus = getGroupStatus(agent);
+                const nextRunIn = relativeTimeUntil(agent.next_run_at);
                 return (
                   <button
                     key={`${group.name}:${agent.agent_id}:${agent.repo}`}
@@ -488,6 +502,7 @@ export default function AgentHealthDashboard() {
 
                     <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
                       <span>{relativeTime(agent.received_at)}</span>
+                      {nextRunIn && <span>next: {nextRunIn}</span>}
                       {agent.consecutive_failures != null &&
                         agent.consecutive_failures > 0 && (
                           <span className="text-red-400/70">
