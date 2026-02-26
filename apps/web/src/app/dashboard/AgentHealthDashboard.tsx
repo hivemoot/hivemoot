@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Types (mirroring server-side HealthOverviewEntry and HealthReport)
@@ -132,6 +132,9 @@ export default function AgentHealthDashboard() {
   } | null>(null);
   const [history, setHistory] = useState<HealthHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyAbortRef = useRef<AbortController | null>(null);
+  const historyRequestIdRef = useRef(0);
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -160,19 +163,65 @@ export default function AgentHealthDashboard() {
     return () => clearInterval(interval);
   }, [fetchOverview]);
 
+  useEffect(() => {
+    return () => {
+      historyAbortRef.current?.abort();
+    };
+  }, []);
+
   async function viewHistory(agentId: string, repo: string) {
+    historyAbortRef.current?.abort();
+    const abortController = new AbortController();
+    historyAbortRef.current = abortController;
+    const requestId = ++historyRequestIdRef.current;
+
     setSelectedAgent({ agent_id: agentId, repo });
+    setHistory([]);
+    setHistoryError(null);
     setHistoryLoading(true);
+
     try {
       const params = new URLSearchParams({ agent_id: agentId, repo });
-      const res = await fetch(`/api/agent-health?${params}`);
-      if (res.ok) {
-        const data = await res.json();
-        setHistory(data.history ?? []);
+      const res = await fetch(`/api/agent-health?${params}`, {
+        signal: abortController.signal,
+      });
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error("Session expired — please log in again.");
+        }
+        throw new Error("Failed to load run history.");
       }
-    } catch {
-      // Silently handle — the grid is still visible
+
+      const data = await res.json();
+      if (
+        abortController.signal.aborted ||
+        requestId !== historyRequestIdRef.current
+      ) {
+        return;
+      }
+
+      setHistory(data.history ?? []);
+    } catch (err) {
+      if (
+        abortController.signal.aborted ||
+        requestId !== historyRequestIdRef.current
+      ) {
+        return;
+      }
+
+      if (err instanceof Error && err.message) {
+        setHistoryError(err.message);
+      } else {
+        setHistoryError("Failed to load run history.");
+      }
+      setHistory([]);
     } finally {
+      if (
+        abortController.signal.aborted ||
+        requestId !== historyRequestIdRef.current
+      ) {
+        return;
+      }
       setHistoryLoading(false);
     }
   }
@@ -186,8 +235,11 @@ export default function AgentHealthDashboard() {
       <div>
         <button
           onClick={() => {
+            historyAbortRef.current?.abort();
             setSelectedAgent(null);
             setHistory([]);
+            setHistoryError(null);
+            setHistoryLoading(false);
           }}
           className="mb-6 flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-300"
         >
@@ -204,6 +256,10 @@ export default function AgentHealthDashboard() {
 
         {historyLoading ? (
           <p className="text-sm text-zinc-500">Loading history…</p>
+        ) : historyError ? (
+          <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4">
+            <p className="text-sm text-red-400">{historyError}</p>
+          </div>
         ) : history.length === 0 ? (
           <p className="text-sm text-zinc-500">No run history available.</p>
         ) : (
