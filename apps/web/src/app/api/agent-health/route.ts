@@ -10,13 +10,14 @@
  *          (none)                       → overview of all agents
  *          ?agent_id=X&repo=Y           → run history for one agent+repo
  *          ?history=true&agent_id=X&repo=Y
- *                                       → same as above (legacy issue contract)
+ *                                       → same as above (explicit history request)
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
 import {
+  AGENT_ID_PATTERN,
   validateReport,
   checkRateLimit,
   recordHealthReport,
@@ -131,8 +132,13 @@ export async function POST(request: NextRequest) {
   if (!allowed) {
     try {
       await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
-    } catch {
-      // Best-effort cleanup only; preserve the rate-limit response.
+    } catch (cleanupErr) {
+      console.warn("[agent-health] Best-effort idempotency cleanup failed after rate-limit", {
+        installationId: auth.installationId,
+        agentId: report.agent_id,
+        runId: report.run_id,
+        error: cleanupErr,
+      });
     }
     return agentHealthError(
       AGENT_HEALTH_ERROR.RATE_LIMITED,
@@ -150,8 +156,12 @@ export async function POST(request: NextRequest) {
     if (!persisted) {
       try {
         await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
-      } catch {
-        // Preserve the original storage error when cleanup fails.
+      } catch (cleanupErr) {
+        console.error("[agent-health] Idempotency cleanup failed during write error recovery", {
+          installationId: auth.installationId,
+          runId: report.run_id,
+          cleanupError: cleanupErr,
+        });
       }
     }
     throw error;
@@ -179,19 +189,48 @@ export async function GET(request: NextRequest) {
   }
 
   if (agentId && repo) {
-    const history = await getHistory(
-      auth.session.installationId,
-      agentId,
-      repo,
-      auth.redis,
-    );
+    if (agentId.length < 1 || agentId.length > 64 || !AGENT_ID_PATTERN.test(agentId)) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.VALIDATION_FAILED,
+        "agent_id must be 1-64 chars and match [a-z0-9_-]",
+        400,
+      );
+    }
+    if (repo.length < 1 || repo.length > 200 || !repo.includes("/")) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.VALIDATION_FAILED,
+        "repo must be 1-200 chars in owner/name format",
+        400,
+      );
+    }
 
-    return NextResponse.json({
-      agent_id: agentId,
-      repo,
-      history,
-      runs: history,
-    });
+    try {
+      const history = await getHistory(
+        auth.session.installationId,
+        agentId,
+        repo,
+        auth.redis,
+      );
+
+      return NextResponse.json({
+        agent_id: agentId,
+        repo,
+        history,
+        runs: history,
+      });
+    } catch (err) {
+      console.error("[agent-health] Failed to fetch history", {
+        installationId: auth.session.installationId,
+        agentId,
+        repo,
+        error: err,
+      });
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+        "Failed to load agent history",
+        500,
+      );
+    }
   }
 
   if (agentId || repo) {
@@ -202,6 +241,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const overview = await getOverview(auth.session.installationId, auth.redis);
-  return NextResponse.json({ agents: overview });
+  try {
+    const overview = await getOverview(auth.session.installationId, auth.redis);
+    return NextResponse.json({ agents: overview });
+  } catch (err) {
+    console.error("[agent-health] Failed to fetch overview", {
+      installationId: auth.session.installationId,
+      error: err,
+    });
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to load agent health data",
+      500,
+    );
+  }
 }

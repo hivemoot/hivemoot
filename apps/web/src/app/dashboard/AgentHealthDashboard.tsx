@@ -3,27 +3,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
-// Types (mirroring server-side HealthOverviewEntry and HealthReport)
+// Types (matches server-side HealthOverviewEntry and HealthReport)
 // ---------------------------------------------------------------------------
 
 interface AgentOverviewEntry {
   agent_id: string;
   repo: string;
-  status: "idle" | "working" | "error";
-  current_issue?: number;
-  summary?: string;
-  error_message?: string;
-  received_at: string;
+  run_id?: string;
+  outcome?: "success" | "failure" | "timeout";
+  duration_secs?: number;
+  consecutive_failures?: number;
+  error?: string;
+  exit_code?: number;
+  received_at: string | null;
   online: boolean;
 }
 
 interface HealthHistoryEntry {
   agent_id: string;
   repo: string;
-  status: "idle" | "working" | "error";
-  current_issue?: number;
-  summary?: string;
-  error_message?: string;
+  run_id: string;
+  outcome: "success" | "failure" | "timeout";
+  duration_secs: number;
+  consecutive_failures: number;
+  error?: string;
+  exit_code?: number;
   received_at: string;
 }
 
@@ -71,12 +75,13 @@ function ArrowLeftIcon({ className }: { className?: string }) {
 // Status helpers
 // ---------------------------------------------------------------------------
 
-function statusColor(status: string, online: boolean): string {
+function outcomeColor(outcome: string | undefined, online: boolean): string {
   if (!online) return "text-zinc-500";
-  switch (status) {
-    case "working":
+  switch (outcome) {
+    case "success":
       return "text-green-400";
-    case "error":
+    case "failure":
+    case "timeout":
       return "text-red-400";
     default:
       return "text-zinc-400";
@@ -88,19 +93,21 @@ function statusDot(online: boolean): string {
   return "bg-green-400";
 }
 
-function statusLabel(status: string, online: boolean): string {
+function outcomeLabel(outcome: string | undefined, online: boolean): string {
   if (!online) return "Offline";
-  switch (status) {
-    case "working":
-      return "Working";
-    case "error":
-      return "Error";
+  switch (outcome) {
+    case "success":
+      return "OK";
+    case "failure":
+      return "Failed";
+    case "timeout":
+      return "Timeout";
     default:
       return "Idle";
   }
 }
 
-function relativeTime(iso: string): string {
+function relativeTime(iso: string | null): string {
   if (!iso) return "never";
   const diff = Date.now() - new Date(iso).getTime();
   const seconds = Math.floor(diff / 1000);
@@ -272,35 +279,40 @@ export default function AgentHealthDashboard() {
                 <div className="mt-0.5 flex items-center gap-2">
                   <span
                     className={`inline-block h-2 w-2 rounded-full ${
-                      entry.status === "error"
+                      entry.outcome === "failure" || entry.outcome === "timeout"
                         ? "bg-red-400"
-                        : entry.status === "working"
+                        : entry.outcome === "success"
                           ? "bg-green-400"
                           : "bg-zinc-500"
                     }`}
                   />
                   <span
                     className={`text-xs font-medium ${
-                      entry.status === "error"
+                      entry.outcome === "failure" || entry.outcome === "timeout"
                         ? "text-red-400"
-                        : entry.status === "working"
+                        : entry.outcome === "success"
                           ? "text-green-400"
                           : "text-zinc-400"
                     }`}
                   >
-                    {entry.status}
+                    {entry.outcome}
                   </span>
                 </div>
                 <div className="min-w-0 flex-1">
-                  {entry.summary && (
-                    <p className="text-sm text-zinc-300">{entry.summary}</p>
+                  <p className="text-sm text-zinc-300">
+                    {entry.run_id}
+                    {entry.duration_secs !== undefined && (
+                      <span className="ml-2 text-zinc-500">
+                        {entry.duration_secs}s
+                      </span>
+                    )}
+                  </p>
+                  {entry.error && (
+                    <p className="mt-0.5 text-sm text-red-400">{entry.error}</p>
                   )}
-                  {entry.error_message && (
-                    <p className="text-sm text-red-400">{entry.error_message}</p>
-                  )}
-                  {entry.current_issue && (
+                  {entry.exit_code !== undefined && (
                     <p className="text-xs text-zinc-500">
-                      Issue #{entry.current_issue}
+                      exit code {entry.exit_code}
                     </p>
                   )}
                 </div>
@@ -373,33 +385,27 @@ export default function AgentHealthDashboard() {
               </span>
             </div>
             <span
-              className={`text-xs font-medium ${statusColor(
-                agent.status,
+              className={`text-xs font-medium ${outcomeColor(
+                agent.outcome,
                 agent.online,
               )}`}
             >
-              {statusLabel(agent.status, agent.online)}
+              {outcomeLabel(agent.outcome, agent.online)}
             </span>
           </div>
 
           <p className="mt-2 truncate text-xs text-zinc-500">{agent.repo}</p>
 
-          {agent.summary && (
-            <p className="mt-2 truncate text-xs text-zinc-400">
-              {agent.summary}
-            </p>
-          )}
-
-          {agent.error_message && (
+          {agent.error && (
             <p className="mt-2 truncate text-xs text-red-400">
-              {agent.error_message}
+              {agent.error}
             </p>
           )}
 
           <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
             <span>{relativeTime(agent.received_at)}</span>
-            {agent.current_issue && (
-              <span>Issue #{agent.current_issue}</span>
+            {agent.consecutive_failures != null && agent.consecutive_failures > 0 && (
+              <span className="text-red-400/70">{agent.consecutive_failures} failures</span>
             )}
           </div>
         </button>

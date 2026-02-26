@@ -92,7 +92,7 @@ describe("POST /api/byok/config", () => {
     const body = await res.json();
     expect(body.status).toBe("active");
     expect(body.provider).toBe("anthropic");
-    expect(body.fingerprint).toBe("1234");
+    expect(body.fingerprint).toBeUndefined();
     expect(setByokEnvelope).toHaveBeenCalledWith(
       "123",
       expect.objectContaining({ status: "active", provider: "anthropic" }),

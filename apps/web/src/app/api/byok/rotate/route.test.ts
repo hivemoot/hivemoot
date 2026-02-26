@@ -82,7 +82,7 @@ describe("POST /api/byok/rotate", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("active");
-    expect(body.fingerprint).toBe("5678");
+    expect(body.fingerprint).toBeUndefined();
     expect(setByokEnvelope).toHaveBeenCalled();
   });
 

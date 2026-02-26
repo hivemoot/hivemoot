@@ -19,7 +19,6 @@ interface Step2FormProps {
 interface SuccessData {
   provider: string;
   model: string;
-  fingerprint: string;
   updatedAt: string;
 }
 
@@ -707,12 +706,6 @@ export default function Step2Form({
           <div className="flex justify-between">
             <dt className="text-zinc-500">Model</dt>
             <dd className="font-mono text-zinc-300">{successData.model}</dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-zinc-500">Key</dt>
-            <dd className="font-mono text-zinc-300">
-              ····
-            </dd>
           </div>
           <div className="flex justify-between">
             <dt className="text-zinc-500">Saved</dt>

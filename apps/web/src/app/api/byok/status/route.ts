@@ -2,7 +2,7 @@
  * GET /api/byok/status
  *
  * Returns non-sensitive metadata about the BYOK configuration.
- * Never returns key material — only provider, model, fingerprint, status, timestamps.
+ * Never returns key material — only provider, model, status, timestamps.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -34,7 +34,6 @@ export async function GET(request: NextRequest) {
         status: envelope.status,
         provider: envelope.provider,
         model: envelope.model,
-        fingerprint: envelope.fingerprint,
         updatedAt: envelope.updatedAt,
       },
     );
@@ -44,7 +43,6 @@ export async function GET(request: NextRequest) {
     status: envelope.status,
     provider: envelope.provider,
     model: envelope.model,
-    fingerprint: envelope.fingerprint,
     updatedAt: envelope.updatedAt,
   });
 }

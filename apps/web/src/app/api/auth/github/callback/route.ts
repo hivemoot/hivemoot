@@ -110,8 +110,8 @@ export async function GET(request: NextRequest) {
         if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
           deniedUrl.searchParams.set("installation_id", deniedInstallationId);
         }
-      } catch {
-        // Fall back to a plain denied redirect if state storage is unavailable.
+      } catch (err) {
+        console.warn("[oauth-callback] Failed to validate state during denied flow", { error: err });
       }
     }
 
@@ -129,7 +129,8 @@ export async function GET(request: NextRequest) {
   let installationId: string | null;
   try {
     installationId = await validateOAuthState(state, oauthStateBinding, redis);
-  } catch {
+  } catch (err) {
+    console.error("[oauth-callback] Failed to validate OAuth state", { error: err });
     const errResponse = setupErrorRedirect(siteUrl, "oauth_state_read_failed");
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
@@ -146,7 +147,8 @@ export async function GET(request: NextRequest) {
   try {
     // --- Step 2: Exchange code for user access token ---
     userToken = await exchangeOAuthCode(code, githubClientId, githubClientSecret);
-  } catch {
+  } catch (err) {
+    console.error("[oauth-callback] Failed to exchange OAuth code", { error: err });
     const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
@@ -164,7 +166,8 @@ export async function GET(request: NextRequest) {
         return response;
       }
       installationId = String(installations[0].id);
-    } catch {
+    } catch (err) {
+      console.error("[oauth-callback] Failed to discover user installations", { error: err });
       const errResponse = setupErrorRedirect(siteUrl, "server_error");
       clearOAuthStateBindingCookie(errResponse);
       return errResponse;
@@ -181,7 +184,8 @@ export async function GET(request: NextRequest) {
       getAuthenticatedUser(userToken),
       getInstallation(installationId, appJwt),
     ]);
-  } catch {
+  } catch (err) {
+    console.error("[oauth-callback] Failed to fetch user/installation", { installationId, error: err });
     const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
@@ -196,7 +200,8 @@ export async function GET(request: NextRequest) {
     let isAdmin: boolean;
     try {
       isAdmin = await checkOrgAdmin(userToken, accountLogin);
-    } catch {
+    } catch (err) {
+      console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
       const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
       clearOAuthStateBindingCookie(errResponse);
       return errResponse;
@@ -230,7 +235,8 @@ export async function GET(request: NextRequest) {
       { installationId, userId: user.id, userLogin: user.login },
       redis,
     );
-  } catch {
+  } catch (err) {
+    console.error("[oauth-callback] Failed to create setup session", { installationId, error: err });
     const errResponse = setupErrorRedirect(siteUrl, "setup_session_create_failed", installationId);
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
@@ -242,8 +248,11 @@ export async function GET(request: NextRequest) {
   let setupComplete = false;
   try {
     setupComplete = await hasByokEnvelope(installationId, redis);
-  } catch {
-    // Fail closed — default to setup wizard if the check fails.
+  } catch (err) {
+    console.warn("[oauth-callback] BYOK check failed, defaulting to setup wizard", {
+      installationId,
+      error: err,
+    });
   }
 
   const successUrl = setupComplete

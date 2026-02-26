@@ -1,11 +1,6 @@
-import { CliError, type RepoRef } from "../config/types.js";
+import { CliError, type PrCommandOptions, type RepoRef } from "../config/types.js";
 import { resolveRepo } from "../github/repo.js";
 import { buildPrPreflight, type PullRequestPreflightResult } from "../github/workflow.js";
-
-export interface PrPreflightOptions {
-  repo?: string;
-  json?: boolean;
-}
 
 function formatRepo(repo: RepoRef): string {
   return `${repo.owner}/${repo.repo}`;
@@ -54,7 +49,7 @@ function formatPreflight(result: PullRequestPreflightResult): string {
 
 export async function prPreflightCommand(
   prRef: string,
-  options: PrPreflightOptions,
+  options: PrCommandOptions,
 ): Promise<void> {
   const repo = await resolveRepo(options.repo);
 

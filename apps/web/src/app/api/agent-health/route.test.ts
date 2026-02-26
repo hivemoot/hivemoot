@@ -12,6 +12,7 @@ vi.mock("@/server/agent-health-auth", () => ({
   authenticateAgentRequest: vi.fn(),
 }));
 vi.mock("@/server/agent-health-store", () => ({
+  AGENT_ID_PATTERN: /^[a-z0-9_-]+$/,
   validateReport: vi.fn(),
   checkRateLimit: vi.fn(),
   recordHealthReport: vi.fn(),
@@ -21,6 +22,26 @@ vi.mock("@/server/agent-health-store", () => ({
   getOverview: vi.fn(),
   getHistory: vi.fn(),
 }));
+vi.mock("@/server/agent-health-error", async () => {
+  const { NextResponse } = await import("next/server");
+  return {
+    AGENT_HEALTH_ERROR: {
+      INVALID_JSON: "agent_health_invalid_json",
+      PAYLOAD_TOO_LARGE: "agent_health_payload_too_large",
+      MISSING_FIELDS: "agent_health_missing_fields",
+      NOT_AUTHENTICATED: "agent_health_not_authenticated",
+      SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
+      TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
+      TOKEN_NOT_FOUND: "agent_health_token_not_found",
+      IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
+      IDEMPOTENCY_PENDING: "agent_health_idempotency_pending",
+      RATE_LIMITED: "agent_health_rate_limited",
+      VALIDATION_FAILED: "agent_health_validation_failed",
+    },
+    agentHealthError: (code: string, message: string, status: number, details?: Record<string, unknown>) =>
+      NextResponse.json({ code, message, ...(details ?? {}) }, { status }),
+  };
+});
 
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
@@ -464,5 +485,86 @@ describe("GET /api/agent-health", () => {
   it("passes installationId from session to getOverview", async () => {
     await GET(makeGetRequest());
     expect(getOverview).toHaveBeenCalledWith("inst-1", expect.anything());
+  });
+
+  // --- GET input validation tests ---
+
+  it("returns 400 when agent_id contains invalid characters", async () => {
+    const res = await GET(makeGetRequest({
+      agent_id: "bee 1; DROP TABLE",
+      repo: "hivemoot/sandbox",
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+    expect(body.message).toContain("agent_id");
+  });
+
+  it("returns 400 when agent_id exceeds 64 characters", async () => {
+    const res = await GET(makeGetRequest({
+      agent_id: "a".repeat(65),
+      repo: "hivemoot/sandbox",
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+  });
+
+  it("returns 400 when repo is missing slash", async () => {
+    const res = await GET(makeGetRequest({
+      agent_id: "bee-1",
+      repo: "noseparator",
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+    expect(body.message).toContain("repo");
+  });
+
+  it("returns 400 when repo exceeds 200 characters", async () => {
+    const res = await GET(makeGetRequest({
+      agent_id: "bee-1",
+      repo: "a".repeat(100) + "/" + "b".repeat(101),
+    }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+  });
+
+  it("returns 500 when getOverview throws", async () => {
+    vi.mocked(getOverview).mockRejectedValue(new Error("redis down"));
+
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(500);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("returns 500 when getHistory throws", async () => {
+    vi.mocked(getHistory).mockRejectedValue(new Error("redis down"));
+
+    const res = await GET(makeGetRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+    }));
+    expect(res.status).toBe(500);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("accepts valid agent_id with underscores and hyphens", async () => {
+    vi.mocked(getHistory).mockResolvedValue([]);
+
+    const res = await GET(makeGetRequest({
+      agent_id: "bee_worker-1",
+      repo: "hivemoot/sandbox",
+    }));
+    expect(res.status).toBe(200);
   });
 });

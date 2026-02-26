@@ -239,7 +239,9 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   if (publishPreflightResult.status === "fulfilled") {
     const preflight = publishPreflightResult.value;
-    if (!preflight.ok) {
+    if (preflight.ok) {
+      summary.publishReadiness = { canPush: true };
+    } else if (!preflight.ok) {
       let message: string;
       if (preflight.originUrl && originTargetsUpstream(preflight.originUrl, repo)) {
         message = `Cannot push — origin targets the upstream repo (${repo.owner}/${repo.repo}). Point origin at a repo you have push access to.`;
