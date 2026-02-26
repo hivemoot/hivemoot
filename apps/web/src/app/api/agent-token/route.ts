@@ -14,6 +14,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   generateAgentToken,
   getAgentToken,
+  LockTimeoutError,
   revokeAgentToken,
 } from "@/server/agent-token";
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
@@ -22,13 +23,25 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  const token = await generateAgentToken(
-    auth.session.installationId,
-    auth.session.userLogin,
-    auth.activeKeyVersion,
-    auth.keyring,
-    auth.redis,
-  );
+  let token: string;
+  try {
+    token = await generateAgentToken(
+      auth.session.installationId,
+      auth.session.userLogin,
+      auth.activeKeyVersion,
+      auth.keyring,
+      auth.redis,
+    );
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
+        "Another token operation is already in progress. Retry in a moment.",
+        503,
+      );
+    }
+    throw error;
+  }
 
   return NextResponse.json({
     token,
@@ -57,7 +70,20 @@ export async function DELETE(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
-  const revoked = await revokeAgentToken(auth.session.installationId, auth.redis);
+  let revoked: boolean;
+  try {
+    revoked = await revokeAgentToken(auth.session.installationId, auth.redis);
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
+        "Another token operation is already in progress. Retry in a moment.",
+        503,
+      );
+    }
+    throw error;
+  }
+
   if (!revoked) {
     return agentHealthError(
       AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
