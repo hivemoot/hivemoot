@@ -7,7 +7,7 @@
  *    Validated on callback to prevent CSRF. Deleted after single use.
  *
  * 2. **Setup session token** — an opaque random token issued after successful
- *    OAuth + admin verification. Stored in Redis with a 30-minute TTL. Required
+ *    OAuth + admin verification. Stored in Redis with a 24-hour TTL. Required
  *    on all subsequent /api/byok/* calls (Phase 3).
  */
 
@@ -18,7 +18,7 @@ import { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE } from "@/constants/co
 export { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE };
 
 const STATE_TTL_SECONDS = 600;
-export const SESSION_TTL_SECONDS = 1800;
+export const SESSION_TTL_SECONDS = 86400;
 
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
