@@ -22,6 +22,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt } from "@/server/crypto";
 import { setByokEnvelope } from "@/server/byok-store";
 import { validateProviderKey } from "@/server/provider-validation";
+import { BYOK_ERROR } from "@/server/byok-error";
 import { POST } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ describe("POST /api/byok/config", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
+    mockAuthFailure(401, BYOK_ERROR.NOT_AUTHENTICATED, "Not authenticated");
     const req = makeRequest({ provider: "anthropic", model: "m", apiKey: "k" });
     const res = await POST(req);
     expect(res.status).toBe(401);
@@ -136,7 +137,7 @@ describe("POST /api/byok/config", () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe("byok_provider_invalid");
+    expect(body.code).toBe(BYOK_ERROR.PROVIDER_INVALID);
     expect(body.message).toBe("Invalid API key");
   });
 

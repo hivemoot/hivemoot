@@ -17,8 +17,8 @@ type ResolverSuccess = {
 type ResolverFailure = {
   ok: false;
   code:
-    | "byok_not_configured"
-    | "byok_revoked"
+    | typeof BYOK_ERROR.NOT_CONFIGURED
+    | typeof BYOK_ERROR.REVOKED
     | typeof BYOK_ERROR.DECRYPT_FAILED
     | typeof BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE;
 };
@@ -185,11 +185,11 @@ async function resolveByokForBot(
 ): Promise<ResolverResult> {
   const envelope = await getByokEnvelope(installationId, redis);
   if (!envelope) {
-    return { ok: false, code: "byok_not_configured" };
+    return { ok: false, code: BYOK_ERROR.NOT_CONFIGURED };
   }
 
   if (envelope.status === "revoked") {
-    return { ok: false, code: "byok_revoked" };
+    return { ok: false, code: BYOK_ERROR.REVOKED };
   }
 
   try {
@@ -339,7 +339,7 @@ describe("BYOK contract acceptance", () => {
     const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
 
     const result = await resolveByokForBot("404", redis, keyring);
-    expect(result).toEqual({ ok: false, code: "byok_not_configured" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.NOT_CONFIGURED });
   });
 
   it("returns byok_revoked without exposing key material", async () => {
@@ -362,7 +362,7 @@ describe("BYOK contract acceptance", () => {
     await setByokEnvelope("200", revokedEnvelope, redis);
 
     const result = await resolveByokForBot("200", redis, keyring);
-    expect(result).toEqual({ ok: false, code: "byok_revoked" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.REVOKED });
   });
 
   it("fails closed with byok_decrypt_failed when ciphertext is tampered", async () => {

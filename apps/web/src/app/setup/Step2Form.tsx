@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { BYOK_ERROR } from "@/constants/byok-errors";
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -587,8 +588,8 @@ export default function Step2Form({
 
       if (
         res.status === 401 &&
-        (err.code === "byok_not_authenticated" ||
-          err.code === "byok_session_invalid")
+        (err.code === BYOK_ERROR.NOT_AUTHENTICATED ||
+          err.code === BYOK_ERROR.SESSION_INVALID)
       ) {
         setSessionExpired(true);
         setMinutesRemaining(0);
@@ -598,7 +599,7 @@ export default function Step2Form({
         return;
       }
 
-      if (res.status === 400 && err.code === "byok_provider_invalid") {
+      if (res.status === 400 && err.code === BYOK_ERROR.PROVIDER_INVALID) {
         setStatus("error");
         setErrorCode(err.code);
         setErrorMessage(
@@ -775,8 +776,8 @@ export default function Step2Form({
   // Form view
   // -----------------------------------------------------------------------
   const isSessionError =
-    errorCode === "byok_not_authenticated" ||
-    errorCode === "byok_session_invalid";
+    errorCode === BYOK_ERROR.NOT_AUTHENTICATED ||
+    errorCode === BYOK_ERROR.SESSION_INVALID;
 
   return (
     <div className="flex flex-col gap-5">
