@@ -265,11 +265,13 @@ async function findTrustedVotingComment(
     const connection = await fetchCommentsPage(repo, issueNumber, cursor);
     if (!connection) return undefined;
 
+    let latestMatch: GraphQLVoteComment | undefined;
     for (const comment of connection.nodes) {
       if (isTrustedVotingComment(comment, issueNumber)) {
-        return { comment };
+        latestMatch = comment;
       }
     }
+    if (latestMatch) return { comment: latestMatch };
 
     if (!connection.pageInfo?.hasPreviousPage) return undefined;
     cursor = connection.pageInfo.startCursor ?? null;
