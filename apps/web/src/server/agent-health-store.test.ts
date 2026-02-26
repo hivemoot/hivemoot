@@ -192,18 +192,23 @@ describe("validateReport", () => {
   });
 
   it("accepts optional model field for provider-native identifiers", () => {
-    const result = validateReport({
-      agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
-      run_id: "20260224-100002-model-attribution",
-      outcome: "success",
-      duration_secs: 12,
-      consecutive_failures: 0,
-      model: "openrouter/anthropic/claude-3.5-sonnet",
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.report.model).toBe("openrouter/anthropic/claude-3.5-sonnet");
+    const validModels = [
+      "openrouter/anthropic/claude-3.5-sonnet",
+      "llama3.1:8b",
+    ];
+
+    for (const model of validModels) {
+      const result = validateReport({
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "20260224-100002-model-attribution",
+        outcome: "success",
+        duration_secs: 12,
+        consecutive_failures: 0,
+        model,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.report.model).toBe(model);
     }
   });
 
