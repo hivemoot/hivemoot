@@ -64,7 +64,11 @@ export async function POST(request: NextRequest) {
 
       reEncrypted++;
     }
-  } catch {
+  } catch (err) {
+    console.error("[byok-re-encrypt] Failed to re-encrypt envelope", {
+      installationId,
+      error: err,
+    });
     failed.push(installationId);
   }
 

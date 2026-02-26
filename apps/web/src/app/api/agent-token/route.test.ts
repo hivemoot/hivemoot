@@ -13,6 +13,26 @@ vi.mock("@/server/agent-token", () => ({
   getAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
 }));
+vi.mock("@/server/agent-health-error", async () => {
+  const { NextResponse } = await import("next/server");
+  return {
+    AGENT_HEALTH_ERROR: {
+      INVALID_JSON: "agent_health_invalid_json",
+      PAYLOAD_TOO_LARGE: "agent_health_payload_too_large",
+      MISSING_FIELDS: "agent_health_missing_fields",
+      NOT_AUTHENTICATED: "agent_health_not_authenticated",
+      SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
+      TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
+      TOKEN_NOT_FOUND: "agent_health_token_not_found",
+      IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
+      IDEMPOTENCY_PENDING: "agent_health_idempotency_pending",
+      RATE_LIMITED: "agent_health_rate_limited",
+      VALIDATION_FAILED: "agent_health_validation_failed",
+    },
+    agentHealthError: (code: string, message: string, status: number, details?: Record<string, unknown>) =>
+      NextResponse.json({ code, message, ...(details ?? {}) }, { status }),
+  };
+});
 
 import { authenticateByokRequest } from "@/server/byok-auth";
 import {
@@ -96,6 +116,17 @@ describe("POST /api/agent-token", () => {
     const res = await POST(makeRequest("POST"));
     expect(res.status).toBe(401);
   });
+
+  it("returns 500 when generateAgentToken throws", async () => {
+    vi.mocked(generateAgentToken).mockRejectedValue(new Error("crypto failure"));
+
+    const res = await POST(makeRequest("POST"));
+    expect(res.status).toBe(500);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+    expect(body.message).toContain("Failed to generate");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -146,6 +177,17 @@ describe("GET /api/agent-token", () => {
     const res = await GET(makeRequest("GET"));
     expect(res.status).toBe(401);
   });
+
+  it("returns 500 when getAgentToken throws", async () => {
+    vi.mocked(getAgentToken).mockRejectedValue(new Error("decrypt failure"));
+
+    const res = await GET(makeRequest("GET"));
+    expect(res.status).toBe(500);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+    expect(body.message).toContain("Failed to retrieve");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -175,5 +217,16 @@ describe("DELETE /api/agent-token", () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const res = await DELETE(makeRequest("DELETE"));
     expect(res.status).toBe(401);
+  });
+
+  it("returns 500 when revokeAgentToken throws", async () => {
+    vi.mocked(revokeAgentToken).mockRejectedValue(new Error("redis failure"));
+
+    const res = await DELETE(makeRequest("DELETE"));
+    expect(res.status).toBe(500);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+    expect(body.message).toContain("Failed to revoke");
   });
 });

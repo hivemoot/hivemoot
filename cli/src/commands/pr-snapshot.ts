@@ -1,11 +1,6 @@
-import { type RepoRef } from "../config/types.js";
+import { type PrCommandOptions, type RepoRef } from "../config/types.js";
 import { resolveRepo } from "../github/repo.js";
 import { buildPrSnapshot, type PullRequestSnapshotResult } from "../github/workflow.js";
-
-export interface PrSnapshotOptions {
-  repo?: string;
-  json?: boolean;
-}
 
 function formatRepo(repo: RepoRef): string {
   return `${repo.owner}/${repo.repo}`;
@@ -43,7 +38,7 @@ function formatSnapshot(snapshot: PullRequestSnapshotResult): string {
 
 export async function prSnapshotCommand(
   prRef: string,
-  options: PrSnapshotOptions,
+  options: PrCommandOptions,
 ): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const snapshot = await buildPrSnapshot(repo, prRef);
