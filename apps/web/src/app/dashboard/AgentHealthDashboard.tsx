@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // Types (matches server-side HealthOverviewEntry and HealthReport)
 // ---------------------------------------------------------------------------
 
+type AgentStatus = "ok" | "failed" | "late" | "unknown";
+
 interface AgentOverviewEntry {
   agent_id: string;
   repo: string;
@@ -16,7 +18,8 @@ interface AgentOverviewEntry {
   error?: string;
   exit_code?: number;
   received_at: string | null;
-  online: boolean;
+  status: AgentStatus;
+  next_run_at?: string;
 }
 
 interface HealthHistoryEntry {
@@ -75,35 +78,45 @@ function ArrowLeftIcon({ className }: { className?: string }) {
 // Status helpers
 // ---------------------------------------------------------------------------
 
-function outcomeColor(outcome: string | undefined, online: boolean): string {
-  if (!online) return "text-zinc-500";
-  switch (outcome) {
-    case "success":
+function statusColor(status: AgentStatus): string {
+  switch (status) {
+    case "ok":
       return "text-green-400";
-    case "failure":
-    case "timeout":
+    case "failed":
       return "text-red-400";
+    case "late":
+      return "text-amber-400";
+    case "unknown":
     default:
-      return "text-zinc-400";
+      return "text-zinc-500";
   }
 }
 
-function statusDot(online: boolean): string {
-  if (!online) return "bg-zinc-600";
-  return "bg-green-400";
+function statusDotColor(status: AgentStatus): string {
+  switch (status) {
+    case "ok":
+      return "bg-green-400";
+    case "failed":
+      return "bg-red-400";
+    case "late":
+      return "bg-amber-400";
+    case "unknown":
+    default:
+      return "bg-zinc-600";
+  }
 }
 
-function outcomeLabel(outcome: string | undefined, online: boolean): string {
-  if (!online) return "Offline";
-  switch (outcome) {
-    case "success":
+function statusLabel(status: AgentStatus): string {
+  switch (status) {
+    case "ok":
       return "OK";
-    case "failure":
+    case "failed":
       return "Failed";
-    case "timeout":
-      return "Timeout";
+    case "late":
+      return "Late";
+    case "unknown":
     default:
-      return "Idle";
+      return "Unknown";
   }
 }
 
@@ -117,6 +130,18 @@ function relativeTime(iso: string | null): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function relativeTimeUntil(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return "now";
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (remainingMinutes === 0) return `${hours}h`;
+  return `${hours}h ${remainingMinutes}m`;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,49 +392,52 @@ export default function AgentHealthDashboard() {
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {agents.map((agent) => (
-        <button
-          key={`${agent.agent_id}:${agent.repo}`}
-          onClick={() => viewHistory(agent.agent_id, agent.repo)}
-          className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
+      {agents.map((agent) => {
+        const nextRunIn = relativeTimeUntil(agent.next_run_at);
+        return (
+          <button
+            key={`${agent.agent_id}:${agent.repo}`}
+            onClick={() => viewHistory(agent.agent_id, agent.repo)}
+            className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`inline-block h-2.5 w-2.5 rounded-full ${statusDotColor(
+                    agent.status,
+                  )}`}
+                />
+                <span className="text-sm font-medium text-[#fafafa]">
+                  {agent.agent_id}
+                </span>
+              </div>
               <span
-                className={`inline-block h-2.5 w-2.5 rounded-full ${statusDot(
-                  agent.online,
-                )}`}
-              />
-              <span className="text-sm font-medium text-[#fafafa]">
-                {agent.agent_id}
+                className={`text-xs font-medium ${statusColor(agent.status)}`}
+              >
+                {statusLabel(agent.status)}
               </span>
             </div>
-            <span
-              className={`text-xs font-medium ${outcomeColor(
-                agent.outcome,
-                agent.online,
-              )}`}
-            >
-              {outcomeLabel(agent.outcome, agent.online)}
-            </span>
-          </div>
 
-          <p className="mt-2 truncate text-xs text-zinc-500">{agent.repo}</p>
+            <p className="mt-2 truncate text-xs text-zinc-500">{agent.repo}</p>
 
-          {agent.error && (
-            <p className="mt-2 truncate text-xs text-red-400">
-              {agent.error}
-            </p>
-          )}
-
-          <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-            <span>{relativeTime(agent.received_at)}</span>
-            {agent.consecutive_failures != null && agent.consecutive_failures > 0 && (
-              <span className="text-red-400/70">{agent.consecutive_failures} failures</span>
+            {agent.error && (
+              <p className="mt-2 truncate text-xs text-red-400">
+                {agent.error}
+              </p>
             )}
-          </div>
-        </button>
-      ))}
+
+            <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
+              <span>{relativeTime(agent.received_at)}</span>
+              {nextRunIn != null && (
+                <span className="text-zinc-500">next: {nextRunIn}</span>
+              )}
+              {agent.consecutive_failures != null && agent.consecutive_failures > 0 && (
+                <span className="text-red-400/70">{agent.consecutive_failures} failures</span>
+              )}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
