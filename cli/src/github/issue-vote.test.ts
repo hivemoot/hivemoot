@@ -196,10 +196,11 @@ describe("buildIssueVoteResult", () => {
 
     it("selects the latest trusted voting comment when multiple exist in one page", async () => {
       // Two trusted voting comments on the same page (oldest-first order within last:100).
-      // The newer one (databaseId: 9001) must be selected, not the first (databaseId: 9000).
+      // Uses both trusted login variants to verify both are recognized.
+      // The newer one (hivemoot[bot], databaseId: 9001) must be selected, not the first (hivemoot, databaseId: 9000).
       mockedGh.mockResolvedValueOnce(makeCommentsResponse([
-        { body: makeVotingCommentBody(ISSUE), author: "hivemoot", databaseId: 9000 },
-        { body: makeVotingCommentBody(ISSUE), author: "hivemoot", databaseId: 9001 },
+        { body: makeVotingCommentBody(ISSUE), author: "hivemoot",      databaseId: 9000, id: "old-comment-id" },
+        { body: makeVotingCommentBody(ISSUE), author: "hivemoot[bot]", databaseId: 9001, id: "new-comment-id" },
       ]));
       mockedGh.mockResolvedValueOnce(makeAddReactionResponse());
 
@@ -207,6 +208,9 @@ describe("buildIssueVoteResult", () => {
 
       expect(result.code).toBe("vote_applied");
       expect(result.targetComment?.databaseId).toBe(9001);
+      expect(result.targetComment?.id).toBe("new-comment-id");
+      const reactionArgs = mockedGh.mock.calls[1][0] as string[];
+      expect(reactionArgs.join(" ")).toContain("/issues/comments/9001/reactions");
     });
   });
 
