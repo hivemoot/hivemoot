@@ -4,10 +4,12 @@ import {
   type GitHubIssue,
   type NotificationRef,
   type RecentClosedItem,
+  type RepoRef,
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
 import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
+import { runPublishPreflight } from "../github/publish.js";
 import { fetchIssues } from "../github/issues.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
@@ -23,6 +25,20 @@ import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 
 function errorDetail(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function normalizeRemoteUrl(remoteUrl: string): string {
+  return remoteUrl.trim().toLowerCase().replace(/\.git$/, "");
+}
+
+function originTargetsUpstream(originUrl: string, repo: RepoRef): boolean {
+  const normalized = normalizeRemoteUrl(originUrl);
+  const owner = repo.owner.toLowerCase();
+  const name = repo.repo.toLowerCase();
+  return (
+    normalized.endsWith(`github.com/${owner}/${name}`) ||
+    normalized.endsWith(`github.com:${owner}/${name}`)
+  );
 }
 
 function buildUnackedMentions(
@@ -94,12 +110,13 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   // Fetch summary data in parallel with optional team config loading.
   // Focus is additive and should not delay base status data.
-  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult] = await Promise.allSettled([
+  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult, publishPreflightResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
     fetchRepoPushAccess(repo),
+    runPublishPreflight(),
   ]);
 
   try {
@@ -218,6 +235,27 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     summary.notes.push(
       `Could not check push permissions (${errorDetail(pushAccessResult.reason)}) — check this repository's contribution docs for publishing guidance.`,
     );
+  }
+
+  if (publishPreflightResult.status === "fulfilled") {
+    const preflight = publishPreflightResult.value;
+    if (!preflight.ok) {
+      let message: string;
+      if (preflight.originUrl && originTargetsUpstream(preflight.originUrl, repo)) {
+        message = `Cannot push — origin targets the upstream repo (${repo.owner}/${repo.repo}). Point origin at a repo you have push access to.`;
+      } else if (preflight.originUrl) {
+        const errorText = (preflight.error ?? "push failed").replace(/\.$/, "");
+        message = `Cannot push to origin (${preflight.originUrl}): ${errorText}. Check credentials and push access.`;
+      } else {
+        message = `Could not verify push access (${preflight.error ?? "unknown error"}). Ensure git is available and origin is configured.`;
+      }
+      summary.publishReadiness = { canPush: false, message };
+    }
+  } else {
+    summary.publishReadiness = {
+      canPush: false,
+      message: `Could not verify push access (${errorDetail(publishPreflightResult.reason)}). Ensure git is available and origin is configured.`,
+    };
   }
 
   if (issues.length >= fetchLimit) {

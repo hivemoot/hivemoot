@@ -16,7 +16,8 @@ export function getCookie(
   cookieString: string = document.cookie,
 ): string | null {
   try {
-    const match = cookieString.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = cookieString.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
     return match ? decodeURIComponent(match[1]) : null;
   } catch {
     return null;

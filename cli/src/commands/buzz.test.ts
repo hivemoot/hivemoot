@@ -30,6 +30,10 @@ vi.mock("../github/notifications.js", () => ({
   fetchNotifications: vi.fn(),
 }));
 
+vi.mock("../github/publish.js", () => ({
+  runPublishPreflight: vi.fn(),
+}));
+
 vi.mock("../github/recent.js", () => ({
   fetchRecentClosedByAuthor: vi.fn(),
 }));
@@ -66,6 +70,7 @@ import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
 import { buildSummary } from "../summary/builder.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
+import { runPublishPreflight } from "../github/publish.js";
 import { buzzCommand } from "./buzz.js";
 
 const mockedResolveRepo = vi.mocked(resolveRepo);
@@ -84,6 +89,7 @@ const mockedFormatBuzz = vi.mocked(formatBuzz);
 const mockedFormatStatus = vi.mocked(formatStatus);
 const mockedJsonBuzz = vi.mocked(jsonBuzz);
 const mockedJsonStatus = vi.mocked(jsonStatus);
+const mockedRunPublishPreflight = vi.mocked(runPublishPreflight);
 
 const testRepo = { owner: "hivemoot", repo: "test" };
 const testSummary = {
@@ -117,6 +123,7 @@ beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
   mockedResolveRepo.mockResolvedValue(testRepo);
   mockedFetchRepoPushAccess.mockResolvedValue(true);
+  mockedRunPublishPreflight.mockResolvedValue({ command: "git push --dry-run origin HEAD", ok: true, originUrl: "https://github.com/hivemoot-guard/test.git" });
   mockedLoadTeamConfig.mockResolvedValue(testTeamConfig);
   mockedFetchIssues.mockResolvedValue([]);
   mockedFetchPulls.mockResolvedValue([]);
@@ -914,6 +921,108 @@ describe("buzzCommand", () => {
     expect(summaryArg.notes).toContain(
       "Could not check push permissions (permission endpoint unavailable) — check this repository's contribution docs for publishing guidance.",
     );
+  });
+
+  // ── Publish preflight ─────────────────────────────────────────────
+
+  it("does not set publishReadiness when preflight succeeds", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({ command: "git push --dry-run origin HEAD", ok: true, originUrl: "https://github.com/hivemoot-guard/test.git" });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toBeUndefined();
+  });
+
+  it("sets publishReadiness.canPush=false with upstream message when origin targets upstream", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://github.com/hivemoot/test.git",
+      error: "remote: Permission to hivemoot/test.git denied to hivemoot-guard.",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Cannot push — origin targets the upstream repo (hivemoot/test). Point origin at a repo you have push access to.",
+    });
+  });
+
+  it("sets publishReadiness.canPush=false with push-denied message when origin is not upstream", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://github.com/hivemoot-guard/test.git",
+      error: "remote: Permission denied (403).",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Cannot push to origin (https://github.com/hivemoot-guard/test.git): remote: Permission denied (403). Check credentials and push access.",
+    });
+  });
+
+  it("does not classify prefix-extended repo names as upstream", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      originUrl: "https://github.com/hivemoot/test-extended.git",
+      error: "remote: Permission denied (403).",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Cannot push to origin (https://github.com/hivemoot/test-extended.git): remote: Permission denied (403). Check credentials and push access.",
+    });
+  });
+
+  it("sets publishReadiness.canPush=false with verify-error message when no origin URL", async () => {
+    mockedRunPublishPreflight.mockResolvedValue({
+      command: "git push --dry-run origin HEAD",
+      ok: false,
+      error: "could not resolve git origin remote: fatal: not a git repository",
+    });
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Could not verify push access (could not resolve git origin remote: fatal: not a git repository). Ensure git is available and origin is configured.",
+    });
+  });
+
+  it("sets publishReadiness.canPush=false with spawn-error message when preflight execution fails", async () => {
+    mockedRunPublishPreflight.mockRejectedValue(new Error("spawn git ENOENT"));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.publishReadiness).toEqual({
+      canPush: false,
+      message: "Could not verify push access (spawn git ENOENT). Ensure git is available and origin is configured.",
+    });
   });
 
   // ── Team focus ────────────────────────────────────────────────────
