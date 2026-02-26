@@ -25,7 +25,7 @@ const ERROR_MESSAGES = {
 type ErrorCode = keyof typeof ERROR_MESSAGES;
 
 function isErrorCode(code: string): code is ErrorCode {
-  return code in ERROR_MESSAGES;
+  return Object.hasOwn(ERROR_MESSAGES, code);
 }
 
 export function normalizeErrorCode(code?: string): ErrorCode {
