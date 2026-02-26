@@ -319,8 +319,6 @@ export async function buildIssueVoteResult(
   const generatedAt = new Date().toISOString();
   const trustedQueenLogins = [...TRUSTED_QUEEN_LOGINS];
 
-  const currentUser = await fetchCurrentUser();
-
   const found = await findTrustedVotingComment(repo, issueNumber);
 
   if (!found) {
@@ -337,6 +335,8 @@ export async function buildIssueVoteResult(
       warnings: [],
     };
   }
+
+  const currentUser = await fetchCurrentUser();
 
   const { comment } = found;
   const targetComment: VotingTargetComment = {

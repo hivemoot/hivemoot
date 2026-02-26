@@ -129,6 +129,8 @@ describe("buildIssueVoteResult", () => {
       expect(result.kind).toBe("issue_vote");
       expect(result.schemaVersion).toBe(1);
       expect(result.trustedQueenLogins).toEqual(["hivemoot", "hivemoot[bot]"]);
+      // fetchCurrentUser must not be called when there is no voting target
+      expect(mockedFetchCurrentUser).not.toHaveBeenCalled();
     });
 
     it("returns no_voting_target when comments exist but none are voting type", async () => {
