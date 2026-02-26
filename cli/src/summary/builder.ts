@@ -11,6 +11,7 @@ import type {
 import type { VoteMap } from "../github/votes.js";
 import type { NotificationMap } from "../github/notifications.js";
 import {
+  GOVERNANCE_LABEL_ALIASES,
   hasLabel,
   hasCIFailure,
   checkStatus,
@@ -34,11 +35,11 @@ interface IssuePipelineCounts {
   readyToImplement: number;
 }
 
-const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set([
-  "hivemoot:discussion",
-  "hivemoot:voting",
-  "hivemoot:extended-voting",
-  "hivemoot:ready-to-implement",
+const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set<string>([
+  GOVERNANCE_LABEL_ALIASES.DISCUSSION[0],
+  GOVERNANCE_LABEL_ALIASES.VOTING[0],
+  GOVERNANCE_LABEL_ALIASES.EXTENDED_VOTING[0],
+  GOVERNANCE_LABEL_ALIASES.READY_TO_IMPLEMENT[0],
 ]);
 
 const OMITTED_PIPELINE_NOTE =

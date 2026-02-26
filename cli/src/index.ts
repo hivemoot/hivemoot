@@ -6,6 +6,8 @@ import { roleCommand } from "./commands/role.js";
 import { initCommand } from "./commands/init.js";
 import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
+import { prSnapshotCommand } from "./commands/pr-snapshot.js";
+import { prPreflightCommand } from "./commands/pr-preflight.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -125,6 +127,50 @@ Examples:
     Watch with a 60-second polling interval`,
   )
   .action(watchCommand);
+
+const prProgram = program
+  .command("pr")
+  .description("Pull request workflow helpers for autonomous agents");
+
+prProgram
+  .command("snapshot")
+  .description("Emit a canonical PR context payload")
+  .argument("<pr>", "Pull request number, URL, or branch")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot pr snapshot 54 --repo hivemoot/hivemoot --json
+    Output schemaVersioned PR context for automation
+
+  $ hivemoot pr snapshot https://github.com/hivemoot/hivemoot/pull/54
+    Resolve from URL in the current repository`,
+  )
+  .action(prSnapshotCommand);
+
+prProgram
+  .command("preflight")
+  .description("Check structural blockers for a PR")
+  .argument("<pr>", "Pull request number, URL, or branch")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  no blockers
+  2  blockers present
+  >=3 execution error
+
+Examples:
+  $ hivemoot pr preflight 54 --repo hivemoot/hivemoot --json
+    Evaluate blockers/warnings with deterministic codes`,
+  )
+  .action(prPreflightCommand);
 
 program
   .command("ack")

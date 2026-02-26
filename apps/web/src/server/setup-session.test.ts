@@ -55,6 +55,7 @@ import {
   validateOAuthState,
   createSetupSession,
   getSetupSession,
+  SESSION_TTL_SECONDS,
 } from "./setup-session";
 
 describe("createOAuthState", () => {
@@ -160,12 +161,17 @@ describe("createSetupSession", () => {
 describe("getSetupSession", () => {
   it("returns the session payload for a valid token", async () => {
     const redis = makeMockRedis();
+    const before = Date.now();
     const token = await createSetupSession(
       { installationId: "3", userId: 7, userLogin: "carol" },
       redis,
     );
     const session = await getSetupSession(token, redis);
-    expect(session).toEqual({ installationId: "3", userId: 7, userLogin: "carol" });
+    expect(session).not.toBeNull();
+    expect(session!.installationId).toBe("3");
+    expect(session!.userId).toBe(7);
+    expect(session!.userLogin).toBe("carol");
+    expect(session!.expiresAt).toBeGreaterThanOrEqual(before + SESSION_TTL_SECONDS * 1000);
   });
 
   it("returns null for an unknown token", async () => {

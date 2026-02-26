@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import SetupWizard from "./SetupWizard";
-import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE } from "@/server/setup-session";
+import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE, getSetupSession } from "@/server/setup-session";
+import { getRedisClient } from "@/server/redis";
+import { validateEnv } from "@/server/env";
 
 export const metadata: Metadata = {
   title: "Set up Hivemoot — Your AI Engineering Team",
@@ -221,10 +223,26 @@ export default async function SetupPage({
   const auth = params.auth;
   const reason = params.reason;
   const cookieStore = await cookies();
-  const hasSession = !!cookieStore.get(SETUP_SESSION_COOKIE)?.value;
+  const sessionToken = cookieStore.get(SETUP_SESSION_COOKIE)?.value;
+  const hasSession = !!sessionToken;
 
   const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
+
+  // Resolve actual session expiry from Redis so the client countdown is accurate.
+  // Falls back to a freshly-computed window if Redis is unavailable.
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is safe in a Next.js async server component
+  let initialExpiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
+  if (isAuthorized && sessionToken) {
+    const env = validateEnv();
+    if (env.ok && env.config.redisRestUrl && env.config.redisRestToken) {
+      const redis = getRedisClient(env.config.redisRestUrl, env.config.redisRestToken);
+      const session = await getSetupSession(sessionToken, redis);
+      if (session) {
+        initialExpiresAt = session.expiresAt;
+      }
+    }
+  }
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -275,7 +293,7 @@ export default async function SetupPage({
           /* Steps 2 & 3: client component manages stepper + content */
           <SetupWizard
             installationId={installationId}
-            sessionTtlSeconds={SESSION_TTL_SECONDS}
+            initialExpiresAt={initialExpiresAt}
           />
         ) : (
           /* Step 1: static server-rendered */
