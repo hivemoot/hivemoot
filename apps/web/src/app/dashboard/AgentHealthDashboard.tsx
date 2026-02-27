@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -17,6 +17,7 @@ interface AgentOverviewEntry {
   exit_code?: number;
   received_at: string | null;
   online: boolean;
+  status?: "ok" | "failed" | "late" | "unknown";
 }
 
 interface HealthHistoryEntry {
@@ -29,6 +30,16 @@ interface HealthHistoryEntry {
   error?: string;
   exit_code?: number;
   received_at: string;
+}
+
+type GroupMode = "repo" | "agent";
+type GroupStatus = "ok" | "failed" | "late" | "unknown";
+
+interface AgentGroup {
+  name: string;
+  entries: AgentOverviewEntry[];
+  statusCounts: Record<GroupStatus, number>;
+  worstStatusPriority: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +118,81 @@ function outcomeLabel(outcome: string | undefined, online: boolean): string {
   }
 }
 
+const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
+
+const GROUP_STATUS_PRIORITY: Record<GroupStatus, number> = {
+  failed: 0,
+  late: 1,
+  unknown: 2,
+  ok: 3,
+};
+
+const GROUP_STATUS_ORDER: GroupStatus[] = ["failed", "late", "unknown", "ok"];
+
+const GROUP_STATUS_META: Record<
+  GroupStatus,
+  { label: string; colorClass: string }
+> = {
+  failed: { label: "failed", colorClass: "bg-red-400" },
+  late: { label: "late", colorClass: "bg-amber-400" },
+  unknown: { label: "unknown", colorClass: "bg-zinc-500" },
+  ok: { label: "ok", colorClass: "bg-green-400" },
+};
+
+function getGroupStatus(agent: AgentOverviewEntry): GroupStatus {
+  if (
+    agent.status === "ok" ||
+    agent.status === "failed" ||
+    agent.status === "late" ||
+    agent.status === "unknown"
+  ) {
+    return agent.status;
+  }
+
+  if (!agent.online) return "unknown";
+  if (agent.outcome === "failure" || agent.outcome === "timeout") {
+    return "failed";
+  }
+  return "ok";
+}
+
+function makeEmptyStatusCounts(): Record<GroupStatus, number> {
+  return { failed: 0, late: 0, unknown: 0, ok: 0 };
+}
+
+function buildGroups(agents: AgentOverviewEntry[], mode: GroupMode): AgentGroup[] {
+  const groups = new Map<string, AgentGroup>();
+
+  for (const agent of agents) {
+    const groupName = mode === "repo" ? agent.repo : agent.agent_id;
+    const status = getGroupStatus(agent);
+    const statusPriority = GROUP_STATUS_PRIORITY[status];
+
+    let group = groups.get(groupName);
+    if (!group) {
+      group = {
+        name: groupName,
+        entries: [],
+        statusCounts: makeEmptyStatusCounts(),
+        worstStatusPriority: GROUP_STATUS_PRIORITY.ok,
+      };
+      groups.set(groupName, group);
+    }
+
+    group.entries.push(agent);
+    group.statusCounts[status] += 1;
+    if (statusPriority < group.worstStatusPriority) {
+      group.worstStatusPriority = statusPriority;
+    }
+  }
+
+  return Array.from(groups.values()).sort(
+    (a, b) =>
+      a.worstStatusPriority - b.worstStatusPriority ||
+      a.name.localeCompare(b.name),
+  );
+}
+
 function relativeTime(iso: string | null): string {
   if (!iso) return "never";
   const diff = Date.now() - new Date(iso).getTime();
@@ -131,6 +217,7 @@ const REFRESH_INTERVAL_MS = 30_000; // 30 seconds
 
 export default function AgentHealthDashboard() {
   const [agents, setAgents] = useState<AgentOverviewEntry[]>([]);
+  const [groupMode, setGroupMode] = useState<GroupMode>("repo");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<{
@@ -142,6 +229,10 @@ export default function AgentHealthDashboard() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const historyAbortRef = useRef<AbortController | null>(null);
   const historyRequestIdRef = useRef(0);
+  const groupedAgents = useMemo(
+    () => buildGroups(agents, groupMode),
+    [agents, groupMode],
+  );
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -169,6 +260,25 @@ export default function AgentHealthDashboard() {
     const interval = setInterval(fetchOverview, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchOverview]);
+
+  useEffect(() => {
+    try {
+      const savedGroupMode = window.localStorage.getItem(GROUP_MODE_STORAGE_KEY);
+      if (savedGroupMode === "repo" || savedGroupMode === "agent") {
+        setGroupMode(savedGroupMode);
+      }
+    } catch {
+      // Ignore localStorage errors and keep default grouping mode.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(GROUP_MODE_STORAGE_KEY, groupMode);
+    } catch {
+      // Ignore localStorage errors and continue with in-memory preference.
+    }
+  }, [groupMode]);
 
   useEffect(() => {
     return () => {
@@ -366,50 +476,114 @@ export default function AgentHealthDashboard() {
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {agents.map((agent) => (
+    <div className="space-y-6">
+      <div
+        className="inline-flex rounded-lg border border-white/[0.06] bg-[#141414] p-1"
+        role="group"
+        aria-label="Group dashboard by"
+      >
         <button
-          key={`${agent.agent_id}:${agent.repo}`}
-          onClick={() => viewHistory(agent.agent_id, agent.repo)}
-          className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+          type="button"
+          onClick={() => setGroupMode("repo")}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            groupMode === "repo"
+              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
+              : "text-zinc-400 hover:text-zinc-300"
+          }`}
+          aria-pressed={groupMode === "repo"}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`inline-block h-2.5 w-2.5 rounded-full ${statusDot(
-                  agent.online,
-                )}`}
-              />
-              <span className="text-sm font-medium text-[#fafafa]">
-                {agent.agent_id}
-              </span>
-            </div>
-            <span
-              className={`text-xs font-medium ${outcomeColor(
-                agent.outcome,
-                agent.online,
-              )}`}
-            >
-              {outcomeLabel(agent.outcome, agent.online)}
-            </span>
-          </div>
-
-          <p className="mt-2 truncate text-xs text-zinc-500">{agent.repo}</p>
-
-          {agent.error && (
-            <p className="mt-2 truncate text-xs text-red-400">
-              {agent.error}
-            </p>
-          )}
-
-          <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-            <span>{relativeTime(agent.received_at)}</span>
-            {agent.consecutive_failures != null && agent.consecutive_failures > 0 && (
-              <span className="text-red-400/70">{agent.consecutive_failures} failures</span>
-            )}
-          </div>
+          By Repo
         </button>
-      ))}
+        <button
+          type="button"
+          onClick={() => setGroupMode("agent")}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            groupMode === "agent"
+              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
+              : "text-zinc-400 hover:text-zinc-300"
+          }`}
+          aria-pressed={groupMode === "agent"}
+        >
+          By Agent
+        </button>
+      </div>
+
+      <div className="space-y-6">
+        {groupedAgents.map((group) => (
+          <section key={group.name}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-[#fafafa]">{group.name}</h3>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {GROUP_STATUS_ORDER.map((status) => {
+                  const count = group.statusCounts[status];
+                  if (count === 0) return null;
+
+                  return (
+                    <span
+                      key={status}
+                      className="inline-flex items-center gap-1.5 text-xs text-zinc-300"
+                    >
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full ${
+                          GROUP_STATUS_META[status].colorClass
+                        }`}
+                      />
+                      {count} {GROUP_STATUS_META[status].label}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {group.entries.map((agent) => (
+                <button
+                  key={`${group.name}:${agent.agent_id}:${agent.repo}`}
+                  onClick={() => viewHistory(agent.agent_id, agent.repo)}
+                  className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className={`inline-block h-2.5 w-2.5 rounded-full ${statusDot(
+                          agent.online,
+                        )}`}
+                      />
+                      <span className="truncate text-sm font-medium text-[#fafafa]">
+                        {groupMode === "repo" ? agent.agent_id : agent.repo}
+                      </span>
+                    </div>
+                    <span
+                      className={`text-xs font-medium ${outcomeColor(
+                        agent.outcome,
+                        agent.online,
+                      )}`}
+                    >
+                      {outcomeLabel(agent.outcome, agent.online)}
+                    </span>
+                  </div>
+
+                  {agent.error && (
+                    <p className="mt-2 truncate text-xs text-red-400">
+                      {agent.error}
+                    </p>
+                  )}
+
+                  <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
+                    <span>{relativeTime(agent.received_at)}</span>
+                    {agent.consecutive_failures != null &&
+                      agent.consecutive_failures > 0 && (
+                        <span className="text-red-400/70">
+                          {agent.consecutive_failures} failures
+                        </span>
+                      )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
