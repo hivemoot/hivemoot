@@ -1,6 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildGroups,
+  GROUP_STATUS_META,
+  GROUP_STATUS_ORDER,
+  type GroupMode,
+} from "./agent-health-grouping";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -32,15 +38,6 @@ interface HealthHistoryEntry {
   received_at: string;
 }
 
-type GroupMode = "repo" | "agent";
-type GroupStatus = "ok" | "failed" | "late" | "unknown";
-
-interface AgentGroup {
-  name: string;
-  entries: AgentOverviewEntry[];
-  statusCounts: Record<GroupStatus, number>;
-  worstStatusPriority: number;
-}
 
 // ---------------------------------------------------------------------------
 // Icons (inline SVGs, following project convention)
@@ -119,79 +116,6 @@ function outcomeLabel(outcome: string | undefined, online: boolean): string {
 }
 
 const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
-
-const GROUP_STATUS_PRIORITY: Record<GroupStatus, number> = {
-  failed: 0,
-  late: 1,
-  unknown: 2,
-  ok: 3,
-};
-
-const GROUP_STATUS_ORDER: GroupStatus[] = ["failed", "late", "unknown", "ok"];
-
-const GROUP_STATUS_META: Record<
-  GroupStatus,
-  { label: string; colorClass: string }
-> = {
-  failed: { label: "failed", colorClass: "bg-red-400" },
-  late: { label: "late", colorClass: "bg-amber-400" },
-  unknown: { label: "unknown", colorClass: "bg-zinc-500" },
-  ok: { label: "ok", colorClass: "bg-green-400" },
-};
-
-function getGroupStatus(agent: AgentOverviewEntry): GroupStatus {
-  if (
-    agent.status === "ok" ||
-    agent.status === "failed" ||
-    agent.status === "late" ||
-    agent.status === "unknown"
-  ) {
-    return agent.status;
-  }
-
-  if (!agent.online) return "unknown";
-  if (agent.outcome === "failure" || agent.outcome === "timeout") {
-    return "failed";
-  }
-  return "ok";
-}
-
-function makeEmptyStatusCounts(): Record<GroupStatus, number> {
-  return { failed: 0, late: 0, unknown: 0, ok: 0 };
-}
-
-function buildGroups(agents: AgentOverviewEntry[], mode: GroupMode): AgentGroup[] {
-  const groups = new Map<string, AgentGroup>();
-
-  for (const agent of agents) {
-    const groupName = mode === "repo" ? agent.repo : agent.agent_id;
-    const status = getGroupStatus(agent);
-    const statusPriority = GROUP_STATUS_PRIORITY[status];
-
-    let group = groups.get(groupName);
-    if (!group) {
-      group = {
-        name: groupName,
-        entries: [],
-        statusCounts: makeEmptyStatusCounts(),
-        worstStatusPriority: GROUP_STATUS_PRIORITY.ok,
-      };
-      groups.set(groupName, group);
-    }
-
-    group.entries.push(agent);
-    group.statusCounts[status] += 1;
-    if (statusPriority < group.worstStatusPriority) {
-      group.worstStatusPriority = statusPriority;
-    }
-  }
-
-  return Array.from(groups.values()).sort(
-    (a, b) =>
-      a.worstStatusPriority - b.worstStatusPriority ||
-      a.name.localeCompare(b.name),
-  );
-}
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "never";
