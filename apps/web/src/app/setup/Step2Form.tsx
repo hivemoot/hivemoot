@@ -43,7 +43,7 @@ const KEY_PLACEHOLDERS: Record<Provider, string> = {
 // ---------------------------------------------------------------------------
 // Inline SVG icons (no external libraries)
 // Official brand marks: Anthropic, OpenAI from Bootstrap Icons; Google "G"
-// from Google Fonts assets; Mistral pixel-grid from brand guidelines.
+// from Google Fonts assets.
 // ---------------------------------------------------------------------------
 
 function AnthropicIcon({ className }: { className?: string }) {

@@ -205,8 +205,8 @@ describe("validateProviderKey — google", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateProviderKey — unknown provider", () => {
-  it("rejects unknown providers", async () => {
-    const result = await validateProviderKey("deepseek", "key");
+  it.each(["deepseek", "mistral"])("rejects unsupported provider %s", async (provider) => {
+    const result = await validateProviderKey(provider, "key");
     expect(result).toEqual({
       valid: false,
       reason: "Unsupported provider. Supported providers: anthropic, openai, google",
