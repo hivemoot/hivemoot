@@ -92,7 +92,7 @@ labels:
     color: "5319e7"
     description: "Issue is in voting phase."
 
-  # --- Fast-track labels (added with PR #75) ---
-  - name: "hivemoot:fast-track"
+  # --- Automerge labels ---
+  - name: "hivemoot:automerge"
     color: "0075ca"
-    description: "Docs-only PR eligible for accelerated review."
+    description: "PR classified by the bot as eligible for accelerated review."
