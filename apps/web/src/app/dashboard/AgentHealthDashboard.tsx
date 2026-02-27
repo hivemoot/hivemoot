@@ -452,52 +452,52 @@ export default function AgentHealthDashboard() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {group.entries.map((agent) => {
-                    const resolvedStatus = getGroupStatus(agent);
-                    return (
-                      <button
-                        key={`${group.name}:${agent.agent_id}:${agent.repo}`}
-                        onClick={() => viewHistory(agent.agent_id, agent.repo)}
-                        className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+              {group.entries.map((agent) => {
+                const resolvedStatus = getGroupStatus(agent);
+                return (
+                  <button
+                    key={`${group.name}:${agent.agent_id}:${agent.repo}`}
+                    onClick={() => viewHistory(agent.agent_id, agent.repo)}
+                    className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`inline-block h-2.5 w-2.5 rounded-full ${
+                            GROUP_STATUS_META[resolvedStatus].colorClass
+                          }`}
+                        />
+                        <span className="truncate text-sm font-medium text-[#fafafa]">
+                          {groupMode === "repo" ? agent.agent_id : agent.repo}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-xs font-medium ${statusColor(
+                          resolvedStatus,
+                        )}`}
                       >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <span
-                              className={`inline-block h-2.5 w-2.5 rounded-full ${
-                                GROUP_STATUS_META[resolvedStatus].colorClass
-                              }`}
-                            />
-                            <span className="truncate text-sm font-medium text-[#fafafa]">
-                              {groupMode === "repo" ? agent.agent_id : agent.repo}
-                            </span>
-                          </div>
-                          <span
-                            className={`text-xs font-medium ${statusColor(
-                              resolvedStatus,
-                            )}`}
-                          >
-                            {statusLabel(resolvedStatus)}
+                        {statusLabel(resolvedStatus)}
+                      </span>
+                    </div>
+
+                    {agent.error && (
+                      <p className="mt-2 truncate text-xs text-red-400">
+                        {agent.error}
+                      </p>
+                    )}
+
+                    <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
+                      <span>{relativeTime(agent.received_at)}</span>
+                      {agent.consecutive_failures != null &&
+                        agent.consecutive_failures > 0 && (
+                          <span className="text-red-400/70">
+                            {agent.consecutive_failures} failures
                           </span>
-                        </div>
-
-                        {agent.error && (
-                          <p className="mt-2 truncate text-xs text-red-400">
-                            {agent.error}
-                          </p>
                         )}
-
-                        <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-                          <span>{relativeTime(agent.received_at)}</span>
-                          {agent.consecutive_failures != null &&
-                            agent.consecutive_failures > 0 && (
-                              <span className="text-red-400/70">
-                                {agent.consecutive_failures} failures
-                              </span>
-                            )}
-                        </div>
-                      </button>
-                    );
-                  })}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </section>
         ))}
