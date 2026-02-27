@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildGroups,
+  getGroupStatus,
   GROUP_STATUS_META,
   GROUP_STATUS_ORDER,
   type GroupMode,
+  type GroupStatus,
 } from "./agent-health-grouping";
 
 // ---------------------------------------------------------------------------
@@ -22,7 +24,7 @@ interface AgentOverviewEntry {
   error?: string;
   exit_code?: number;
   received_at: string | null;
-  online: boolean;
+  online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
 }
 
@@ -79,39 +81,29 @@ function ArrowLeftIcon({ className }: { className?: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Status helpers
-// ---------------------------------------------------------------------------
-
-function outcomeColor(outcome: string | undefined, online: boolean): string {
-  if (!online) return "text-zinc-500";
-  switch (outcome) {
-    case "success":
+function statusColor(status: GroupStatus): string {
+  switch (status) {
+    case "ok":
       return "text-green-400";
-    case "failure":
-    case "timeout":
+    case "failed":
       return "text-red-400";
-    default:
-      return "text-zinc-400";
+    case "late":
+      return "text-amber-400";
+    case "unknown":
+      return "text-zinc-500";
   }
 }
 
-function statusDot(online: boolean): string {
-  if (!online) return "bg-zinc-600";
-  return "bg-green-400";
-}
-
-function outcomeLabel(outcome: string | undefined, online: boolean): string {
-  if (!online) return "Offline";
-  switch (outcome) {
-    case "success":
+function statusLabel(status: GroupStatus): string {
+  switch (status) {
+    case "ok":
       return "OK";
-    case "failure":
+    case "failed":
       return "Failed";
-    case "timeout":
-      return "Timeout";
-    default:
-      return "Idle";
+    case "late":
+      return "Late";
+    case "unknown":
+      return "Unknown";
   }
 }
 
@@ -460,50 +452,52 @@ export default function AgentHealthDashboard() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {group.entries.map((agent) => (
-                <button
-                  key={`${group.name}:${agent.agent_id}:${agent.repo}`}
-                  onClick={() => viewHistory(agent.agent_id, agent.repo)}
-                  className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <span
-                        className={`inline-block h-2.5 w-2.5 rounded-full ${statusDot(
-                          agent.online,
-                        )}`}
-                      />
-                      <span className="truncate text-sm font-medium text-[#fafafa]">
-                        {groupMode === "repo" ? agent.agent_id : agent.repo}
-                      </span>
-                    </div>
-                    <span
-                      className={`text-xs font-medium ${outcomeColor(
-                        agent.outcome,
-                        agent.online,
-                      )}`}
-                    >
-                      {outcomeLabel(agent.outcome, agent.online)}
-                    </span>
-                  </div>
+                  {group.entries.map((agent) => {
+                    const resolvedStatus = getGroupStatus(agent);
+                    return (
+                      <button
+                        key={`${group.name}:${agent.agent_id}:${agent.repo}`}
+                        onClick={() => viewHistory(agent.agent_id, agent.repo)}
+                        className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <span
+                              className={`inline-block h-2.5 w-2.5 rounded-full ${
+                                GROUP_STATUS_META[resolvedStatus].colorClass
+                              }`}
+                            />
+                            <span className="truncate text-sm font-medium text-[#fafafa]">
+                              {groupMode === "repo" ? agent.agent_id : agent.repo}
+                            </span>
+                          </div>
+                          <span
+                            className={`text-xs font-medium ${statusColor(
+                              resolvedStatus,
+                            )}`}
+                          >
+                            {statusLabel(resolvedStatus)}
+                          </span>
+                        </div>
 
-                  {agent.error && (
-                    <p className="mt-2 truncate text-xs text-red-400">
-                      {agent.error}
-                    </p>
-                  )}
+                        {agent.error && (
+                          <p className="mt-2 truncate text-xs text-red-400">
+                            {agent.error}
+                          </p>
+                        )}
 
-                  <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-                    <span>{relativeTime(agent.received_at)}</span>
-                    {agent.consecutive_failures != null &&
-                      agent.consecutive_failures > 0 && (
-                        <span className="text-red-400/70">
-                          {agent.consecutive_failures} failures
-                        </span>
-                      )}
-                  </div>
-                </button>
-              ))}
+                        <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
+                          <span>{relativeTime(agent.received_at)}</span>
+                          {agent.consecutive_failures != null &&
+                            agent.consecutive_failures > 0 && (
+                              <span className="text-red-400/70">
+                                {agent.consecutive_failures} failures
+                              </span>
+                            )}
+                        </div>
+                      </button>
+                    );
+                  })}
             </div>
           </section>
         ))}

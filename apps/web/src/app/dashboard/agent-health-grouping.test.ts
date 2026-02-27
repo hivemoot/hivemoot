@@ -35,12 +35,17 @@ describe("getGroupStatus", () => {
     );
   });
 
-  it("maps failure or timeout outcomes to failed when online", () => {
+  it("maps failure or timeout outcomes to failed regardless of online state", () => {
     expect(
       getGroupStatus(makeAgent({ outcome: "failure", status: undefined })),
     ).toBe("failed");
     expect(
       getGroupStatus(makeAgent({ outcome: "timeout", status: undefined })),
+    ).toBe("failed");
+    expect(
+      getGroupStatus(
+        makeAgent({ outcome: "failure", online: false, status: undefined }),
+      ),
     ).toBe("failed");
   });
 
@@ -51,6 +56,22 @@ describe("getGroupStatus", () => {
     expect(getGroupStatus(makeAgent({ outcome: undefined, status: undefined }))).toBe(
       "ok",
     );
+  });
+
+  it("keeps success fallback when online is not provided", () => {
+    expect(
+      getGroupStatus(
+        makeAgent({ outcome: "success", online: undefined, status: undefined }),
+      ),
+    ).toBe("ok");
+  });
+
+  it("returns unknown when status, outcome, and online are all missing", () => {
+    expect(
+      getGroupStatus(
+        makeAgent({ outcome: undefined, online: undefined, status: undefined }),
+      ),
+    ).toBe("unknown");
   });
 });
 

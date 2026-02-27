@@ -4,7 +4,7 @@ export type GroupStatus = "ok" | "failed" | "late" | "unknown";
 export interface GroupableAgent {
   agent_id: string;
   repo: string;
-  online: boolean;
+  online?: boolean;
   outcome?: "success" | "failure" | "timeout";
   status?: GroupStatus;
 }
@@ -54,11 +54,13 @@ export function getGroupStatus(agent: GroupableAgent): GroupStatus {
     return agent.status;
   }
 
-  if (!agent.online) return "unknown";
   if (agent.outcome === "failure" || agent.outcome === "timeout") {
     return "failed";
   }
-  return "ok";
+  if (agent.online === false) return "unknown";
+  if (agent.outcome === "success") return "ok";
+  if (agent.online === true) return "ok";
+  return "unknown";
 }
 
 export function buildGroups<TAgent extends GroupableAgent>(
