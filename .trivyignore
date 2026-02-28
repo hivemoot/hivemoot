@@ -1,1 +1,5 @@
-# No active Trivy suppressions.
+# minimatch ReDoS — bundled inside npm 11.10.1+ (transitive dep we cannot control).
+# Remove once npm ships a release with minimatch >= 10.2.3.
+# exp:2026-04-30
+CVE-2026-27903
+CVE-2026-27904
