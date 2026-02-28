@@ -1107,10 +1107,20 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
   elif [ "$exit_code" -ne 0 ]; then
     _run_outcome="failure"
   fi
+
+  # Compute next_run_at when running on a periodic schedule.
+  # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  _next_run_at=""
+  if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
+    _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || date -u -v "+${PERIODIC_INTERVAL_SECS}S" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || true)"
+  fi
+
   report_health_to_backend \
     "$agent_name" "$target_repo" "${HEALTH_REPORT_TOKEN_FILE:-${AGENT_GITHUB_TOKEN_FILE:-}}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
-    "$exit_code" "${_run_error:-}" || true
+    "$exit_code" "${_run_error:-}" "$_next_run_at" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

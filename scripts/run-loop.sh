@@ -28,6 +28,7 @@ max_agents=10
 token_tmp_root="/tmp/hivemoot-agent-token-files"
 lock_dir="/tmp/agent-locks"
 agent_run_busy_exit=3
+run_once_script="${RUN_ONCE_SCRIPT:-/opt/hivemoot-agent/scripts/run-once.sh}"
 
 # Periodic scheduling (backward compat: fall back to BASE_SECS / JITTER_SECS)
 periodic_interval="${PERIODIC_INTERVAL_SECS:-${BASE_SECS:-3600}}"
@@ -287,7 +288,7 @@ trap handle_shutdown TERM INT
 # Returns ${agent_run_busy_exit} when the agent was busy (lock not acquired).
 # Returns non-zero/non-3 on actual run-once.sh failure.
 #
-# Args: agent_id extra_prompt [ack_key state_file session_key]
+# Args: agent_id extra_prompt [ack_key state_file session_key consecutive_failures run_trigger]
 # When ack_key + state_file are provided and the run succeeds (exit 0),
 # calls `hivemoot ack` to mark the mention as read. On failure the mention
 # stays unread so the next poll cycle retries it.
@@ -298,6 +299,7 @@ try_run_agent() {
   local state_file="${4:-}"
   local session_key="${5:-}"
   local consecutive_failures_count="${6:-0}"
+  local run_trigger="${7:-periodic}"
   local lock_file="${lock_dir}/${agent_id}.lock"
   local token_file="${agent_token_files[$agent_id]}"
   local agent_workspace="${workspace_root}/agents/${agent_id}"
@@ -324,11 +326,17 @@ try_run_agent() {
     export AGENT_EXTRA_PROMPT="$extra_prompt"
     export AGENT_SESSION_KEY="$session_key"
     export AGENT_CONSECUTIVE_FAILURES="$consecutive_failures_count"
+    # Keep next_run_at scoped to periodic scheduler runs only.
+    if [ "$run_trigger" = "periodic" ]; then
+      export PERIODIC_INTERVAL_SECS="$periodic_interval"
+    else
+      unset PERIODIC_INTERVAL_SECS
+    fi
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
 
     agent_exit=0
-    /opt/hivemoot-agent/scripts/run-once.sh || agent_exit=$?
+    "$run_once_script" || agent_exit=$?
 
     if [ "$agent_exit" -ne 0 ]; then
       log "${agent_id}: run exited with code ${agent_exit}"
@@ -468,7 +476,7 @@ Then read the full thread, research the topic, and take appropriate action with 
         # Redirect stdin from /dev/null so the backgrounded child doesn't inherit
         # the pipe fd — inherited pipe fds can flip to O_NONBLOCK and cause the
         # parent while-read loop to fail with EAGAIN, killing the watcher.
-        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" "$mention_session_key" </dev/null &
+        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" "$mention_session_key" "0" "mention" </dev/null &
 
       done || true  # Don't let pipefail+errexit kill the restart loop
 
@@ -542,7 +550,7 @@ start_agent_periodic_scheduler() {
 
       # Run agent
       local run_status=0
-      try_run_agent "$agent_id" "$global_extra_prompt" "" "" "" "$consecutive_failures" || run_status=$?
+      try_run_agent "$agent_id" "$global_extra_prompt" "" "" "" "$consecutive_failures" "periodic" || run_status=$?
 
       if [ "$run_status" -eq 0 ]; then
         if [ "$consecutive_failures" -gt 0 ]; then

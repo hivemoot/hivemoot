@@ -29,7 +29,7 @@ _HEALTH_PAYLOAD_MAX_BYTES=10240
 _VALID_OUTCOMES="success failure timeout"
 
 # Allowed payload fields (sorted). Must match backend HealthReport.
-_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code outcome repo run_id"
+_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code next_run_at outcome repo run_id"
 
 # Build the JSON payload for the health report.
 # Requires jq.
@@ -42,6 +42,7 @@ _build_health_payload() {
   local consecutive_failures="$6"
   local exit_code="${7:-}"
   local error_msg="${8:-}"
+  local next_run_at="${9:-}"
 
   local jq_args=(
     -n
@@ -71,6 +72,10 @@ _build_health_payload() {
   if [ -n "$error_msg" ]; then
     jq_args+=(--arg error "$error_msg")
     jq_filter="${jq_filter} + {error: \$error}"
+  fi
+  if [ -n "$next_run_at" ]; then
+    jq_args+=(--arg next_run_at "$next_run_at")
+    jq_filter="${jq_filter} + {next_run_at: \$next_run_at}"
   fi
 
   jq "${jq_args[@]}" "$jq_filter"
@@ -257,6 +262,7 @@ _sleep_with_jitter() {
 #   consecutive_failures — current streak of consecutive failures
 #   exit_code            — process exit code (optional)
 #   error                — error message (optional)
+#   next_run_at          — ISO 8601 timestamp of next scheduled run (optional)
 report_health_to_backend() {
   local agent_id="$1"
   local repo="$2"
@@ -267,6 +273,7 @@ report_health_to_backend() {
   local consecutive_failures="${7:-0}"
   local exit_code="${8:-}"
   local error_msg="${9:-}"
+  local next_run_at="${10:-}"
 
   if [ -z "$HEALTH_REPORT_URL" ]; then
     return 0
@@ -291,7 +298,8 @@ report_health_to_backend() {
     "$duration_secs" \
     "$consecutive_failures" \
     "$exit_code" \
-    "$error_msg"
+    "$error_msg" \
+    "$next_run_at"
   )"
 
   if ! _validate_health_payload "$payload"; then

@@ -189,6 +189,29 @@ test_payload_omits_empty_optionals() {
   pass "payload omits empty optional fields"
 }
 
+test_payload_optional_next_run_at() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "2026-02-27T10:00:00Z")"
+  local has_next
+  has_next="$(printf '%s' "$payload" | jq 'has("next_run_at")')"
+  [ "$has_next" = "true" ] || fail "expected next_run_at field when provided"
+  local next_val
+  next_val="$(printf '%s' "$payload" | jq -r '.next_run_at')"
+  [ "$next_val" = "2026-02-27T10:00:00Z" ] || fail "expected next_run_at='2026-02-27T10:00:00Z', got '${next_val}'"
+  pass "payload includes optional next_run_at"
+}
+
+test_payload_omits_empty_next_run_at() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "")"
+  local has_next
+  has_next="$(printf '%s' "$payload" | jq 'has("next_run_at")')"
+  [ "$has_next" = "false" ] || fail "expected next_run_at to be omitted when empty"
+  pass "payload omits empty next_run_at"
+}
+
 # ── validation tests ─────────────────────────────────────────────
 
 test_validates_missing_agent_id() {
@@ -253,6 +276,16 @@ test_valid_payload_with_optionals_passes() {
     fail "valid payload with optionals should pass validation"
   fi
   pass "valid payload with optionals passes validation"
+}
+
+test_valid_payload_with_next_run_at_passes() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "2026-02-27T10:00:00Z")"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid payload with next_run_at should pass validation"
+  fi
+  pass "valid payload with next_run_at passes validation"
 }
 
 # ── validation — enums ───────────────────────────────────────────
@@ -655,6 +688,80 @@ MOCK
   pass "includes exit_code and error on failure"
 }
 
+test_sends_next_run_at_when_provided() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+  # shellcheck disable=SC2034  # read by sourced report_health_to_backend
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  report_health_to_backend "forager" "hivemoot/sandbox" "" "20260226-run-3" "success" "120" "0" "0" "" "2026-02-27T02:00:00Z" 2>/dev/null || true
+
+  PATH="$original_path"
+
+  if [ -f "$captured_file" ]; then
+    local next_val
+    next_val="$(jq -r '.next_run_at' "$captured_file")"
+    [ "$next_val" = "2026-02-27T02:00:00Z" ] || fail "expected next_run_at='2026-02-27T02:00:00Z', got '${next_val}'"
+  else
+    fail "payload was not captured"
+  fi
+  pass "includes next_run_at in payload when provided"
+}
+
+test_omits_next_run_at_when_empty() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-no-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+  # shellcheck disable=SC2034  # read by sourced report_health_to_backend
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  report_health_to_backend "forager" "hivemoot/sandbox" "" "20260226-run-4" "success" "120" "0" "0" "" "" 2>/dev/null || true
+
+  PATH="$original_path"
+
+  if [ -f "$captured_file" ]; then
+    local has_next
+    has_next="$(jq 'has("next_run_at")' "$captured_file")"
+    [ "$has_next" = "false" ] || fail "expected next_run_at to be absent when not provided"
+  else
+    fail "payload was not captured"
+  fi
+  pass "omits next_run_at from payload when empty"
+}
+
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
@@ -675,6 +782,8 @@ run_test test_payload_field_count
 run_test test_payload_optional_exit_code
 run_test test_payload_optional_error
 run_test test_payload_omits_empty_optionals
+run_test test_payload_optional_next_run_at
+run_test test_payload_omits_empty_next_run_at
 echo ""
 
 echo "  Validation — required fields:"
@@ -684,6 +793,7 @@ run_test test_validates_missing_run_id
 run_test test_validates_extra_fields
 run_test test_valid_payload_passes
 run_test test_valid_payload_with_optionals_passes
+run_test test_valid_payload_with_next_run_at_passes
 echo ""
 
 echo "  Validation — enums:"
@@ -716,6 +826,8 @@ echo "  Integration:"
 run_test test_skips_when_url_empty
 run_test test_sends_correct_payload
 run_test test_sends_optional_fields_on_failure
+run_test test_sends_next_run_at_when_provided
+run_test test_omits_next_run_at_when_empty
 echo ""
 
 teardown
