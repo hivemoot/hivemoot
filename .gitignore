@@ -7,3 +7,4 @@ data/
 runs/
 secrets/
 *.log
+.tmp-*/
