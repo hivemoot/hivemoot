@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildGroups,
+  getGroupStatus,
+  GROUP_STATUS_META,
+  GROUP_STATUS_ORDER,
+  type GroupMode,
+  type GroupStatus,
+} from "./agent-health-grouping";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -16,7 +24,8 @@ interface AgentOverviewEntry {
   error?: string;
   exit_code?: number;
   received_at: string | null;
-  online: boolean;
+  online?: boolean;
+  status?: "ok" | "failed" | "late" | "unknown";
 }
 
 interface HealthHistoryEntry {
@@ -30,6 +39,7 @@ interface HealthHistoryEntry {
   exit_code?: number;
   received_at: string;
 }
+
 
 // ---------------------------------------------------------------------------
 // Icons (inline SVGs, following project convention)
@@ -71,41 +81,33 @@ function ArrowLeftIcon({ className }: { className?: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Status helpers
-// ---------------------------------------------------------------------------
-
-function outcomeColor(outcome: string | undefined, online: boolean): string {
-  if (!online) return "text-zinc-500";
-  switch (outcome) {
-    case "success":
+function statusColor(status: GroupStatus): string {
+  switch (status) {
+    case "ok":
       return "text-green-400";
-    case "failure":
-    case "timeout":
+    case "failed":
       return "text-red-400";
-    default:
-      return "text-zinc-400";
+    case "late":
+      return "text-amber-400";
+    case "unknown":
+      return "text-zinc-500";
   }
 }
 
-function statusDot(online: boolean): string {
-  if (!online) return "bg-zinc-600";
-  return "bg-green-400";
-}
-
-function outcomeLabel(outcome: string | undefined, online: boolean): string {
-  if (!online) return "Offline";
-  switch (outcome) {
-    case "success":
+function statusLabel(status: GroupStatus): string {
+  switch (status) {
+    case "ok":
       return "OK";
-    case "failure":
+    case "failed":
       return "Failed";
-    case "timeout":
-      return "Timeout";
-    default:
-      return "Idle";
+    case "late":
+      return "Late";
+    case "unknown":
+      return "Unknown";
   }
 }
+
+const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "never";
@@ -131,6 +133,7 @@ const REFRESH_INTERVAL_MS = 30_000; // 30 seconds
 
 export default function AgentHealthDashboard() {
   const [agents, setAgents] = useState<AgentOverviewEntry[]>([]);
+  const [groupMode, setGroupMode] = useState<GroupMode>("repo");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<{
@@ -142,6 +145,10 @@ export default function AgentHealthDashboard() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const historyAbortRef = useRef<AbortController | null>(null);
   const historyRequestIdRef = useRef(0);
+  const groupedAgents = useMemo(
+    () => buildGroups(agents, groupMode),
+    [agents, groupMode],
+  );
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -169,6 +176,25 @@ export default function AgentHealthDashboard() {
     const interval = setInterval(fetchOverview, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchOverview]);
+
+  useEffect(() => {
+    try {
+      const savedGroupMode = window.localStorage.getItem(GROUP_MODE_STORAGE_KEY);
+      if (savedGroupMode === "repo" || savedGroupMode === "agent") {
+        setGroupMode(savedGroupMode);
+      }
+    } catch {
+      // Ignore localStorage errors and keep default grouping mode.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(GROUP_MODE_STORAGE_KEY, groupMode);
+    } catch {
+      // Ignore localStorage errors and continue with in-memory preference.
+    }
+  }, [groupMode]);
 
   useEffect(() => {
     return () => {
@@ -366,50 +392,116 @@ export default function AgentHealthDashboard() {
   }
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {agents.map((agent) => (
+    <div className="space-y-6">
+      <div
+        className="inline-flex rounded-lg border border-white/[0.06] bg-[#141414] p-1"
+        role="group"
+        aria-label="Group dashboard by"
+      >
         <button
-          key={`${agent.agent_id}:${agent.repo}`}
-          onClick={() => viewHistory(agent.agent_id, agent.repo)}
-          className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+          type="button"
+          onClick={() => setGroupMode("repo")}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            groupMode === "repo"
+              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
+              : "text-zinc-400 hover:text-zinc-300"
+          }`}
+          aria-pressed={groupMode === "repo"}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`inline-block h-2.5 w-2.5 rounded-full ${statusDot(
-                  agent.online,
-                )}`}
-              />
-              <span className="text-sm font-medium text-[#fafafa]">
-                {agent.agent_id}
-              </span>
-            </div>
-            <span
-              className={`text-xs font-medium ${outcomeColor(
-                agent.outcome,
-                agent.online,
-              )}`}
-            >
-              {outcomeLabel(agent.outcome, agent.online)}
-            </span>
-          </div>
-
-          <p className="mt-2 truncate text-xs text-zinc-500">{agent.repo}</p>
-
-          {agent.error && (
-            <p className="mt-2 truncate text-xs text-red-400">
-              {agent.error}
-            </p>
-          )}
-
-          <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-            <span>{relativeTime(agent.received_at)}</span>
-            {agent.consecutive_failures != null && agent.consecutive_failures > 0 && (
-              <span className="text-red-400/70">{agent.consecutive_failures} failures</span>
-            )}
-          </div>
+          By Repo
         </button>
-      ))}
+        <button
+          type="button"
+          onClick={() => setGroupMode("agent")}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            groupMode === "agent"
+              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
+              : "text-zinc-400 hover:text-zinc-300"
+          }`}
+          aria-pressed={groupMode === "agent"}
+        >
+          By Agent
+        </button>
+      </div>
+
+      <div className="space-y-6">
+        {groupedAgents.map((group) => (
+          <section key={group.name}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-[#fafafa]">{group.name}</h3>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {GROUP_STATUS_ORDER.map((status) => {
+                  const count = group.statusCounts[status];
+                  if (count === 0) return null;
+
+                  return (
+                    <span
+                      key={status}
+                      className="inline-flex items-center gap-1.5 text-xs text-zinc-300"
+                    >
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full ${
+                          GROUP_STATUS_META[status].colorClass
+                        }`}
+                      />
+                      {count} {GROUP_STATUS_META[status].label}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {group.entries.map((agent) => {
+                const resolvedStatus = getGroupStatus(agent);
+                return (
+                  <button
+                    key={`${group.name}:${agent.agent_id}:${agent.repo}`}
+                    onClick={() => viewHistory(agent.agent_id, agent.repo)}
+                    className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`inline-block h-2.5 w-2.5 rounded-full ${
+                            GROUP_STATUS_META[resolvedStatus].colorClass
+                          }`}
+                        />
+                        <span className="truncate text-sm font-medium text-[#fafafa]">
+                          {groupMode === "repo" ? agent.agent_id : agent.repo}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-xs font-medium ${statusColor(
+                          resolvedStatus,
+                        )}`}
+                      >
+                        {statusLabel(resolvedStatus)}
+                      </span>
+                    </div>
+
+                    {agent.error && (
+                      <p className="mt-2 truncate text-xs text-red-400">
+                        {agent.error}
+                      </p>
+                    )}
+
+                    <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
+                      <span>{relativeTime(agent.received_at)}</span>
+                      {agent.consecutive_failures != null &&
+                        agent.consecutive_failures > 0 && (
+                          <span className="text-red-400/70">
+                            {agent.consecutive_failures} failures
+                          </span>
+                        )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
