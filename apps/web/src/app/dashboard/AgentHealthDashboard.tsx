@@ -500,12 +500,14 @@ export default function AgentHealthDashboard() {
                       </p>
                     )}
 
-                    <div className="mt-3 flex items-center justify-between text-xs text-zinc-600">
-                      <span>{relativeTime(agent.received_at)}</span>
-                      {nextRunIn && <span>next: {nextRunIn}</span>}
+                    <div className="mt-3 flex items-center text-xs">
+                      <div className="flex items-center gap-3 text-zinc-600">
+                        <span>{relativeTime(agent.received_at)}</span>
+                        {nextRunIn && <span>next: {nextRunIn}</span>}
+                      </div>
                       {agent.consecutive_failures != null &&
                         agent.consecutive_failures > 0 && (
-                          <span className="text-red-400/70">
+                          <span className="ml-auto text-red-400/70">
                             {agent.consecutive_failures} failures
                           </span>
                         )}

@@ -4,7 +4,8 @@
  * Redis layout per agent:
  *
  *   agent-health:latest:{installId}:{agentId}:{repo}
- *     → HealthReport JSON, TTL 30 min (online indicator)
+ *     → HealthReport JSON, dynamic TTL:
+ *       max(30 min, 2 × secondsUntilNextRun) when next_run_at is provided
  *
  *   agent-health:runs:{installId}:{agentId}:{repo}
  *     → Sorted set, score = received_at epoch ms, member = JSON report
