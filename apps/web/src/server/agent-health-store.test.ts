@@ -55,6 +55,15 @@ function makeMockRedis() {
       const set = sets.get(key);
       return set ? [...set] : [];
     }),
+    srem: vi.fn(async (key: string, ...members: string[]) => {
+      const set = sets.get(key);
+      if (!set) return 0;
+      let removed = 0;
+      for (const m of members) {
+        if (set.delete(m)) removed++;
+      }
+      return removed;
+    }),
     zadd: vi.fn(async (key: string, entry: { score: number; member: string }) => {
       if (!sortedSets.has(key)) sortedSets.set(key, new Map());
       sortedSets.get(key)!.set(entry.member, entry.score);
@@ -814,14 +823,14 @@ describe("getOverview", () => {
     expect(redis.get).toHaveBeenCalledTimes(1);
   });
 
-  it("returns unknown status when latest key has expired", async () => {
+  it("removes stale index entry when latest key has expired", async () => {
     redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
     // No latest key stored → expired
 
     const result = await getOverview("inst-1", redis);
-    expect(result).toHaveLength(1);
-    expect(result[0].status).toBe("unknown");
-    expect(result[0].agent_id).toBe("bee-1");
+    expect(result).toHaveLength(0);
+    // Stale entry should be removed from the index
+    expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1:hivemoot/sandbox")).toBe(false);
   });
 
   it("derives ok status for successful outcome without next_run_at", async () => {
