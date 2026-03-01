@@ -59,6 +59,12 @@ Full config examples:
 docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 ```
 
+> [!WARNING]
+> `hivemoot-agent` is not fully production-ready yet.
+> Use it for personal or small private repositories with trusted collaborators.
+> For production deployments, use the [Host Controller (Phase 2 MVP)](#host-controller-phase-2-mvp)
+> and apply additional hardening for credentials, runtime isolation, and permissions.
+
 ## What This Does
 
 You give it a GitHub repo. It spins up AI-powered agents that:
