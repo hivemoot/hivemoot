@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { BYOK_ERROR } from "@/constants/byok-errors";
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -18,7 +19,6 @@ interface Step2FormProps {
 interface SuccessData {
   provider: string;
   model: string;
-  fingerprint: string;
   updatedAt: string;
 }
 
@@ -46,7 +46,7 @@ const KEY_PLACEHOLDERS: Record<Provider, string> = {
 // ---------------------------------------------------------------------------
 // Inline SVG icons (no external libraries)
 // Official brand marks: Anthropic, OpenAI from Bootstrap Icons; Google "G"
-// from Google Fonts assets; Mistral pixel-grid from brand guidelines.
+// from Google Fonts assets.
 // ---------------------------------------------------------------------------
 
 function AnthropicIcon({ className }: { className?: string }) {
@@ -604,8 +604,8 @@ export default function Step2Form({
 
       if (
         res.status === 401 &&
-        (err.code === "byok_not_authenticated" ||
-          err.code === "byok_session_invalid")
+        (err.code === BYOK_ERROR.NOT_AUTHENTICATED ||
+          err.code === BYOK_ERROR.SESSION_INVALID)
       ) {
         setSessionExpired(true);
         setMinutesRemaining(0);
@@ -615,7 +615,7 @@ export default function Step2Form({
         return;
       }
 
-      if (res.status === 400 && err.code === "byok_provider_invalid") {
+      if (res.status === 400 && err.code === BYOK_ERROR.PROVIDER_INVALID) {
         setStatus("error");
         setErrorCode(err.code);
         setErrorMessage(
@@ -725,12 +725,6 @@ export default function Step2Form({
             <dd className="font-mono text-zinc-300">{successData.model}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-zinc-500">Key</dt>
-            <dd className="font-mono text-zinc-300">
-              ····
-            </dd>
-          </div>
-          <div className="flex justify-between">
             <dt className="text-zinc-500">Saved</dt>
             <dd className="text-zinc-300">
               {new Date(successData.updatedAt).toLocaleString()}
@@ -792,8 +786,8 @@ export default function Step2Form({
   // Form view
   // -----------------------------------------------------------------------
   const isSessionError =
-    errorCode === "byok_not_authenticated" ||
-    errorCode === "byok_session_invalid";
+    errorCode === BYOK_ERROR.NOT_AUTHENTICATED ||
+    errorCode === BYOK_ERROR.SESSION_INVALID;
 
   return (
     <div className="flex flex-col gap-5">

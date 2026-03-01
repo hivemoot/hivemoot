@@ -8,6 +8,7 @@ import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
+import { issueVoteCommand } from "./commands/issue-vote.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -127,6 +128,36 @@ Examples:
     Watch with a 60-second polling interval`,
   )
   .action(watchCommand);
+
+const issueProgram = program
+  .command("issue")
+  .description("Issue workflow helpers for autonomous agents");
+
+issueProgram
+  .command("vote")
+  .description("Cast a vote on an issue in the voting phase")
+  .argument("<issue>", "Issue number")
+  .argument("<vote>", 'Vote direction: "up" (👍) or "down" (👎)')
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve target without applying reaction")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  vote applied (or already voted — idempotent)
+  2  actionable guard: no_voting_target or conflicting_vote
+  >=3 execution error
+
+Examples:
+  $ hivemoot issue vote 42 up --repo hivemoot/hivemoot --json
+    Vote 👍 on issue #42 and output structured result
+
+  $ hivemoot issue vote 42 down --dry-run
+    Resolve the voting target without casting a vote`,
+  )
+  .action(issueVoteCommand);
 
 const prProgram = program
   .command("pr")

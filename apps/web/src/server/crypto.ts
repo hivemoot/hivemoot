@@ -7,6 +7,7 @@
  */
 
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
+import { BYOK_ERROR } from "./byok-error";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_BYTES = 12; // NIST-recommended for GCM
@@ -17,7 +18,9 @@ const HEX_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 // Error types
 // ---------------------------------------------------------------------------
 
-export type ByokCryptoErrorCode = "byok_key_version_unavailable" | "byok_decrypt_failed";
+export type ByokCryptoErrorCode =
+  | typeof BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE
+  | typeof BYOK_ERROR.DECRYPT_FAILED;
 
 export class ByokCryptoError extends Error {
   readonly code: ByokCryptoErrorCode;
@@ -85,7 +88,7 @@ export function encrypt(
   const key = keyring.get(keyVersion);
   if (!key) {
     throw new ByokCryptoError(
-      "byok_key_version_unavailable",
+      BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,
       `Key version "${keyVersion}" not found in keyring`,
     );
   }
@@ -114,7 +117,7 @@ export function decrypt(
   const key = keyring.get(envelope.keyVersion);
   if (!key) {
     throw new ByokCryptoError(
-      "byok_key_version_unavailable",
+      BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,
       `Key version "${envelope.keyVersion}" not found in keyring`,
     );
   }
@@ -137,6 +140,6 @@ export function decrypt(
   } catch (err) {
     // Re-throw our own errors; wrap everything else as tamper detection
     if (err instanceof ByokCryptoError) throw err;
-    throw new ByokCryptoError("byok_decrypt_failed", "Decryption failed — data may be tampered");
+    throw new ByokCryptoError(BYOK_ERROR.DECRYPT_FAILED, "Decryption failed — data may be tampered");
   }
 }

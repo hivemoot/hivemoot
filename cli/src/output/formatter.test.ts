@@ -316,6 +316,34 @@ describe("formatStatus()", () => {
     expect(output).not.toContain("Issue pipeline:");
     expect(output).toContain("Issue pipeline and implementation-gap metrics are omitted");
   });
+
+  it("renders PUBLISH READINESS section when canPush is false", () => {
+    const withReadiness: RepoSummary = {
+      ...summary,
+      publishReadiness: {
+        canPush: false,
+        message: "Cannot push — origin targets the upstream repo (hivemoot/colony). Point origin at a repo you have push access to.",
+      },
+    };
+
+    const output = formatStatus(withReadiness);
+    expect(output).toContain("PUBLISH READINESS");
+    expect(output).toContain("Cannot push — origin targets the upstream repo");
+  });
+
+  it("omits PUBLISH READINESS section when publishReadiness is absent", () => {
+    const output = formatStatus(summary);
+    expect(output).not.toContain("PUBLISH READINESS");
+  });
+
+  it("omits PUBLISH READINESS section when canPush is true", () => {
+    const withReadiness: RepoSummary = {
+      ...summary,
+      publishReadiness: { canPush: true },
+    };
+    const output = formatStatus(withReadiness);
+    expect(output).not.toContain("PUBLISH READINESS");
+  });
 });
 
 describe("DRIVE sections", () => {
