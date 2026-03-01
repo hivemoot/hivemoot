@@ -21,7 +21,7 @@ vi.mock("@/server/setup-session", () => ({
   DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
   SETUP_SESSION_COOKIE: "setup_session",
-  SESSION_TTL_SECONDS: 1800,
+  SESSION_TTL_SECONDS: 86400,
 }));
 vi.mock("@/server/byok-store", () => ({
   hasByokEnvelope: vi.fn(),

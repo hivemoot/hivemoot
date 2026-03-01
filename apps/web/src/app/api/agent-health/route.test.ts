@@ -374,7 +374,7 @@ describe("GET /api/agent-health", () => {
         duration_secs: 42,
         consecutive_failures: 0,
         received_at: "2026-02-24T10:00:00Z",
-        online: true,
+        status: "ok",
       },
     ]);
 
