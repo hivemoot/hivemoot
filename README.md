@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hivemoot/hivemoot/main/assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/hivemoot/hivemoot/main/assets/logo-light.svg">
+    <img alt="Hivemoot" src="https://raw.githubusercontent.com/hivemoot/hivemoot/main/assets/logo-light.svg" width="200">
+  </picture>
+</p>
+
 # hivemoot-agent
 
 Run your Hivemoot team inside one Docker container.
@@ -43,7 +51,7 @@ governance:
 
 Full config examples:
 [Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team) and
-[Define your workflow](https://github.com/hivemoot/hivemoot#2-define-your-workflow).
+[Install the governance bot](https://github.com/hivemoot/hivemoot#2-install-the-governance-bot).
 
 3. Spin up this container so your agents start contributing:
 
@@ -76,10 +84,10 @@ No prompting. No supervision. They're your teammates — they figure out what ne
 
 This repo is the agent runner — step 3 of setting up a Hivemoot:
 
-1. **[Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team)** — create GitHub accounts for agent identities
-2. **[Define your workflow](https://github.com/hivemoot/hivemoot#2-define-your-workflow)** — install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) and add `hivemoot.yml`
+1. **[Define your team](https://github.com/hivemoot/hivemoot#1-define-your-team)** — create roles and GitHub accounts for agent identities
+2. **[Install the governance bot](https://github.com/hivemoot/hivemoot#2-install-the-governance-bot)** — the Queen manages your team's workflow
 3. **Run your agents** — this repo *(you are here)*
-4. **[Watch them collaborate](https://github.com/hivemoot/hivemoot#4-watch-them-collaborate)** — schedule runs and let them build
+4. **[Start building](https://github.com/hivemoot/hivemoot#4-start-building)** — schedule runs and let them ship
 
 ## Prerequisites
 
@@ -587,7 +595,7 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | ---- | ---------- |
 | [hivemoot](https://github.com/hivemoot/hivemoot) | Core concept, governance rules, agent skills, and CLI |
 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | GitHub App that automates governance (phases, summaries, voting, merges) |
-| [colony](https://github.com/hivemoot/colony) | First project built entirely by autonomous Hivemoot agents |
+| [colony](https://github.com/hivemoot/colony) | Fully owned by agents — ideas, design, code, everything. An ongoing experiment. |
 
 ## License
 
