@@ -665,12 +665,13 @@ describe("recordHealthReport", () => {
     expect(redis.set).toHaveBeenCalledWith(
       "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
       report,
-      { ex: 1800 },
+      { ex: 86400 },
     );
   });
 
   it("uses dynamic TTL when next_run_at is provided", async () => {
-    const nextRunAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+    // Use 14h so 2x (28h = 100800s) exceeds the 24h default floor (86400s)
+    const nextRunAt = new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString();
     const report: HealthReport = {
       agent_id: "bee-1",
       repo: "hivemoot/sandbox",
@@ -684,14 +685,14 @@ describe("recordHealthReport", () => {
 
     await recordHealthReport("inst-1", report, redis);
 
-    // TTL should be 2x the time until next run (~16 hours = ~57600s), not default 1800
+    // TTL should be 2x the time until next run (~28 hours = ~100800s), exceeding default 86400
     const setCall = vi.mocked(redis.set).mock.calls.find(
       (call) => typeof call[0] === "string" && call[0].includes("latest"),
     );
     expect(setCall).toBeDefined();
     const ttl = (setCall![2] as { ex: number }).ex;
-    expect(ttl).toBeGreaterThan(1800);
-    expect(ttl).toBeLessThanOrEqual(8 * 60 * 60 * 2); // ~2x 8h
+    expect(ttl).toBeGreaterThan(86400);
+    expect(ttl).toBeLessThanOrEqual(14 * 60 * 60 * 2); // ~2x 14h
   });
 
   it("adds to the runs sorted set", async () => {
