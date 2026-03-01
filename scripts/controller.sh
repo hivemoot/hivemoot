@@ -248,6 +248,7 @@ spawn_worker() {
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
   append_env_if_set GIT_CLONE_DEPTH
+  append_env_if_set SHARED_CLONE_CACHE
   append_env_if_set SESSION_RESUME
   append_env_if_set SESSION_RESUME_MAX_IDLE_HOURS
   append_env_if_set SESSION_RESUME_MAX_AGE_HOURS
