@@ -5,7 +5,7 @@
  *
  *   agent-health:latest:{installId}:{agentId}:{repo}
  *     → HealthReport JSON, dynamic TTL:
- *       max(30 min, 2 × secondsUntilNextRun) when next_run_at is provided
+ *       max(24h, 2 × secondsUntilNextRun) when next_run_at is provided
  *
  *   agent-health:runs:{installId}:{agentId}:{repo}
  *     → Sorted set, score = received_at epoch ms, member = JSON report
@@ -29,7 +29,7 @@ import { type Redis } from "@upstash/redis";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_LATEST_TTL_SECONDS = 30 * 60; // 30 minutes
+const DEFAULT_LATEST_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_HISTORY_ENTRIES = 1440; // read-side cap; ~24h at 1 report/min
@@ -443,8 +443,9 @@ export async function checkRateLimit(
 
 /**
  * Computes the TTL for the latest-report key.
- * When next_run_at is provided, extends to 2x the time until next run
- * so the key survives through the expected gap between runs.
+ * Floor is 24 hours so agents on long cycles (e.g. 8h) stay visible on the
+ * dashboard even if they miss a cycle. When next_run_at is provided and
+ * 2x the gap exceeds 24h, the TTL extends to cover that instead.
  */
 function computeLatestTtl(report: HealthReport): number {
   if (typeof report.next_run_at === "string") {
