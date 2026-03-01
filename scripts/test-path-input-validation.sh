@@ -45,19 +45,19 @@ assert_fails_with \
   env TARGET_REPO=owner/repo WORKSPACE_ROOT=relative AGENT_ID_01=worker AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-loop.sh
 
 assert_fails_with \
-  "Invalid agent id: ." \
+  "Invalid AGENT_ID: ." \
   env TARGET_REPO=owner/repo AGENT_ID_01=. AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-multi.sh
 
 assert_fails_with \
-  "Invalid agent id: ." \
+  "Invalid AGENT_ID: ." \
   env TARGET_REPO=owner/repo AGENT_ID_01=. AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-loop.sh
 
 assert_fails_with \
-  "Invalid agent id: .." \
+  "Invalid AGENT_ID: .." \
   env TARGET_REPO=owner/repo AGENT_ID_01=.. AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-multi.sh
 
 assert_fails_with \
-  "Invalid agent id: .." \
+  "Invalid AGENT_ID: .." \
   env TARGET_REPO=owner/repo AGENT_ID_01=.. AGENT_GITHUB_TOKEN_01=dummy bash scripts/run-loop.sh
 
 echo "PASS: workspace root and agent ID validation checks"

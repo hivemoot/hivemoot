@@ -172,7 +172,7 @@ validate_agent_id() {
 
   case "$agent_id" in
     ''|*[!a-zA-Z0-9_-]*)
-      echo "Invalid agent id: ${agent_id}" >&2
+      echo "Invalid AGENT_ID: ${agent_id}" >&2
       exit 1
       ;;
   esac
