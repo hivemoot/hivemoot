@@ -391,6 +391,50 @@ test_response_200() {
   pass "200 response succeeds"
 }
 
+test_token_not_exposed_in_curl_argv() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-token-argv"
+  mkdir -p "$mock_dir"
+
+  cat > "${mock_dir}/curl" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$(dirname "$0")/curl-args"
+cat > "$(dirname "$0")/curl-stdin"
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local token_file="${mock_dir}/token"
+  local token_value="secret-health-token"
+  printf '%s\n' "$token_value" > "$token_file"
+
+  local payload
+  payload="$(build_test_payload)"
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+
+  if ! _send_health_report "http://localhost/api/agent-health" "$payload" "$token_file" 2>/dev/null; then
+    PATH="$original_path"
+    fail "expected send with token file to succeed"
+  fi
+  PATH="$original_path"
+
+  local args_file="${mock_dir}/curl-args"
+  [ -f "$args_file" ] || fail "mock curl did not capture argv"
+  if grep -Fq "$token_value" "$args_file"; then
+    fail "token value leaked into curl argv"
+  fi
+
+  grep -Fxq '@-' "$args_file" || fail "expected curl argv to include '@-' header-stdin reference"
+
+  local stdin_file="${mock_dir}/curl-stdin"
+  [ -f "$stdin_file" ] || fail "mock curl did not capture stdin"
+  local stdin_line
+  stdin_line="$(cat "$stdin_file")"
+  [ "$stdin_line" = "Authorization: Bearer ${token_value}" ] || fail "expected auth header on stdin"
+  pass "token is passed via stdin and not exposed in curl argv"
+}
+
 test_response_400() {
   source_reporter
   local mock_curl
@@ -813,6 +857,7 @@ echo ""
 
 echo "  Response handling:"
 run_test test_response_200
+run_test test_token_not_exposed_in_curl_argv
 run_test test_response_400
 run_test test_response_401
 run_test test_response_413

@@ -165,14 +165,24 @@ _send_health_report() {
     local curl_args=(-s -o /dev/null -w '%{http_code}' --max-time "$timeout")
     curl_args+=(-X POST -H 'Content-Type: application/json')
 
-    # Auth header — token read from file, same pattern as codebase (run-loop.sh)
+    # Auth header: pass via stdin (`-H @-`) so the token never appears in
+    # process argv and does not need to be staged in a temporary file.
+    local use_auth_header_stdin=0
+    local token_value=""
     if [ -n "$token_file" ] && [ -f "$token_file" ]; then
-      curl_args+=(-H "Authorization: Bearer $(cat "$token_file")")
+      if ! token_value="$(tr -d '\r\n' < "$token_file")"; then
+        echo "health-report: failed to read token file: ${token_file}" >&2
+        return 1
+      fi
+      use_auth_header_stdin=1
     fi
 
     curl_args+=(-d "$payload" "$url")
-
-    http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    if [ "$use_auth_header_stdin" -eq 1 ]; then
+      http_code="$(printf 'Authorization: Bearer %s\n' "$token_value" | curl "${curl_args[@]}" -H @-)" || curl_exit=$?
+    else
+      http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    fi
 
     # Network error: curl exits non-zero with http_code empty or "000"
     # (connection refused, DNS failure, timeout before response, etc.)

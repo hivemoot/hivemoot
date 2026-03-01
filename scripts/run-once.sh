@@ -1097,7 +1097,7 @@ fi
 stats_file="${log_dir}/agent-stats.json"
 _is_error=0
 [ "$exit_code" -ne 0 ] && _is_error=1
-_stats_line="$(update_agent_stats "$stats_file" "$_is_error")"
+update_agent_stats "$stats_file" "$_is_error" >/dev/null
 
 # Best-effort health report (never affects exit code).
 if [ -n "${HEALTH_REPORT_URL:-}" ]; then
