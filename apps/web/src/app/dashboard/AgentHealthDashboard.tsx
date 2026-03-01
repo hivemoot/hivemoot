@@ -23,7 +23,7 @@ interface AgentOverviewEntry {
   consecutive_failures?: number;
   error?: string;
   exit_code?: number;
-  received_at: string | null;
+  received_at: string;
   online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
   next_run_at?: string;
@@ -110,8 +110,7 @@ function statusLabel(status: GroupStatus): string {
 
 const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return "never";
+function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return "just now";

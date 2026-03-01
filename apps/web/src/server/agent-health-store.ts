@@ -67,7 +67,7 @@ export interface HealthOverviewEntry {
   model?: string;
   error?: string;
   exit_code?: number;
-  received_at: string | null; // null when latest key is missing/corrupt
+  received_at: string;
   status: AgentStatus;
   next_run_at?: string;
 }
@@ -606,26 +606,19 @@ export async function getOverview(
       }
     }
 
-    // Agent existed but latest key is missing/corrupt — show as unknown fallback.
-    console.warn("[agent-health] Latest report missing or corrupt for indexed agent", {
-      agentId: indexed[i].agentId,
-      repo: indexed[i].repo,
-      reportRawType: typeof reportRaw,
-    });
-    entries.push({
-      agent_id: indexed[i].agentId,
-      repo: indexed[i].repo,
-      received_at: null,
-      status: "unknown",
+    // Latest key expired or corrupt — remove stale index entry.
+    // The agent re-registers via SADD on its next POST.
+    redis.srem(indexKey(installId), `${indexed[i].agentId}:${indexed[i].repo}`).catch((err) => {
+      console.warn("[agent-health] Failed to remove stale index entry", {
+        agentId: indexed[i].agentId,
+        repo: indexed[i].repo,
+        error: err,
+      });
     });
   }
 
-  // Sort by received_at descending (most recent first); null entries sink to bottom
-  entries.sort((a, b) => {
-    if (a.received_at === null) return 1;
-    if (b.received_at === null) return -1;
-    return b.received_at.localeCompare(a.received_at);
-  });
+  // Sort by received_at descending (most recent first)
+  entries.sort((a, b) => b.received_at.localeCompare(a.received_at));
 
   return entries;
 }
