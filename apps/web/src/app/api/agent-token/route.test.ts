@@ -8,11 +8,22 @@ import { NextRequest, NextResponse } from "next/server";
 vi.mock("@/server/byok-auth", () => ({
   authenticateByokRequest: vi.fn(),
 }));
-vi.mock("@/server/agent-token", () => ({
-  generateAgentToken: vi.fn(),
-  getAgentToken: vi.fn(),
-  revokeAgentToken: vi.fn(),
-}));
+vi.mock("@/server/agent-token", () => {
+  class LockTimeoutError extends Error {
+    constructor(installationId: string) {
+      super(`Timed out acquiring agent-token lock for installation ${installationId}`);
+      this.name = "LockTimeoutError";
+    }
+  }
+
+  return {
+    generateAgentToken: vi.fn(),
+    getAgentToken: vi.fn(),
+    revokeAgentToken: vi.fn(),
+    LockTimeoutError,
+  };
+});
+
 vi.mock("@/server/agent-health-error", async () => {
   const { NextResponse } = await import("next/server");
   return {
@@ -24,6 +35,7 @@ vi.mock("@/server/agent-health-error", async () => {
       SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
       TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
       TOKEN_NOT_FOUND: "agent_health_token_not_found",
+      LOCK_TIMEOUT: "agent_health_lock_timeout",
       IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
       IDEMPOTENCY_PENDING: "agent_health_idempotency_pending",
       RATE_LIMITED: "agent_health_rate_limited",
@@ -38,6 +50,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   generateAgentToken,
   getAgentToken,
+  LockTimeoutError,
   revokeAgentToken,
 } from "@/server/agent-token";
 import { POST, GET, DELETE } from "./route";
@@ -115,6 +128,16 @@ describe("POST /api/agent-token", () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const res = await POST(makeRequest("POST"));
     expect(res.status).toBe(401);
+  });
+
+  it("returns 503 with lock-timeout code when token lock cannot be acquired", async () => {
+    vi.mocked(generateAgentToken).mockRejectedValue(new LockTimeoutError("123"));
+
+    const res = await POST(makeRequest("POST"));
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_lock_timeout");
   });
 
   it("returns 500 when generateAgentToken throws", async () => {
@@ -217,6 +240,16 @@ describe("DELETE /api/agent-token", () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const res = await DELETE(makeRequest("DELETE"));
     expect(res.status).toBe(401);
+  });
+
+  it("returns 503 with lock-timeout code when token lock cannot be acquired", async () => {
+    vi.mocked(revokeAgentToken).mockRejectedValue(new LockTimeoutError("123"));
+
+    const res = await DELETE(makeRequest("DELETE"));
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_lock_timeout");
   });
 
   it("returns 500 when revokeAgentToken throws", async () => {

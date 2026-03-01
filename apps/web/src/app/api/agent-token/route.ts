@@ -14,6 +14,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   generateAgentToken,
   getAgentToken,
+  LockTimeoutError,
   revokeAgentToken,
 } from "@/server/agent-token";
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
@@ -37,6 +38,13 @@ export async function POST(request: NextRequest) {
       message: "Store this token securely and rotate it immediately if compromised.",
     });
   } catch (err) {
+    if (err instanceof LockTimeoutError) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
+        "Another token operation is already in progress. Retry in a moment.",
+        503,
+      );
+    }
     console.error("[agent-token] Failed to generate token", {
       installationId: auth.session.installationId,
       error: err,
@@ -93,6 +101,13 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({ revoked: true });
   } catch (err) {
+    if (err instanceof LockTimeoutError) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.LOCK_TIMEOUT,
+        "Another token operation is already in progress. Retry in a moment.",
+        503,
+      );
+    }
     console.error("[agent-token] Failed to revoke token", {
       installationId: auth.session.installationId,
       error: err,

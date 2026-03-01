@@ -79,6 +79,13 @@ export interface AgentTokenRecord {
   createdBy: string;
 }
 
+export class LockTimeoutError extends Error {
+  constructor(installationId: string) {
+    super(`Timed out acquiring agent-token lock for installation ${installationId}`);
+    this.name = "LockTimeoutError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -149,7 +156,7 @@ async function withInstallationLock<T>(
     await sleep(randomRetryDelayMs());
   }
 
-  throw new Error(`Timed out acquiring agent-token lock for installation ${installationId}`);
+  throw new LockTimeoutError(installationId);
 }
 
 // ---------------------------------------------------------------------------

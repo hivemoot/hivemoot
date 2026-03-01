@@ -13,6 +13,7 @@ export const AGENT_HEALTH_ERROR = {
   MISSING_FIELDS: "agent_health_missing_fields",
   NOT_AUTHENTICATED: "agent_health_not_authenticated",
   SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
+  LOCK_TIMEOUT: "agent_health_lock_timeout",
   TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
   TOKEN_NOT_FOUND: "agent_health_token_not_found",
   IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
