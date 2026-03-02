@@ -26,7 +26,7 @@ const DEFAULT_MODELS: Record<Provider, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-5.2",
   google: "gemini-3-flash-preview",
-  openrouter: "anthropic/claude-3.5-sonnet",
+  openrouter: "anthropic/claude-sonnet-4.6",
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
@@ -950,7 +950,7 @@ export default function Step2Form({
           />
           {provider === "openrouter" ? (
             <p className="mt-1.5 text-xs text-zinc-500">
-              Format: <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">provider/model-name</code> (e.g. <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">anthropic/claude-3.5-sonnet</code>).{" "}
+              Format: <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">provider/model-name</code> (e.g. <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">anthropic/claude-sonnet-4.6</code>).{" "}
               <a
                 href="https://openrouter.ai/models"
                 target="_blank"
