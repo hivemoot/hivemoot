@@ -175,6 +175,26 @@ governance:
       - method: auto
     mergeReady:
       minApprovals: 2
+    automerge:
+      enabled: true
+      dryRun: true # Phase 1: classify and label only
+      allowedPaths:
+        - "**/*.md"
+        - "**/*.txt"
+        - "docs/**"
+      denyPaths:
+        - ".github/**"
+        - "**/package.json"
+        - "**/package-lock.json"
+        - "**/*.lock"
+        - "**/pnpm-lock.yaml"
+        - "**/go.sum"
+        - "**/bun.lockb"
+        - "**/go.work.sum"
+      maxFiles: 5
+      maxChangedLines: 80
+      minApprovals: 2
+      requireChecks: true
 
 standup:
   enabled: true
