@@ -13,9 +13,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "${SCRIPT_DIR}/lib.sh"
 
 bash_major="${BASH_VERSINFO[0]:-0}"
+print_bash_upgrade_hint() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    echo "On macOS, install a newer bash: brew install bash" >&2
+    echo "Then run it explicitly (Apple Silicon: /opt/homebrew/bin/bash scripts/controller.sh; Intel: /usr/local/bin/bash scripts/controller.sh)." >&2
+    return 0
+  fi
+
+  if command -v apt >/dev/null 2>&1 || command -v apt-get >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo apt install bash" >&2
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo dnf install bash" >&2
+  elif command -v yum >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo yum install bash" >&2
+  elif command -v apk >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo apk add bash" >&2
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo pacman -S bash" >&2
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo zypper install bash" >&2
+  elif command -v pkg >/dev/null 2>&1; then
+    echo "Install a newer bash: sudo pkg install bash" >&2
+  else
+    echo "Install Bash 4+ with your package manager." >&2
+  fi
+
+  echo "Then rerun this script with the upgraded Bash binary." >&2
+}
+
 if [ "$bash_major" -lt 4 ]; then
   echo "scripts/controller.sh requires Bash 4 or newer (found ${BASH_VERSION:-unknown})." >&2
-  echo "On macOS, install a newer bash and run it explicitly (for example: /opt/homebrew/bin/bash scripts/controller.sh)." >&2
+  print_bash_upgrade_hint
   exit 1
 fi
 
@@ -220,6 +248,9 @@ spawn_worker() {
     mkdir -p "${job_home}/.codex"
     cp "$codex_auth_file" "${job_home}/.codex/auth.json"
     chmod 600 "${job_home}/.codex/auth.json"
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      chown -R 1000:1000 "${job_home}/.codex" 2>/dev/null || true
+    fi
   fi
 
   docker_run_args+=(
@@ -1004,6 +1035,11 @@ run_job() {
 
   mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir"
   chmod 700 "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir" 2>/dev/null || true
+  # On Linux, containers run as uid 1000 (node). Workspace and home directories
+  # must be owned by this uid for the container to write into them.
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    chown 1000:1000 "$job_workspace" "$job_home" 2>/dev/null || true
+  fi
 
   write_job_spec "$job_spec_file" "$job_id" "$repo" "$agent_id" "$trigger_type" "$agent_timeout_seconds"
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "queued" "-"
@@ -1359,6 +1395,11 @@ for index in "${!agent_ids[@]}"; do
   token_file="$(mktemp "${token_tmp_root}/${aid}.XXXXXX")"
   printf '%s' "$token_value" > "$token_file"
   chmod 600 "$token_file" 2>/dev/null || true
+  # On Linux, containers run as uid 1000 (node). macOS Docker Desktop remaps
+  # uids via virtiofs, but native Linux Docker maps 1:1.
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    chown 1000:1000 "$token_file" 2>/dev/null || true
+  fi
   temp_token_files+=("$token_file")
   agent_token_files["$aid"]="$token_file"
   ensure_agent_lock_file "$target_repo" "$aid"
