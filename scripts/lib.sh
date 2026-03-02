@@ -241,6 +241,60 @@ load_slot_token() {
   printf '%s' "$token"
 }
 
+# Populate caller-declared seen_agents, agent_ids, and agent_tokens by reading
+# AGENT_ID_XX / AGENT_GITHUB_TOKEN_XX(_FILE) env vars for slots 1..<max_slots>.
+# Arrays must be declared in the caller scope before calling this function:
+#   declare -A seen_agents=()
+#   declare -a agent_ids=()
+#   declare -a agent_tokens=()
+load_agent_slots() {
+  local max_slots="${1:-10}"
+  local slot suffix id_var token_var token_file_var
+  local agent_id agent_token token_inline token_file
+
+  for slot in $(seq 1 "$max_slots"); do
+    suffix="$(printf '%02d' "$slot")"
+    id_var="AGENT_ID_${suffix}"
+    token_var="AGENT_GITHUB_TOKEN_${suffix}"
+    token_file_var="${token_var}_FILE"
+
+    agent_id="$(trim "${!id_var:-}")"
+    token_inline="${!token_var:-}"
+    token_file="${!token_file_var:-}"
+
+    if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
+      continue
+    fi
+
+    if [ -z "$agent_id" ]; then
+      echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
+      exit 1
+    fi
+
+    agent_token="$(load_slot_token "$suffix")"
+    if [ -z "$agent_token" ]; then
+      echo "Missing token for slot ${suffix}. Set ${token_var} or ${token_file_var}." >&2
+      exit 1
+    fi
+
+    validate_agent_id "$agent_id"
+
+    if [ -n "${seen_agents[$agent_id]:-}" ]; then
+      echo "Duplicate agent id detected: ${agent_id}" >&2
+      exit 1
+    fi
+    seen_agents["$agent_id"]=1
+
+    agent_ids+=("$agent_id")
+    agent_tokens+=("$agent_token")
+  done
+
+  if [ "${#agent_ids[@]}" -eq 0 ]; then
+    echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
+    exit 1
+  fi
+}
+
 preflight_check_provider_auth() {
   local provider="$1"
   local auth_mode="${2:-auto}"
