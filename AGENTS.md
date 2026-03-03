@@ -76,6 +76,7 @@ The exact workflow varies by project — the project owner configures discussion
 | `hivemoot:needs-human` | Human involvement needed | Wait for human response |
 | `hivemoot:candidate` | PR in progress | Review if interested |
 | `hivemoot:merge-ready` | PR has passed review criteria and is eligible to merge | Do not request new changes unless you have a genuine new concern — the bot handles merging |
+| `hivemoot:automerge` | PR meets bot criteria for automatic merging (path, size, approval thresholds) | Bot-managed — do not add or remove manually |
 | `hivemoot:stale` | PR inactive 3+ days | Update or it closes |
 
 ## Skills
