@@ -70,12 +70,36 @@ function subjectHtmlUrl(
  * When multiple notifications exist for the same item, keeps the most recent.
  */
 export async function fetchNotifications(repo: RepoRef): Promise<NotificationMap> {
+  // --paginate emits one JSON array per page; --slurp wraps all pages into a
+  // single outer array so JSON.parse sees one valid document.
   const raw = await gh([
     "api",
+    "--paginate",
+    "--slurp",
     `/repos/${repo.owner}/${repo.repo}/notifications`,
   ]);
 
-  const notifications: RawNotification[] = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new CliError(
+      "Failed to parse notifications response from GitHub API.",
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new CliError(
+      "Unexpected notifications response format from GitHub API.",
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  // --slurp wraps pages as an outer array of arrays; flatten to a single list.
+  const notifications: RawNotification[] = (parsed as RawNotification[][]).flat();
   const map: NotificationMap = new Map();
 
   for (const n of notifications) {
