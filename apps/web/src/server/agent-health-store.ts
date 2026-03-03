@@ -41,6 +41,26 @@ const MODEL_PATTERN = /^[a-zA-Z0-9._:/-]{1,128}$/;
 // Types
 // ---------------------------------------------------------------------------
 
+export type TriggerType = "scheduled" | "mention" | "manual";
+
+export interface ModelTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cost_usd: number | null;
+}
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cost_usd: number | null;
+  num_turns: number;
+  model_breakdown: Record<string, ModelTokenUsage> | null;
+}
+
 export interface HealthReport {
   agent_id: string;
   repo: string;
@@ -52,6 +72,8 @@ export interface HealthReport {
   error?: string;
   exit_code?: number;
   next_run_at?: string; // ISO 8601, optional — when the next scheduled run is expected
+  trigger?: TriggerType;
+  token_usage?: TokenUsage | null;
   received_at: string; // ISO 8601, server-assigned
 }
 
@@ -70,6 +92,8 @@ export interface HealthOverviewEntry {
   received_at: string;
   status: AgentStatus;
   next_run_at?: string;
+  trigger?: TriggerType;
+  token_usage?: TokenUsage | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +209,7 @@ export type IdempotencyReservation =
 // ---------------------------------------------------------------------------
 
 const VALID_OUTCOMES = new Set(["success", "failure", "timeout"]);
+const VALID_TRIGGERS = new Set<TriggerType>(["scheduled", "mention", "manual"]);
 const ALLOWED_FIELDS = new Set([
   "agent_id",
   "repo",
@@ -196,6 +221,8 @@ const ALLOWED_FIELDS = new Set([
   "error",
   "exit_code",
   "next_run_at",
+  "trigger",
+  "token_usage",
 ]);
 
 export type ValidationResult = {
@@ -316,6 +343,88 @@ export function validateReport(body: unknown): ValidationResult {
     }
   }
 
+  if (
+    obj.trigger !== undefined
+    && (typeof obj.trigger !== "string" || !VALID_TRIGGERS.has(obj.trigger as TriggerType))
+  ) {
+    return { ok: false, message: "trigger must be one of: scheduled, mention, manual" };
+  }
+
+  if (obj.token_usage !== undefined && obj.token_usage !== null) {
+    const tu = obj.token_usage;
+    if (typeof tu !== "object" || Array.isArray(tu)) {
+      return { ok: false, message: "token_usage must be an object or null" };
+    }
+    const t = tu as Record<string, unknown>;
+
+    if (typeof t.input_tokens !== "number" || !Number.isInteger(t.input_tokens) || t.input_tokens < 0) {
+      return { ok: false, message: "token_usage.input_tokens must be a non-negative integer" };
+    }
+    if (typeof t.output_tokens !== "number" || !Number.isInteger(t.output_tokens) || t.output_tokens < 0) {
+      return { ok: false, message: "token_usage.output_tokens must be a non-negative integer" };
+    }
+    if (
+      t.cache_read_input_tokens !== null
+      && (typeof t.cache_read_input_tokens !== "number" || !Number.isInteger(t.cache_read_input_tokens) || t.cache_read_input_tokens < 0)
+    ) {
+      return { ok: false, message: "token_usage.cache_read_input_tokens must be a non-negative integer or null" };
+    }
+    if (
+      t.cache_creation_input_tokens !== null
+      && (typeof t.cache_creation_input_tokens !== "number" || !Number.isInteger(t.cache_creation_input_tokens) || t.cache_creation_input_tokens < 0)
+    ) {
+      return { ok: false, message: "token_usage.cache_creation_input_tokens must be a non-negative integer or null" };
+    }
+    if (
+      t.cost_usd !== null
+      && (typeof t.cost_usd !== "number" || t.cost_usd < 0)
+    ) {
+      return { ok: false, message: "token_usage.cost_usd must be a non-negative number or null" };
+    }
+    if (typeof t.num_turns !== "number" || !Number.isInteger(t.num_turns) || t.num_turns < 0) {
+      return { ok: false, message: "token_usage.num_turns must be a non-negative integer" };
+    }
+    if (t.model_breakdown !== null && t.model_breakdown !== undefined) {
+      if (typeof t.model_breakdown !== "object" || Array.isArray(t.model_breakdown)) {
+        return { ok: false, message: "token_usage.model_breakdown must be an object or null" };
+      }
+      const mb = t.model_breakdown as Record<string, unknown>;
+      for (const [modelId, usage] of Object.entries(mb)) {
+        if (!MODEL_PATTERN.test(modelId)) {
+          return { ok: false, message: `token_usage.model_breakdown key must match [a-zA-Z0-9._:/-]+ (got: ${modelId})` };
+        }
+        if (typeof usage !== "object" || usage === null || Array.isArray(usage)) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId} must be an object` };
+        }
+        const u = usage as Record<string, unknown>;
+        if (typeof u.input_tokens !== "number" || !Number.isInteger(u.input_tokens) || u.input_tokens < 0) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId}.input_tokens must be a non-negative integer` };
+        }
+        if (typeof u.output_tokens !== "number" || !Number.isInteger(u.output_tokens) || u.output_tokens < 0) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId}.output_tokens must be a non-negative integer` };
+        }
+        if (
+          u.cache_read_input_tokens !== null
+          && (typeof u.cache_read_input_tokens !== "number" || !Number.isInteger(u.cache_read_input_tokens) || u.cache_read_input_tokens < 0)
+        ) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_read_input_tokens must be a non-negative integer or null` };
+        }
+        if (
+          u.cache_creation_input_tokens !== null
+          && (typeof u.cache_creation_input_tokens !== "number" || !Number.isInteger(u.cache_creation_input_tokens) || u.cache_creation_input_tokens < 0)
+        ) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_creation_input_tokens must be a non-negative integer or null` };
+        }
+        if (
+          u.cost_usd !== null
+          && (typeof u.cost_usd !== "number" || u.cost_usd < 0)
+        ) {
+          return { ok: false, message: `token_usage.model_breakdown.${modelId}.cost_usd must be a non-negative number or null` };
+        }
+      }
+    }
+  }
+
   const report: HealthReport = {
     agent_id: obj.agent_id,
     repo: obj.repo,
@@ -330,6 +439,8 @@ export function validateReport(body: unknown): ValidationResult {
   if (typeof obj.model === "string") report.model = obj.model;
   if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
   if (typeof obj.next_run_at === "string") report.next_run_at = obj.next_run_at;
+  if (typeof obj.trigger === "string") report.trigger = obj.trigger as TriggerType;
+  if (obj.token_usage !== undefined) report.token_usage = obj.token_usage as TokenUsage | null;
 
   return { ok: true, report };
 }
@@ -602,6 +713,8 @@ export async function getOverview(
           received_at: report.received_at,
           status: deriveStatus(report),
           next_run_at: typeof report.next_run_at === "string" ? report.next_run_at : undefined,
+          trigger: typeof report.trigger === "string" && VALID_TRIGGERS.has(report.trigger as TriggerType) ? report.trigger : undefined,
+          token_usage: "token_usage" in report ? report.token_usage : undefined,
         });
         continue;
       }
