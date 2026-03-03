@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
+import { extractTaskId } from "@/server/task-route-utils";
 import { getTask, TASK_ID_PATTERN } from "@/server/task-store";
-
-function extractTaskId(pathname: string): string | null {
-  const parts = pathname.split("/").filter(Boolean);
-  const tasksIndex = parts.lastIndexOf("tasks");
-  if (tasksIndex === -1) return null;
-  const taskId = parts[tasksIndex + 1];
-  return taskId ?? null;
-}
 
 export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);

@@ -12,6 +12,17 @@ const MAX_PROMPT_CHARS = 8000;
 const MAX_ENGINE_CHARS = 64;
 const MAX_PROGRESS_CHARS = 400;
 const MAX_RESULT_CHARS = 128_000;
+const TASK_LOCK_PREFIX = "hive:task-lock:";
+const TASK_LOCK_TTL_SECONDS = 5;
+const TASK_LOCK_MAX_WAIT_MS = 1000;
+const TASK_LOCK_RETRY_MIN_MS = 8;
+const TASK_LOCK_RETRY_MAX_MS = 20;
+const RELEASE_TASK_LOCK_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+`;
 
 const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const VALID_ENGINE_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -77,6 +88,13 @@ export interface RateLimitResult {
   retryAfterSeconds: number;
 }
 
+class TaskLockTimeoutError extends Error {
+  constructor(installationId: string) {
+    super(`Timed out acquiring task lock for installation ${installationId}`);
+    this.name = "TaskLockTimeoutError";
+  }
+}
+
 function taskKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}`;
 }
@@ -109,8 +127,66 @@ function createRateLimitKey(
   return `tasks:create-ratelimit:${installationId}:${userId}:${minuteBucket}`;
 }
 
+function taskLockKey(installationId: string): string {
+  return `${TASK_LOCK_PREFIX}${installationId}`;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomTaskLockRetryDelayMs(): number {
+  return TASK_LOCK_RETRY_MIN_MS
+    + Math.floor(Math.random() * (TASK_LOCK_RETRY_MAX_MS - TASK_LOCK_RETRY_MIN_MS + 1));
+}
+
+async function releaseTaskLock(
+  lockKey: string,
+  lockOwnerToken: string,
+  redis: Redis,
+): Promise<void> {
+  await redis.eval(RELEASE_TASK_LOCK_SCRIPT, [lockKey], [lockOwnerToken]);
+}
+
+async function withTaskInstallationLock<T>(
+  installationId: string,
+  redis: Redis,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lockKey = taskLockKey(installationId);
+  const lockOwnerToken = randomBytes(16).toString("hex");
+  const deadline = Date.now() + TASK_LOCK_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const acquired = await redis.set(lockKey, lockOwnerToken, {
+      nx: true,
+      ex: TASK_LOCK_TTL_SECONDS,
+    });
+
+    if (acquired === "OK") {
+      try {
+        return await fn();
+      } finally {
+        try {
+          await releaseTaskLock(lockKey, lockOwnerToken, redis);
+        } catch (error) {
+          // Lock cleanup is best-effort so operation results are preserved.
+          console.error("[tasks] Failed to release task lock", {
+            installationId,
+            error,
+          });
+        }
+      }
+    }
+
+    await sleep(randomTaskLockRetryDelayMs());
+  }
+
+  throw new TaskLockTimeoutError(installationId);
 }
 
 function isTerminal(status: TaskStatus): boolean {
@@ -406,42 +482,54 @@ export async function createTask(
   request: CreateTaskRequest,
   redis: Redis,
 ): Promise<CreateTaskResult> {
-  const activeTaskCount = await countActiveTasks(installationId, redis);
-  if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
-    return { ok: false, reason: "concurrency_limited" };
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const taskId = generateTaskId();
+      const ts = Date.now();
+      const timestamp = new Date(ts).toISOString();
+
+      const stored: StoredTaskRecord = {
+        task_id: taskId,
+        status: "pending",
+        engine: request.engine,
+        prompt: request.prompt,
+        repos: request.repos,
+        timeout_secs: request.timeout_secs,
+        created_by: createdBy,
+        created_at: timestamp,
+        updated_at: timestamp,
+      };
+
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), stored)
+        .set(taskProgressKey(installationId, taskId), "Queued")
+        .zadd(pendingKey(installationId), { score: ts, member: taskId })
+        .zadd(recentKey(installationId), { score: ts, member: taskId })
+        .exec();
+
+      return {
+        ok: true,
+        task: {
+          ...stored,
+          progress: "Queued",
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task create lock timeout", {
+        installationId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
   }
-
-  const taskId = generateTaskId();
-  const ts = Date.now();
-  const timestamp = new Date(ts).toISOString();
-
-  const stored: StoredTaskRecord = {
-    task_id: taskId,
-    status: "pending",
-    engine: request.engine,
-    prompt: request.prompt,
-    repos: request.repos,
-    timeout_secs: request.timeout_secs,
-    created_by: createdBy,
-    created_at: timestamp,
-    updated_at: timestamp,
-  };
-
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), stored)
-    .set(taskProgressKey(installationId, taskId), "Queued")
-    .zadd(pendingKey(installationId), { score: ts, member: taskId })
-    .zadd(recentKey(installationId), { score: ts, member: taskId })
-    .exec();
-
-  return {
-    ok: true,
-    task: {
-      ...stored,
-      progress: "Queued",
-    },
-  };
 }
 
 async function finalizeTask(
@@ -511,7 +599,7 @@ async function finalizeTask(
   };
 }
 
-export async function markTaskRunning(
+async function markTaskRunningUnlocked(
   installationId: string,
   taskId: string,
   redis: Redis,
@@ -552,6 +640,29 @@ export async function markTaskRunning(
       progress: "Running",
     },
   };
+}
+
+export async function markTaskRunning(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskTransitionResult> {
+  try {
+    return await withTaskInstallationLock(
+      installationId,
+      redis,
+      () => markTaskRunningUnlocked(installationId, taskId, redis),
+    );
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task start lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
 }
 
 export async function setTaskProgress(
@@ -694,22 +805,34 @@ export async function claimNextPendingTask(
   installationId: string,
   redis: Redis,
 ): Promise<TaskRecord | null> {
-  const candidates = await redis.zrange(pendingKey(installationId), 0, 9);
-  const taskIds = candidates.filter((candidate): candidate is string => typeof candidate === "string");
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const candidates = await redis.zrange(pendingKey(installationId), 0, 9);
+      const taskIds = candidates.filter((candidate): candidate is string => typeof candidate === "string");
 
-  for (const taskId of taskIds) {
-    const transitioned = await markTaskRunning(installationId, taskId, redis);
-    if (transitioned.ok) return transitioned.task;
+      for (const taskId of taskIds) {
+        const transitioned = await markTaskRunningUnlocked(installationId, taskId, redis);
+        if (transitioned.ok) return transitioned.task;
 
-    if (transitioned.reason === "not_found" || transitioned.reason === "invalid_transition") {
-      await redis.zrem(pendingKey(installationId), taskId);
-      continue;
-    }
+        if (transitioned.reason === "not_found" || transitioned.reason === "invalid_transition") {
+          await redis.zrem(pendingKey(installationId), taskId);
+          continue;
+        }
 
-    if (transitioned.reason === "concurrency_limited") {
+        if (transitioned.reason === "concurrency_limited") {
+          return null;
+        }
+      }
+
+      return null;
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task claim lock timeout", {
+        installationId,
+      });
       return null;
     }
+    throw error;
   }
-
-  return null;
 }

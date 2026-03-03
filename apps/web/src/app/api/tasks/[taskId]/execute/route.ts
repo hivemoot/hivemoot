@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseContentLength } from "@/server/request-utils";
+import { extractTaskId } from "@/server/task-route-utils";
 import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import {
@@ -15,20 +17,6 @@ const MAX_PAYLOAD_BYTES = 128 * 1024;
 const textEncoder = new TextEncoder();
 
 type ExecuteAction = "progress" | "complete" | "fail" | "timeout";
-
-function parseContentLength(header: string | null): number | null {
-  if (!header) return null;
-  const parsed = Number(header);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.floor(parsed);
-}
-
-function extractTaskId(pathname: string): string | null {
-  const parts = pathname.split("/").filter(Boolean);
-  const tasksIndex = parts.lastIndexOf("tasks");
-  if (tasksIndex === -1) return null;
-  return parts[tasksIndex + 1] ?? null;
-}
 
 function parseAction(value: unknown): ExecuteAction | null {
   if (value === "progress" || value === "complete" || value === "fail" || value === "timeout") {

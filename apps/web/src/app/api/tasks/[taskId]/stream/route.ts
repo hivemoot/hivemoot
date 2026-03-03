@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
+import { extractTaskId } from "@/server/task-route-utils";
 import { getTask, TASK_ID_PATTERN, type TaskRecord } from "@/server/task-store";
 
 export const dynamic = "force-dynamic";
@@ -8,14 +9,6 @@ export const dynamic = "force-dynamic";
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_STREAM_DURATION_MS = 55_000;
-
-function extractTaskId(pathname: string): string | null {
-  const parts = pathname.split("/").filter(Boolean);
-  const tasksIndex = parts.lastIndexOf("tasks");
-  if (tasksIndex === -1) return null;
-  const taskId = parts[tasksIndex + 1];
-  return taskId ?? null;
-}
 
 function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;

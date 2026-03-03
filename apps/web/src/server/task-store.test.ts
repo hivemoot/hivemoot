@@ -79,6 +79,19 @@ function makeMockRedis() {
       counters.set(key, next);
       return next;
     }),
+    eval: vi.fn(async (script: string, keys: string[], args: string[]) => {
+      if (script.includes('redis.call("get", KEYS[1]) == ARGV[1]')) {
+        const lockKey = keys[0];
+        const lockOwnerToken = args[0];
+        if (kv.get(lockKey) === lockOwnerToken) {
+          kv.delete(lockKey);
+          ttl.delete(lockKey);
+          return 1;
+        }
+        return 0;
+      }
+      return 0;
+    }),
     expire: vi.fn(async (key: string, seconds: number) => {
       ttl.set(key, seconds);
       return 1;
@@ -259,6 +272,31 @@ describe("task lifecycle", () => {
     expect(blocked).toEqual({ ok: false, reason: "concurrency_limited" });
   });
 
+  it("enforces max active tasks under parallel create attempts", async () => {
+    const attempts = await Promise.all(
+      Array.from({ length: MAX_CONCURRENT_TASKS + 4 }, (_, index) =>
+        createTask(
+          "inst-1",
+          "queen",
+          {
+            engine: "codex",
+            prompt: `parallel-${index}`,
+            repos: ["hivemoot/hivemoot"],
+            timeout_secs: 300,
+          },
+          redis,
+        )
+      ),
+    );
+
+    const created = attempts.filter((result) => result.ok);
+    expect(created).toHaveLength(MAX_CONCURRENT_TASKS);
+
+    const pendingCount = redis._zsets.get("tasks:pending:inst-1")?.size ?? 0;
+    const runningCount = redis._zsets.get("tasks:running:inst-1")?.size ?? 0;
+    expect(pendingCount + runningCount).toBeLessThanOrEqual(MAX_CONCURRENT_TASKS);
+  });
+
   it("stores 7-day TTL on completed tasks and 1-day TTL on failed tasks", async () => {
     const created = await createTask(
       "inst-1",
@@ -401,6 +439,32 @@ describe("task lifecycle", () => {
     expect(claimed).not.toBeNull();
     expect(claimed?.status).toBe("running");
     expect(claimed?.task_id).toBe(first.task.task_id);
+  });
+
+  it("does not allow two parallel claimers to claim the same task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "single",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const [firstClaim, secondClaim] = await Promise.all([
+      claimNextPendingTask("inst-1", redis),
+      claimNextPendingTask("inst-1", redis),
+    ]);
+
+    const successfulClaims = [firstClaim, secondClaim].filter((task) => task !== null);
+    expect(successfulClaims).toHaveLength(1);
+    expect(successfulClaims[0]?.task_id).toBe(created.task.task_id);
   });
 
   it("returns null when there are no pending tasks to claim", async () => {

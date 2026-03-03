@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
+import { parseContentLength } from "@/server/request-utils";
 import {
   AGENT_ID_PATTERN,
   validateReport,
@@ -31,13 +32,6 @@ import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-erro
 
 const MAX_PAYLOAD_BYTES = 10 * 1024;
 const textEncoder = new TextEncoder();
-
-function parseContentLength(header: string | null): number | null {
-  if (!header) return null;
-  const parsed = Number(header);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.floor(parsed);
-}
 
 function payloadTooLargeResponse() {
   return agentHealthError(
