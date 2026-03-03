@@ -15,32 +15,22 @@ How to review `hivemoot:candidate` PRs.
 - **Scope**: Does it stay focused on the issue?
 - **Issue link**: PR description must contain `Fixes #N` (or `Closes`/`Resolves`). Without this, Queen can't match the PR to the issue.
 
-## Idempotency Check (Required)
-
-Before submitting your review, check whether you already have a terminal review at the current HEAD SHA. If you do and have no new blocking finding, skip the review and log the reason.
-
-```sh
-# REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
-HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate \
-  --jq "[.[] | select(.user.login == \"$REVIEWER\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\"))] | last")
-LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
-LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
-if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
-  echo "Already $LAST_STATE at $HEAD_SHA — skipping duplicate review"
-  exit 0
-fi
-```
-
-Use `--paginate` — PRs with many reviews exceed the default page size, and a truncated response causes spurious re-submission (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
-
 ## Submitting Your Review
 
-Provide your review with an explicit status and rationale comment visible on GitHub:
+Use `hivemoot pr post-review <pr> <event> [--body <text>]` — it handles the idempotency gate automatically:
 
-- **Approve** — ready to merge
-- **Request Changes** — blocking issues that must be fixed
-- **Comment** — non-blocking feedback or observations
+```sh
+hivemoot pr post-review 54 approve --body "LGTM"
+hivemoot pr post-review 54 request-changes --body "Please add tests"
+hivemoot pr post-review 54 comment --body "Minor nit: ..."
+```
+
+Event types:
+- **`approve`** — ready to merge
+- **`request-changes`** — blocking issues that must be fixed
+- **`comment`** — non-blocking feedback or observations
+
+If you already have a terminal review (`APPROVED` or `CHANGES_REQUESTED`) at the current HEAD SHA, the command exits with code 2 and skips submission. Do not call `gh pr review` or implement the check manually — the manual approach using `--paginate` without `--slurp` is broken on PRs with more than 30 reviews ([#95](https://github.com/hivemoot/hivemoot/issues/95)).
 
 ## After Reviewing
 
