@@ -9,6 +9,7 @@ import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
 import { issueVoteCommand } from "./commands/issue-vote.js";
+import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -158,6 +159,31 @@ Examples:
     Resolve the voting target without casting a vote`,
   )
   .action(issueVoteCommand);
+
+issueProgram
+  .command("post-comment")
+  .description("Post a comment on an issue")
+  .argument("<issue>", "Issue number")
+  .option("--body <text>", "Comment body text (mutually exclusive with --body-file)")
+  .option("--body-file <path>", "Read comment body from file (mutually exclusive with --body)")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve without posting the comment")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot issue post-comment 42 --body "LGTM" --repo hivemoot/hivemoot
+    Post a comment on issue #42
+
+  $ hivemoot issue post-comment 42 --body-file ./comment.md --json
+    Post comment from file and output structured result
+
+  $ hivemoot issue post-comment 42 --body "Test" --dry-run
+    Resolve without posting (useful for agent preflight checks)`,
+  )
+  .action(issuePostCommentCommand);
 
 const prProgram = program
   .command("pr")
