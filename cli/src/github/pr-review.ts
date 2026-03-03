@@ -76,23 +76,29 @@ async function fetchPrBasicInfo(repo: RepoRef, prRef: string): Promise<PrBasicIn
 }
 
 async function fetchAllReviews(repo: RepoRef, prNumber: number): Promise<RestReview[]> {
-  // Use --paginate to handle PRs with many reviews (>30 default page size).
+  // --paginate emits one JSON array per page; --slurp wraps all pages into a
+  // single outer array so JSON.parse sees one valid document.
   const raw = await gh([
     "api",
     "--paginate",
+    "--slurp",
     `repos/${repo.owner}/${repo.repo}/pulls/${prNumber}/reviews`,
   ]);
 
-  // --paginate concatenates JSON arrays, resulting in a valid JSON array.
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [];
+    throw new CliError(
+      "Failed to parse paginated reviews response from GitHub API.",
+      "GH_ERROR",
+      1,
+    );
   }
 
   if (!Array.isArray(parsed)) return [];
-  return parsed as RestReview[];
+  // --slurp wraps pages as an outer array of arrays; flatten to a single list.
+  return (parsed as RestReview[][]).flat();
 }
 
 function findTerminalReviewAtSha(
