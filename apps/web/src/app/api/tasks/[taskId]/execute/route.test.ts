@@ -12,6 +12,7 @@ vi.mock("@/server/task-store", () => ({
   completeTask: vi.fn(),
   failTask: vi.fn(),
   timeoutTask: vi.fn(),
+  requestFollowUp: vi.fn(),
 }));
 
 import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
@@ -21,6 +22,7 @@ import {
   completeTask,
   failTask,
   timeoutTask,
+  requestFollowUp,
 } from "@/server/task-store";
 import { POST } from "./route";
 
@@ -50,6 +52,7 @@ beforeEach(() => {
   vi.mocked(completeTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "completed" } });
   vi.mocked(failTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "failed" } });
   vi.mocked(timeoutTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "timed_out" } });
+  vi.mocked(requestFollowUp).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "needs_follow_up" } });
 });
 
 function makeRequest(body: unknown) {
@@ -120,5 +123,47 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe("task_invalid_transition");
+  });
+
+  it("accepts request_follow_up action", async () => {
+    const res = await POST(makeRequest({ action: "request_follow_up", message: "Need API key" }));
+    expect(res.status).toBe(200);
+    expect(requestFollowUp).toHaveBeenCalledWith(
+      "inst-1",
+      "abc123abc123abc123abc123",
+      "Need API key",
+      expect.anything(),
+    );
+  });
+
+  it("returns 400 when message is missing for request_follow_up", async () => {
+    const res = await POST(makeRequest({ action: "request_follow_up" }));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("task_missing_fields");
+  });
+
+  it("returns 409 when request_follow_up hits invalid_transition", async () => {
+    vi.mocked(requestFollowUp).mockResolvedValue({
+      ok: false,
+      reason: "invalid_transition",
+    });
+
+    const res = await POST(makeRequest({ action: "request_follow_up", message: "Need info" }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("task_invalid_transition");
+  });
+
+  it("returns 429 when concurrency limited", async () => {
+    vi.mocked(setTaskProgress).mockResolvedValue({
+      ok: false,
+      reason: "concurrency_limited",
+    });
+
+    const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }));
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe("task_concurrency_limited");
   });
 });

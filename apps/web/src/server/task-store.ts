@@ -531,14 +531,22 @@ export async function createTask(
         .exec();
 
       // Append initial user prompt as the first message in the timeline.
-      // Done outside multi since rpush is not chainable on the pipeline type,
-      // and the prompt is recoverable from the task record if this fails.
-      const initialMessage: TaskMessage = {
-        role: "user",
-        content: request.prompt,
-        created_at: timestamp,
-      };
-      await appendTaskMessageRaw(installationId, taskId, initialMessage, redis);
+      // Best-effort: the task is already committed so a Redis failure here
+      // must not cause a 500 — the prompt is recoverable from the task record.
+      try {
+        const initialMessage: TaskMessage = {
+          role: "user",
+          content: request.prompt,
+          created_at: timestamp,
+        };
+        await appendTaskMessageRaw(installationId, taskId, initialMessage, redis);
+      } catch (error) {
+        console.error("[tasks] Failed to append initial message (task created successfully)", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
 
       return {
         ok: true,
@@ -614,8 +622,17 @@ async function finalizeTask(
 
   await multi.exec();
 
-  // Expire the messages list alongside the task data.
-  await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+  // Best-effort: expire the messages list alongside the task data.
+  // The task has already been finalized so a failure here must not propagate.
+  try {
+    await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+  } catch (error) {
+    console.error("[tasks] Failed to expire messages key (task finalized)", {
+      installationId,
+      taskId,
+      error,
+    });
+  }
 
   return {
     ok: true,
@@ -963,15 +980,24 @@ export async function requestFollowUp(
     .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
     .exec();
 
-  // Append the agent's follow-up request as a timeline message.
-  await appendTaskMessage(installationId, taskId, "agent", message, redis);
-  await appendTaskMessage(
-    installationId,
-    taskId,
-    "system",
-    "Task paused — waiting for follow-up from user.",
-    redis,
-  );
+  // Best-effort: append timeline messages after the transition is committed.
+  // A Redis failure here must not cause a 500 — the state change is durable.
+  try {
+    await appendTaskMessage(installationId, taskId, "agent", message, redis);
+    await appendTaskMessage(
+      installationId,
+      taskId,
+      "system",
+      "Task paused — waiting for follow-up from user.",
+      redis,
+    );
+  } catch (error) {
+    console.error("[tasks] Failed to append follow-up messages (transition committed)", {
+      installationId,
+      taskId,
+      error,
+    });
+  }
 
   return {
     ok: true,
@@ -1019,21 +1045,30 @@ export async function resumeTaskWithFollowUp(
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();
 
-      // Record the user's follow-up and system status in the timeline.
-      await appendTaskMessage(
-        installationId,
-        taskId,
-        "user",
-        followUpMessage,
-        redis,
-      );
-      await appendTaskMessage(
-        installationId,
-        taskId,
-        "system",
-        "Follow-up received — task re-queued.",
-        redis,
-      );
+      // Best-effort: record the user's follow-up in the timeline.
+      // The transition is committed so a Redis failure must not propagate.
+      try {
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "user",
+          followUpMessage,
+          redis,
+        );
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "system",
+          "Follow-up received — task re-queued.",
+          redis,
+        );
+      } catch (error) {
+        console.error("[tasks] Failed to append follow-up timeline messages (transition committed)", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
 
       return {
         ok: true,

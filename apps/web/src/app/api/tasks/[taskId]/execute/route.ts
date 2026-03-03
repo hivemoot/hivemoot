@@ -152,7 +152,7 @@ export async function POST(request: NextRequest) {
       if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
         return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
       }
-      const followUp = await requestFollowUp(auth.installationId, taskId, obj.message, auth.redis);
+      const followUp = await requestFollowUp(auth.installationId, taskId, obj.message.trim(), auth.redis);
       return toTransitionResponse(followUp);
     }
 

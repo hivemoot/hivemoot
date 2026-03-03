@@ -832,3 +832,134 @@ describe("task messages", () => {
     expect(messages).toEqual([]);
   });
 });
+
+describe("post-transition append failure resilience", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("createTask succeeds even when timeline append fails", async () => {
+    // Make rpush fail to simulate a Redis error on timeline append.
+    vi.mocked(redis.rpush).mockRejectedValue(new Error("Redis write error"));
+
+    const result = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("pending");
+
+    // Task should be retrievable.
+    const fetched = await getTask("inst-1", result.task.task_id, redis);
+    expect(fetched).not.toBeNull();
+    expect(fetched?.status).toBe("pending");
+  });
+
+  it("requestFollowUp succeeds even when timeline append fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    // Make rpush fail after the transition multi has already committed.
+    vi.mocked(redis.rpush).mockRejectedValue(new Error("Redis write error"));
+
+    const result = await requestFollowUp(
+      "inst-1",
+      created.task.task_id,
+      "Need more info",
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("needs_follow_up");
+  });
+
+  it("resumeTaskWithFollowUp succeeds even when timeline append fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
+
+    // Make rpush fail after the transition multi has already committed.
+    vi.mocked(redis.rpush).mockRejectedValue(new Error("Redis write error"));
+
+    const result = await resumeTaskWithFollowUp(
+      "inst-1",
+      created.task.task_id,
+      "Here is the info",
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("pending");
+  });
+
+  it("completeTask succeeds even when message key expire fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    // Make expire fail to simulate a Redis error on message key TTL.
+    vi.mocked(redis.expire).mockRejectedValue(new Error("Redis expire error"));
+
+    const result = await completeTask(
+      "inst-1",
+      created.task.task_id,
+      "Done",
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("completed");
+  });
+});
