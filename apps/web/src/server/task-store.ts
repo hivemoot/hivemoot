@@ -689,3 +689,27 @@ export async function listRecentTasks(
 
   return validTasks;
 }
+
+export async function claimNextPendingTask(
+  installationId: string,
+  redis: Redis,
+): Promise<TaskRecord | null> {
+  const candidates = await redis.zrange(pendingKey(installationId), 0, 9);
+  const taskIds = candidates.filter((candidate): candidate is string => typeof candidate === "string");
+
+  for (const taskId of taskIds) {
+    const transitioned = await markTaskRunning(installationId, taskId, redis);
+    if (transitioned.ok) return transitioned.task;
+
+    if (transitioned.reason === "not_found" || transitioned.reason === "invalid_transition") {
+      await redis.zrem(pendingKey(installationId), taskId);
+      continue;
+    }
+
+    if (transitioned.reason === "concurrency_limited") {
+      return null;
+    }
+  }
+
+  return null;
+}

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
   checkTaskCreateRateLimit,
+  claimNextPendingTask,
   completeTask,
   createTask,
   DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -366,6 +367,45 @@ describe("task lifecycle", () => {
 
     const tasks = await listRecentTasks("inst-1", 10, redis);
     expect(tasks.length).toBe(2);
+  });
+
+  it("claims the next pending task and marks it running", async () => {
+    const first = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "first",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    const second = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "second",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).not.toBeNull();
+    expect(claimed?.status).toBe("running");
+    expect(claimed?.task_id).toBe(first.task.task_id);
+  });
+
+  it("returns null when there are no pending tasks to claim", async () => {
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).toBeNull();
   });
 });
 

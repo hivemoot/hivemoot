@@ -142,4 +142,20 @@ describe("POST /api/tasks/create", () => {
     const body = await res.json();
     expect(body.code).toBe("task_invalid_json");
   });
+
+  it("returns 403 for cross-origin create requests", async () => {
+    const req = new NextRequest("https://example.com/api/tasks/create", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://evil.example",
+      },
+      body: JSON.stringify({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("task_forbidden");
+  });
 });

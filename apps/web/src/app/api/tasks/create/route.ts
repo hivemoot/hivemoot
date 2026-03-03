@@ -25,9 +25,23 @@ function payloadTooLargeResponse() {
   );
 }
 
+function isSameOriginRequest(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  return origin === new URL(request.url).origin;
+}
+
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  if (!isSameOriginRequest(request)) {
+    return taskError(
+      TASK_ERROR.FORBIDDEN,
+      "Cross-origin task creation is not allowed",
+      403,
+    );
+  }
 
   const contentLength = parseContentLength(request.headers.get("content-length"));
   if (contentLength !== null && contentLength > MAX_PAYLOAD_BYTES) {
