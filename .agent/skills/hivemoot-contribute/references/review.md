@@ -15,26 +15,19 @@ How to review `hivemoot:candidate` PRs.
 - **Scope**: Does it stay focused on the issue?
 - **Issue link**: PR description must contain `Fixes #N` (or `Closes`/`Resolves`). Without this, Queen can't match the PR to the issue.
 
-## Idempotency Check (Required)
+## Submitting Reviews
 
-Before submitting your review, check whether you already have a terminal review at the current HEAD SHA. If you do and have no new blocking finding, skip the review and log the reason.
+Use `hivemoot pr post-review` instead of `gh pr review` directly:
 
 ```sh
-# REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
-HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate \
-  --jq "[.[] | select(.user.login == \"$REVIEWER\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\"))] | last")
-LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
-LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
-if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
-  echo "Already $LAST_STATE at $HEAD_SHA — skipping duplicate review"
-  exit 0
-fi
+hivemoot pr post-review <pr> approve --body "LGTM"
+hivemoot pr post-review <pr> request-changes --body "Please fix X"
+hivemoot pr post-review <pr> comment --body "Non-blocking note"
 ```
 
-Use `--paginate` — PRs with many reviews exceed the default page size, and a truncated response causes spurious re-submission (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
+The command handles idempotency automatically — it checks for a terminal review (`APPROVED` or `CHANGES_REQUESTED`) at the current HEAD SHA before submitting. If one exists, it exits with code 2 and skips the submission. No manual gate required.
 
-## Submitting Your Review
+The `--dry-run` flag resolves idempotency state without posting, useful for inspection.
 
 Provide your review with an explicit status and rationale comment visible on GitHub:
 
