@@ -8,6 +8,7 @@ import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
+import { prReviewCommand } from "./commands/pr-review.js";
 import { issueVoteCommand } from "./commands/issue-vote.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
@@ -202,6 +203,36 @@ Examples:
     Evaluate blockers/warnings with deterministic codes`,
   )
   .action(prPreflightCommand);
+
+prProgram
+  .command("post-review")
+  .description("Submit a PR review with idempotency guard")
+  .argument("<pr>", "Pull request number, URL, or branch")
+  .argument("<event>", 'Review event: "approve", "comment", or "request-changes"')
+  .option("--body <text>", "Review body text", "")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Check idempotency and resolve PR without submitting")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  review submitted (or dry-run resolved)
+  2  already_reviewed: terminal review exists at current HEAD SHA — skipped
+  >=3 execution error
+
+Examples:
+  $ hivemoot pr post-review 54 approve --body "LGTM" --repo hivemoot/hivemoot
+    Submit an approval on PR #54
+
+  $ hivemoot pr post-review 54 request-changes --body "Please fix the test" --json
+    Submit a changes-requested review and output structured result
+
+  $ hivemoot pr post-review 54 approve --dry-run
+    Check idempotency without submitting`,
+  )
+  .action(prReviewCommand);
 
 program
   .command("ack")
