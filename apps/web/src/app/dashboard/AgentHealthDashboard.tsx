@@ -162,7 +162,8 @@ function formatTokens(n: number): string {
 
 function cacheHitRate(tu: TokenUsage): string | null {
   const read = tu.cache_read_input_tokens ?? 0;
-  const total = tu.input_tokens + read;
+  const creation = tu.cache_creation_input_tokens ?? 0;
+  const total = tu.input_tokens + read + creation;
   if (total === 0) return null;
   return `${Math.round((read / total) * 100)}%`;
 }
