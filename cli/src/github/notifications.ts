@@ -140,7 +140,13 @@ export async function fetchMentionNotifications(
     );
   }
 
-  if (!Array.isArray(pages)) return [];
+  if (!Array.isArray(pages)) {
+    throw new CliError(
+      "Unexpected non-array response from GitHub API paginated notifications.",
+      "GH_ERROR",
+      1,
+    );
+  }
   const notifications = (pages as RawNotification[][]).flat();
 
   return notifications.filter((n) => {

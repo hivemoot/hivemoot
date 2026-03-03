@@ -319,6 +319,15 @@ describe("fetchMentionNotifications()", () => {
       fetchMentionNotifications("hivemoot/colony", ["mention"]),
     ).rejects.toThrow(CliError);
   });
+
+  it("throws CliError when --slurp returns non-array JSON (fail-closed)", async () => {
+    // --slurp should always yield an outer array; a non-array is unexpected
+    mockedGh.mockResolvedValue(JSON.stringify({ unexpected: "object" }));
+
+    await expect(
+      fetchMentionNotifications("hivemoot/colony", ["mention"]),
+    ).rejects.toMatchObject({ code: "GH_ERROR" });
+  });
 });
 
 describe("markNotificationRead()", () => {
