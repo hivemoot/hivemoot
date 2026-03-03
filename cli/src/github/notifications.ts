@@ -122,12 +122,26 @@ export async function fetchMentionNotifications(
   const args = [
     "api",
     "--paginate",
+    "--slurp",
     `/repos/${repo}/notifications?${params}`,
   ];
 
   const raw = await gh(args);
 
-  const notifications: RawNotification[] = JSON.parse(raw);
+  // --slurp wraps pages as an outer array of arrays; flatten to a single list.
+  let pages: unknown;
+  try {
+    pages = JSON.parse(raw);
+  } catch {
+    throw new CliError(
+      "Failed to parse paginated notifications response from GitHub API.",
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  if (!Array.isArray(pages)) return [];
+  const notifications = (pages as RawNotification[][]).flat();
 
   return notifications.filter((n) => {
     if (!n.unread) return false;

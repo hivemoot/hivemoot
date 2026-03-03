@@ -205,6 +205,7 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
+      "--slurp",
       "/repos/hivemoot/colony/notifications?all=false",
     ]);
   });
@@ -217,6 +218,7 @@ describe("fetchMentionNotifications()", () => {
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
+      "--slurp",
       "/repos/hivemoot/colony/notifications?all=false&since=2026-01-15T00%3A00%3A00Z",
     ]);
   });
@@ -229,8 +231,8 @@ describe("fetchMentionNotifications()", () => {
     const args = mockedGh.mock.calls[0][0];
     // Must NOT contain -f flags (which send body fields and cause 404 on GET)
     expect(args).not.toContain("-f");
-    // URL must contain query string
-    expect(args[2]).toMatch(/\?all=false/);
+    // URL must contain query string (--slurp is at index 2, URL at index 3)
+    expect(args[3]).toMatch(/\?all=false/);
   });
 
   it("URL-encodes since timestamps with colons correctly", async () => {
@@ -238,7 +240,7 @@ describe("fetchMentionNotifications()", () => {
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-02-13T02:11:08.000Z");
 
-    const url = mockedGh.mock.calls[0][0][2];
+    const url = mockedGh.mock.calls[0][0][3];
     // Colons in ISO timestamps must be percent-encoded in the query string
     expect(url).toContain("since=2026-02-13T02%3A11%3A08.000Z");
     expect(url).not.toContain("-f");
@@ -249,7 +251,7 @@ describe("fetchMentionNotifications()", () => {
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"]);
 
-    const url = mockedGh.mock.calls[0][0][2];
+    const url = mockedGh.mock.calls[0][0][3];
     expect(url).not.toContain("since");
     expect(url).toBe("/repos/hivemoot/colony/notifications?all=false");
   });
@@ -295,6 +297,27 @@ describe("fetchMentionNotifications()", () => {
 
     const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
     expect(result).toHaveLength(0);
+  });
+
+  it("flattens multi-page responses correctly", async () => {
+    const page1 = [makeNotification({ id: "1001", reason: "mention" })];
+    const page2 = [makeNotification({ id: "1002", reason: "mention" })];
+    // --slurp wraps all pages into an outer array of arrays
+    mockedGh.mockResolvedValue(JSON.stringify([page1, page2]));
+
+    const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("1001");
+    expect(result[1].id).toBe("1002");
+  });
+
+  it("throws CliError on parse failure instead of silently returning empty", async () => {
+    // Simulates corrupted output that cannot be parsed
+    mockedGh.mockResolvedValue("not-valid-json");
+
+    await expect(
+      fetchMentionNotifications("hivemoot/colony", ["mention"]),
+    ).rejects.toThrow(CliError);
   });
 });
 
