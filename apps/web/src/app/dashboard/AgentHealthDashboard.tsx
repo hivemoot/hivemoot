@@ -142,7 +142,7 @@ function TriggerBadge({ trigger }: { trigger: TriggerType }) {
     mention: { label: "@mention", className: "text-blue-400/80 bg-blue-500/10" },
     manual: { label: "manual", className: "text-amber-400/80 bg-amber-500/10" },
   };
-  const { label, className } = config[trigger];
+  const { label, className } = config[trigger] ?? { label: trigger, className: "text-zinc-500 bg-zinc-500/10" };
   return (
     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${className}`}>
       {label}
