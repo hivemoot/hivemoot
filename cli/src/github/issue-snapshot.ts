@@ -1,6 +1,7 @@
 import { CliError, type RepoRef } from "../config/types.js";
 import { gh } from "./client.js";
 import { fetchCurrentUser } from "./user.js";
+import { TRUSTED_QUEEN_LOGINS } from "./issue-vote.js";
 
 // ── Phase detection ────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ export interface IssueSnapshotResult {
 
 // ── Internal helpers ───────────────────────────────────────────────
 
-const TRUSTED_QUEEN_LOGINS_SET = new Set(["hivemoot", "hivemoot[bot]"]);
+const TRUSTED_QUEEN_LOGINS_SET = new Set<string>(TRUSTED_QUEEN_LOGINS);
 const METADATA_RE = /<!--\s*hivemoot-metadata:\s*(\{[\s\S]*?\})\s*-->/;
 const BODY_PREVIEW_LENGTH = 500;
 
@@ -202,6 +203,73 @@ query ($owner: String!, $repo: String!, $number: Int!, $commentsCursor: String) 
   }
 }`;
 
+const COMMENT_REACTIONS_QUERY = `
+query ($commentId: ID!, $reactionsCursor: String) {
+  node(id: $commentId) {
+    ... on IssueComment {
+      reactions(first: 100, after: $reactionsCursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          content
+          createdAt
+          user { login }
+        }
+      }
+    }
+  }
+}`;
+
+type ReactionNode = GraphQLCommentNode["reactions"]["nodes"][number];
+
+interface CommentReactionsResponse {
+  data: {
+    node: {
+      reactions: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes: ReactionNode[];
+      };
+    } | null;
+  };
+}
+
+async function fetchAllReactionsForComment(
+  commentId: string,
+  initialReactions: GraphQLCommentNode["reactions"],
+): Promise<ReactionNode[]> {
+  const all: ReactionNode[] = [...initialReactions.nodes];
+
+  if (!initialReactions.pageInfo?.hasNextPage || !initialReactions.pageInfo.endCursor) {
+    return all;
+  }
+
+  let cursor: string | null = initialReactions.pageInfo.endCursor;
+  while (cursor) {
+    const raw = await gh([
+      "api",
+      "graphql",
+      "-f",
+      `query=${COMMENT_REACTIONS_QUERY}`,
+      "-F",
+      `commentId=${commentId}`,
+      "-F",
+      `reactionsCursor=${cursor}`,
+    ]);
+    const response = JSON.parse(raw) as CommentReactionsResponse;
+    const reactions = response.data?.node?.reactions;
+    if (!reactions) break;
+
+    all.push(...reactions.nodes);
+
+    if (!reactions.pageInfo?.hasNextPage) break;
+    cursor = reactions.pageInfo.endCursor ?? null;
+  }
+
+  return all;
+}
+
 async function fetchCommentsPage(
   repo: RepoRef,
   issueNumber: number,
@@ -231,31 +299,47 @@ async function fetchCommentsPage(
   return response.data?.repository?.issue?.comments;
 }
 
-async function fetchAllQueenComments(
+// Paginates newest → older, stopping as soon as both types are found on a page.
+// Within each page, nodes are chronological (oldest → newest), so last-wins
+// gives the most recent match on that page. A match on a newer page takes
+// precedence over anything on an older page.
+async function findLatestQueenComments(
   repo: RepoRef,
   issueNumber: number,
-): Promise<GraphQLCommentNode[]> {
-  const queenComments: GraphQLCommentNode[] = [];
+): Promise<{ voting?: GraphQLCommentNode; summary?: GraphQLCommentNode }> {
   let cursor: string | null = null;
+  let latestVoting: GraphQLCommentNode | undefined;
+  let latestSummary: GraphQLCommentNode | undefined;
 
   while (true) {
     const connection = await fetchCommentsPage(repo, issueNumber, cursor);
     if (!connection) break;
+
+    let pageVoting: GraphQLCommentNode | undefined;
+    let pageSummary: GraphQLCommentNode | undefined;
 
     for (const comment of connection.nodes) {
       const authorLogin = comment.author?.login ?? "";
       if (!TRUSTED_QUEEN_LOGINS_SET.has(authorLogin)) continue;
       const meta = parseMeta(comment.body);
       if (!meta || meta.issueNumber !== issueNumber) continue;
-      queenComments.push(comment);
+      if (meta.type === "voting") pageVoting = comment;
+      else if (meta.type === "summary") pageSummary = comment;
     }
+
+    // Newer page wins: only record if not already found on a later page.
+    if (pageVoting && !latestVoting) latestVoting = pageVoting;
+    if (pageSummary && !latestSummary) latestSummary = pageSummary;
+
+    // Stop as soon as both are found.
+    if (latestVoting && latestSummary) break;
 
     if (!connection.pageInfo?.hasPreviousPage) break;
     cursor = connection.pageInfo.startCursor ?? null;
     if (!cursor) break;
   }
 
-  return queenComments;
+  return { voting: latestVoting, summary: latestSummary };
 }
 
 // ── Main export ────────────────────────────────────────────────────
@@ -266,26 +350,13 @@ export async function buildIssueSnapshot(
 ): Promise<IssueSnapshotResult> {
   const generatedAt = new Date().toISOString();
 
-  const [issueData, queenComments] = await Promise.all([
+  const [issueData, { voting: latestVoting, summary: latestSummary }] = await Promise.all([
     fetchIssueMetadata(repo, issueNumber),
-    fetchAllQueenComments(repo, issueNumber),
+    findLatestQueenComments(repo, issueNumber),
   ]);
 
   const labels = issueData.labels.map((l) => l.name);
   const phase = extractPhase(labels);
-
-  // Find the most recent Queen voting and summary comments.
-  let latestVoting: GraphQLCommentNode | undefined;
-  let latestSummary: GraphQLCommentNode | undefined;
-
-  for (const comment of queenComments) {
-    const meta = parseMeta(comment.body)!;
-    if (meta.type === "voting") {
-      latestVoting = comment;
-    } else if (meta.type === "summary") {
-      latestSummary = comment;
-    }
-  }
 
   // Resolve yourVote if there is a voting comment.
   let currentUser: string | null = null;
@@ -299,13 +370,19 @@ export async function buildIssueSnapshot(
 
   let votingComment: IssueSnapshotVotingComment | undefined;
   if (latestVoting) {
-    const reactions = latestVoting.reactions.nodes;
-    const thumbsUp = reactions.filter((r) => r.content === "THUMBS_UP").length;
-    const thumbsDown = reactions.filter((r) => r.content === "THUMBS_DOWN").length;
+    // Paginate through all reactions so tallies and yourVote are accurate even
+    // when the voting comment has more than 100 reactions.
+    const allReactions = await fetchAllReactionsForComment(
+      latestVoting.id,
+      latestVoting.reactions,
+    );
+
+    const thumbsUp = allReactions.filter((r) => r.content === "THUMBS_UP").length;
+    const thumbsDown = allReactions.filter((r) => r.content === "THUMBS_DOWN").length;
 
     let yourVote: string | null = null;
     if (currentUser) {
-      const yourReaction = reactions.find((r) => r.user?.login === currentUser);
+      const yourReaction = allReactions.find((r) => r.user?.login === currentUser);
       if (yourReaction) {
         yourVote = REACTION_EMOJI[yourReaction.content] ?? null;
       }
