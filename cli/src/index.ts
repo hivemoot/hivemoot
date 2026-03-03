@@ -10,6 +10,7 @@ import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
 import { issueVoteCommand } from "./commands/issue-vote.js";
 import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
+import { notificationsPullCommand } from "./commands/notifications-pull.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -228,6 +229,37 @@ Examples:
     Evaluate blockers/warnings with deterministic codes`,
   )
   .action(prPreflightCommand);
+
+const notificationsProgram = program
+  .command("notifications")
+  .description("Notification helpers for autonomous agents");
+
+notificationsProgram
+  .command("pull")
+  .description("Fetch unread notifications as a stable JSON payload")
+  .requiredOption("--repo <owner/repo>", "Target repository")
+  .option("--reason <list>", "Comma-separated reason filter (e.g. mention,author), or * for all", "*")
+  .option("--state-file <path>", "Watch state file for cursor-based deduplication")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0   success (including empty notification list)
+  >=3 execution error
+
+Examples:
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --json
+    Fetch all unread notifications as JSON
+
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --reason mention
+    Fetch only mention notifications
+
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --state-file .hivemoot-watch.json
+    Skip notifications already processed by hivemoot watch/ack`,
+  )
+  .action(notificationsPullCommand);
 
 program
   .command("ack")

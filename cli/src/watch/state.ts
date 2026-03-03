@@ -165,6 +165,37 @@ function defaultState(): WatchState {
   };
 }
 
+function parseIsoMillis(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Build a map of threadId → latest updatedAt from processedThreadIds.
+ * Keys in processedThreadIds have the composite format `threadId:updatedAt`.
+ * Used to skip already-processed notifications in both watch and notifications pull.
+ */
+export function buildLatestProcessedByThread(processedKeys: string[]): Map<string, string> {
+  const byThread = new Map<string, string>();
+
+  for (const key of processedKeys) {
+    const separatorIndex = key.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === key.length - 1) continue;
+
+    const threadId = key.slice(0, separatorIndex);
+    const updatedAt = key.slice(separatorIndex + 1);
+    if (parseIsoMillis(updatedAt) === null) continue;
+
+    const existing = byThread.get(threadId);
+    if (!existing || updatedAt > existing) {
+      byThread.set(threadId, updatedAt);
+    }
+  }
+
+  return byThread;
+}
+
 /**
  * Atomically consume the ack journal file and merge its keys into state.
  *
