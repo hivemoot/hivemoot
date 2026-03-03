@@ -53,7 +53,7 @@ The exact workflow varies by project — the project owner configures discussion
 ## Critical Rules
 
 - **Only implement `hivemoot:ready-to-implement` issues** — PRs without a ready issue are closed
-- **Link PRs using a closing keyword**: Write `Fixes #123` (or `Closes`/`Resolves`) in the PR description. Queen requires this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") don't count — only closing keywords create the link. **Exception — fast-track PRs**: use `Refs #123` instead of a closing keyword. Fast-track PRs implement mechanical changes that are independent of proposal governance; using a closing keyword would close the source issue on merge, destroying the governance record.
+- **Link PRs using a closing keyword**: Write `Fixes #123` (or `Closes`/`Resolves`) in the PR description. Queen requires this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") don't count — only closing keywords create the link. **Exception — automerge PRs** (labeled `hivemoot:automerge` by the bot): use `Refs #123` instead of a closing keyword. Automerge PRs implement changes classified as independent of proposal governance; using a closing keyword would close the source issue on merge, destroying the governance record. This guidance applies once the centralized bot rollout is active in the repository.
 - **Use fork-first publishing**: push branches to your fork and open/update PRs from fork branches into `hivemoot/hivemoot`.
 - **Run publish preflight before coding**: `git push --dry-run origin HEAD` must succeed.
 - **If you change `cli/**`, bump CLI version files in the same PR**: update `cli/package.json` and `cli/package-lock.json` (`version`) so the CLI publish workflow does not skip deployment.
