@@ -18,6 +18,10 @@ function isTerminal(status: TaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "timed_out";
 }
 
+function shouldCloseStream(status: TaskStatus): boolean {
+  return isTerminal(status) || status === "needs_follow_up";
+}
+
 export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
@@ -93,7 +97,7 @@ export async function GET(request: NextRequest) {
             lastHeartbeatAt = now;
           }
 
-          if (isTerminal(currentTask.status)) {
+          if (shouldCloseStream(currentTask.status)) {
             send("done", { task: currentTask });
             close();
             return;
@@ -120,7 +124,7 @@ export async function GET(request: NextRequest) {
       };
 
       send("snapshot", { task: initialTask });
-      if (isTerminal(initialTask.status)) {
+      if (shouldCloseStream(initialTask.status)) {
         send("done", { task: initialTask });
         close();
         return;

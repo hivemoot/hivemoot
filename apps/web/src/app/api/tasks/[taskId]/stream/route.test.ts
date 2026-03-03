@@ -56,6 +56,29 @@ describe("GET /api/tasks/[taskId]/stream", () => {
     expect(text).toContain("event: done");
   });
 
+  it("returns SSE snapshot and done events for needs_follow_up task", async () => {
+    vi.mocked(getTask).mockResolvedValue({
+      task_id: "abc123abc123abc123abc123",
+      status: "needs_follow_up",
+      engine: "codex",
+      prompt: "Deep analysis",
+      repos: ["hivemoot/hivemoot"],
+      timeout_secs: 300,
+      created_by: "queen",
+      created_at: "2026-03-03T12:00:00.000Z",
+      updated_at: "2026-03-03T12:00:00.000Z",
+      progress: "Need more context",
+    });
+
+    const req = new NextRequest("https://example.com/api/tasks/abc123abc123abc123abc123/stream");
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("event: snapshot");
+    expect(text).toContain("event: done");
+  });
+
   it("returns 400 for invalid task id", async () => {
     const req = new NextRequest("https://example.com/api/tasks/not-valid/stream");
     const res = await GET(req);

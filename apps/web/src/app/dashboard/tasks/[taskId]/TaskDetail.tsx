@@ -278,7 +278,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
   // SSE streaming for live updates
   useEffect(() => {
-    if (!task || isTerminal(task.status)) return;
+    if (!task || isTerminal(task.status) || task.status === "needs_follow_up") return;
 
     let closed = false;
 
