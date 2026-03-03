@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
-import { getTask, TASK_ID_PATTERN, type TaskRecord } from "@/server/task-store";
+import { getTask, TASK_ID_PATTERN, type TaskStatus } from "@/server/task-store";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,7 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function isTerminal(status: TaskRecord["status"]): boolean {
+function isTerminal(status: TaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "timed_out";
 }
 

@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
+  appendTaskMessage,
   checkTaskCreateRateLimit,
   claimNextPendingTask,
   completeTask,
   createTask,
   DEFAULT_TASK_TIMEOUT_SECONDS,
+  getTaskMessages,
   MAX_CONCURRENT_TASKS,
   markTaskRunning,
+  requestFollowUp,
+  resumeTaskWithFollowUp,
   setTaskProgress,
   failTask,
   getTask,
@@ -26,6 +30,7 @@ function makeMockRedis() {
   const ttl = new Map<string, number>();
   const zsets = new Map<string, Map<string, number>>();
   const counters = new Map<string, number>();
+  const lists = new Map<string, string[]>();
 
   let multiOps: Array<() => Promise<unknown>> = [];
 
@@ -96,6 +101,25 @@ function makeMockRedis() {
       ttl.set(key, seconds);
       return 1;
     }),
+    rpush: vi.fn(async (key: string, ...values: string[]) => {
+      if (!lists.has(key)) lists.set(key, []);
+      lists.get(key)!.push(...values);
+      return lists.get(key)!.length;
+    }),
+    lrange: vi.fn(async (key: string, start: number, stop: number) => {
+      const list = lists.get(key);
+      if (!list) return [];
+      const end = stop < 0 ? list.length : stop + 1;
+      return list.slice(start, end);
+    }),
+    ltrim: vi.fn(async (key: string, start: number, stop: number) => {
+      const list = lists.get(key);
+      if (!list) return "OK";
+      const end = stop < 0 ? list.length + stop + 1 : stop + 1;
+      const trimmed = list.slice(start < 0 ? list.length + start : start, end);
+      lists.set(key, trimmed);
+      return "OK";
+    }),
     multi: vi.fn(() => {
       multiOps = [];
       return pipeline;
@@ -104,6 +128,7 @@ function makeMockRedis() {
     _kv: kv,
     _ttl: ttl,
     _zsets: zsets,
+    _lists: lists,
   };
 
   const pipeline = {
@@ -136,6 +161,7 @@ function makeMockRedis() {
     _kv: Map<string, unknown>;
     _ttl: Map<string, number>;
     _zsets: Map<string, Map<string, number>>;
+    _lists: Map<string, string[]>;
   };
 }
 
@@ -488,5 +514,321 @@ describe("checkTaskCreateRateLimit", () => {
     const blocked = await checkTaskCreateRateLimit("inst-1", 1, redis);
     expect(blocked.allowed).toBe(false);
     expect(blocked.retryAfterSeconds).toBe(60);
+  });
+});
+
+describe("follow-up workflow", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  async function createAndStartTask() {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate auth flow",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("Task creation failed");
+
+    const running = await markTaskRunning("inst-1", created.task.task_id, redis);
+    expect(running.ok).toBe(true);
+
+    return created.task;
+  }
+
+  it("transitions running → needs_follow_up → pending → running", async () => {
+    const task = await createAndStartTask();
+
+    // Executor requests follow-up.
+    const followUp = await requestFollowUp(
+      "inst-1",
+      task.task_id,
+      "I need the API key for the external service.",
+      redis,
+    );
+    expect(followUp.ok).toBe(true);
+    if (!followUp.ok) return;
+    expect(followUp.task.status).toBe("needs_follow_up");
+
+    // Verify task is not in the running set anymore.
+    const fetchedPaused = await getTask("inst-1", task.task_id, redis);
+    expect(fetchedPaused?.status).toBe("needs_follow_up");
+
+    // User posts follow-up.
+    const resumed = await resumeTaskWithFollowUp(
+      "inst-1",
+      task.task_id,
+      "Here is the API key: sk-abc123",
+      redis,
+    );
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.task.status).toBe("pending");
+
+    // Executor claims task again.
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).not.toBeNull();
+    expect(claimed?.task_id).toBe(task.task_id);
+    expect(claimed?.status).toBe("running");
+  });
+
+  it("rejects follow-up request from non-running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    // Task is pending, not running — follow-up should fail.
+    const result = await requestFollowUp(
+      "inst-1",
+      created.task.task_id,
+      "Need info",
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects user follow-up when task is not in needs_follow_up state", async () => {
+    const task = await createAndStartTask();
+
+    // Task is running, not needs_follow_up — user follow-up should fail.
+    const result = await resumeTaskWithFollowUp(
+      "inst-1",
+      task.task_id,
+      "Here is more info",
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects follow-up after terminal state", async () => {
+    const task = await createAndStartTask();
+    await completeTask("inst-1", task.task_id, "Done", redis);
+
+    const result = await requestFollowUp(
+      "inst-1",
+      task.task_id,
+      "More work needed",
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects user follow-up after terminal state", async () => {
+    const task = await createAndStartTask();
+    const followUp = await requestFollowUp(
+      "inst-1",
+      task.task_id,
+      "Need info",
+      redis,
+    );
+    expect(followUp.ok).toBe(true);
+
+    // Complete the task (should fail since it's needs_follow_up, not running).
+    // First resume, then complete.
+    await resumeTaskWithFollowUp("inst-1", task.task_id, "Info provided", redis);
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).not.toBeNull();
+    await completeTask("inst-1", task.task_id, "Done", redis);
+
+    // Now try follow-up on completed task.
+    const result = await resumeTaskWithFollowUp(
+      "inst-1",
+      task.task_id,
+      "Even more info",
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("does not auto-timeout needs_follow_up tasks", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 1,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
+
+    // Backdate the task to simulate timeout window passing.
+    const taskKey = `task:inst-1:${created.task.task_id}`;
+    const stored = redis._kv.get(taskKey) as Record<string, unknown>;
+    redis._kv.set(taskKey, {
+      ...stored,
+      started_at: "2020-01-01T00:00:00.000Z",
+      created_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    // getTask should NOT auto-timeout a needs_follow_up task.
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("needs_follow_up");
+  });
+
+  it("needs_follow_up tasks do not count against max concurrent limit", async () => {
+    // Create and start MAX tasks, then move one to needs_follow_up.
+    const tasks = [];
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      const created = await createTask(
+        "inst-1",
+        "queen",
+        {
+          engine: "codex",
+          prompt: `Task ${i}`,
+          repos: ["hivemoot/hivemoot"],
+          timeout_secs: 300,
+        },
+        redis,
+      );
+      expect(created.ok).toBe(true);
+      if (created.ok) tasks.push(created.task);
+    }
+
+    // Start and pause one task.
+    await markTaskRunning("inst-1", tasks[0].task_id, redis);
+    await requestFollowUp("inst-1", tasks[0].task_id, "Need info", redis);
+
+    // Should now be able to create another task since the paused one doesn't count.
+    const extra = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Extra task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(extra.ok).toBe(true);
+  });
+});
+
+describe("task messages", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("stores initial prompt as first message on task creation", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Analyze the codebase",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("Analyze the codebase");
+  });
+
+  it("appends messages and retrieves them in order", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Do work",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await appendTaskMessage("inst-1", created.task.task_id, "agent", "Working on it...", redis);
+    await appendTaskMessage("inst-1", created.task.task_id, "system", "Task running", redis);
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    expect(messages).toHaveLength(3);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("agent");
+    expect(messages[2].role).toBe("system");
+  });
+
+  it("records follow-up messages in the timeline", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need more context", redis);
+    await resumeTaskWithFollowUp("inst-1", created.task.task_id, "Here is the context", redis);
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    // 1: initial prompt, 2: agent follow-up request, 3: system paused,
+    // 4: user follow-up, 5: system re-queued
+    expect(messages).toHaveLength(5);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("agent");
+    expect(messages[1].content).toBe("Need more context");
+    expect(messages[2].role).toBe("system");
+    expect(messages[3].role).toBe("user");
+    expect(messages[3].content).toBe("Here is the context");
+    expect(messages[4].role).toBe("system");
+  });
+
+  it("returns empty array when no messages exist", async () => {
+    const messages = await getTaskMessages("inst-1", "aabbccddeeff001122334455", redis);
+    expect(messages).toEqual([]);
   });
 });

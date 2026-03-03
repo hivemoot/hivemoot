@@ -7,6 +7,7 @@ import {
   completeTask,
   failTask,
   getTask,
+  requestFollowUp,
   setTaskProgress,
   TASK_ID_PATTERN,
   timeoutTask,
@@ -16,10 +17,16 @@ import {
 const MAX_PAYLOAD_BYTES = 128 * 1024;
 const textEncoder = new TextEncoder();
 
-type ExecuteAction = "progress" | "complete" | "fail" | "timeout";
+type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "request_follow_up";
 
 function parseAction(value: unknown): ExecuteAction | null {
-  if (value === "progress" || value === "complete" || value === "fail" || value === "timeout") {
+  if (
+    value === "progress"
+    || value === "complete"
+    || value === "fail"
+    || value === "timeout"
+    || value === "request_follow_up"
+  ) {
     return value;
   }
   return null;
@@ -98,7 +105,7 @@ export async function POST(request: NextRequest) {
   if (!action) {
     return taskError(
       TASK_ERROR.INVALID_ACTION,
-      "action must be one of: progress, complete, fail, timeout",
+      "action must be one of: progress, complete, fail, timeout, request_follow_up",
       400,
     );
   }
@@ -139,6 +146,14 @@ export async function POST(request: NextRequest) {
     case "timeout": {
       const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
       return toTransitionResponse(timedOut);
+    }
+
+    case "request_follow_up": {
+      if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
+        return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
+      }
+      const followUp = await requestFollowUp(auth.installationId, taskId, obj.message, auth.redis);
+      return toTransitionResponse(followUp);
     }
 
     default:

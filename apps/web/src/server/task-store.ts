@@ -28,9 +28,21 @@ const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const VALID_ENGINE_PATTERN = /^[A-Za-z0-9._:-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
 
-export type TaskStatus = "pending" | "running" | "completed" | "failed" | "timed_out";
+export type TaskStatus = "pending" | "running" | "needs_follow_up" | "completed" | "failed" | "timed_out";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "timed_out"]);
+
+// Tasks paused for human input — exempt from auto-timeout.
+const PAUSED_STATUSES = new Set<TaskStatus>(["needs_follow_up"]);
+
+export interface TaskMessage {
+  role: "user" | "agent" | "system";
+  content: string;
+  created_at: string;
+}
+
+const MAX_MESSAGE_CONTENT_CHARS = 8000;
+const MAX_MESSAGES_PER_TASK = 200;
 
 export interface TaskRecord {
   task_id: string;
@@ -105,6 +117,10 @@ function taskResultKey(installationId: string, taskId: string): string {
 
 function taskProgressKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}:progress`;
+}
+
+function taskMessagesKey(installationId: string, taskId: string): string {
+  return `task:${installationId}:${taskId}:messages`;
 }
 
 function pendingKey(installationId: string): string {
@@ -213,7 +229,7 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
     typeof obj.task_id !== "string"
     || !TASK_ID_PATTERN.test(obj.task_id)
     || typeof obj.status !== "string"
-    || !["pending", "running", "completed", "failed", "timed_out"].includes(obj.status)
+    || !["pending", "running", "needs_follow_up", "completed", "failed", "timed_out"].includes(obj.status)
     || typeof obj.engine !== "string"
     || typeof obj.prompt !== "string"
     || !Array.isArray(obj.repos)
@@ -274,6 +290,7 @@ async function cleanupMissingTask(
     .zrem(recentKey(installationId), taskId)
     .del(taskResultKey(installationId, taskId))
     .del(taskProgressKey(installationId, taskId))
+    .del(taskMessagesKey(installationId, taskId))
     .exec();
 }
 
@@ -329,7 +346,7 @@ async function maybeTimeoutTask(
   stored: StoredTaskRecord,
   redis: Redis,
 ): Promise<StoredTaskRecord> {
-  if (isTerminal(stored.status)) return stored;
+  if (isTerminal(stored.status) || PAUSED_STATUSES.has(stored.status)) return stored;
 
   const deadlineMs = transitionDeadlineMs(stored);
   if (Date.now() <= deadlineMs) return stored;
@@ -513,6 +530,16 @@ export async function createTask(
         .zadd(recentKey(installationId), { score: ts, member: taskId })
         .exec();
 
+      // Append initial user prompt as the first message in the timeline.
+      // Done outside multi since rpush is not chainable on the pipeline type,
+      // and the prompt is recoverable from the task record if this fails.
+      const initialMessage: TaskMessage = {
+        role: "user",
+        content: request.prompt,
+        created_at: timestamp,
+      };
+      await appendTaskMessageRaw(installationId, taskId, initialMessage, redis);
+
       return {
         ok: true,
         task: {
@@ -586,6 +613,9 @@ async function finalizeTask(
   }
 
   await multi.exec();
+
+  // Expire the messages list alongside the task data.
+  await redis.expire(taskMessagesKey(installationId, taskId), ttl);
 
   return {
     ok: true,
@@ -832,6 +862,194 @@ export async function claimNextPendingTask(
         installationId,
       });
       return null;
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Task messages
+// ---------------------------------------------------------------------------
+
+async function appendTaskMessageRaw(
+  installationId: string,
+  taskId: string,
+  message: TaskMessage,
+  redis: Redis,
+): Promise<void> {
+  const key = taskMessagesKey(installationId, taskId);
+  await redis.rpush(key, JSON.stringify(message));
+  await redis.ltrim(key, -MAX_MESSAGES_PER_TASK, -1);
+}
+
+export async function appendTaskMessage(
+  installationId: string,
+  taskId: string,
+  role: TaskMessage["role"],
+  content: string,
+  redis: Redis,
+): Promise<void> {
+  const message: TaskMessage = {
+    role,
+    content: sanitizeText(content, MAX_MESSAGE_CONTENT_CHARS),
+    created_at: nowIso(),
+  };
+  await appendTaskMessageRaw(installationId, taskId, message, redis);
+}
+
+export async function getTaskMessages(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskMessage[]> {
+  const raw = await redis.lrange(taskMessagesKey(installationId, taskId), 0, -1);
+  if (!raw || raw.length === 0) return [];
+
+  const messages: TaskMessage[] = [];
+  for (const entry of raw) {
+    try {
+      const str = typeof entry === "string" ? entry : JSON.stringify(entry);
+      const parsed = JSON.parse(str) as Record<string, unknown>;
+      if (
+        typeof parsed.role === "string"
+        && typeof parsed.content === "string"
+        && typeof parsed.created_at === "string"
+      ) {
+        messages.push({
+          role: parsed.role as TaskMessage["role"],
+          content: parsed.content,
+          created_at: parsed.created_at,
+        });
+      }
+    } catch {
+      // Skip malformed message entries.
+    }
+  }
+
+  return messages;
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up transitions
+// ---------------------------------------------------------------------------
+
+export async function requestFollowUp(
+  installationId: string,
+  taskId: string,
+  message: string,
+  redis: Redis,
+): Promise<TaskTransitionResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  if (stored.status !== "running") {
+    return { ok: false, reason: "invalid_transition" };
+  }
+
+  const timestamp = nowIso();
+  const nextStored: StoredTaskRecord = {
+    ...stored,
+    status: "needs_follow_up",
+    updated_at: timestamp,
+  };
+
+  const progress = sanitizeText(message, MAX_PROGRESS_CHARS);
+
+  await redis
+    .multi()
+    .set(taskKey(installationId, taskId), nextStored)
+    .set(taskProgressKey(installationId, taskId), progress)
+    .zrem(runningKey(installationId), taskId)
+    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+    .exec();
+
+  // Append the agent's follow-up request as a timeline message.
+  await appendTaskMessage(installationId, taskId, "agent", message, redis);
+  await appendTaskMessage(
+    installationId,
+    taskId,
+    "system",
+    "Task paused — waiting for follow-up from user.",
+    redis,
+  );
+
+  return {
+    ok: true,
+    task: {
+      ...nextStored,
+      progress,
+    },
+  };
+}
+
+export async function resumeTaskWithFollowUp(
+  installationId: string,
+  taskId: string,
+  followUpMessage: string,
+  redis: Redis,
+): Promise<TaskTransitionResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      if (stored.status !== "needs_follow_up") {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const timestamp = nowIso();
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status: "pending",
+        updated_at: timestamp,
+        // Clear started_at so the timeout clock resets on the next claim.
+        started_at: undefined,
+      };
+
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
+        .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      // Record the user's follow-up and system status in the timeline.
+      await appendTaskMessage(
+        installationId,
+        taskId,
+        "user",
+        followUpMessage,
+        redis,
+      );
+      await appendTaskMessage(
+        installationId,
+        taskId,
+        "system",
+        "Follow-up received — task re-queued.",
+        redis,
+      );
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress: "Re-queued after follow-up",
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task follow-up lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
     }
     throw error;
   }
