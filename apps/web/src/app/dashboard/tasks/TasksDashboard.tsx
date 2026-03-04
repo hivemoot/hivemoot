@@ -4,10 +4,6 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type TaskRecord } from "./types";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 type CreateFormStatus = "idle" | "submitting" | "success" | "error";
 
 // ---------------------------------------------------------------------------
