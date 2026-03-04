@@ -1314,6 +1314,58 @@ describe("buildSummary()", () => {
     expect(summary.implement.map((item) => item.number)).toEqual([700]);
   });
 
+  it("keeps repository health and issue pipeline based on unfiltered data", () => {
+    const issues = [
+      makeIssue({ number: 705, labels: [{ name: "bug" }] }),
+      makeIssue({ number: 706, labels: [{ name: "hivemoot:discussion" }] }),
+      makeIssue({ number: 707, labels: [{ name: "hivemoot:ready-to-implement" }] }),
+    ];
+    const prs = [
+      makePR({
+        number: 708,
+        labels: [{ name: "bug" }],
+        author: { login: "alice" },
+        reviewDecision: "APPROVED",
+        mergeable: "MERGEABLE",
+      }),
+      makePR({
+        number: 709,
+        labels: [{ name: "enhancement" }],
+        author: { login: "bob" },
+        reviewDecision: "CHANGES_REQUESTED",
+      }),
+    ];
+
+    const summary = buildSummary(
+      repo,
+      issues,
+      prs,
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { labels: { include: ["bug"] } },
+    );
+
+    expect(summary.unclassified.map((item) => item.number)).toEqual([705]);
+    expect(summary.reviewPRs.map((item) => item.number)).toEqual([708]);
+    expect(summary.repositoryHealth?.openPRs).toEqual({
+      total: 2,
+      mergeReady: 1,
+      changesRequested: 1,
+      draft: 0,
+    });
+    expect(summary.repositoryHealth?.issuePipeline).toEqual({
+      discussion: 1,
+      voting: 0,
+      readyToImplement: 1,
+    });
+    expect(summary.notes).not.toContain(
+      "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+    );
+  });
+
   it("uses exclude-wins precedence when include and exclude both match", () => {
     const issues = [
       makeIssue({

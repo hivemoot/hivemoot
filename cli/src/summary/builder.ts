@@ -195,6 +195,7 @@ function classifyIssue(
   currentUser: string,
   now: Date,
 ): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified"; item: SummaryItem } {
+  const bucket = classifyIssueBucket(issue);
   const age = timeAgo(issue.createdAt, now);
   const assigned =
     issue.assignees.length > 0
@@ -226,37 +227,57 @@ function classifyIssue(
     }
   }
 
-  // Issues needing human attention are excluded from all actionable buckets
-  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) {
+  // Issues needing human attention are excluded from all actionable buckets.
+  if (bucket === "needsHuman") {
     return {
       bucket: "needsHuman",
       item: { ...base, assigned },
     };
   }
 
-  // Bot governance labels (canonical + legacy aliases)
-  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) {
+  // Bot governance labels (canonical + legacy aliases).
+  if (bucket === "voteOn") {
     return { bucket: "voteOn", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) {
+  if (bucket === "discuss") {
     return { bucket: "discuss", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) {
+  if (bucket === "implement") {
     return { bucket: "implement", item: { ...base, assigned } };
-  }
-
-  // Keyword fallback (repos without the bot)
-  if (hasLabel(issue.labels, "vote")) {
-    return { bucket: "voteOn", item: base };
-  }
-  if (hasLabel(issue.labels, "discuss")) {
-    return { bucket: "discuss", item: base };
   }
 
   return {
     bucket: "unclassified",
     item: { ...base, assigned },
   };
+}
+
+function classifyIssueBucket(issue: GitHubIssue): "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified" {
+  // Issues needing human attention are excluded from all actionable buckets.
+  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) {
+    return "needsHuman";
+  }
+
+  // Bot governance labels (canonical + legacy aliases).
+  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) {
+    return "voteOn";
+  }
+  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) {
+    return "discuss";
+  }
+  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) {
+    return "implement";
+  }
+
+  // Keyword fallback (repos without the bot).
+  if (hasLabel(issue.labels, "vote")) {
+    return "voteOn";
+  }
+  if (hasLabel(issue.labels, "discuss")) {
+    return "discuss";
+  }
+
+  return "unclassified";
 }
 
 function classifyPR(
@@ -449,6 +470,15 @@ export function buildSummary(
     ? prs.filter((pr) =>
       matchesFocusFilters(pr.labels, pr.author?.login ?? undefined, normalizedFocusFilters))
     : prs;
+  let fullDiscussionCount = 0;
+  let fullVotingCount = 0;
+  let fullReadyToImplementCount = 0;
+  for (const issue of issues) {
+    const bucket = classifyIssueBucket(issue);
+    if (bucket === "discuss") fullDiscussionCount += 1;
+    else if (bucket === "voteOn") fullVotingCount += 1;
+    else if (bucket === "implement") fullReadyToImplementCount += 1;
+  }
 
   for (const issue of visibleIssues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
@@ -631,18 +661,18 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
-  const hasDefaultPhaseLabels = visibleIssues.some((issue) =>
+  const hasDefaultPhaseLabels = issues.some((issue) =>
     issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
     ? {
-        discussion: discuss.length,
-        voting: voteOn.length,
-        readyToImplement: implement.length,
+        discussion: fullDiscussionCount,
+        voting: fullVotingCount,
+        readyToImplement: fullReadyToImplementCount,
       }
     : undefined;
-  const repositoryHealth = buildRepositoryHealth(visibleIssues, visiblePRs, currentUser, now, issuePipeline);
-  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(visiblePRs));
+  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
   if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
 
   return {
