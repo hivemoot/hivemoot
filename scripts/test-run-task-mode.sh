@@ -28,6 +28,18 @@ assert_file_not_contains() {
   fi
 }
 
+assert_file_starts_with() {
+  local file="$1"
+  local expected="$2"
+  local first_line=""
+  first_line="$(head -n 1 "$file")"
+  if [ "$first_line" != "$expected" ]; then
+    echo "Expected first line: $expected" >&2
+    echo "Actual first line: $first_line" >&2
+    fail "assertion failed"
+  fi
+}
+
 echo "Running task mode checks"
 
 tmp_root="$(mktemp -d)"
@@ -54,10 +66,14 @@ printf '%s\n' "AGENT_EXTRA_PROMPT_START" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_EXTRA_PROMPT_END" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
-cat > "${LOG_DIR}/mock-run.log" <<'LOG'
+if [ -n "${MOCK_RUN_ONCE_LOG_JSONL_FILE:-}" ]; then
+  cat "${MOCK_RUN_ONCE_LOG_JSONL_FILE}" > "${LOG_DIR}/mock-run.log"
+else
+  cat > "${LOG_DIR}/mock-run.log" <<'LOG'
 mock provider output line 1
 mock provider output line 2
 LOG
+fi
 exit "${MOCK_RUN_ONCE_EXIT_CODE:-0}"
 RUN_ONCE
 chmod +x "$mock_run_once"
@@ -143,6 +159,7 @@ MOCK_CURL
 chmod +x "$mock_curl"
 
 export PATH="${mock_bin}:$PATH"
+export AGENT_PROVIDER="claude"
 
 run_case_direct_env() {
   local case_dir="${tmp_root}/case-direct"
@@ -413,6 +430,8 @@ run_case_requires_agent_token() {
     RUN_ONCE_SCRIPT="$mock_run_once" \
     WORKSPACE_ROOT="${case_dir}/workspace" \
     LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN= \
+    HIVEMOOT_AGENT_TOKEN_FILE= \
     AGENT_TASK_ID="task-no-token" \
     AGENT_TASK_PROMPT="Check missing token" \
     TARGET_REPO="owner/repo" \
@@ -446,8 +465,116 @@ run_case_default_log_dir_when_unset() {
     bash scripts/run-task.sh
 
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "LOG_DIR=${case_dir}/workspace/runs"
-  assert_file_contains "$result_path" "## Log Tail"
+  assert_file_contains "$result_path" "## Debug Log Tail"
   assert_file_contains "$result_path" "mock provider output line 1"
+}
+
+run_case_codex_result_extraction() {
+  local case_dir="${tmp_root}/case-codex-result-extraction"
+  local result_path="${case_dir}/workspace/task-output/task-codex/result.md"
+  local codex_log="${case_dir}/codex.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
+{"type":"item.completed","item":{"type":"agent_message","text":"## Final Answer\n\n- alpha\n- beta"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_ID="task-codex" \
+    AGENT_TASK_PROMPT="Return markdown answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Final Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "thread.started"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
+run_case_codex_result_extraction_fallback() {
+  local case_dir="${tmp_root}/case-codex-result-fallback"
+  local result_path="${case_dir}/workspace/task-output/task-codex-fallback/result.md"
+  local codex_log="${case_dir}/codex-empty.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_ID="task-codex-fallback" \
+    AGENT_TASK_PROMPT="Return markdown answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "could not be extracted from Codex logs"
+  assert_file_contains "$MOCK_CURL_CALLS" "could be extracted from Codex JSON logs"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
+run_case_codex_result_extraction_with_malformed_lines() {
+  local case_dir="${tmp_root}/case-codex-result-malformed"
+  local result_path="${case_dir}/workspace/task-output/task-codex-malformed/result.md"
+  local codex_log="${case_dir}/codex-malformed.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
+not-json-line
+{"type":"item.completed","item":{"type":"agent_message","text":"## First Answer\n\n- old"}}
+{broken-json
+{"type":"item.completed","item":{"type":"agent_message","text":"## Final Answer\n\n- fresh"}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_ID="task-codex-malformed" \
+    AGENT_TASK_PROMPT="Return markdown answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Final Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "not-json-line"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
 run_case_direct_env
@@ -461,5 +588,8 @@ run_case_allows_dot_leading_repo_segment
 run_case_shared_agent_token
 run_case_requires_agent_token
 run_case_default_log_dir_when_unset
+run_case_codex_result_extraction
+run_case_codex_result_extraction_fallback
+run_case_codex_result_extraction_with_malformed_lines
 
 echo "PASS: task mode checks"

@@ -252,27 +252,90 @@ if [ -d "$log_dir" ]; then
 fi
 rm -f "$preexisting_logs_file"
 
+extract_codex_result_markdown() {
+  local log_path="$1"
+  local encoded_message=""
+
+  if [ ! -f "$log_path" ]; then
+    return 0
+  fi
+
+  encoded_message="$(
+    jq -Rr '
+      fromjson?
+      | select(.type=="item.completed")
+      | .item
+      | select(.type=="agent_message")
+      | .text // empty
+      | @base64
+    ' "$log_path" | tail -n 1
+  )"
+
+  if [ -n "$encoded_message" ]; then
+    printf '%s\n' "$encoded_message" | jq -Rr '@base64d'
+  fi
+}
+
+extract_task_result_markdown() {
+  local provider_name="$1"
+  local log_path="$2"
+
+  case "$provider_name" in
+    codex)
+      extract_codex_result_markdown "$log_path"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+provider_name="${AGENT_PROVIDER:-unknown}"
+task_result_markdown=""
+if [ "$run_exit_code" -eq 0 ] && [ -n "$latest_log" ] && [ -f "$latest_log" ]; then
+  task_result_markdown="$(extract_task_result_markdown "$provider_name" "$latest_log")"
+fi
+
+complete_payload=""
+if [ "$run_exit_code" -eq 0 ]; then
+  if [ -n "$task_result_markdown" ]; then
+    complete_payload="$task_result_markdown"
+  elif [ "$provider_name" = "codex" ]; then
+    complete_payload="Task completed, but no agent markdown result could be extracted from Codex JSON logs. See local debug details in task-output/${task_id}/result.md."
+  fi
+fi
+
 mkdir -p "$(dirname "$result_path")"
 {
+  if [ -n "$task_result_markdown" ]; then
+    printf '%s\n' "$task_result_markdown"
+    echo
+  fi
+
   echo "# Task Result"
   echo
   echo "- task_id: ${task_id}"
   echo "- repo: ${task_repo}"
-  echo "- provider: ${AGENT_PROVIDER:-unknown}"
+  echo "- provider: ${provider_name}"
   echo "- exit_code: ${run_exit_code}"
-  echo
 
-  if [ "$run_exit_code" -eq 0 ]; then
+  if [ "$run_exit_code" -eq 0 ] && [ -z "$task_result_markdown" ] && [ "$provider_name" = "codex" ]; then
+    echo
+    echo "Execution finished, but the markdown result could not be extracted from Codex logs."
+  elif [ "$run_exit_code" -eq 0 ]; then
+    echo
     echo "Execution finished successfully."
   elif [ "$run_exit_code" -eq 124 ]; then
+    echo
     echo "Execution timed out."
   else
+    echo
     echo "Execution failed."
   fi
 
   if [ -n "$latest_log" ] && [ -f "$latest_log" ]; then
     echo
-    echo "## Log Tail"
+    echo "## Debug Log Tail"
     echo
     echo '```text'
     tail -n 200 "$latest_log"
@@ -281,7 +344,10 @@ mkdir -p "$(dirname "$result_path")"
 } > "$result_path"
 
 max_result_bytes=100000
-result_payload="$(cat "$result_path")"
+result_payload="$complete_payload"
+if [ -z "$result_payload" ]; then
+  result_payload="$(cat "$result_path")"
+fi
 if [ "$(printf '%s' "$result_payload" | wc -c | tr -d ' ')" -gt "$max_result_bytes" ]; then
   result_payload="$(printf '%s' "$result_payload" | head -c "$max_result_bytes")
 
