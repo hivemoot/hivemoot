@@ -1143,6 +1143,35 @@ launch_job() {
 
   ensure_agent_lock_file "$repo" "$agent_id"
 
+  # Per-agent concurrency guard: only needed when max_workers > 1.
+  # With max_workers=1, wait_for_available_slot() already serializes all
+  # launches so no slot starvation is possible.
+  # With max_workers > 1, a second subshell for the same agent would block
+  # at flock in run_job() while holding a global worker slot, starving other
+  # agents. Reap first so running_pids reflects only live subshells.
+  if [ "$controller_max_workers" -gt 1 ]; then
+    reap_finished_jobs
+    local running_pid=""
+    for running_pid in "${running_pids[@]}"; do
+      if [ "${pid_to_agent[$running_pid]:-}" = "$agent_id" ]; then
+        log "Agent ${agent_id} already running (job=${pid_to_job_id[$running_pid]}); deferring ${trigger_type} trigger"
+        if [ -n "$processing_file" ]; then
+          if [ "$trigger_type" = "mention" ]; then
+            # Re-queue so process_queue() picks it up on the next cycle.
+            mv -f "$processing_file" "${processing_file%.processing}.trigger.json" 2>/dev/null || true
+          elif [ "$trigger_type" = "periodic" ]; then
+            # Periodic deferrals are intentionally dropped. Finalize the
+            # queue artifact immediately to avoid lingering .processing files.
+            mv -f "$processing_file" "${processing_file%.processing}.done" 2>/dev/null || true
+          fi
+        fi
+        # Periodic triggers re-fire on the next interval in loop mode.
+        # In once mode there is no next interval in this process.
+        return 0
+      fi
+    done
+  fi
+
   if ! wait_for_available_slot; then
     return 1
   fi
