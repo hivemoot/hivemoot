@@ -7,11 +7,13 @@ import {
   completeTask,
   createTask,
   DEFAULT_TASK_TIMEOUT_SECONDS,
+  deleteTask,
   getTaskMessages,
   MAX_CONCURRENT_TASKS,
   markTaskRunning,
   requestFollowUp,
   resumeTaskWithFollowUp,
+  retryTask,
   setTaskProgress,
   failTask,
   getTask,
@@ -961,5 +963,307 @@ describe("post-transition append failure resilience", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.task.status).toBe("completed");
+  });
+});
+
+describe("deleteTask", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("deletes a timed-out task and removes all Redis keys", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Task to delete",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "oops", redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: true });
+
+    // Task should no longer exist.
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched).toBeNull();
+
+    // Should not appear in recent tasks list.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    expect(recent.find((t) => t.task_id === created.task.task_id)).toBeUndefined();
+  });
+
+  it("deletes a pending task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Pending task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: true });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched).toBeNull();
+  });
+
+  it("rejects deletion of a running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Running task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    // Task should still exist.
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("running");
+  });
+
+  it("returns not_found for a nonexistent task", async () => {
+    const result = await deleteTask("inst-1", "aabbccddeeff001122334455", redis);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("frees a concurrency slot when a pending task is deleted", async () => {
+    // Fill all slots.
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      const res = await createTask(
+        "inst-1",
+        "queen",
+        {
+          engine: "codex",
+          prompt: `Task ${i}`,
+          repos: ["hivemoot/hivemoot"],
+          timeout_secs: 300,
+        },
+        redis,
+      );
+      expect(res.ok).toBe(true);
+    }
+
+    // Confirm we're at capacity.
+    const blocked = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Overflow",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(blocked.ok).toBe(false);
+
+    // Delete one of the pending tasks.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    await deleteTask("inst-1", recent[0].task_id, redis);
+
+    // Should now be able to create again.
+    const unblocked = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Now fits",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(unblocked.ok).toBe(true);
+  });
+});
+
+describe("retryTask", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("creates a new pending task from a timed-out task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Retry me",
+        repos: ["hivemoot/hivemoot", "hivemoot/colony"],
+        timeout_secs: 420,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    // Simulate timed_out by checking the failed state is retryable.
+    const retried = await retryTask("inst-1", created.task.task_id, redis);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+
+    // New task should have a different ID but same prompt/repos/engine.
+    expect(retried.task.task_id).not.toBe(created.task.task_id);
+    expect(retried.task.status).toBe("pending");
+    expect(retried.task.prompt).toBe("Retry me");
+    expect(retried.task.repos).toEqual(["hivemoot/hivemoot", "hivemoot/colony"]);
+    expect(retried.task.engine).toBe("codex");
+    expect(retried.task.timeout_secs).toBe(420);
+    expect(retried.task.created_by).toBe("queen");
+  });
+
+  it("rejects retry of a running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Running",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects retry of a pending task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Pending",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("respects concurrency limit on retry", async () => {
+    // Fill all slots.
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      await createTask(
+        "inst-1",
+        "queen",
+        {
+          engine: "codex",
+          prompt: `Slot ${i}`,
+          repos: ["hivemoot/hivemoot"],
+          timeout_secs: 300,
+        },
+        redis,
+      );
+    }
+
+    // Fail one task to make it retryable, then refill the freed slot.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    const failedId = recent[0].task_id;
+    await markTaskRunning("inst-1", failedId, redis);
+    await failTask("inst-1", failedId, "oops", redis);
+
+    // Refill the slot so we're back at MAX_CONCURRENT_TASKS.
+    const refill = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Refill slot",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(refill.ok).toBe(true);
+
+    // Retry should fail because all slots are occupied.
+    const result = await retryTask("inst-1", failedId, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("concurrency_limited");
+    }
+  });
+
+  it("does not modify the original task on retry", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Original",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    await retryTask("inst-1", created.task.task_id, redis);
+
+    // Original task should still be failed.
+    const original = await getTask("inst-1", created.task.task_id, redis);
+    expect(original?.status).toBe("failed");
+    expect(original?.error).toBe("boom");
+  });
+
+  it("returns not_found for a nonexistent task", async () => {
+    const result = await retryTask("inst-1", "aabbccddeeff001122334455", redis);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 });

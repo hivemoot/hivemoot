@@ -95,6 +95,14 @@ export type TaskTransitionResult =
   | { ok: true; task: TaskRecord }
   | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
 
+export type TaskDeleteResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "invalid_transition" };
+
+export type TaskRetryResult =
+  | { ok: true; task: TaskRecord }
+  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+
 export interface RateLimitResult {
   allowed: boolean;
   retryAfterSeconds: number;
@@ -882,6 +890,78 @@ export async function claimNextPendingTask(
     }
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Delete & retry
+// ---------------------------------------------------------------------------
+
+const DELETABLE_STATUSES = new Set<TaskStatus>([
+  "pending",
+  "needs_follow_up",
+  "completed",
+  "failed",
+  "timed_out",
+]);
+
+export async function deleteTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskDeleteResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  if (!DELETABLE_STATUSES.has(stored.status)) {
+    return { ok: false, reason: "invalid_transition" };
+  }
+
+  await redis
+    .multi()
+    .del(taskKey(installationId, taskId))
+    .del(taskResultKey(installationId, taskId))
+    .del(taskProgressKey(installationId, taskId))
+    .del(taskMessagesKey(installationId, taskId))
+    .zrem(pendingKey(installationId), taskId)
+    .zrem(runningKey(installationId), taskId)
+    .zrem(recentKey(installationId), taskId)
+    .exec();
+
+  return { ok: true };
+}
+
+const RETRYABLE_STATUSES = new Set<TaskStatus>(["failed", "timed_out"]);
+
+export async function retryTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskRetryResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  if (!RETRYABLE_STATUSES.has(stored.status)) {
+    return { ok: false, reason: "invalid_transition" };
+  }
+
+  // Create a new task reusing the original's prompt, repos, engine, and timeout.
+  const result = await createTask(
+    installationId,
+    stored.created_by,
+    {
+      engine: stored.engine,
+      prompt: stored.prompt,
+      repos: stored.repos,
+      timeout_secs: stored.timeout_secs,
+    },
+    redis,
+  );
+
+  if (!result.ok) {
+    return { ok: false, reason: result.reason };
+  }
+
+  return { ok: true, task: result.task };
 }
 
 // ---------------------------------------------------------------------------
