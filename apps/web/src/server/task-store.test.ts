@@ -403,7 +403,6 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
         prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
@@ -452,7 +451,6 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
         prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
@@ -482,11 +480,12 @@ describe("task lifecycle", () => {
       throw new Error("Expected mocked redis.set implementation");
     }
 
-    setSpy.mockImplementation(async (key: string, value: unknown, opts?: SetOpts) => {
+    setSpy.mockImplementation(async (...args) => {
+      const [key, value, opts] = args;
       if (
         !heartbeatWriteBlocked
         && key === taskStorageKey
-        && !opts?.nx
+        && (!opts || typeof opts !== "object" || !("nx" in opts) || opts.nx !== true)
         && typeof value === "object"
         && value !== null
         && (value as { status?: string }).status === "running"
@@ -496,7 +495,7 @@ describe("task lifecycle", () => {
         await heartbeatWriteReleased;
       }
 
-      return baseSet(key, value, opts);
+      return baseSet(...args);
     });
 
     const heartbeatPromise = heartbeatTask("inst-1", created.task.task_id, redis);
@@ -1090,7 +1089,6 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
         prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
