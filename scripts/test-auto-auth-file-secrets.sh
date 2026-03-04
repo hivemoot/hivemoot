@@ -60,6 +60,18 @@ assert_eq "api_key" "$(resolve_effective_auth_mode "codex" "auto")" \
   "codex auto should resolve to api_key after *_FILE load"
 unset OPENAI_API_KEY OPENAI_API_KEY_FILE || true
 
+assert_fails_with \
+  "Set either OPENAI_API_KEY or OPENAI_API_KEY_FILE, not both." \
+  env \
+    AGENT_PROVIDER=codex \
+    AGENT_AUTH_MODE=auto \
+    OPENAI_API_KEY=sk-inline \
+    OPENAI_API_KEY_FILE="${tmp_key_file}" \
+    TARGET_REPO=owner/repo \
+    AGENT_ID_01=worker \
+    AGENT_GITHUB_TOKEN_01=dummy \
+    bash scripts/run-multi.sh
+
 # These wrappers should load *_FILE secrets before resolving auth mode
 # or parsing agents. A missing file must fail fast with the file error.
 rm -f "$missing_key_file"

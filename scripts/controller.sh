@@ -1542,7 +1542,7 @@ periodic_jitter="${PERIODIC_JITTER_SECS:-300}"
 watch_mentions="${WATCH_MENTIONS:-0}"
 watch_tasks="${WATCH_TASKS:-0}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
-task_poll_interval_secs=10
+task_poll_interval_secs="${TASK_POLL_INTERVAL_SECS:-120}"
 task_dispatch_agent_ids="${TASK_DISPATCH_AGENT_IDS:-}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
@@ -1563,7 +1563,7 @@ agent_timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
 target_repo="${TARGET_REPO:-}"
 task_claim_url="${AGENT_TASK_CLAIM_URL:-}"
 task_execute_base_url="${AGENT_TASK_EXECUTE_BASE_URL:-}"
-task_executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
+task_executor_token=""
 max_agents=10
 controller_instance_id="$(date +%s)-$$"
 shutdown_requested=0
@@ -1644,8 +1644,9 @@ if [ "$watch_tasks" = "0" ]; then
 fi
 
 if [ "$watch_tasks" = "1" ]; then
-  load_secret_from_file HIVEMOOT_AGENT_TOKEN
-  task_executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
+  if ! task_executor_token="$(resolve_secret_value HIVEMOOT_AGENT_TOKEN)"; then
+    exit 1
+  fi
   if [ -z "$task_executor_token" ]; then
     echo "HIVEMOOT_AGENT_TOKEN or HIVEMOOT_AGENT_TOKEN_FILE is required when WATCH_TASKS=1." >&2
     exit 1

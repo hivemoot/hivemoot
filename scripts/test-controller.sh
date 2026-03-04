@@ -836,6 +836,57 @@ run_task_watch_case() {
   echo "PASS: task-watch mode claims and runs delegated tasks"
 }
 
+run_task_watch_token_file_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+  local curl_log=""
+  local token_file=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  token_file="${case_dir}/secrets/hivemoot-agent-token"
+  mkdir -p "$(dirname "$token_file")"
+  printf '%s' 'shared-token-from-file' > "$token_file"
+  chmod 600 "$token_file"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN_FILE="${token_file}" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in task-watch token-file case"
+  assert_file_contains "$run_log" "-e HIVEMOOT_AGENT_TOKEN_FILE=${token_file}"
+  assert_file_contains "$run_log" "-v ${token_file}:${token_file}:ro"
+  assert_file_not_contains "$run_log" "-e HIVEMOOT_AGENT_TOKEN=shared-token-from-file"
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch token-file case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token-from-file"
+
+  echo "PASS: task-watch mode supports HIVEMOOT_AGENT_TOKEN_FILE without conflicts"
+}
+
 run_task_watch_no_task_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1199,6 +1250,7 @@ run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
 run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
 run_task_watch_scope_validation_case "$repo_root" "${tmpdir}/task-watch-scope-validation"

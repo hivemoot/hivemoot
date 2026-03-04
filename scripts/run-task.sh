@@ -12,6 +12,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 load_provider_secrets
 load_secret_from_file HIVEMOOT_AGENT_TOKEN
 
+# Task mode runs a single agent. The controller passes credentials in the
+# multi-agent slot format (AGENT_ID_01 / AGENT_GITHUB_TOKEN_01_FILE) but
+# run-once.sh expects the bare AGENT_GITHUB_TOKEN_FILE.  Resolve slot 01
+# into the bare form so run-once.sh can load it via load_secret_from_file.
+if [ -z "${AGENT_GITHUB_TOKEN_FILE:-}" ] && [ -z "${AGENT_GITHUB_TOKEN:-}" ]; then
+  if [ -n "${AGENT_GITHUB_TOKEN_01_FILE:-}" ]; then
+    export AGENT_GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_01_FILE}"
+  elif [ -n "${AGENT_GITHUB_TOKEN_01:-}" ]; then
+    export AGENT_GITHUB_TOKEN="${AGENT_GITHUB_TOKEN_01}"
+  fi
+fi
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then

@@ -342,7 +342,8 @@ bash scripts/controller.sh
 
 In task-watching mode, `TARGET_REPO` is optional because each claimed task
 already carries its target repo.
-The claim poll interval is fixed at 10 seconds.
+The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
+(default: `120` seconds).
 `TASK_DISPATCH_AGENT_IDS` is required and must reference configured
 `AGENT_ID_XX` values; only those agents are allowed to execute claimed tasks.
 If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with

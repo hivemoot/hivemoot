@@ -48,6 +48,8 @@ printf '%s\n' "TARGET_REPO=${TARGET_REPO:-}" > "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "LOG_DIR=${LOG_DIR:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "SESSION_RESUME=${SESSION_RESUME:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf '%s\n' "AGENT_GITHUB_TOKEN=${AGENT_GITHUB_TOKEN:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf '%s\n' "AGENT_GITHUB_TOKEN_FILE=${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_EXTRA_PROMPT_START" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_EXTRA_PROMPT_END" >> "${MOCK_ENV_SNAPSHOT:?}"
@@ -203,6 +205,39 @@ run_case_claim_mode() {
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claimed-42/execute"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/claimed"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_TIMEOUT_SECONDS=333"
+}
+
+run_case_slot_token_file_bridge() {
+  local case_dir="${tmp_root}/case-slot-token-file-bridge"
+  local result_path="${case_dir}/workspace/task-output/task-slot-file/result.md"
+  local slot_token_file="${case_dir}/secrets/slot-token"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace" "$(dirname "$slot_token_file")"
+  printf '%s' "ghs_slot_file_token" > "$slot_token_file"
+  chmod 600 "$slot_token_file"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_ID="task-slot-file" \
+    AGENT_TASK_PROMPT="Verify slot token file bridge" \
+    TARGET_REPO="owner/repo" \
+    AGENT_GITHUB_TOKEN= \
+    AGENT_GITHUB_TOKEN_FILE= \
+    AGENT_GITHUB_TOKEN_01= \
+    AGENT_GITHUB_TOKEN_01_FILE="$slot_token_file" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "Execution finished successfully."
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_GITHUB_TOKEN="
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_GITHUB_TOKEN_FILE=${slot_token_file}"
 }
 
 run_case_claim_repo_mismatch() {
@@ -417,6 +452,7 @@ run_case_default_log_dir_when_unset() {
 
 run_case_direct_env
 run_case_claim_mode
+run_case_slot_token_file_bridge
 run_case_claim_repo_mismatch
 run_case_no_pending_task
 run_case_no_stale_log_tail_on_early_failure
