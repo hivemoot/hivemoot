@@ -367,3 +367,43 @@ describe("jsonRole()", () => {
     expect(result).not.toHaveProperty("onboarding");
   });
 });
+
+describe("suppressedSections in JSON output", () => {
+  it("suppresses listed sections in jsonStatus by returning empty arrays", () => {
+    const suppressed: RepoSummary = {
+      ...summary,
+      suppressedSections: ["discuss", "voteOn"],
+    };
+    const result = JSON.parse(jsonStatus(suppressed));
+    expect(result.discuss).toEqual([]);
+    expect(result.voteOn).toEqual([]);
+    // non-suppressed sections are still present
+    expect(result.implement).toEqual(summary.implement);
+    expect(result.reviewPRs).toEqual(summary.reviewPRs);
+  });
+
+  it("suppresses listed sections in jsonBuzz summary by returning empty arrays", () => {
+    const suppressed: RepoSummary = {
+      ...summary,
+      suppressedSections: ["implement", "reviewPRs"],
+    };
+    const result = JSON.parse(jsonBuzz("engineer", role, suppressed));
+    expect(result.summary.implement).toEqual([]);
+    expect(result.summary.reviewPRs).toEqual([]);
+    expect(result.summary.discuss).toEqual(summary.discuss);
+  });
+
+  it("passes all sections through when suppressedSections is absent", () => {
+    const result = JSON.parse(jsonStatus(summary));
+    expect(result.discuss).toEqual(summary.discuss);
+    expect(result.voteOn).toEqual(summary.voteOn);
+    expect(result.implement).toEqual(summary.implement);
+  });
+
+  it("passes all sections through when suppressedSections is empty", () => {
+    const noSuppress: RepoSummary = { ...summary, suppressedSections: [] };
+    const result = JSON.parse(jsonStatus(noSuppress));
+    expect(result.discuss).toEqual(summary.discuss);
+    expect(result.implement).toEqual(summary.implement);
+  });
+});

@@ -1,20 +1,23 @@
 import type { RepoSummary, RoleConfig, TeamConfig } from "../config/types.js";
 
 function summaryPayload(summary: RepoSummary): Record<string, unknown> {
+  const suppressed = new Set(summary.suppressedSections ?? []);
+  const s = <T>(key: string, value: T): T | [] => (suppressed.has(key) ? ([] as []) : value);
+
   return {
     notifications: summary.notifications,
     unackedMentions: summary.unackedMentions ?? [],
     repo: `${summary.repo.owner}/${summary.repo.repo}`,
     currentUser: summary.currentUser,
-    driveDiscussion: summary.driveDiscussion,
-    driveImplementation: summary.driveImplementation,
-    voteOn: summary.voteOn,
-    discuss: summary.discuss,
-    implement: summary.implement,
-    unclassified: summary.unclassified ?? [],
-    reviewPRs: summary.reviewPRs,
-    draftPRs: summary.draftPRs,
-    addressFeedback: summary.addressFeedback,
+    driveDiscussion: s("driveDiscussion", summary.driveDiscussion),
+    driveImplementation: s("driveImplementation", summary.driveImplementation),
+    voteOn: s("voteOn", summary.voteOn),
+    discuss: s("discuss", summary.discuss),
+    implement: s("implement", summary.implement),
+    unclassified: s("unclassified", summary.unclassified ?? []),
+    reviewPRs: s("reviewPRs", summary.reviewPRs),
+    draftPRs: s("draftPRs", summary.draftPRs),
+    addressFeedback: s("addressFeedback", summary.addressFeedback),
     recentlyClosedByYou: summary.recentlyClosedByYou ?? [],
     needsHuman: summary.needsHuman,
     repositoryHealth: summary.repositoryHealth,

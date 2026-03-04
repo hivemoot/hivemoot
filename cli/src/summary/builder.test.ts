@@ -1442,4 +1442,70 @@ describe("buildSummary() — focus filters", () => {
     const allIssueNumbers = [...summary.discuss, ...summary.driveDiscussion].map((i) => i.number);
     expect(allIssueNumbers).toContain(1);
   });
+
+  it("filtered-out issue does not appear in NOTIFICATIONS fallback", () => {
+    // issue #5 is filtered out by label rules, but has an unread notification.
+    // It must not leak back into the notifications array via the unmatched fallback.
+    const filteredIssue = makeIssue({
+      number: 5,
+      labels: [{ name: "enhancement" }, { name: "hivemoot:discussion" }],
+    });
+    const notifications = new Map([
+      [5, {
+        threadId: "T5",
+        reason: "mention" as const,
+        updatedAt: "2025-06-15T11:00:00Z",
+        title: "Filtered issue",
+        url: "https://github.com/hivemoot/colony/issues/5",
+        itemType: "Issue" as const,
+      }],
+    ]);
+
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(
+      repo,
+      [filteredIssue],
+      [],
+      "testuser",
+      now,
+      new Map(),
+      notifications,
+      undefined,
+      filters,
+    );
+
+    expect(summary.notifications).toHaveLength(0);
+  });
+
+  it("filtered-out PR does not appear in NOTIFICATIONS fallback", () => {
+    const filteredPR = makePR({
+      number: 15,
+      labels: [{ name: "enhancement" }],
+    });
+    const notifications = new Map([
+      [15, {
+        threadId: "T15",
+        reason: "review_requested" as const,
+        updatedAt: "2025-06-15T11:00:00Z",
+        title: "Filtered PR",
+        url: "https://github.com/hivemoot/colony/pull/15",
+        itemType: "PullRequest" as const,
+      }],
+    ]);
+
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(
+      repo,
+      [],
+      [filteredPR],
+      "testuser",
+      now,
+      new Map(),
+      notifications,
+      undefined,
+      filters,
+    );
+
+    expect(summary.notifications).toHaveLength(0);
+  });
 });

@@ -388,23 +388,29 @@ export function buildSummary(
   const notes: string[] = [];
 
   // Apply label/author item filters when a focus filter is active.
+  // Track filtered-out numbers so they don't leak back into NOTIFICATIONS.
+  const filteredOutNumbers = new Set<number>();
   const filteredIssues = focusFilters
-    ? issues.filter((issue) =>
-        passesItemFilter(
+    ? issues.filter((issue) => {
+        const passes = passesItemFilter(
           issue.labels.map((l) => l.name),
           issue.author?.login ?? "",
           focusFilters,
-        )
-      )
+        );
+        if (!passes) filteredOutNumbers.add(issue.number);
+        return passes;
+      })
     : issues;
   const filteredPRs = focusFilters
-    ? prs.filter((pr) =>
-        passesItemFilter(
+    ? prs.filter((pr) => {
+        const passes = passesItemFilter(
           pr.labels.map((l) => l.name),
           pr.author?.login ?? "",
           focusFilters,
-        )
-      )
+        );
+        if (!passes) filteredOutNumbers.add(pr.number);
+        return passes;
+      })
     : prs;
 
   for (const issue of filteredIssues) {
@@ -533,8 +539,11 @@ export function buildSummary(
 
   // Include unread notification threads that do not map to currently fetched
   // open items (e.g. closed threads or items beyond fetch limit).
+  // Skip items that were explicitly filtered out by focus rules — they must
+  // not appear in any output path, including NOTIFICATIONS.
   for (const [number, n] of notifications.entries()) {
     if (matchedNumbers.has(number)) continue;
+    if (filteredOutNumbers.has(number)) continue;
 
     const ackKey = `${n.threadId}:${n.updatedAt}`;
     notificationRefs.push({
