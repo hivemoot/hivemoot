@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseKeyring, encrypt, decrypt, ByokCryptoError } from "./crypto";
 import type { EncryptedEnvelope } from "./crypto";
+import { BYOK_ERROR } from "./byok-error";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -129,7 +130,7 @@ describe("tamper detection", () => {
     try {
       decrypt(tampered, keyring);
     } catch (err) {
-      expect((err as ByokCryptoError).code).toBe("byok_decrypt_failed");
+      expect((err as ByokCryptoError).code).toBe(BYOK_ERROR.DECRYPT_FAILED);
     }
   });
 
@@ -142,7 +143,7 @@ describe("tamper detection", () => {
     try {
       decrypt(tampered, keyring);
     } catch (err) {
-      expect((err as ByokCryptoError).code).toBe("byok_decrypt_failed");
+      expect((err as ByokCryptoError).code).toBe(BYOK_ERROR.DECRYPT_FAILED);
     }
   });
 
@@ -155,7 +156,7 @@ describe("tamper detection", () => {
     try {
       decrypt(tampered, keyring);
     } catch (err) {
-      expect((err as ByokCryptoError).code).toBe("byok_decrypt_failed");
+      expect((err as ByokCryptoError).code).toBe(BYOK_ERROR.DECRYPT_FAILED);
     }
   });
 });
@@ -171,7 +172,7 @@ describe("key version errors", () => {
     try {
       encrypt("test", "v99", keyring);
     } catch (err) {
-      expect((err as ByokCryptoError).code).toBe("byok_key_version_unavailable");
+      expect((err as ByokCryptoError).code).toBe(BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE);
     }
   });
 
@@ -186,7 +187,7 @@ describe("key version errors", () => {
     try {
       decrypt(envelope, smallKeyring);
     } catch (err) {
-      expect((err as ByokCryptoError).code).toBe("byok_key_version_unavailable");
+      expect((err as ByokCryptoError).code).toBe(BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE);
     }
   });
 });

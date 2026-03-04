@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Step2Form from "./Step2Form";
 
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ interface Step {
 
 interface SetupWizardProps {
   installationId: string;
-  sessionTtlSeconds: number;
+  initialExpiresAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ docker compose run --rm hivemoot-agent`}</code>
 
 export default function SetupWizard({
   installationId,
-  sessionTtlSeconds,
+  initialExpiresAt,
 }: SetupWizardProps) {
   const [activeStep, setActiveStep] = useState<2 | 3>(2);
   const steps = buildSteps(activeStep);
@@ -314,12 +314,12 @@ export default function SetupWizard({
       <aside className="shrink-0 sm:w-56">
         <ol className="flex flex-col" aria-label="Setup progress">
           {steps.map((step, i) => (
-            <div key={step.number}>
+            <Fragment key={step.number}>
               <StepIndicator step={step} />
               {i < steps.length - 1 && (
                 <StepConnector fromStatus={step.status} />
               )}
-            </div>
+            </Fragment>
           ))}
         </ol>
       </aside>
@@ -329,7 +329,7 @@ export default function SetupWizard({
         {activeStep === 2 ? (
           <Step2Form
             installationId={installationId}
-            sessionTtlSeconds={sessionTtlSeconds}
+            initialExpiresAt={initialExpiresAt}
             onComplete={() => setActiveStep(3)}
           />
         ) : (

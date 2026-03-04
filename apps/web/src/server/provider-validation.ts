@@ -19,6 +19,7 @@ const PROVIDER_VALIDATORS: Record<string, ProviderValidator> = {
   anthropic: validateAnthropic,
   openai: validateOpenAI,
   google: validateGoogle,
+  openrouter: validateOpenRouter,
 };
 
 function isAbortError(error: unknown): boolean {
@@ -116,5 +117,22 @@ async function validateGoogle(apiKey: string): Promise<ValidationResult> {
       return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
     }
     return { valid: false, reason: "Failed to reach Google AI API" };
+  }
+}
+
+async function validateOpenRouter(apiKey: string): Promise<ValidationResult> {
+  try {
+    const response = await fetchWithTimeout("https://openrouter.ai/api/v1/auth/key", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (response.ok) return { valid: true };
+    if (response.status === 401) return { valid: false, reason: "Invalid API key" };
+    return { valid: false, reason: `Provider returned ${response.status}` };
+  } catch (error) {
+    if (isAbortError(error)) {
+      return { valid: false, reason: PROVIDER_VALIDATION_TIMEOUT_REASON };
+    }
+    return { valid: false, reason: "Failed to reach OpenRouter API" };
   }
 }

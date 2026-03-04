@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <title>Hivemoot Discord Icon</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="icon-title">
+  <title id="icon-title">Hivemoot</title>
 
   <!-- Background -->
   <rect width="512" height="512" fill="#111827"/>

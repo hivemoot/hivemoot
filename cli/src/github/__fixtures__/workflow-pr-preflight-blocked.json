@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "pr_preflight",
+  "generatedAt": "2026-02-19T00:00:00.000Z",
+  "repo": {
+    "owner": "hivemoot",
+    "repo": "hivemoot"
+  },
+  "pr": {
+    "number": 36,
+    "title": "Clarify accepted closing-keyword link formats",
+    "url": "https://github.com/hivemoot/hivemoot/pull/36",
+    "state": "OPEN",
+    "isDraft": false,
+    "mergeable": "CONFLICTING",
+    "reviewDecision": null,
+    "createdAt": "2026-02-17T03:20:00Z",
+    "updatedAt": "2026-02-18T16:44:33Z",
+    "headRefName": "codex/generalize-linking-guidance",
+    "baseRefName": "main",
+    "author": "hivemoot"
+  },
+  "linkedIssues": [],
+  "checks": {
+    "required": [
+      {
+        "name": "typecheck-test-build",
+        "type": "check_run",
+        "required": true,
+        "bucket": "fail",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE"
+      }
+    ],
+    "all": [
+      {
+        "name": "typecheck-test-build",
+        "type": "check_run",
+        "required": true,
+        "bucket": "fail",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE"
+      }
+    ],
+    "requiredFailing": [
+      {
+        "name": "typecheck-test-build",
+        "type": "check_run",
+        "required": true,
+        "bucket": "fail",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE"
+      }
+    ],
+    "requiredPending": []
+  },
+  "blockers": [
+    {
+      "code": "no_linked_issue",
+      "message": "Pull request must link an issue via closing keyword."
+    },
+    {
+      "code": "merge_conflict",
+      "message": "Pull request currently has merge conflicts."
+    },
+    {
+      "code": "required_checks_failing",
+      "message": "Required checks are failing: typecheck-test-build."
+    }
+  ],
+  "warnings": [],
+  "pass": false
+}

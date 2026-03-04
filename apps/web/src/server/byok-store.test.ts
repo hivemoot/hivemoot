@@ -3,6 +3,7 @@ import { type Redis } from "@upstash/redis";
 import {
   getByokEnvelope,
   setByokEnvelope,
+  hasByokEnvelope,
   listByokInstallationIds,
 } from "./byok-store";
 import type { ByokEnvelope } from "./byok-store";
@@ -25,6 +26,9 @@ function makeMockRedis() {
       const existed = store.has(key);
       store.delete(key);
       return existed ? 1 : 0;
+    }),
+    exists: vi.fn(async (...keys: string[]) => {
+      return keys.filter((k) => store.has(k)).length;
     }),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     scan: vi.fn(async (cursor: string, ..._args: unknown[]) => {
@@ -157,6 +161,20 @@ describe("setByokEnvelope + getByokEnvelope lifecycle", () => {
     const result = await getByokEnvelope("100", redis);
     expect(result!.status).toBe("revoked");
     expect(result!.ciphertext).toBe("");
+  });
+});
+
+describe("hasByokEnvelope", () => {
+  it("returns true when an envelope exists", async () => {
+    const redis = makeMockRedis();
+    await setByokEnvelope("100", makeEnvelope(), redis);
+
+    expect(await hasByokEnvelope("100", redis)).toBe(true);
+  });
+
+  it("returns false when no envelope exists", async () => {
+    const redis = makeMockRedis();
+    expect(await hasByokEnvelope("999", redis)).toBe(false);
   });
 });
 

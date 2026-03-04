@@ -7,7 +7,7 @@
  *    Validated on callback to prevent CSRF. Deleted after single use.
  *
  * 2. **Setup session token** — an opaque random token issued after successful
- *    OAuth + admin verification. Stored in Redis with a 30-minute TTL. Required
+ *    OAuth + admin verification. Stored in Redis with a 24-hour TTL. Required
  *    on all subsequent /api/byok/* calls (Phase 3).
  */
 
@@ -18,7 +18,7 @@ import { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE } from "@/constants/co
 export { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE };
 
 const STATE_TTL_SECONDS = 600;
-export const SESSION_TTL_SECONDS = 1800;
+export const SESSION_TTL_SECONDS = 86400;
 
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
@@ -84,6 +84,10 @@ export interface SetupSessionPayload {
   userLogin: string;
 }
 
+export interface SetupSessionResult extends SetupSessionPayload {
+  expiresAt: number;
+}
+
 export async function createSetupSession(
   payload: SetupSessionPayload,
   redis: Redis,
@@ -100,7 +104,7 @@ export async function createSetupSession(
 export async function getSetupSession(
   token: string,
   redis: Redis,
-): Promise<SetupSessionPayload | null> {
+): Promise<SetupSessionResult | null> {
   const data = await redis.get<SetupSessionPayload & { exp: number }>(`${SESSION_KEY_PREFIX}${token}`);
   if (!data) return null;
 
@@ -109,5 +113,5 @@ export async function getSetupSession(
     return null;
   }
 
-  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin };
+  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin, expiresAt: data.exp };
 }

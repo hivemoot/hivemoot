@@ -31,7 +31,9 @@ function normalizeEnvelope(
   installationId: string,
   rawEnvelope: Partial<ByokEnvelope> & { fingerprintLast4?: unknown },
 ): ByokEnvelope | null {
-  const fingerprint = rawEnvelope.fingerprint ?? rawEnvelope.fingerprintLast4;
+  // fingerprint is always "" for new envelopes; tolerate missing for legacy data
+  const rawFp = rawEnvelope.fingerprint ?? rawEnvelope.fingerprintLast4;
+  const fingerprint = typeof rawFp === "string" ? rawFp : "";
 
   if (
     typeof rawEnvelope.provider !== "string" ||
@@ -42,10 +44,9 @@ function normalizeEnvelope(
     typeof rawEnvelope.keyVersion !== "string" ||
     !isByokStatus(rawEnvelope.status) ||
     typeof rawEnvelope.updatedAt !== "string" ||
-    typeof rawEnvelope.updatedBy !== "string" ||
-    typeof fingerprint !== "string"
+    typeof rawEnvelope.updatedBy !== "string"
   ) {
-    console.warn("Invalid BYOK envelope shape in Redis", { installationId });
+    console.error("[byok-store] Invalid BYOK envelope shape in Redis — possible data corruption", { installationId });
     return null;
   }
 
@@ -74,6 +75,18 @@ export async function getByokEnvelope(
   if (!raw) return null;
 
   return normalizeEnvelope(installationId, raw);
+}
+
+/**
+ * Returns true if a BYOK envelope exists for the given installation.
+ * Uses a single Redis EXISTS command — no deserialization, no crypto data in memory.
+ */
+export async function hasByokEnvelope(
+  installationId: string,
+  redis: Redis,
+): Promise<boolean> {
+  const count = await redis.exists(`${KEY_PREFIX}${installationId}`);
+  return count > 0;
 }
 
 /**

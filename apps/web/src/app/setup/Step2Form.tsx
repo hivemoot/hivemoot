@@ -1,24 +1,24 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { BYOK_ERROR } from "@/constants/byok-errors";
 
 // ---------------------------------------------------------------------------
 // Types & constants
 // ---------------------------------------------------------------------------
 
-type Provider = "anthropic" | "openai" | "google";
+type Provider = "anthropic" | "openai" | "google" | "openrouter";
 type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 
 interface Step2FormProps {
   installationId: string;
-  sessionTtlSeconds: number;
+  initialExpiresAt: number;
   onComplete?: () => void;
 }
 
 interface SuccessData {
   provider: string;
   model: string;
-  fingerprint: string;
   updatedAt: string;
 }
 
@@ -26,24 +26,27 @@ const DEFAULT_MODELS: Record<Provider, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-5.2",
   google: "gemini-3-flash-preview",
+  openrouter: "anthropic/claude-sonnet-4.6",
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",
+  openrouter: "OpenRouter",
 };
 
 const KEY_PLACEHOLDERS: Record<Provider, string> = {
   anthropic: "sk-ant-...",
   openai: "sk-...",
   google: "AIza...",
+  openrouter: "sk-or-v1-...",
 };
 
 // ---------------------------------------------------------------------------
 // Inline SVG icons (no external libraries)
 // Official brand marks: Anthropic, OpenAI from Bootstrap Icons; Google "G"
-// from Google Fonts assets; Mistral pixel-grid from brand guidelines.
+// from Google Fonts assets.
 // ---------------------------------------------------------------------------
 
 function AnthropicIcon({ className }: { className?: string }) {
@@ -87,10 +90,24 @@ function GoogleIcon({ className }: { className?: string }) {
   );
 }
 
+function OpenRouterIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICONS: Record<Provider, typeof AnthropicIcon> = {
   anthropic: AnthropicIcon,
   openai: OpenAIIcon,
   google: GoogleIcon,
+  openrouter: OpenRouterIcon,
 };
 
 function EyeIcon() {
@@ -458,14 +475,12 @@ function QueenIntro() {
 
 export default function Step2Form({
   installationId,
-  sessionTtlSeconds,
+  initialExpiresAt,
   onComplete,
 }: Step2FormProps) {
-  // Compute expiry once at mount time. Subtract a 5-second buffer to account
-  // for time consumed by the redirect + page load after the session was created.
-  const [sessionExpiresAt] = useState(
-    () => Date.now() + (sessionTtlSeconds - 5) * 1000,
-  );
+  // Use the server-provided expiry timestamp directly — no client-side
+  // estimation needed since the server derives it from the actual Redis TTL.
+  const [sessionExpiresAt] = useState(() => initialExpiresAt);
   // Form state
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
@@ -589,8 +604,8 @@ export default function Step2Form({
 
       if (
         res.status === 401 &&
-        (err.code === "byok_not_authenticated" ||
-          err.code === "byok_session_invalid")
+        (err.code === BYOK_ERROR.NOT_AUTHENTICATED ||
+          err.code === BYOK_ERROR.SESSION_INVALID)
       ) {
         setSessionExpired(true);
         setMinutesRemaining(0);
@@ -600,7 +615,7 @@ export default function Step2Form({
         return;
       }
 
-      if (res.status === 400 && err.code === "byok_provider_invalid") {
+      if (res.status === 400 && err.code === BYOK_ERROR.PROVIDER_INVALID) {
         setStatus("error");
         setErrorCode(err.code);
         setErrorMessage(
@@ -609,7 +624,15 @@ export default function Step2Form({
         return;
       }
 
-      // Generic server error
+      // 5xx: hide internal details from users
+      if (res.status >= 500) {
+        setStatus("error");
+        setErrorCode(err.code ?? "");
+        setErrorMessage("Something went wrong. Please try again later.");
+        return;
+      }
+
+      // Generic client error fallback
       setStatus("error");
       setErrorCode(err.code ?? "");
       setErrorMessage(err.message ?? "Something went wrong. Please try again.");
@@ -629,7 +652,10 @@ export default function Step2Form({
 
   const sessionBanner =
     sessionExpired ? (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+      // role="alert" triggers an assertive screen-reader announcement when the
+      // banner appears, so users who are mid-typing hear the expiry immediately
+      // (WCAG 4.1.3 Status Messages).
+      <div role="alert" className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
         <svg
           className="h-4 w-4 shrink-0 text-red-400"
           viewBox="0 0 16 16"
@@ -699,12 +725,6 @@ export default function Step2Form({
             <dd className="font-mono text-zinc-300">{successData.model}</dd>
           </div>
           <div className="flex justify-between">
-            <dt className="text-zinc-500">Key</dt>
-            <dd className="font-mono text-zinc-300">
-              ····
-            </dd>
-          </div>
-          <div className="flex justify-between">
             <dt className="text-zinc-500">Saved</dt>
             <dd className="text-zinc-300">
               {new Date(successData.updatedAt).toLocaleString()}
@@ -766,8 +786,8 @@ export default function Step2Form({
   // Form view
   // -----------------------------------------------------------------------
   const isSessionError =
-    errorCode === "byok_not_authenticated" ||
-    errorCode === "byok_session_invalid";
+    errorCode === BYOK_ERROR.NOT_AUTHENTICATED ||
+    errorCode === BYOK_ERROR.SESSION_INVALID;
 
   return (
     <div className="flex flex-col gap-5">
@@ -862,10 +882,11 @@ export default function Step2Form({
         )}
 
         {/* Provider selector — 2×2 grid */}
-        <fieldset>
+        {/* disabled={sessionExpired} propagates to all descendant buttons via HTML spec */}
+        <fieldset disabled={sessionExpired}>
           <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
-          <div className="grid grid-cols-3 gap-2">
-            {(["anthropic", "openai", "google"] as const).map((p) => {
+          <div className="grid grid-cols-2 gap-2">
+            {(["anthropic", "openai", "google", "openrouter"] as const).map((p) => {
               const isActive = provider === p;
               const Icon = PROVIDER_ICONS[p];
               return (
@@ -876,6 +897,7 @@ export default function Step2Form({
                   className={`
                     flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5
                     text-sm font-medium transition-colors
+                    disabled:cursor-not-allowed disabled:opacity-50
                     ${
                       isActive
                         ? "border-honey-500/40 bg-honey-500/10 text-honey-400"
@@ -891,6 +913,28 @@ export default function Step2Form({
           </div>
         </fieldset>
 
+        {provider === "openrouter" && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <svg
+              className="h-4 w-4 shrink-0 mt-0.5 text-amber-400"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6" />
+              <path d="M8 5v3" />
+              <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+            </svg>
+            <p className="text-xs text-amber-300/90">
+              Requests route through <span className="font-medium">OpenRouter</span> before reaching the model provider.
+            </p>
+          </div>
+        )}
+
         {/* Model field */}
         <div className="mt-5">
           <label htmlFor="model" className="mb-2 block text-sm text-zinc-400">
@@ -901,11 +945,26 @@ export default function Step2Form({
             type="text"
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+            disabled={sessionExpired}
+            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            The model the Queen uses for AI features.
-          </p>
+          {provider === "openrouter" ? (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Format: <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">provider/model-name</code> (e.g. <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">anthropic/claude-sonnet-4.6</code>).{" "}
+              <a
+                href="https://openrouter.ai/models"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-honey-400 hover:underline"
+              >
+                Browse models
+              </a>.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              The model the Queen uses for AI features.
+            </p>
+          )}
         </div>
 
         {/* API key field */}
@@ -924,12 +983,14 @@ export default function Step2Form({
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={KEY_PLACEHOLDERS[provider]}
-              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+              disabled={sessionExpired}
+              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             />
             <button
               type="button"
               onClick={() => setShowKey((v) => !v)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
+              disabled={sessionExpired}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={showKey ? "Hide API key" : "Show API key"}
             >
               {showKey ? <EyeOffIcon /> : <EyeIcon />}

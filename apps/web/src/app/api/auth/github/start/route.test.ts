@@ -76,55 +76,68 @@ describe("GET /api/auth/github/start", () => {
     expect(setCookie).toContain("HttpOnly");
   });
 
-  it("returns 400 when installation_id is missing", async () => {
+  it("redirects to /setup when installation_id is missing", async () => {
     const req = makeRequest("https://example.com/api/auth/github/start");
     const res = await GET(req);
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/installation_id/);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
   });
 
-  it("returns 400 when installation_id is not numeric", async () => {
+  it("redirects to /setup when installation_id is not numeric", async () => {
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=abc");
     const res = await GET(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
   });
 
-  it("returns 503 when GitHub OAuth is not configured", async () => {
+  it("redirects to /setup/error when GitHub OAuth is not configured", async () => {
     vi.mocked(validateEnv).mockReturnValue({
       ok: true,
       config: { ...VALID_CONFIG, githubClientId: undefined, githubClientSecret: undefined },
     });
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
     const res = await GET(req);
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("server_misconfiguration");
   });
 
-  it("returns 503 when Redis is not configured", async () => {
+  it("redirects to /setup/error when Redis is not configured", async () => {
     vi.mocked(validateEnv).mockReturnValue({
       ok: true,
       config: { ...VALID_CONFIG, redisRestUrl: undefined, redisRestToken: undefined },
     });
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
     const res = await GET(req);
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("server_misconfiguration");
   });
 
-  it("returns 503 when env validation fails", async () => {
+  it("redirects to /setup/error when env validation fails", async () => {
     vi.mocked(validateEnv).mockReturnValue({ ok: false, missing: ["HIVEMOOT_REDIS_REST_URL"] });
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
     const res = await GET(req);
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("server_misconfiguration");
   });
 
-  it("returns 503 with a stable code when OAuth state storage fails", async () => {
+  it("redirects to /setup/error with oauth_state_store_failed when state storage fails", async () => {
     vi.mocked(createOAuthState).mockRejectedValue(new Error("redis down"));
 
     const req = makeRequest("https://example.com/api/auth/github/start?installation_id=1");
     const res = await GET(req);
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.code).toBe("oauth_state_store_failed");
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("oauth_state_store_failed");
+    expect(location.searchParams.get("installation_id")).toBe("1");
   });
 
   it("includes the callback redirect_uri scoped to siteUrl", async () => {

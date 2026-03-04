@@ -6,6 +6,10 @@ import { roleCommand } from "./commands/role.js";
 import { initCommand } from "./commands/init.js";
 import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
+import { prSnapshotCommand } from "./commands/pr-snapshot.js";
+import { prPreflightCommand } from "./commands/pr-preflight.js";
+import { issueVoteCommand } from "./commands/issue-vote.js";
+import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -125,6 +129,105 @@ Examples:
     Watch with a 60-second polling interval`,
   )
   .action(watchCommand);
+
+const issueProgram = program
+  .command("issue")
+  .description("Issue workflow helpers for autonomous agents");
+
+issueProgram
+  .command("vote")
+  .description("Cast a vote on an issue in the voting phase")
+  .argument("<issue>", "Issue number")
+  .argument("<vote>", 'Vote direction: "up" (👍) or "down" (👎)')
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve target without applying reaction")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  vote applied (or already voted — idempotent)
+  2  actionable guard: no_voting_target or conflicting_vote
+  >=3 execution error
+
+Examples:
+  $ hivemoot issue vote 42 up --repo hivemoot/hivemoot --json
+    Vote 👍 on issue #42 and output structured result
+
+  $ hivemoot issue vote 42 down --dry-run
+    Resolve the voting target without casting a vote`,
+  )
+  .action(issueVoteCommand);
+
+issueProgram
+  .command("post-comment")
+  .description("Post a comment on an issue")
+  .argument("<issue>", "Issue number")
+  .option("--body <text>", "Comment body text (mutually exclusive with --body-file)")
+  .option("--body-file <path>", "Read comment body from file (mutually exclusive with --body)")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve without posting the comment")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot issue post-comment 42 --body "LGTM" --repo hivemoot/hivemoot
+    Post a comment on issue #42
+
+  $ hivemoot issue post-comment 42 --body-file ./comment.md --json
+    Post comment from file and output structured result
+
+  $ hivemoot issue post-comment 42 --body "Test" --dry-run
+    Resolve without posting (useful for agent preflight checks)`,
+  )
+  .action(issuePostCommentCommand);
+
+const prProgram = program
+  .command("pr")
+  .description("Pull request workflow helpers for autonomous agents");
+
+prProgram
+  .command("snapshot")
+  .description("Emit a canonical PR context payload")
+  .argument("<pr>", "Pull request number, URL, or branch")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot pr snapshot 54 --repo hivemoot/hivemoot --json
+    Output schemaVersioned PR context for automation
+
+  $ hivemoot pr snapshot https://github.com/hivemoot/hivemoot/pull/54
+    Resolve from URL in the current repository`,
+  )
+  .action(prSnapshotCommand);
+
+prProgram
+  .command("preflight")
+  .description("Check structural blockers for a PR")
+  .argument("<pr>", "Pull request number, URL, or branch")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  no blockers
+  2  blockers present
+  >=3 execution error
+
+Examples:
+  $ hivemoot pr preflight 54 --repo hivemoot/hivemoot --json
+    Evaluate blockers/warnings with deterministic codes`,
+  )
+  .action(prPreflightCommand);
 
 program
   .command("ack")

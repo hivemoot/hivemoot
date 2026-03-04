@@ -21,7 +21,10 @@ vi.mock("@/server/setup-session", () => ({
   DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
   SETUP_SESSION_COOKIE: "setup_session",
-  SESSION_TTL_SECONDS: 1800,
+  SESSION_TTL_SECONDS: 86400,
+}));
+vi.mock("@/server/byok-store", () => ({
+  hasByokEnvelope: vi.fn(),
 }));
 
 import { validateEnv } from "@/server/env";
@@ -40,6 +43,7 @@ import {
   OAUTH_STATE_BINDING_COOKIE,
 } from "@/server/setup-session";
 import { SETUP_SESSION_COOKIE } from "@/server/setup-session";
+import { hasByokEnvelope } from "@/server/byok-store";
 import { GET } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,7 @@ beforeEach(() => {
     stateBinding === "binding-cookie" ? "12345" : null
   ));
   vi.mocked(createSetupSession).mockResolvedValue("session-token-abc");
+  vi.mocked(hasByokEnvelope).mockResolvedValue(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -117,6 +122,27 @@ describe("GET /api/auth/github/callback — happy paths", () => {
     expect(setCookie).toContain(SETUP_SESSION_COOKIE);
     expect(setCookie).toContain("session-token-abc");
     expect(setCookie).toContain("HttpOnly");
+  });
+
+  it("sets a non-httpOnly remembered-user cookie with the GitHub login", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    const setCookie = res.headers.get("set-cookie")!;
+    expect(setCookie).toContain("hm_remembered_user=alice");
+    // Must NOT be HttpOnly — the landing page reads it client-side
+    const rememberedCookie = setCookie
+      .split(", ")
+      .find((c) => c.includes("hm_remembered_user"));
+    expect(rememberedCookie).toBeDefined();
+    expect(rememberedCookie).not.toContain("HttpOnly");
   });
 
   it("issues session and redirects for an org installation (admin user)", async () => {
@@ -157,7 +183,7 @@ describe("GET /api/auth/github/callback — rejections", () => {
     expect(location.searchParams.get("auth")).toBe("expired");
   });
 
-  it("returns 503 with a stable code when OAuth state lookup fails", async () => {
+  it("redirects to /setup/error with oauth_state_read_failed when state lookup fails", async () => {
     vi.mocked(validateOAuthState).mockRejectedValue(new Error("redis unavailable"));
 
     const req = makeRequestWithCookie(
@@ -166,15 +192,18 @@ describe("GET /api/auth/github/callback — rejections", () => {
     );
     const res = await GET(req);
 
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.code).toBe("oauth_state_read_failed");
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("oauth_state_read_failed");
   });
 
-  it("returns 400 when code or state are missing", async () => {
+  it("redirects to /setup when code or state are missing", async () => {
     const req = makeRequest({});
     const res = await GET(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
   });
 
   it("redirects with forbidden reason when org user is not admin", async () => {
@@ -253,7 +282,7 @@ describe("GET /api/auth/github/callback — rejections", () => {
     expect(res.headers.get("location")).not.toContain("installation_id=");
   });
 
-  it("returns 502 when code exchange fails", async () => {
+  it("redirects to /setup/error when code exchange fails", async () => {
     vi.mocked(exchangeOAuthCode).mockRejectedValue(new Error("bad_verification_code"));
 
     const req = makeRequestWithCookie(
@@ -261,10 +290,14 @@ describe("GET /api/auth/github/callback — rejections", () => {
       "binding-cookie",
     );
     const res = await GET(req);
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("server_error");
+    expect(location.searchParams.get("installation_id")).toBe("12345");
   });
 
-  it("returns 503 with a stable code when setup session creation fails", async () => {
+  it("redirects to /setup/error with setup_session_create_failed when session creation fails", async () => {
     vi.mocked(getInstallation).mockResolvedValue({
       account: { login: "alice", type: "User" },
     });
@@ -275,9 +308,11 @@ describe("GET /api/auth/github/callback — rejections", () => {
       "binding-cookie",
     );
     const res = await GET(req);
-    expect(res.status).toBe(503);
-    const body = await res.json();
-    expect(body.code).toBe("setup_session_create_failed");
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("setup_session_create_failed");
+    expect(location.searchParams.get("installation_id")).toBe("12345");
   });
 
   it("redirects to /setup?auth=expired when state-binding cookie is missing", async () => {
@@ -374,7 +409,7 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     expect(res.headers.get("location")).toContain("installation_id=111");
   });
 
-  it("returns 502 when installation discovery fails", async () => {
+  it("redirects to /setup/error when installation discovery fails", async () => {
     vi.mocked(getUserInstallations).mockRejectedValue(new Error("GitHub API error"));
 
     const req = makeRequestWithCookie(
@@ -382,9 +417,10 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
       "binding-cookie",
     );
     const res = await GET(req);
-    expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(body.error).toMatch(/discover/i);
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup/error");
+    expect(location.searchParams.get("code")).toBe("server_error");
   });
 
   it("does not set installation_id on denied redirect from discovery flow", async () => {
@@ -402,5 +438,66 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     const location = res.headers.get("location")!;
     expect(location).toContain("auth=denied");
     expect(location).not.toContain("installation_id=");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Smart redirect (returning users with BYOK → /dashboard)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/auth/github/callback — smart redirect", () => {
+  it("redirects to /dashboard when BYOK envelope exists", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+    vi.mocked(hasByokEnvelope).mockResolvedValue(true);
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/dashboard");
+    expect(location.searchParams.has("installation_id")).toBe(false);
+  });
+
+  it("redirects to /setup when no BYOK envelope exists", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+    vi.mocked(hasByokEnvelope).mockResolvedValue(false);
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("ok");
+    expect(location.searchParams.get("installation_id")).toBe("12345");
+  });
+
+  it("falls back to /setup when BYOK check throws", async () => {
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+    vi.mocked(hasByokEnvelope).mockRejectedValue(new Error("redis unavailable"));
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/setup");
+    expect(location.searchParams.get("auth")).toBe("ok");
   });
 });

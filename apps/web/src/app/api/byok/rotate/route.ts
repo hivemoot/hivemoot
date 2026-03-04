@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
     status: "active",
     updatedAt: new Date().toISOString(),
     updatedBy: auth.session.userLogin,
-    fingerprint: apiKey.slice(-4),
+    fingerprint: "",
   };
 
   await setByokEnvelope(installationId, envelope, auth.redis);
@@ -76,7 +76,6 @@ export async function POST(request: NextRequest) {
     status: "active",
     provider,
     model,
-    fingerprint: envelope.fingerprint,
     updatedAt: envelope.updatedAt,
   });
 }

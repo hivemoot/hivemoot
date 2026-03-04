@@ -14,7 +14,10 @@
  *    - Org installations: caller must have admin role in the org
  *    - User installations: authenticated login must match installation account
  * 6. Issue setup session token, store in Redis, set as HttpOnly cookie
- * 7. Redirect back to /setup
+ * 7. Smart redirect: /dashboard if BYOK already configured, otherwise /setup
+ *
+ * Error paths that occur during a browser-initiated flow redirect to
+ * /setup/error with a code param instead of returning raw JSON.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -36,8 +39,8 @@ import {
   SETUP_SESSION_COOKIE,
   SESSION_TTL_SECONDS,
 } from "@/server/setup-session";
-const OAUTH_STATE_READ_FAILED_CODE = "oauth_state_read_failed";
-const SETUP_SESSION_CREATE_FAILED_CODE = "setup_session_create_failed";
+import { REMEMBERED_USER_COOKIE } from "@/constants/cookies";
+import { hasByokEnvelope } from "@/server/byok-store";
 
 function clearOAuthStateBindingCookie(response: NextResponse) {
   response.cookies.set(OAUTH_STATE_BINDING_COOKIE, "", {
@@ -49,10 +52,25 @@ function clearOAuthStateBindingCookie(response: NextResponse) {
   });
 }
 
+function setupErrorRedirect(
+  siteUrl: string,
+  code: string,
+  installationId?: string | null,
+): NextResponse {
+  const url = new URL(`${siteUrl}/setup/error`);
+  url.searchParams.set("code", code);
+  if (installationId) url.searchParams.set("installation_id", installationId);
+  return NextResponse.redirect(url.toString());
+}
+
 export async function GET(request: NextRequest) {
   const env = validateEnv();
   if (!env.ok) {
-    return NextResponse.json({ error: "Server misconfiguration" }, { status: 503 });
+    // Can't construct absolute URL without siteUrl — use request origin as fallback
+    const origin = new URL(request.url).origin;
+    const url = new URL(`${origin}/setup/error`);
+    url.searchParams.set("code", "server_misconfiguration");
+    return NextResponse.redirect(url.toString());
   }
 
   const {
@@ -66,10 +84,10 @@ export async function GET(request: NextRequest) {
   } = env.config;
 
   if (!githubClientId || !githubClientSecret || !githubAppId || !githubAppPrivateKey) {
-    return NextResponse.json({ error: "GitHub is not configured on this server" }, { status: 503 });
+    return setupErrorRedirect(siteUrl, "server_misconfiguration");
   }
   if (!redisRestUrl || !redisRestToken) {
-    return NextResponse.json({ error: "Session storage is not configured" }, { status: 503 });
+    return setupErrorRedirect(siteUrl, "server_misconfiguration");
   }
 
   const { searchParams } = new URL(request.url);
@@ -92,8 +110,8 @@ export async function GET(request: NextRequest) {
         if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
           deniedUrl.searchParams.set("installation_id", deniedInstallationId);
         }
-      } catch {
-        // Fall back to a plain denied redirect if state storage is unavailable.
+      } catch (err) {
+        console.warn("[oauth-callback] Failed to validate state during denied flow", { error: err });
       }
     }
 
@@ -103,18 +121,19 @@ export async function GET(request: NextRequest) {
   }
 
   if (!code || !state) {
-    return NextResponse.json({ error: "Missing code or state" }, { status: 400 });
+    // Malformed callback — redirect to setup root
+    return NextResponse.redirect(new URL(`${siteUrl}/setup`).toString());
   }
 
   // --- Step 1: Validate state (CSRF check) ---
   let installationId: string | null;
   try {
     installationId = await validateOAuthState(state, oauthStateBinding, redis);
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to read OAuth state", code: OAUTH_STATE_READ_FAILED_CODE },
-      { status: 503 },
-    );
+  } catch (err) {
+    console.error("[oauth-callback] Failed to validate OAuth state", { error: err });
+    const errResponse = setupErrorRedirect(siteUrl, "oauth_state_read_failed");
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
   if (!installationId) {
     const expiredUrl = new URL(`${siteUrl}/setup`);
@@ -128,8 +147,11 @@ export async function GET(request: NextRequest) {
   try {
     // --- Step 2: Exchange code for user access token ---
     userToken = await exchangeOAuthCode(code, githubClientId, githubClientSecret);
-  } catch {
-    return NextResponse.json({ error: "Failed to exchange authorization code" }, { status: 502 });
+  } catch (err) {
+    console.error("[oauth-callback] Failed to exchange OAuth code", { error: err });
+    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
@@ -144,8 +166,11 @@ export async function GET(request: NextRequest) {
         return response;
       }
       installationId = String(installations[0].id);
-    } catch {
-      return NextResponse.json({ error: "Failed to discover installations" }, { status: 502 });
+    } catch (err) {
+      console.error("[oauth-callback] Failed to discover user installations", { error: err });
+      const errResponse = setupErrorRedirect(siteUrl, "server_error");
+      clearOAuthStateBindingCookie(errResponse);
+      return errResponse;
     }
   }
 
@@ -159,8 +184,11 @@ export async function GET(request: NextRequest) {
       getAuthenticatedUser(userToken),
       getInstallation(installationId, appJwt),
     ]);
-  } catch {
-    return NextResponse.json({ error: "Failed to verify identity" }, { status: 502 });
+  } catch (err) {
+    console.error("[oauth-callback] Failed to fetch user/installation", { installationId, error: err });
+    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 5: Authorization check ---
@@ -172,8 +200,11 @@ export async function GET(request: NextRequest) {
     let isAdmin: boolean;
     try {
       isAdmin = await checkOrgAdmin(userToken, accountLogin);
-    } catch {
-      return NextResponse.json({ error: "Failed to check org membership" }, { status: 502 });
+    } catch (err) {
+      console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
+      const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+      clearOAuthStateBindingCookie(errResponse);
+      return errResponse;
     }
     if (!isAdmin) {
       const forbiddenUrl = new URL(`${siteUrl}/setup`);
@@ -204,17 +235,33 @@ export async function GET(request: NextRequest) {
       { installationId, userId: user.id, userLogin: user.login },
       redis,
     );
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to create setup session", code: SETUP_SESSION_CREATE_FAILED_CODE },
-      { status: 503 },
-    );
+  } catch (err) {
+    console.error("[oauth-callback] Failed to create setup session", { installationId, error: err });
+    const errResponse = setupErrorRedirect(siteUrl, "setup_session_create_failed", installationId);
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
-  // --- Step 7: Redirect to setup page with session cookie ---
-  const successUrl = new URL(`${siteUrl}/setup`);
-  successUrl.searchParams.set("installation_id", installationId);
-  successUrl.searchParams.set("auth", "ok");
+  // --- Step 7: Smart redirect based on setup completion ---
+  // Returning users who already configured BYOK go straight to the dashboard.
+  // New users (or failed checks) go to the setup wizard.
+  let setupComplete = false;
+  try {
+    setupComplete = await hasByokEnvelope(installationId, redis);
+  } catch (err) {
+    console.warn("[oauth-callback] BYOK check failed, defaulting to setup wizard", {
+      installationId,
+      error: err,
+    });
+  }
+
+  const successUrl = setupComplete
+    ? new URL(`${siteUrl}/dashboard`)
+    : new URL(`${siteUrl}/setup`);
+  if (!setupComplete) {
+    successUrl.searchParams.set("installation_id", installationId);
+    successUrl.searchParams.set("auth", "ok");
+  }
   const response = NextResponse.redirect(successUrl.toString());
 
   response.cookies.set(SETUP_SESSION_COOKIE, token, {
@@ -224,6 +271,18 @@ export async function GET(request: NextRequest) {
     maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
+
+  // Remember the authenticated user for 30 days so the landing page can show
+  // a "Continue as @username" shortcut on return visits. Not httpOnly because
+  // the landing page reads it client-side to stay statically rendered. The
+  // value is a public GitHub login — no credentials.
+  response.cookies.set(REMEMBERED_USER_COOKIE, user.login, {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+  });
+
   clearOAuthStateBindingCookie(response);
 
   return response;

@@ -209,6 +209,7 @@ Join the Discord to chat about autonomous agents, ask questions, and watch the t
 
 ## 📚 Learn More
 
+- 🏗️ **[Architecture](./ARCHITECTURE.md)** — High-level system shape and contributor map
 - 📖 **[How It Works](./HOW-IT-WORKS.md)** — Full governance mechanics
 - 💡 **[Concept](./CONCEPT.md)** — Philosophy, vision, and where this is going
 - 🤖 **[Agents](./AGENTS.md)** — Instructions for AI agents joining hivemoot projects

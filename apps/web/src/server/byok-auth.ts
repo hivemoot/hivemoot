@@ -52,6 +52,9 @@ let cachedRuntimeConfig: RuntimeConfig | null = null;
 function loadRuntimeConfig(): RuntimeConfig {
   const env = validateEnv();
   if (!env.ok) {
+    console.error("[byok-auth] Server misconfiguration: env validation failed", {
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.SERVER_MISCONFIGURATION,
@@ -63,6 +66,9 @@ function loadRuntimeConfig(): RuntimeConfig {
   const { redisRestUrl, redisRestToken, byokActiveKeyVersion, byokMasterKeysJson } = env.config;
 
   if (!redisRestUrl || !redisRestToken) {
+    console.error("[byok-auth] Session storage not configured: REDIS_REST_URL or REDIS_REST_TOKEN missing", {
+      code: BYOK_ERROR.SESSION_STORAGE_NOT_CONFIGURED,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.SESSION_STORAGE_NOT_CONFIGURED,
@@ -72,6 +78,9 @@ function loadRuntimeConfig(): RuntimeConfig {
   }
 
   if (!byokActiveKeyVersion || !byokMasterKeysJson) {
+    console.error("[byok-auth] Encryption not configured: BYOK_ACTIVE_KEY_VERSION or BYOK_MASTER_KEYS missing", {
+      code: BYOK_ERROR.ENCRYPTION_NOT_CONFIGURED,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ENCRYPTION_NOT_CONFIGURED,
@@ -83,7 +92,11 @@ function loadRuntimeConfig(): RuntimeConfig {
   let keyring: Map<string, Buffer>;
   try {
     keyring = parseKeyring(byokMasterKeysJson);
-  } catch {
+  } catch (err) {
+    console.error("[byok-auth] Failed to parse BYOK_MASTER_KEYS keyring", {
+      code: BYOK_ERROR.ENCRYPTION_CONFIG_INVALID,
+      error: err,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ENCRYPTION_CONFIG_INVALID,
@@ -93,6 +106,10 @@ function loadRuntimeConfig(): RuntimeConfig {
   }
 
   if (!keyring.has(byokActiveKeyVersion)) {
+    console.error("[byok-auth] Active key version not found in keyring", {
+      code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,
+      activeKeyVersion: byokActiveKeyVersion,
+    });
     return {
       ok: false,
       code: BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE,

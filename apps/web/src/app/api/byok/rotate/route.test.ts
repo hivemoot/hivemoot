@@ -22,6 +22,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import { encrypt } from "@/server/crypto";
 import { setByokEnvelope } from "@/server/byok-store";
 import { validateProviderKey } from "@/server/provider-validation";
+import { BYOK_ERROR } from "@/server/byok-error";
 import { POST } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ describe("POST /api/byok/rotate", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("active");
-    expect(body.fingerprint).toBe("5678");
+    expect(body.fingerprint).toBeUndefined();
     expect(setByokEnvelope).toHaveBeenCalled();
   });
 
@@ -99,7 +100,7 @@ describe("POST /api/byok/rotate", () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe("byok_provider_invalid");
+    expect(body.code).toBe(BYOK_ERROR.PROVIDER_INVALID);
     expect(body.message).toBe("Invalid API key");
   });
 

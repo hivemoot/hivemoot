@@ -5,6 +5,10 @@ export interface RoleConfig {
   instructions: string;
 }
 
+export interface FocusBlock {
+  objective: string;
+}
+
 export interface TeamConfig {
   name?: string;
   onboarding?: string;
@@ -168,6 +172,10 @@ export interface PrioritySignal {
   summary: string;
 }
 
+export type PublishReadiness =
+  | { canPush: true }
+  | { canPush: false; message: string };
+
 export interface RepoSummary {
   repo: RepoRef;
   currentUser: string;
@@ -186,11 +194,17 @@ export interface RepoSummary {
   notifications: NotificationRef[];
   repositoryHealth?: RepositoryHealth;
   prioritySignals?: PrioritySignal[];
+  publishReadiness?: PublishReadiness;
   focus?: string;
   notes: string[];
 }
 
 // ── CLI Options ────────────────────────────────────────────────────
+
+export interface PrCommandOptions {
+  repo?: string;
+  json?: boolean;
+}
 
 export interface BuzzOptions {
   role?: string;
