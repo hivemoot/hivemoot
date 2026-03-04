@@ -480,6 +480,186 @@ describe("validateReport", () => {
       expect(result.report.next_run_at).toBeUndefined();
     }
   });
+
+  it("accepts a valid trigger field", () => {
+    for (const trigger of ["scheduled", "mention", "manual"] as const) {
+      const result = validateReport({
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        run_id: "run-1",
+        outcome: "success",
+        duration_secs: 1,
+        consecutive_failures: 0,
+        trigger,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.report.trigger).toBe(trigger);
+    }
+  });
+
+  it("rejects an invalid trigger value", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      trigger: "cron",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("trigger");
+  });
+
+  it("omits trigger when not provided", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.report.trigger).toBeUndefined();
+  });
+
+  it("accepts a full token_usage object", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 540,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 139367,
+        output_tokens: 20573,
+        cache_read_input_tokens: 6164579,
+        cache_creation_input_tokens: 74218,
+        cost_usd: 4.18,
+        num_turns: 93,
+        model_breakdown: {
+          "claude-sonnet-4-6": {
+            input_tokens: 95,
+            output_tokens: 17375,
+            cache_read_input_tokens: 6164579,
+            cache_creation_input_tokens: 74218,
+            cost_usd: 3.98,
+          },
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.token_usage?.cost_usd).toBe(4.18);
+      expect(result.report.token_usage?.num_turns).toBe(93);
+    }
+  });
+
+  it("accepts token_usage with null optional fields (codex-style)", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 300,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 2508878,
+        output_tokens: 25086,
+        cache_read_input_tokens: 2259200,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        num_turns: 75,
+        model_breakdown: null,
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.token_usage?.cost_usd).toBeNull();
+      expect(result.report.token_usage?.model_breakdown).toBeNull();
+    }
+  });
+
+  it("accepts token_usage: null (unsupported provider)", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 60,
+      consecutive_failures: 0,
+      token_usage: null,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.report.token_usage).toBeNull();
+  });
+
+  it("omits token_usage from report when not provided", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.report.token_usage).toBeUndefined();
+  });
+
+  it("rejects token_usage with non-integer input_tokens", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 1.5,
+        output_tokens: 100,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        num_turns: 1,
+        model_breakdown: null,
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("input_tokens");
+  });
+
+  it("rejects token_usage with invalid model_breakdown key", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        num_turns: 1,
+        model_breakdown: {
+          "invalid model id with spaces": {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_input_tokens: null,
+            cache_creation_input_tokens: null,
+            cost_usd: null,
+          },
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("model_breakdown");
+  });
 });
 
 // ---------------------------------------------------------------------------

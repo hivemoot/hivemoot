@@ -1,0 +1,69 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
+
+vi.mock("@/server/task-executor-auth", () => ({
+  authenticateTaskExecutorRequest: vi.fn(),
+}));
+
+vi.mock("@/server/task-store", () => ({
+  claimNextPendingTask: vi.fn(),
+}));
+
+import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
+import { claimNextPendingTask } from "@/server/task-store";
+import { POST } from "./route";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+
+  vi.mocked(authenticateTaskExecutorRequest).mockResolvedValue({
+    ok: true,
+    installationId: "inst-1",
+    redis: {} as never,
+  });
+});
+
+describe("POST /api/tasks/claim", () => {
+  it("returns claimed task", async () => {
+    vi.mocked(claimNextPendingTask).mockResolvedValue({
+      task_id: "abc123abc123abc123abc123",
+      status: "running",
+      engine: "codex",
+      prompt: "Deep analysis",
+      repos: ["hivemoot/hivemoot"],
+      timeout_secs: 300,
+      created_by: "queen",
+      created_at: "2026-03-03T12:00:00.000Z",
+      updated_at: "2026-03-03T12:00:00.000Z",
+      started_at: "2026-03-03T12:01:00.000Z",
+      progress: "Running",
+    });
+
+    const req = new NextRequest("https://example.com/api/tasks/claim", { method: "POST" });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(claimNextPendingTask).toHaveBeenCalledWith("inst-1", expect.anything());
+  });
+
+  it("returns 204 when no task is pending", async () => {
+    vi.mocked(claimNextPendingTask).mockResolvedValue(null);
+
+    const req = new NextRequest("https://example.com/api/tasks/claim", { method: "POST" });
+    const res = await POST(req);
+
+    expect(res.status).toBe(204);
+  });
+
+  it("forwards auth failures", async () => {
+    vi.mocked(authenticateTaskExecutorRequest).mockResolvedValue({
+      ok: false,
+      response: NextResponse.json({ code: "task_not_authenticated" }, { status: 401 }),
+    });
+
+    const req = new NextRequest("https://example.com/api/tasks/claim", { method: "POST" });
+    const res = await POST(req);
+
+    expect(res.status).toBe(401);
+  });
+});

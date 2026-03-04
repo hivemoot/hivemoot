@@ -1,0 +1,598 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface TaskRecord {
+  task_id: string;
+  status: string;
+  engine: string;
+  prompt: string;
+  repos: string[];
+  timeout_secs: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  progress?: string;
+  result?: string;
+}
+
+interface TaskMessage {
+  role: "user" | "agent" | "system";
+  content: string;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+function ArrowLeftIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="13" y1="8" x2="3" y2="8" />
+      <polyline points="7 4 3 8 7 12" />
+    </svg>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg className="h-4 w-4 animate-spin" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SendIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 2L7 9" />
+      <path d="M14 2l-4.5 12-2.5-5.5L2 6z" />
+    </svg>
+  );
+}
+
+function UserIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="5.5" r="2.5" />
+      <path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" />
+    </svg>
+  );
+}
+
+function BotIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="5" width="10" height="8" rx="2" />
+      <circle cx="6" cy="9" r="1" fill="currentColor" />
+      <circle cx="10" cy="9" r="1" fill="currentColor" />
+      <line x1="8" y1="2" x2="8" y2="5" />
+      <circle cx="8" cy="2" r="1" />
+    </svg>
+  );
+}
+
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <line x1="8" y1="7" x2="8" y2="11" />
+      <circle cx="8" cy="5" r="0.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString();
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function statusColor(status: string): string {
+  switch (status) {
+    case "completed":
+      return "text-green-400";
+    case "running":
+      return "text-blue-400";
+    case "pending":
+      return "text-zinc-400";
+    case "needs_follow_up":
+      return "text-amber-400";
+    case "failed":
+    case "timed_out":
+      return "text-red-400";
+    default:
+      return "text-zinc-500";
+  }
+}
+
+function statusDotColor(status: string): string {
+  switch (status) {
+    case "completed":
+      return "bg-green-400";
+    case "running":
+      return "bg-blue-400";
+    case "pending":
+      return "bg-zinc-400";
+    case "needs_follow_up":
+      return "bg-amber-400";
+    case "failed":
+    case "timed_out":
+      return "bg-red-400";
+    default:
+      return "bg-zinc-500";
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "running":
+      return "Running";
+    case "pending":
+      return "Pending";
+    case "needs_follow_up":
+      return "Needs follow-up";
+    case "failed":
+      return "Failed";
+    case "timed_out":
+      return "Timed out";
+    default:
+      return status;
+  }
+}
+
+function isTerminal(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "timed_out";
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export default function TaskDetail({ taskId }: { taskId: string }) {
+  const [task, setTask] = useState<TaskRecord | null>(null);
+  const [messages, setMessages] = useState<TaskMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [followUpText, setFollowUpText] = useState("");
+  const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const [followUpError, setFollowUpError] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const sseRef = useRef<{ close: () => void } | null>(null);
+
+  // Fetch task + messages
+  const fetchTask = useCallback(async () => {
+    try {
+      const [taskRes, msgRes] = await Promise.all([
+        fetch(`/api/tasks/${taskId}`),
+        fetch(`/api/tasks/${taskId}/messages`),
+      ]);
+
+      if (!taskRes.ok) {
+        if (taskRes.status === 401) {
+          setError("Session expired — please log in again.");
+          return;
+        }
+        if (taskRes.status === 404) {
+          setError("Task not found.");
+          return;
+        }
+        setError("Failed to load task.");
+        return;
+      }
+
+      const taskData = await taskRes.json();
+      setTask(taskData.task);
+
+      if (msgRes.ok) {
+        const msgData = await msgRes.json();
+        setMessages(msgData.messages ?? []);
+      }
+
+      setError(null);
+    } catch {
+      setError("Network error — could not reach server.");
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    fetchTask();
+  }, [fetchTask]);
+
+  // Auto-scroll messages when new ones arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // SSE streaming for live updates
+  useEffect(() => {
+    if (!task || isTerminal(task.status) || task.status === "needs_follow_up") return;
+
+    let closed = false;
+
+    function connectSSE() {
+      if (closed) return;
+
+      const eventSource = new EventSource(`/api/tasks/${taskId}/stream`);
+
+      eventSource.addEventListener("snapshot", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.task) setTask(data.task);
+        } catch {
+          // Ignore malformed SSE data.
+        }
+      });
+
+      eventSource.addEventListener("task", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.task) {
+            setTask(data.task);
+            // Re-fetch messages when task state changes to pick up new timeline entries.
+            fetch(`/api/tasks/${taskId}/messages`)
+              .then((res) => (res.ok ? res.json() : null))
+              .then((data) => {
+                if (data?.messages) setMessages(data.messages);
+              })
+              .catch(() => {
+                // Best-effort message refresh.
+              });
+          }
+        } catch {
+          // Ignore malformed SSE data.
+        }
+      });
+
+      eventSource.addEventListener("done", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.task) setTask(data.task);
+        } catch {
+          // Ignore malformed SSE data.
+        }
+        eventSource.close();
+        // Final message refresh.
+        fetch(`/api/tasks/${taskId}/messages`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.messages) setMessages(data.messages);
+          })
+          .catch(() => {
+            // Best-effort.
+          });
+      });
+
+      eventSource.addEventListener("error", () => {
+        eventSource.close();
+        // Reconnect after a delay unless stream was intentionally closed.
+        if (!closed) {
+          setTimeout(connectSSE, 3000);
+        }
+      });
+
+      sseRef.current = { close: () => eventSource.close() };
+    }
+
+    connectSSE();
+
+    return () => {
+      closed = true;
+      sseRef.current?.close();
+    };
+  }, [task?.status, taskId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Follow-up submission
+  async function handleFollowUp(e: React.FormEvent) {
+    e.preventDefault();
+    if (followUpSubmitting) return;
+
+    const trimmed = followUpText.trim();
+    if (!trimmed) {
+      setFollowUpError("Please enter a message.");
+      return;
+    }
+
+    setFollowUpSubmitting(true);
+    setFollowUpError("");
+
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/follow-up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Unknown error" }));
+        setFollowUpError(err.message ?? "Failed to send follow-up.");
+        return;
+      }
+
+      const data = await res.json();
+      if (data.task) setTask(data.task);
+      setFollowUpText("");
+      // Refresh messages to show the follow-up in the timeline.
+      await fetchTask();
+    } catch {
+      setFollowUpError("Could not reach the server.");
+    } finally {
+      setFollowUpSubmitting(false);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Loading
+  // -------------------------------------------------------------------------
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3 text-sm text-zinc-500">
+        <SpinnerIcon />
+        Loading task…
+      </div>
+    );
+  }
+
+  if (error || !task) {
+    return (
+      <div>
+        <Link
+          href="/dashboard/tasks"
+          className="mb-6 flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-300"
+        >
+          <ArrowLeftIcon className="h-3.5 w-3.5" />
+          Back to tasks
+        </Link>
+        <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-6">
+          <p className="text-sm text-red-400">{error ?? "Task not found."}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+
+  return (
+    <div>
+      {/* Back link */}
+      <Link
+        href="/dashboard/tasks"
+        className="mb-6 flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-300"
+      >
+        <ArrowLeftIcon className="h-3.5 w-3.5" />
+        Back to tasks
+      </Link>
+
+      {/* Task header */}
+      <div className="mb-6 rounded-xl border border-white/[0.06] bg-[#141414] p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3">
+              <span className={`inline-block h-3 w-3 rounded-full ${statusDotColor(task.status)}`} />
+              <span className={`text-sm font-semibold ${statusColor(task.status)}`}>
+                {statusLabel(task.status)}
+              </span>
+              {task.status === "running" && (
+                <SpinnerIcon />
+              )}
+            </div>
+            <p className="mt-3 text-sm text-[#fafafa]">{task.prompt}</p>
+          </div>
+        </div>
+
+        {/* Metadata */}
+        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 text-xs sm:grid-cols-4">
+          <div>
+            <dt className="text-zinc-600">Repos</dt>
+            <dd className="mt-0.5 font-mono text-zinc-400">{task.repos.join(", ")}</dd>
+          </div>
+          <div>
+            <dt className="text-zinc-600">Created</dt>
+            <dd className="mt-0.5 text-zinc-400">{relativeTime(task.created_at)}</dd>
+          </div>
+          <div>
+            <dt className="text-zinc-600">Engine</dt>
+            <dd className="mt-0.5 font-mono text-zinc-400">{task.engine}</dd>
+          </div>
+          <div>
+            <dt className="text-zinc-600">Timeout</dt>
+            <dd className="mt-0.5 text-zinc-400">{task.timeout_secs}s</dd>
+          </div>
+        </dl>
+
+        {/* Progress bar for running tasks */}
+        {task.progress && !isTerminal(task.status) && task.status !== "needs_follow_up" && (
+          <div className="mt-4 border-t border-white/[0.06] pt-4">
+            <p className="text-xs text-zinc-500">
+              {task.progress}
+            </p>
+          </div>
+        )}
+
+        {/* Error display */}
+        {task.error && isTerminal(task.status) && (
+          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+            <p className="text-sm text-red-400">{task.error}</p>
+          </div>
+        )}
+
+        {/* Result display */}
+        {task.result && (
+          <div className="mt-4 border-t border-white/[0.06] pt-4">
+            <h4 className="mb-2 text-xs font-semibold text-zinc-500">Result</h4>
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-4 text-xs text-zinc-300">
+              {task.result}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      {/* Message timeline */}
+      <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6">
+        <h3 className="mb-4 text-sm font-semibold text-[#fafafa]">Timeline</h3>
+
+        {messages.length === 0 ? (
+          <p className="text-sm text-zinc-500">No messages yet.</p>
+        ) : (
+          <div className="space-y-3">
+            {messages.map((msg, i) => (
+              <div
+                key={`${msg.created_at}-${i}`}
+                className={`flex gap-3 rounded-lg px-4 py-3 ${
+                  msg.role === "user"
+                    ? "border border-honey-500/10 bg-honey-500/5"
+                    : msg.role === "agent"
+                      ? "border border-blue-500/10 bg-blue-500/5"
+                      : "border border-white/[0.04] bg-white/[0.02]"
+                }`}
+              >
+                <div className="mt-0.5 shrink-0">
+                  {msg.role === "user" ? (
+                    <UserIcon className="h-4 w-4 text-honey-500/70" />
+                  ) : msg.role === "agent" ? (
+                    <BotIcon className="h-4 w-4 text-blue-400/70" />
+                  ) : (
+                    <InfoIcon className="h-4 w-4 text-zinc-600" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-medium ${
+                      msg.role === "user"
+                        ? "text-honey-500/70"
+                        : msg.role === "agent"
+                          ? "text-blue-400/70"
+                          : "text-zinc-600"
+                    }`}>
+                      {msg.role === "user" ? "You" : msg.role === "agent" ? "Agent" : "System"}
+                    </span>
+                    <span className="text-xs text-zinc-700">
+                      {formatTime(msg.created_at)}
+                    </span>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-300">
+                    {msg.content}
+                  </p>
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+        )}
+
+        {/* Follow-up input — shown when task needs follow-up */}
+        {task.status === "needs_follow_up" && (
+          <div className="mt-4 border-t border-white/[0.06] pt-4">
+            <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+              <p className="text-sm text-amber-400">
+                The agent is waiting for your input to continue working on this task.
+              </p>
+            </div>
+
+            {followUpError && (
+              <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+                <p className="text-sm text-red-400">{followUpError}</p>
+              </div>
+            )}
+
+            <form onSubmit={handleFollowUp} className="flex gap-3">
+              <textarea
+                rows={2}
+                value={followUpText}
+                onChange={(e) => setFollowUpText(e.target.value)}
+                placeholder="Type your follow-up message…"
+                className="flex-1 resize-y rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+              />
+              <button
+                type="submit"
+                disabled={followUpSubmitting}
+                className="flex h-10 shrink-0 items-center gap-2 self-end rounded-lg bg-honey-500 px-4 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {followUpSubmitting ? (
+                  <SpinnerIcon />
+                ) : (
+                  <SendIcon className="h-4 w-4" />
+                )}
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
