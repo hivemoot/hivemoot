@@ -1,6 +1,7 @@
 import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
+  FocusFilters,
   HivemootConfig,
   TeamConfig,
   RepoRef,
@@ -65,11 +66,69 @@ function parseLegacyFocus(rawFocus: unknown): string | undefined {
 const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_FOCUS_NAME_LENGTH = 64;
 
+// Parses a string[] from a raw value, discarding non-string elements.
+function parseStringArray(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const result = raw.filter((v): v is string => typeof v === "string");
+  return result.length > 0 ? result : undefined;
+}
+
+// Parses the filters block from a focus block. Invalid or missing fields are
+// silently skipped to match the loader's existing graceful-degradation policy.
+function parseFocusFilters(rawBlock: Record<string, unknown>): FocusFilters | undefined {
+  const rawFilters = rawBlock.filters;
+  if (!rawFilters || typeof rawFilters !== "object" || Array.isArray(rawFilters)) return undefined;
+
+  const f = rawFilters as Record<string, unknown>;
+  const result: FocusFilters = {};
+
+  const rawLabels = f.labels;
+  if (rawLabels && typeof rawLabels === "object" && !Array.isArray(rawLabels)) {
+    const l = rawLabels as Record<string, unknown>;
+    const include = parseStringArray(l.include);
+    const exclude = parseStringArray(l.exclude);
+    if (include !== undefined || exclude !== undefined) {
+      result.labels = {};
+      if (include !== undefined) result.labels.include = include;
+      if (exclude !== undefined) result.labels.exclude = exclude;
+    }
+  }
+
+  const rawAuthors = f.authors;
+  if (rawAuthors && typeof rawAuthors === "object" && !Array.isArray(rawAuthors)) {
+    const a = rawAuthors as Record<string, unknown>;
+    const include = parseStringArray(a.include);
+    const exclude = parseStringArray(a.exclude);
+    if (include !== undefined || exclude !== undefined) {
+      result.authors = {};
+      if (include !== undefined) result.authors.include = include;
+      if (exclude !== undefined) result.authors.exclude = exclude;
+    }
+  }
+
+  const suppressSections = parseStringArray(f.suppressSections);
+  if (suppressSections !== undefined) {
+    result.suppressSections = suppressSections;
+  }
+
+  if (
+    result.labels === undefined &&
+    result.authors === undefined &&
+    result.suppressSections === undefined
+  ) {
+    return undefined;
+  }
+
+  return result;
+}
+
 // Resolves focus from the team config. Handles two formats:
 // 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
 // 2. Legacy: team.focus.default (plain string)
 // The new format takes precedence when team.focuses is present.
-function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
+function resolveActiveFocus(
+  rawTeam: Record<string, unknown>,
+): { objective: string | undefined; filters: FocusFilters | undefined } {
   const rawFocuses = rawTeam.focuses;
 
   if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
@@ -101,14 +160,15 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
       // and the next candidate (or undefined) is returned.
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
-      return objective;
+      const filters = parseFocusFilters(b);
+      return { objective, filters };
     }
 
-    return undefined;
+    return { objective: undefined, filters: undefined };
   }
 
-  // Fall back to the legacy focus.default format.
-  return parseLegacyFocus(rawTeam.focus);
+  // Fall back to the legacy focus.default format (no filters in legacy format).
+  return { objective: parseLegacyFocus(rawTeam.focus), filters: undefined };
 }
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
@@ -207,13 +267,16 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
-  const focus = resolveFocus(team as unknown as Record<string, unknown>);
+  const { objective: focus, filters: focusFilters } = resolveActiveFocus(
+    team as unknown as Record<string, unknown>,
+  );
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
     focus,
+    focusFilters,
   };
 }
 

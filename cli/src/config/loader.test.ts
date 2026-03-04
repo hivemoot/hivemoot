@@ -813,4 +813,125 @@ team:
     expect(config.roles.engineer.description).toHaveLength(500);
     expect(config.roles.engineer.instructions).toHaveLength(10_000);
   });
+
+  it("parses focus filters with label include/exclude from active focus block", async () => {
+    const withFiltersYaml = yaml.dump({
+      team: {
+        activeFocus: "bugfix",
+        focuses: {
+          bugfix: {
+            objective: "Fix all the bugs.",
+            filters: {
+              labels: { include: ["bug", "v2.0-blocker"], exclude: ["wontfix"] },
+              authors: { exclude: ["dependabot[bot]"] },
+              suppressSections: ["discussion", "voting"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withFiltersYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Fix all the bugs.");
+    expect(config.focusFilters).toEqual({
+      labels: { include: ["bug", "v2.0-blocker"], exclude: ["wontfix"] },
+      authors: { exclude: ["dependabot[bot]"] },
+      suppressSections: ["discussion", "voting"],
+    });
+  });
+
+  it("parses focus with suppressSections only", async () => {
+    const suppressOnlyYaml = yaml.dump({
+      team: {
+        activeFocus: "review-sprint",
+        focuses: {
+          "review-sprint": {
+            objective: "Clear the review queue.",
+            filters: {
+              suppressSections: ["ready-to-implement", "draft-prs"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(suppressOnlyYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Clear the review queue.");
+    expect(config.focusFilters).toEqual({
+      suppressSections: ["ready-to-implement", "draft-prs"],
+    });
+  });
+
+  it("returns undefined focusFilters when filters block is absent", async () => {
+    const noFiltersYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "General work." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(noFiltersYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("General work.");
+    expect(config.focusFilters).toBeUndefined();
+  });
+
+  it("silently ignores non-string entries in filters arrays", async () => {
+    const mixedArrayYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work.",
+            filters: {
+              labels: { include: ["bug", 42, null, "valid"] },
+              suppressSections: ["discussion", 99],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Do things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(mixedArrayYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters?.labels?.include).toEqual(["bug", "valid"]);
+    expect(config.focusFilters?.suppressSections).toEqual(["discussion"]);
+  });
+
+  it("returns undefined focusFilters for legacy focus.default format", async () => {
+    const legacyFocusYaml = yaml.dump({
+      team: {
+        focus: { default: "Legacy objective." },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(legacyFocusYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Legacy objective.");
+    expect(config.focusFilters).toBeUndefined();
+  });
 });

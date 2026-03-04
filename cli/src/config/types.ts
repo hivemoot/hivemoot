@@ -5,8 +5,25 @@ export interface RoleConfig {
   instructions: string;
 }
 
+export interface FocusLabelFilter {
+  include?: string[];
+  exclude?: string[];
+}
+
+export interface FocusAuthorFilter {
+  include?: string[];
+  exclude?: string[];
+}
+
+export interface FocusFilters {
+  labels?: FocusLabelFilter;
+  authors?: FocusAuthorFilter;
+  suppressSections?: string[];
+}
+
 export interface FocusBlock {
   objective: string;
+  filters?: FocusFilters;
 }
 
 export interface TeamConfig {
@@ -14,6 +31,7 @@ export interface TeamConfig {
   onboarding?: string;
   roles: Record<string, RoleConfig>;
   focus?: string;
+  focusFilters?: FocusFilters;
 }
 
 export interface HivemootConfig {
@@ -196,6 +214,7 @@ export interface RepoSummary {
   prioritySignals?: PrioritySignal[];
   publishReadiness?: PublishReadiness;
   focus?: string;
+  suppressedSections?: string[];
   notes: string[];
 }
 

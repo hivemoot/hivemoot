@@ -227,6 +227,7 @@ function formatPublishReadinessSection(readiness: PublishReadiness): string {
 
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
+  const suppressed = new Set(summary.suppressedSections ?? []);
   const sections: string[] = [];
 
   sections.push(
@@ -236,15 +237,15 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatRepositoryHealth(summary),
       formatPrioritySignals(summary),
       formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
-      formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
-      formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
-      formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
-      formatSection("DISCUSS ISSUES", summary.discuss, u, "discuss", limit),
-      formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
-      formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
-      formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
-      formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
-      formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
+      suppressed.has("driveDiscussion") ? "" : formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
+      suppressed.has("driveImplementation") ? "" : formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
+      suppressed.has("voteOn") ? "" : formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
+      suppressed.has("discuss") ? "" : formatSection("DISCUSS ISSUES", summary.discuss, u, "discuss", limit),
+      suppressed.has("implement") ? "" : formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
+      suppressed.has("unclassified") ? "" : formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
+      suppressed.has("reviewPRs") ? "" : formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
+      suppressed.has("draftPRs") ? "" : formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
+      suppressed.has("addressFeedback") ? "" : formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
       formatRecentClosedSection(summary, limit),
       summary.publishReadiness ? formatPublishReadinessSection(summary.publishReadiness) : "",
     ].filter(Boolean),

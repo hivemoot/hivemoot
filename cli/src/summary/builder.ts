@@ -1,4 +1,5 @@
 import type {
+  FocusFilters,
   GitHubIssue,
   GitHubPR,
   NotificationRef,
@@ -310,6 +311,61 @@ function buildPrioritySignals(
     });
 }
 
+// Maps user-facing suppressSections names to internal RepoSummary section keys.
+// A single name can map to multiple keys (e.g. "discussion" covers both
+// the peer and self-authored discussion sections).
+const SUPPRESS_SECTION_MAP: Record<string, string[]> = {
+  discussion: ["discuss", "driveDiscussion"],
+  voting: ["voteOn"],
+  "ready-to-implement": ["implement"],
+  "review-prs": ["reviewPRs"],
+  "draft-prs": ["draftPRs"],
+  "address-feedback": ["addressFeedback"],
+  unclassified: ["unclassified"],
+  "drive-discussion": ["driveDiscussion"],
+  "drive-implementation": ["driveImplementation"],
+};
+
+function resolveSuppressedSections(names: string[]): string[] {
+  const result: string[] = [];
+  for (const name of names) {
+    const keys = SUPPRESS_SECTION_MAP[name.toLowerCase()];
+    if (keys) result.push(...keys);
+  }
+  return result;
+}
+
+// Returns true if the item passes the label/author filter rules.
+// An item is included when:
+//   - labels.include: at least one of the listed labels is present (if specified)
+//   - labels.exclude: none of the listed labels are present (if specified)
+//   - authors.include: the author is in the list (if specified)
+//   - authors.exclude: the author is NOT in the list (if specified)
+function passesItemFilter(
+  labelNames: string[],
+  authorLogin: string,
+  filters: FocusFilters,
+): boolean {
+  const { labels, authors } = filters;
+
+  if (labels?.include && labels.include.length > 0) {
+    const lower = labelNames.map((l) => l.toLowerCase());
+    if (!labels.include.some((l) => lower.includes(l.toLowerCase()))) return false;
+  }
+  if (labels?.exclude && labels.exclude.length > 0) {
+    const lower = labelNames.map((l) => l.toLowerCase());
+    if (labels.exclude.some((l) => lower.includes(l.toLowerCase()))) return false;
+  }
+  if (authors?.include && authors.include.length > 0) {
+    if (!authors.include.includes(authorLogin)) return false;
+  }
+  if (authors?.exclude && authors.exclude.length > 0) {
+    if (authors.exclude.includes(authorLogin)) return false;
+  }
+
+  return true;
+}
+
 export function buildSummary(
   repo: RepoRef,
   issues: GitHubIssue[],
@@ -319,6 +375,7 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  focusFilters?: FocusFilters,
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -330,7 +387,27 @@ export function buildSummary(
   const addressFeedback: SummaryItem[] = [];
   const notes: string[] = [];
 
-  for (const issue of issues) {
+  // Apply label/author item filters when a focus filter is active.
+  const filteredIssues = focusFilters
+    ? issues.filter((issue) =>
+        passesItemFilter(
+          issue.labels.map((l) => l.name),
+          issue.author?.login ?? "",
+          focusFilters,
+        )
+      )
+    : issues;
+  const filteredPRs = focusFilters
+    ? prs.filter((pr) =>
+        passesItemFilter(
+          pr.labels.map((l) => l.name),
+          pr.author?.login ?? "",
+          focusFilters,
+        )
+      )
+    : prs;
+
+  for (const issue of filteredIssues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
@@ -357,7 +434,7 @@ export function buildSummary(
     }
   }
 
-  for (const pr of prs) {
+  for (const pr of filteredPRs) {
     const { bucket, item } = classifyPR(pr, now);
     const ctx = reviewContext(pr, currentUser, now);
     if (ctx) {
@@ -494,6 +571,11 @@ export function buildSummary(
   const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
   if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
 
+  const suppressedSections =
+    focusFilters?.suppressSections && focusFilters.suppressSections.length > 0
+      ? resolveSuppressedSections(focusFilters.suppressSections)
+      : undefined;
+
   return {
     repo,
     currentUser,
@@ -512,6 +594,7 @@ export function buildSummary(
     repositoryHealth,
     prioritySignals,
     focus,
+    ...(suppressedSections !== undefined ? { suppressedSections } : {}),
     notes,
   };
 }

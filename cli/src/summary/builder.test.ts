@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSummary } from "./builder.js";
-import type { GitHubIssue, GitHubPR, RepoRef } from "../config/types.js";
+import type { FocusFilters, GitHubIssue, GitHubPR, RepoRef } from "../config/types.js";
 
 const repo: RepoRef = { owner: "hivemoot", repo: "colony" };
 const now = new Date("2025-06-15T12:00:00Z");
@@ -1291,5 +1291,155 @@ describe("buildSummary()", () => {
     expect(summary.notes).toContain(
       "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
     );
+  });
+});
+
+describe("buildSummary() — focus filters", () => {
+  const now = new Date("2025-06-15T12:00:00Z");
+
+  function makeIssue(overrides: Partial<GitHubIssue> = {}): GitHubIssue {
+    return {
+      number: 1,
+      title: "Test issue",
+      labels: [{ name: "hivemoot:discussion" }],
+      assignees: [],
+      author: { login: "alice" },
+      comments: [],
+      createdAt: "2025-06-12T12:00:00Z",
+      updatedAt: "2025-06-12T12:00:00Z",
+      url: "https://github.com/hivemoot/colony/issues/1",
+      ...overrides,
+    };
+  }
+
+  function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
+    return {
+      number: 10,
+      title: "Test PR",
+      state: "OPEN",
+      author: { login: "bob" },
+      labels: [],
+      comments: [],
+      reviews: [],
+      createdAt: "2025-06-13T12:00:00Z",
+      updatedAt: "2025-06-13T12:00:00Z",
+      url: "https://github.com/hivemoot/colony/pull/10",
+      isDraft: false,
+      reviewDecision: "",
+      mergeable: "MERGEABLE",
+      statusCheckRollup: [],
+      closingIssuesReferences: [],
+      commits: [],
+      ...overrides,
+    };
+  }
+
+  it("label include filter keeps only issues with a matching label", () => {
+    const bugIssue = makeIssue({ number: 1, labels: [{ name: "bug" }, { name: "hivemoot:discussion" }] });
+    const featureIssue = makeIssue({ number: 2, labels: [{ name: "enhancement" }, { name: "hivemoot:discussion" }] });
+
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(repo, [bugIssue, featureIssue], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allIssueNumbers = [
+      ...summary.discuss,
+      ...summary.voteOn,
+      ...summary.implement,
+      ...summary.driveDiscussion,
+    ].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
+    expect(allIssueNumbers).not.toContain(2);
+  });
+
+  it("label exclude filter drops issues with a matching label", () => {
+    const bugIssue = makeIssue({ number: 1, labels: [{ name: "bug" }, { name: "hivemoot:discussion" }] });
+    const wontfixIssue = makeIssue({ number: 2, labels: [{ name: "wontfix" }, { name: "hivemoot:discussion" }] });
+
+    const filters: FocusFilters = { labels: { exclude: ["wontfix"] } };
+    const summary = buildSummary(repo, [bugIssue, wontfixIssue], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allIssueNumbers = [...summary.discuss, ...summary.driveDiscussion].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
+    expect(allIssueNumbers).not.toContain(2);
+  });
+
+  it("author exclude filter drops issues from excluded authors", () => {
+    const humanIssue = makeIssue({ number: 1, author: { login: "alice" }, labels: [{ name: "hivemoot:discussion" }] });
+    const botIssue = makeIssue({ number: 2, author: { login: "dependabot[bot]" }, labels: [{ name: "hivemoot:discussion" }] });
+
+    const filters: FocusFilters = { authors: { exclude: ["dependabot[bot]"] } };
+    const summary = buildSummary(repo, [humanIssue, botIssue], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allIssueNumbers = [
+      ...summary.discuss,
+      ...summary.driveDiscussion,
+    ].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
+    expect(allIssueNumbers).not.toContain(2);
+  });
+
+  it("author include filter keeps only issues from listed authors", () => {
+    const aliceIssue = makeIssue({ number: 1, author: { login: "alice" }, labels: [{ name: "hivemoot:discussion" }] });
+    const bobIssue = makeIssue({ number: 2, author: { login: "bob" }, labels: [{ name: "hivemoot:discussion" }] });
+
+    const filters: FocusFilters = { authors: { include: ["alice"] } };
+    const summary = buildSummary(repo, [aliceIssue, bobIssue], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allIssueNumbers = [
+      ...summary.discuss,
+      ...summary.driveDiscussion,
+    ].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
+    expect(allIssueNumbers).not.toContain(2);
+  });
+
+  it("PR label filter removes non-matching PRs from review buckets", () => {
+    const bugPR = makePR({ number: 10, labels: [{ name: "bug" }] });
+    const featurePR = makePR({ number: 11, labels: [{ name: "enhancement" }] });
+
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(repo, [], [bugPR, featurePR], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allPRNumbers = [...summary.reviewPRs, ...summary.draftPRs, ...summary.addressFeedback].map((p) => p.number);
+    expect(allPRNumbers).toContain(10);
+    expect(allPRNumbers).not.toContain(11);
+  });
+
+  it("suppressSections translates ready-to-implement to suppressedSections", () => {
+    const filters: FocusFilters = { suppressSections: ["ready-to-implement", "discussion"] };
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    expect(summary.suppressedSections).toEqual(
+      expect.arrayContaining(["implement", "discuss", "driveDiscussion"]),
+    );
+  });
+
+  it("suppressedSections is undefined when no suppressSections specified", () => {
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    expect(summary.suppressedSections).toBeUndefined();
+  });
+
+  it("no filter applied when focusFilters is undefined", () => {
+    const issue1 = makeIssue({ number: 1, labels: [{ name: "hivemoot:discussion" }] });
+    const issue2 = makeIssue({ number: 2, labels: [{ name: "hivemoot:discussion" }] });
+
+    const summary = buildSummary(repo, [issue1, issue2], [], "testuser", now);
+
+    const allIssueNumbers = [...summary.discuss, ...summary.driveDiscussion].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
+    expect(allIssueNumbers).toContain(2);
+    expect(summary.suppressedSections).toBeUndefined();
+  });
+
+  it("label filter is case-insensitive", () => {
+    const issue = makeIssue({ number: 1, labels: [{ name: "BUG" }, { name: "hivemoot:discussion" }] });
+
+    const filters: FocusFilters = { labels: { include: ["bug"] } };
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, filters);
+
+    const allIssueNumbers = [...summary.discuss, ...summary.driveDiscussion].map((i) => i.number);
+    expect(allIssueNumbers).toContain(1);
   });
 });
