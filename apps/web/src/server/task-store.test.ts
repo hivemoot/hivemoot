@@ -447,6 +447,80 @@ describe("task lifecycle", () => {
     expect(timedOut?.status).toBe("timed_out");
   });
 
+  it("prevents stale heartbeat writes from resurrecting a finalized task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const taskStorageKey = `task:inst-1:${created.task.task_id}`;
+    let heartbeatWriteBlocked = false;
+    let signalHeartbeatBlocked!: () => void;
+    let releaseHeartbeatWrite!: () => void;
+    const heartbeatBlocked = new Promise<void>((resolve) => {
+      signalHeartbeatBlocked = resolve;
+    });
+    const heartbeatWriteReleased = new Promise<void>((resolve) => {
+      releaseHeartbeatWrite = resolve;
+    });
+
+    const setSpy = vi.spyOn(redis, "set");
+    const baseSet = setSpy.getMockImplementation();
+    if (!baseSet) {
+      throw new Error("Expected mocked redis.set implementation");
+    }
+
+    setSpy.mockImplementation(async (key: string, value: unknown, opts?: SetOpts) => {
+      if (
+        !heartbeatWriteBlocked
+        && key === taskStorageKey
+        && !opts?.nx
+        && typeof value === "object"
+        && value !== null
+        && (value as { status?: string }).status === "running"
+      ) {
+        heartbeatWriteBlocked = true;
+        signalHeartbeatBlocked();
+        await heartbeatWriteReleased;
+      }
+
+      return baseSet(key, value, opts);
+    });
+
+    const heartbeatPromise = heartbeatTask("inst-1", created.task.task_id, redis);
+    await heartbeatBlocked;
+    const completePromise = completeTask("inst-1", created.task.task_id, "done", redis);
+
+    releaseHeartbeatWrite();
+
+    const [heartbeatResult, completeResult] = await Promise.all([
+      heartbeatPromise,
+      completePromise,
+    ]);
+
+    expect(completeResult.ok).toBe(true);
+    expect(
+      heartbeatResult.ok
+      || (!heartbeatResult.ok && heartbeatResult.reason === "invalid_transition"),
+    ).toBe(true);
+
+    const finalTask = await getTask("inst-1", created.task.task_id, redis);
+    expect(finalTask?.status).toBe("completed");
+    expect(redis._zsets.get("tasks:running:inst-1")?.has(created.task.task_id)).toBe(false);
+  });
+
   it("lists recent tasks", async () => {
     const first = await createTask(
       "inst-1",

@@ -311,6 +311,27 @@ function transitionDeadlineMs(task: StoredTaskRecord): number {
   return Date.now() + task.timeout_secs * 1000;
 }
 
+async function withTaskTransitionLock(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+  operation: string,
+  fn: () => Promise<TaskTransitionResult>,
+): Promise<TaskTransitionResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, fn);
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn(operation, {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
+}
+
 async function cleanupMissingTask(
   installationId: string,
   taskId: string,
@@ -594,72 +615,80 @@ async function finalizeTask(
   redis: Redis,
   allowedFrom: Set<TaskStatus>,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task finalize lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (!allowedFrom.has(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (!allowedFrom.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const timestamp = nowIso();
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    status,
-    updated_at: timestamp,
-    finished_at: timestamp,
-    error: options.error ? sanitizeText(options.error, MAX_PROGRESS_CHARS) : stored.error,
-  };
+      const timestamp = nowIso();
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status,
+        updated_at: timestamp,
+        finished_at: timestamp,
+        error: options.error ? sanitizeText(options.error, MAX_PROGRESS_CHARS) : stored.error,
+      };
 
-  const ttl = terminalTtl(status);
-  const progress = options.progress
-    ? sanitizeText(options.progress, MAX_PROGRESS_CHARS)
-    : status === "completed"
-      ? "Completed"
-      : status === "timed_out"
-        ? "Timed out"
-        : "Failed";
+      const ttl = terminalTtl(status);
+      const progress = options.progress
+        ? sanitizeText(options.progress, MAX_PROGRESS_CHARS)
+        : status === "completed"
+          ? "Completed"
+          : status === "timed_out"
+            ? "Timed out"
+            : "Failed";
 
-  const multi = redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
-    .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
-    .zrem(pendingKey(installationId), taskId)
-    .zrem(runningKey(installationId), taskId)
-    .del(taskClaimTokenHashKey(installationId, taskId))
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
+      const multi = redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
+        .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
+        .zrem(pendingKey(installationId), taskId)
+        .zrem(runningKey(installationId), taskId)
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
 
-  if (typeof options.result === "string") {
-    multi.set(
-      taskResultKey(installationId, taskId),
-      sanitizeText(options.result, MAX_RESULT_CHARS),
-      { ex: ttl },
-    );
-  }
+      if (typeof options.result === "string") {
+        multi.set(
+          taskResultKey(installationId, taskId),
+          sanitizeText(options.result, MAX_RESULT_CHARS),
+          { ex: ttl },
+        );
+      }
 
-  await multi.exec();
+      await multi.exec();
 
-  // Best-effort: expire the messages list alongside the task data.
-  // The task has already been finalized so a failure here must not propagate.
-  try {
-    await redis.expire(taskMessagesKey(installationId, taskId), ttl);
-  } catch (error) {
-    console.error("[tasks] Failed to expire messages key (task finalized)", {
-      installationId,
-      taskId,
-      error,
-    });
-  }
+      // Best-effort: expire the messages list alongside the task data.
+      // The task has already been finalized so a failure here must not propagate.
+      try {
+        await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+      } catch (error) {
+        console.error("[tasks] Failed to expire messages key (task finalized)", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress,
-      result: typeof options.result === "string"
-        ? sanitizeText(options.result, MAX_RESULT_CHARS)
-        : undefined,
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+          result: typeof options.result === "string"
+            ? sanitizeText(options.result, MAX_RESULT_CHARS)
+            : undefined,
+        },
+      };
     },
-  };
+  );
 }
 
 async function markTaskRunningUnlocked(
@@ -742,34 +771,42 @@ export async function setTaskProgress(
   progress: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task progress lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (isTerminal(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (isTerminal(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    updated_at: nowIso(),
-  };
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        updated_at: nowIso(),
+      };
 
-  const normalized = sanitizeText(progress, MAX_PROGRESS_CHARS);
+      const normalized = sanitizeText(progress, MAX_PROGRESS_CHARS);
 
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored)
-    .set(taskProgressKey(installationId, taskId), normalized)
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), normalized)
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress: normalized,
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress: normalized,
+        },
+      };
     },
-  };
+  );
 }
 
 export async function heartbeatTask(
@@ -777,29 +814,37 @@ export async function heartbeatTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task heartbeat lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (stored.status !== "running") {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (stored.status !== "running") {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    updated_at: nowIso(),
-  };
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        updated_at: nowIso(),
+      };
 
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored)
-    .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
 
-  return {
-    ok: true,
-    task: await buildTaskRecord(installationId, nextStored, redis),
-  };
+      return {
+        ok: true,
+        task: await buildTaskRecord(installationId, nextStored, redis),
+      };
+    },
+  );
 }
 
 export async function completeTask(
@@ -1111,30 +1156,47 @@ export async function requestFollowUp(
   message: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  const transitioned = await withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task follow-up lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (stored.status !== "running") {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (stored.status !== "running") {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const timestamp = nowIso();
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    status: "needs_follow_up",
-    updated_at: timestamp,
-  };
+      const timestamp = nowIso();
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status: "needs_follow_up",
+        updated_at: timestamp,
+      };
 
-  const progress = sanitizeText(message, MAX_PROGRESS_CHARS);
+      const progress = sanitizeText(message, MAX_PROGRESS_CHARS);
 
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored)
-    .set(taskProgressKey(installationId, taskId), progress)
-    .zrem(runningKey(installationId), taskId)
-    .del(taskClaimTokenHashKey(installationId, taskId))
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), progress)
+        .zrem(runningKey(installationId), taskId)
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+        },
+      };
+    },
+  );
+  if (!transitioned.ok) return transitioned;
 
   // Best-effort: append timeline messages after the transition is committed.
   // A Redis failure here must not cause a 500 — the state change is durable.
@@ -1155,13 +1217,7 @@ export async function requestFollowUp(
     });
   }
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress,
-    },
-  };
+  return transitioned;
 }
 
 export async function resumeTaskWithFollowUp(
