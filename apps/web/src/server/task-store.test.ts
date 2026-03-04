@@ -10,6 +10,7 @@ import {
   deleteTask,
   getTaskMessages,
   MAX_CONCURRENT_TASKS,
+  heartbeatTask,
   markTaskRunning,
   requestFollowUp,
   resumeTaskWithFollowUp,
@@ -389,6 +390,56 @@ describe("task lifecycle", () => {
     redis._kv.set(taskKey, {
       ...stored,
       started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const timedOut = await getTask("inst-1", created.task.task_id, redis);
+    expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("extends timeout window from latest heartbeat", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 1,
+      },
+      redis,
+    );
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const taskKey = `task:inst-1:${created.task.task_id}`;
+    const stored = redis._kv.get(taskKey) as {
+      started_at?: string;
+      updated_at: string;
+    };
+
+    redis._kv.set(taskKey, {
+      ...stored,
+      started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const heartbeat = await heartbeatTask("inst-1", created.task.task_id, redis);
+    expect(heartbeat.ok).toBe(true);
+
+    const stillRunning = await getTask("inst-1", created.task.task_id, redis);
+    expect(stillRunning?.status).toBe("running");
+
+    const refreshed = redis._kv.get(taskKey) as {
+      started_at?: string;
+      updated_at: string;
+    };
+    redis._kv.set(taskKey, {
+      ...refreshed,
+      updated_at: "2020-01-01T00:00:00.000Z",
     });
 
     const timedOut = await getTask("inst-1", created.task.task_id, redis);

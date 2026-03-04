@@ -9,6 +9,7 @@ vi.mock("@/server/task-store", () => ({
   TASK_ID_PATTERN: /^[a-f0-9]{24}$/,
   getTask: vi.fn(),
   setTaskProgress: vi.fn(),
+  heartbeatTask: vi.fn(),
   completeTask: vi.fn(),
   failTask: vi.fn(),
   timeoutTask: vi.fn(),
@@ -19,6 +20,7 @@ import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
 import {
   getTask,
   setTaskProgress,
+  heartbeatTask,
   completeTask,
   failTask,
   timeoutTask,
@@ -48,6 +50,7 @@ beforeEach(() => {
 
   vi.mocked(getTask).mockResolvedValue(BASE_TASK);
   vi.mocked(setTaskProgress).mockResolvedValue({ ok: true, task: { ...BASE_TASK, progress: "step" } });
+  vi.mocked(heartbeatTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK } });
   vi.mocked(completeTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "completed" } });
   vi.mocked(failTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "failed" } });
   vi.mocked(timeoutTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "timed_out" } });
@@ -78,6 +81,16 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     const res = await POST(makeRequest({ action: "complete", result: "done" }));
     expect(res.status).toBe(200);
     expect(completeTask).toHaveBeenCalled();
+  });
+
+  it("accepts heartbeat updates for executor", async () => {
+    const res = await POST(makeRequest({ action: "heartbeat" }));
+    expect(res.status).toBe(200);
+    expect(heartbeatTask).toHaveBeenCalledWith(
+      "inst-1",
+      "abc123abc123abc123abc123",
+      expect.anything(),
+    );
   });
 
   it("returns 401 when executor token is invalid", async () => {

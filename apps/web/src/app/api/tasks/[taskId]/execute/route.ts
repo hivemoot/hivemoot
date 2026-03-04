@@ -8,6 +8,7 @@ import {
   failTask,
   getTask,
   requestFollowUp,
+  heartbeatTask,
   setTaskProgress,
   TASK_ID_PATTERN,
   timeoutTask,
@@ -17,7 +18,7 @@ import {
 const MAX_PAYLOAD_BYTES = 128 * 1024;
 const textEncoder = new TextEncoder();
 
-type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "request_follow_up";
+type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "heartbeat" | "request_follow_up";
 
 function parseAction(value: unknown): ExecuteAction | null {
   if (
@@ -25,6 +26,7 @@ function parseAction(value: unknown): ExecuteAction | null {
     || value === "complete"
     || value === "fail"
     || value === "timeout"
+    || value === "heartbeat"
     || value === "request_follow_up"
   ) {
     return value;
@@ -105,7 +107,7 @@ export async function POST(request: NextRequest) {
   if (!action) {
     return taskError(
       TASK_ERROR.INVALID_ACTION,
-      "action must be one of: progress, complete, fail, timeout, request_follow_up",
+      "action must be one of: progress, complete, fail, timeout, heartbeat, request_follow_up",
       400,
     );
   }
@@ -146,6 +148,11 @@ export async function POST(request: NextRequest) {
     case "timeout": {
       const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
       return toTransitionResponse(timedOut);
+    }
+
+    case "heartbeat": {
+      const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
+      return toTransitionResponse(heartbeat);
     }
 
     case "request_follow_up": {

@@ -267,16 +267,25 @@ function generateTaskId(): string {
   return randomBytes(12).toString("hex");
 }
 
-function transitionDeadlineMs(task: StoredTaskRecord): number {
-  const baseTs = task.status === "running" && task.started_at
-    ? new Date(task.started_at).getTime()
-    : new Date(task.created_at).getTime();
+function parseIsoTimestampMs(value?: string): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
-  if (!Number.isFinite(baseTs)) {
-    return Date.now() + task.timeout_secs * 1000;
+function transitionDeadlineMs(task: StoredTaskRecord): number {
+  const baseCandidates = task.status === "running"
+    ? [task.updated_at, task.started_at, task.created_at]
+    : [task.created_at];
+
+  for (const candidate of baseCandidates) {
+    const baseTs = parseIsoTimestampMs(candidate);
+    if (baseTs !== null) {
+      return baseTs + task.timeout_secs * 1000;
+    }
   }
 
-  return baseTs + task.timeout_secs * 1000;
+  return Date.now() + task.timeout_secs * 1000;
 }
 
 async function cleanupMissingTask(
@@ -727,6 +736,36 @@ export async function setTaskProgress(
       ...nextStored,
       progress: normalized,
     },
+  };
+}
+
+export async function heartbeatTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskTransitionResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  if (stored.status !== "running") {
+    return { ok: false, reason: "invalid_transition" };
+  }
+
+  const nextStored: StoredTaskRecord = {
+    ...stored,
+    updated_at: nowIso(),
+  };
+
+  await redis
+    .multi()
+    .set(taskKey(installationId, taskId), nextStored)
+    .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
+    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+    .exec();
+
+  return {
+    ok: true,
+    task: await buildTaskRecord(installationId, nextStored, redis),
   };
 }
 
