@@ -201,6 +201,54 @@ describe("validateProviderKey — google", () => {
 });
 
 // ---------------------------------------------------------------------------
+// OpenRouter
+// ---------------------------------------------------------------------------
+
+describe("validateProviderKey — openrouter", () => {
+  it("returns valid when OpenRouter API responds 200", async () => {
+    mockFetchResponse(200, { data: { label: "test-key" } });
+    const result = await validateProviderKey("openrouter", "sk-or-v1-test");
+    expect(result).toEqual({ valid: true });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://openrouter.ai/api/v1/auth/key",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer sk-or-v1-test" }),
+      }),
+    );
+  });
+
+  it("returns invalid with reason on 401", async () => {
+    mockFetchResponse(401);
+    const result = await validateProviderKey("openrouter", "bad-key");
+    expect(result).toEqual({ valid: false, reason: "Invalid API key" });
+  });
+
+  it("returns invalid with status on other errors", async () => {
+    mockFetchResponse(500);
+    const result = await validateProviderKey("openrouter", "sk-or-v1-test");
+    expect(result).toEqual({ valid: false, reason: "Provider returned 500" });
+  });
+
+  it("handles network errors gracefully", async () => {
+    mockFetchError();
+    const result = await validateProviderKey("openrouter", "sk-or-v1-test");
+    expect(result).toEqual({ valid: false, reason: "Failed to reach OpenRouter API" });
+  });
+
+  it("times out when OpenRouter API does not respond", async () => {
+    vi.useFakeTimers();
+    mockFetchHangUntilAbort();
+
+    const resultPromise = validateProviderKey("openrouter", "sk-or-v1-test");
+    await vi.advanceTimersByTimeAsync(PROVIDER_VALIDATION_TIMEOUT_MS);
+    const result = await resultPromise;
+
+    expect(result).toEqual({ valid: false, reason: "Provider validation timed out" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unknown provider
 // ---------------------------------------------------------------------------
 
@@ -209,7 +257,7 @@ describe("validateProviderKey — unknown provider", () => {
     const result = await validateProviderKey(provider, "key");
     expect(result).toEqual({
       valid: false,
-      reason: "Unsupported provider. Supported providers: anthropic, openai, google",
+      reason: "Unsupported provider. Supported providers: anthropic, openai, google, openrouter",
     });
     expect(global.fetch).not.toHaveBeenCalled();
   });

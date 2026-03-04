@@ -14,6 +14,26 @@ import {
 // Types (matches server-side HealthOverviewEntry and HealthReport)
 // ---------------------------------------------------------------------------
 
+type TriggerType = "scheduled" | "mention" | "manual";
+
+interface ModelTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cost_usd: number | null;
+}
+
+interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cost_usd: number | null;
+  num_turns: number;
+  model_breakdown: Record<string, ModelTokenUsage> | null;
+}
+
 interface AgentOverviewEntry {
   agent_id: string;
   repo: string;
@@ -27,6 +47,8 @@ interface AgentOverviewEntry {
   online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
   next_run_at?: string;
+  trigger?: TriggerType;
+  token_usage?: TokenUsage | null;
 }
 
 interface HealthHistoryEntry {
@@ -39,6 +61,8 @@ interface HealthHistoryEntry {
   error?: string;
   exit_code?: number;
   received_at: string;
+  trigger?: TriggerType;
+  token_usage?: TokenUsage | null;
 }
 
 
@@ -106,6 +130,100 @@ function statusLabel(status: GroupStatus): string {
     case "unknown":
       return "Unknown";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: trigger badge
+// ---------------------------------------------------------------------------
+
+function TriggerBadge({ trigger }: { trigger: TriggerType }) {
+  const config: Record<TriggerType, { label: string; className: string }> = {
+    scheduled: { label: "scheduled", className: "text-zinc-500 bg-zinc-500/10" },
+    mention: { label: "@mention", className: "text-blue-400/80 bg-blue-500/10" },
+    manual: { label: "manual", className: "text-amber-400/80 bg-amber-500/10" },
+  };
+  const { label, className } = config[trigger] ?? { label: trigger, className: "text-zinc-500 bg-zinc-500/10" };
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${className}`}>
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: token usage summary
+// ---------------------------------------------------------------------------
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return String(n);
+}
+
+function cacheHitRate(tu: TokenUsage): string | null {
+  const read = tu.cache_read_input_tokens ?? 0;
+  const creation = tu.cache_creation_input_tokens ?? 0;
+  const total = tu.input_tokens + read + creation;
+  if (total === 0) return null;
+  return `${Math.round((read / total) * 100)}%`;
+}
+
+function TokenSummary({ tu }: { tu: TokenUsage }) {
+  const hitRate = cacheHitRate(tu);
+  const breakdown = tu.model_breakdown ? Object.entries(tu.model_breakdown) : [];
+
+  return (
+    <div className="mt-2 space-y-1.5 text-xs text-zinc-500">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span>
+          <span className="text-zinc-400">{formatTokens(tu.input_tokens)}</span>
+          {" in"}
+        </span>
+        <span>
+          <span className="text-zinc-400">{formatTokens(tu.output_tokens)}</span>
+          {" out"}
+        </span>
+        {hitRate && (
+          <span>
+            cache <span className="text-green-400/80">{hitRate}</span>
+          </span>
+        )}
+        <span>
+          <span className="text-zinc-400">{tu.num_turns}</span>
+          {" turns"}
+        </span>
+        {tu.cost_usd !== null && (
+          <span className="text-zinc-300">
+            ${tu.cost_usd.toFixed(2)}
+          </span>
+        )}
+      </div>
+      {breakdown.length > 0 && (
+        <details className="group">
+          <summary className="cursor-pointer list-none text-zinc-600 hover:text-zinc-500">
+            <span className="inline-flex items-center gap-1">
+              <svg className="h-2.5 w-2.5 transition-transform group-open:rotate-90" viewBox="0 0 8 8" fill="currentColor" aria-hidden="true">
+                <path d="M2 1l4 3-4 3V1z" />
+              </svg>
+              model breakdown
+            </span>
+          </summary>
+          <div className="mt-1.5 space-y-0.5 pl-4">
+            {breakdown.map(([modelId, mu]) => (
+              <div key={modelId} className="flex items-center gap-2 font-mono text-[10px]">
+                <span className="min-w-0 flex-1 truncate text-zinc-600">{modelId}</span>
+                <span>{formatTokens(mu.input_tokens)}in</span>
+                <span>{formatTokens(mu.output_tokens)}out</span>
+                {mu.cost_usd !== null && (
+                  <span className="text-zinc-400">${mu.cost_usd.toFixed(2)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
 }
 
 const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
@@ -312,51 +430,57 @@ export default function AgentHealthDashboard() {
             {history.map((entry, i) => (
               <div
                 key={`${entry.received_at}-${i}`}
-                className="flex items-start gap-4 rounded-lg border border-white/[0.06] bg-[#141414] px-4 py-3"
+                className="rounded-lg border border-white/[0.06] bg-[#141414] px-4 py-3"
               >
-                <div className="mt-0.5 flex items-center gap-2">
-                  <span
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      entry.outcome === "failure" || entry.outcome === "timeout"
-                        ? "bg-red-400"
-                        : entry.outcome === "success"
-                          ? "bg-green-400"
-                          : "bg-zinc-500"
-                    }`}
-                  />
-                  <span
-                    className={`text-xs font-medium ${
-                      entry.outcome === "failure" || entry.outcome === "timeout"
-                        ? "text-red-400"
-                        : entry.outcome === "success"
-                          ? "text-green-400"
-                          : "text-zinc-400"
-                    }`}
-                  >
-                    {entry.outcome}
+                <div className="flex items-start gap-4">
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${
+                        entry.outcome === "failure" || entry.outcome === "timeout"
+                          ? "bg-red-400"
+                          : entry.outcome === "success"
+                            ? "bg-green-400"
+                            : "bg-zinc-500"
+                      }`}
+                    />
+                    <span
+                      className={`text-xs font-medium ${
+                        entry.outcome === "failure" || entry.outcome === "timeout"
+                          ? "text-red-400"
+                          : entry.outcome === "success"
+                            ? "text-green-400"
+                            : "text-zinc-400"
+                      }`}
+                    >
+                      {entry.outcome}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm text-zinc-300">
+                        {entry.run_id}
+                        {entry.duration_secs !== undefined && (
+                          <span className="ml-2 text-zinc-500">
+                            {entry.duration_secs}s
+                          </span>
+                        )}
+                      </p>
+                      {entry.trigger && <TriggerBadge trigger={entry.trigger} />}
+                    </div>
+                    {entry.error && (
+                      <p className="mt-0.5 text-sm text-red-400">{entry.error}</p>
+                    )}
+                    {entry.exit_code !== undefined && (
+                      <p className="text-xs text-zinc-500">
+                        exit code {entry.exit_code}
+                      </p>
+                    )}
+                    {entry.token_usage && <TokenSummary tu={entry.token_usage} />}
+                  </div>
+                  <span className="shrink-0 text-xs text-zinc-600">
+                    {relativeTime(entry.received_at)}
                   </span>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-zinc-300">
-                    {entry.run_id}
-                    {entry.duration_secs !== undefined && (
-                      <span className="ml-2 text-zinc-500">
-                        {entry.duration_secs}s
-                      </span>
-                    )}
-                  </p>
-                  {entry.error && (
-                    <p className="mt-0.5 text-sm text-red-400">{entry.error}</p>
-                  )}
-                  {entry.exit_code !== undefined && (
-                    <p className="text-xs text-zinc-500">
-                      exit code {entry.exit_code}
-                    </p>
-                  )}
-                </div>
-                <span className="shrink-0 text-xs text-zinc-600">
-                  {relativeTime(entry.received_at)}
-                </span>
               </div>
             ))}
           </div>
@@ -503,6 +627,11 @@ export default function AgentHealthDashboard() {
                       <div className="flex items-center gap-3 text-zinc-600">
                         <span>{relativeTime(agent.received_at)}</span>
                         {nextRunIn && <span>next: {nextRunIn}</span>}
+                        {agent.token_usage?.cost_usd != null && (
+                          <span className="text-zinc-500">
+                            ${agent.token_usage.cost_usd.toFixed(2)}
+                          </span>
+                        )}
                       </div>
                       {agent.consecutive_failures != null &&
                         agent.consecutive_failures > 0 && (

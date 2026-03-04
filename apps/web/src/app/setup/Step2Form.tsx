@@ -7,7 +7,7 @@ import { BYOK_ERROR } from "@/constants/byok-errors";
 // Types & constants
 // ---------------------------------------------------------------------------
 
-type Provider = "anthropic" | "openai" | "google";
+type Provider = "anthropic" | "openai" | "google" | "openrouter";
 type FormStatus = "idle" | "submitting" | "success" | "error" | "skipped";
 
 interface Step2FormProps {
@@ -26,18 +26,21 @@ const DEFAULT_MODELS: Record<Provider, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-5.2",
   google: "gemini-3-flash-preview",
+  openrouter: "anthropic/claude-sonnet-4.6",
 };
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",
+  openrouter: "OpenRouter",
 };
 
 const KEY_PLACEHOLDERS: Record<Provider, string> = {
   anthropic: "sk-ant-...",
   openai: "sk-...",
   google: "AIza...",
+  openrouter: "sk-or-v1-...",
 };
 
 // ---------------------------------------------------------------------------
@@ -87,10 +90,24 @@ function GoogleIcon({ className }: { className?: string }) {
   );
 }
 
+function OpenRouterIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICONS: Record<Provider, typeof AnthropicIcon> = {
   anthropic: AnthropicIcon,
   openai: OpenAIIcon,
   google: GoogleIcon,
+  openrouter: OpenRouterIcon,
 };
 
 function EyeIcon() {
@@ -868,8 +885,8 @@ export default function Step2Form({
         {/* disabled={sessionExpired} propagates to all descendant buttons via HTML spec */}
         <fieldset disabled={sessionExpired}>
           <legend className="mb-2 text-sm text-zinc-400">Provider</legend>
-          <div className="grid grid-cols-3 gap-2">
-            {(["anthropic", "openai", "google"] as const).map((p) => {
+          <div className="grid grid-cols-2 gap-2">
+            {(["anthropic", "openai", "google", "openrouter"] as const).map((p) => {
               const isActive = provider === p;
               const Icon = PROVIDER_ICONS[p];
               return (
@@ -896,6 +913,28 @@ export default function Step2Form({
           </div>
         </fieldset>
 
+        {provider === "openrouter" && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <svg
+              className="h-4 w-4 shrink-0 mt-0.5 text-amber-400"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6" />
+              <path d="M8 5v3" />
+              <circle cx="8" cy="11" r="0.5" fill="currentColor" />
+            </svg>
+            <p className="text-xs text-amber-300/90">
+              Requests route through <span className="font-medium">OpenRouter</span> before reaching the model provider.
+            </p>
+          </div>
+        )}
+
         {/* Model field */}
         <div className="mt-5">
           <label htmlFor="model" className="mb-2 block text-sm text-zinc-400">
@@ -909,9 +948,23 @@ export default function Step2Form({
             disabled={sessionExpired}
             className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            The model the Queen uses for AI features.
-          </p>
+          {provider === "openrouter" ? (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Format: <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">provider/model-name</code> (e.g. <code className="rounded bg-white/[0.06] px-1 py-0.5 text-zinc-400">anthropic/claude-sonnet-4.6</code>).{" "}
+              <a
+                href="https://openrouter.ai/models"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-honey-400 hover:underline"
+              >
+                Browse models
+              </a>.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              The model the Queen uses for AI features.
+            </p>
+          )}
         </div>
 
         {/* API key field */}
