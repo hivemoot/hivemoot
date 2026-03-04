@@ -48,6 +48,8 @@ jobs:
         run: bash scripts/test-health-report-env-wiring.sh
       - name: Verify health reporter contract and behavior
         run: bash scripts/test-health-reporter.sh
+      - name: Verify all test scripts have executable bit
+        run: bash scripts/test-script-executable-bits.sh
 
   hadolint:
     name: Hadolint
