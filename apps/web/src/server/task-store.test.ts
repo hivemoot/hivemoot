@@ -1050,6 +1050,118 @@ describe("deleteTask", () => {
     expect(fetched?.status).toBe("running");
   });
 
+  it("rejects deletion of a task waiting for follow-up", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Need follow-up",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need clarification", redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("needs_follow_up");
+  });
+
+  it("rejects deletion when task becomes running while delete waits on lock", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Race candidate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    let releaseDeleteExec!: () => void;
+    const deleteExecGate = new Promise<void>((resolve) => {
+      releaseDeleteExec = resolve;
+    });
+
+    // Delay delete's Redis transaction so legacy unlocked behavior would race.
+    const multiMock = redis.multi as unknown as {
+      mockImplementation: (fn: () => unknown) => void;
+    };
+    multiMock.mockImplementation(() => {
+      const ops: Array<() => Promise<unknown>> = [];
+      const pipeline = {
+        del: (...args: string[]) => {
+          ops.push(() => redis.del(...args));
+          return pipeline;
+        },
+        zrem: (key: string, ...members: string[]) => {
+          ops.push(() => redis.zrem(key, ...members));
+          return pipeline;
+        },
+        exec: async () => {
+          await deleteExecGate;
+          const results: unknown[] = [];
+          for (const op of ops) {
+            results.push(await op());
+          }
+          return results;
+        },
+      };
+      return pipeline;
+    });
+
+    // External owner holds lock while transitioning pending -> running.
+    await redis.set("hive:task-lock:inst-1", "external-owner", {
+      nx: true,
+      ex: 5,
+    });
+
+    const deletePromise = deleteTask("inst-1", created.task.task_id, redis);
+
+    // Let deleteTask block on lock or queued transaction.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rawTaskKey = `task:inst-1:${created.task.task_id}`;
+    const rawTask = redis._kv.get(rawTaskKey) as Record<string, unknown> | undefined;
+    expect(rawTask?.status).toBe("pending");
+
+    const now = new Date().toISOString();
+    redis._kv.set(rawTaskKey, {
+      ...rawTask,
+      status: "running",
+      started_at: now,
+      updated_at: now,
+    });
+
+    redis._zsets.get("tasks:pending:inst-1")?.delete(created.task.task_id);
+    if (!redis._zsets.has("tasks:running:inst-1")) {
+      redis._zsets.set("tasks:running:inst-1", new Map());
+    }
+    redis._zsets.get("tasks:running:inst-1")!.set(created.task.task_id, Date.now());
+
+    await redis.del("hive:task-lock:inst-1");
+    releaseDeleteExec();
+
+    const result = await deletePromise;
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("running");
+  });
+
   it("returns not_found for a nonexistent task", async () => {
     const result = await deleteTask("inst-1", "aabbccddeeff001122334455", redis);
     expect(result).toEqual({ ok: false, reason: "not_found" });

@@ -260,7 +260,7 @@ function isRetryable(status: string): boolean {
 }
 
 function isDeletable(status: string): boolean {
-  return status !== "running";
+  return status === "pending" || isTerminal(status);
 }
 
 // ---------------------------------------------------------------------------
