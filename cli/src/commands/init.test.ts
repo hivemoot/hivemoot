@@ -48,4 +48,29 @@ describe("initCommand", () => {
     expect(output).toMatch(/architect:\s/);
     expect(output).toMatch(/qa:\s/);
   });
+
+  it("includes version field", async () => {
+    await initCommand();
+
+    const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    expect(output).toContain("version: 1");
+  });
+
+  it("includes governance block with manual exits", async () => {
+    await initCommand();
+
+    const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    expect(output).toContain("governance:");
+    expect(output).toContain("type: manual");
+    expect(output).toContain("trustedReviewers:");
+  });
+
+  it("includes focuses comment in current format", async () => {
+    await initCommand();
+
+    const output = vi.mocked(console.log).mock.calls[0][0] as string;
+    expect(output).toContain("# focuses:");
+    expect(output).toContain("activeFocus");
+    expect(output).not.toContain("focus.default");
+  });
 });

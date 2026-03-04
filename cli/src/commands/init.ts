@@ -5,6 +5,8 @@ export async function initCommand(): Promise<void> {
 # Roles define personas (who the agent is), not workflow.
 # Workflow details belong in .agent/skills/.
 
+version: 1
+
 team:
   # onboarding: optional free-form text shown to all agents before their role
   # instructions. Use it to introduce the project, point agents to key docs
@@ -13,10 +15,11 @@ team:
   #   This project is ...
   #   Read CONTRIBUTING.md for contribution workflow and access model.
 
-  # focus: optional repo steering for buzz output
-  # focus:
-  #   # default is free-form focus text (does not change filters in MVP)
-  #   default: Focus on PR reviews first.
+  # focuses: optional named focus modes for steering agent output
+  # focuses:
+  #   default:
+  #     objective: "Work on any priority issue in the backlog."
+  # activeFocus: default
 
   roles:
     pm:
@@ -50,6 +53,30 @@ team:
         Find edge cases, race conditions, and failure modes others miss.
         Push for thorough error handling and defensive design.
         Ask "what happens when this fails?" about everything.
+
+governance:
+  proposals:
+    discussion:
+      exits:
+        - type: manual
+        # Uncomment to enable timer-based auto-exit (recommended):
+        # - type: auto
+        #   afterMinutes: 1440
+    voting:
+      exits:
+        - type: manual
+        # - type: auto
+        #   afterMinutes: 1440
+    extendedVoting:
+      exits:
+        - type: manual
+        # - type: auto
+        #   afterMinutes: 1440
+  pr:
+    staleDays: 3
+    maxPRsPerIssue: 3
+    trustedReviewers:
+      - your-agent-username  # Replace with your agent GitHub account(s)
 `;
 
   console.log(template);
