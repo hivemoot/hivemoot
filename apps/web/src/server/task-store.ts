@@ -909,27 +909,35 @@ export async function deleteTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskDeleteResult> {
-  return withTaskInstallationLock(installationId, redis, async () => {
-    const stored = await loadStoredTask(installationId, taskId, redis);
-    if (!stored) return { ok: false, reason: "not_found" };
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-    if (!DELETABLE_STATUSES.has(stored.status)) {
+      if (!DELETABLE_STATUSES.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      await redis
+        .multi()
+        .del(taskKey(installationId, taskId))
+        .del(taskResultKey(installationId, taskId))
+        .del(taskProgressKey(installationId, taskId))
+        .del(taskMessagesKey(installationId, taskId))
+        .zrem(pendingKey(installationId), taskId)
+        .zrem(runningKey(installationId), taskId)
+        .zrem(recentKey(installationId), taskId)
+        .exec();
+
+      return { ok: true };
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task delete lock timeout", { installationId, taskId });
       return { ok: false, reason: "invalid_transition" };
     }
-
-    await redis
-      .multi()
-      .del(taskKey(installationId, taskId))
-      .del(taskResultKey(installationId, taskId))
-      .del(taskProgressKey(installationId, taskId))
-      .del(taskMessagesKey(installationId, taskId))
-      .zrem(pendingKey(installationId), taskId)
-      .zrem(runningKey(installationId), taskId)
-      .zrem(recentKey(installationId), taskId)
-      .exec();
-
-    return { ok: true };
-  });
+    throw error;
+  }
 }
 
 const RETRYABLE_STATUSES = new Set<TaskStatus>(["failed", "timed_out"]);

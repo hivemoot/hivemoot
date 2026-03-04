@@ -15,22 +15,22 @@ export async function POST(request: NextRequest) {
     return taskError(TASK_ERROR.INVALID_TASK_ID, "Invalid task id", 400);
   }
 
-  try {
-    const rateLimit = await checkTaskCreateRateLimit(
-      auth.session.installationId,
-      auth.session.userId,
-      auth.redis,
+  const rateLimit = await checkTaskCreateRateLimit(
+    auth.session.installationId,
+    auth.session.userId,
+    auth.redis,
+  );
+
+  if (!rateLimit.allowed) {
+    return taskError(
+      TASK_ERROR.RATE_LIMITED,
+      "Too many task create requests. Please retry shortly.",
+      429,
+      { retry_after_secs: rateLimit.retryAfterSeconds },
     );
+  }
 
-    if (!rateLimit.allowed) {
-      return taskError(
-        TASK_ERROR.RATE_LIMITED,
-        "Too many task create requests. Please retry shortly.",
-        429,
-        { retry_after_secs: rateLimit.retryAfterSeconds },
-      );
-    }
-
+  try {
     const result = await retryTask(auth.session.installationId, taskId, auth.redis);
 
     if (!result.ok) {

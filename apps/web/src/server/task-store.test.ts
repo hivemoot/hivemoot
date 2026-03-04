@@ -1055,6 +1055,58 @@ describe("deleteTask", () => {
     expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 
+  it("re-reads status inside the lock so a pending->running race cannot be deleted", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Race simulation",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const taskId = created.task.task_id;
+    let lockAttempts = 0;
+
+    // Capture the real implementation so non-intercepted calls delegate correctly.
+    const setFn = redis.set as unknown as ReturnType<typeof vi.fn>;
+    const originalImpl = setFn.getMockImplementation() as (
+      key: string,
+      value: unknown,
+      opts?: SetOpts,
+    ) => Promise<"OK" | null>;
+
+    setFn.mockImplementation(async (key: string, value: unknown, opts?: SetOpts) => {
+      if (key === "hive:task-lock:inst-1" && opts?.nx) {
+        lockAttempts++;
+        if (lockAttempts === 1) {
+          // Simulate claimNextPendingTask winning the lock and transitioning the task
+          // to "running" before deleteTask can acquire the lock.
+          const stored = redis._kv.get(`task:inst-1:${taskId}`) as
+            | Record<string, unknown>
+            | undefined;
+          if (stored) {
+            redis._kv.set(`task:inst-1:${taskId}`, { ...stored, status: "running" });
+          }
+          return null; // Lock contention — first acquisition attempt fails.
+        }
+      }
+      return originalImpl(key, value, opts);
+    });
+
+    const result = await deleteTask("inst-1", taskId, redis);
+
+    // deleteTask must reject: the task is now running, not pending/terminal.
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+    // The lock-retry path must have fired, proving the check runs inside the lock.
+    expect(lockAttempts).toBeGreaterThanOrEqual(2);
+  });
+
   it("frees a concurrency slot when a pending task is deleted", async () => {
     // Fill all slots.
     for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
@@ -1192,6 +1244,31 @@ describe("retryTask", () => {
     }
   });
 
+  it("rejects retry of a completed task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Completed",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "all done", redis);
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
   it("respects concurrency limit on retry", async () => {
     // Fill all slots.
     for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
@@ -1260,31 +1337,6 @@ describe("retryTask", () => {
     const original = await getTask("inst-1", created.task.task_id, redis);
     expect(original?.status).toBe("failed");
     expect(original?.error).toBe("boom");
-  });
-
-  it("rejects retry of a completed task", async () => {
-    const created = await createTask(
-      "inst-1",
-      "queen",
-      {
-        engine: "codex",
-        prompt: "Completed",
-        repos: ["hivemoot/hivemoot"],
-        timeout_secs: 300,
-      },
-      redis,
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await markTaskRunning("inst-1", created.task.task_id, redis);
-    await completeTask("inst-1", created.task.task_id, "done", redis);
-
-    const result = await retryTask("inst-1", created.task.task_id, redis);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe("invalid_transition");
-    }
   });
 
   it("returns not_found for a nonexistent task", async () => {
