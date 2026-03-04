@@ -3,26 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface TaskRecord {
-  task_id: string;
-  status: string;
-  engine: string;
-  prompt: string;
-  repos: string[];
-  timeout_secs: number;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  started_at?: string;
-  finished_at?: string;
-  error?: string;
-  progress?: string;
-  result?: string;
-}
+import type { TaskRecord } from "./types";
 
 type CreateFormStatus = "idle" | "submitting" | "success" | "error";
 
