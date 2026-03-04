@@ -44,7 +44,7 @@ then
   fail "entrypoint unexpectedly succeeded with invalid RUN_MODE"
 fi
 
-grep -Fqx "Invalid RUN_MODE: invalid. Expected: once|loop" "$tmp_stderr" \
+grep -Fqx "Invalid RUN_MODE: invalid. Expected: once|loop|task" "$tmp_stderr" \
   || fail "expected invalid RUN_MODE error"
 
 [ -f "$tmp_home/.claude/.credentials.json" ] || fail "missing credentials file"

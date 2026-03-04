@@ -216,9 +216,17 @@ spawn_worker() {
   local token_file="$6"
   local extra_prompt="$7"
   local session_key="$8"
+  local trigger_type="$9"
+  local task_id="${10:-}"
+  local task_prompt="${11:-}"
 
   local container_name="${worker_name_prefix}-${job_id}"
   local prompt_file="${AGENT_PROMPT_FILE:-}"
+  local worker_run_mode="once"
+
+  if [ "$trigger_type" = "task" ]; then
+    worker_run_mode="task"
+  fi
 
   docker_run_args=(
     run
@@ -254,7 +262,7 @@ spawn_worker() {
   fi
 
   docker_run_args+=(
-    -e RUN_MODE=once
+    -e "RUN_MODE=${worker_run_mode}"
     -e TARGET_REPO="${repo}"
     -e WORKSPACE_ROOT=/workspace
     -e JOB_ID="${job_id}"
@@ -270,6 +278,13 @@ spawn_worker() {
   fi
   if [ -n "$session_key" ]; then
     docker_run_args+=( -e "AGENT_SESSION_KEY=${session_key}" )
+  fi
+  if [ "$worker_run_mode" = "task" ]; then
+    docker_run_args+=( -e "AGENT_TASK_ID=${task_id}" )
+    docker_run_args+=( -e "AGENT_TASK_PROMPT=${task_prompt}" )
+    if [ -n "$task_execute_base_url" ]; then
+      docker_run_args+=( -e "AGENT_TASK_EXECUTE_BASE_URL=${task_execute_base_url}" )
+    fi
   fi
 
   append_env_if_set AGENT_PROVIDER
@@ -291,7 +306,7 @@ spawn_worker() {
   append_env_if_set HEALTH_REPORT_TIMEOUT_SECS
   append_env_if_set HEALTH_REPORT_MAX_RETRIES
 
-  append_secret_env HEALTH_REPORT_TOKEN
+  append_secret_env HIVEMOOT_AGENT_TOKEN
   append_secret_env OPENAI_API_KEY
   append_secret_env GOOGLE_API_KEY
   append_secret_env GEMINI_API_KEY
@@ -1011,6 +1026,8 @@ run_job() {
   local trigger_type="$4"
   local extra_prompt="$5"
   local session_key="$6"
+  local task_id="${7:-}"
+  local task_prompt="${8:-}"
 
   local token_file="${agent_token_files[$agent_id]}"
   local lock_key="${repo}:${agent_id}"
@@ -1055,7 +1072,7 @@ run_job() {
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
-  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key")"; then
+  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key" "$trigger_type" "$task_id" "$task_prompt")"; then
     cleanup_job_home_credentials "$job_home"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     return 125
@@ -1121,6 +1138,8 @@ launch_job() {
   local state_file="${7:-}"
   local session_key="${8:-}"
   local processing_file="${9:-}"
+  local task_id="${10:-}"
+  local task_prompt="${11:-}"
 
   ensure_agent_lock_file "$repo" "$agent_id"
 
@@ -1129,7 +1148,7 @@ launch_job() {
   fi
 
   (
-    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key"
+    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key" "$task_id" "$task_prompt"
   ) &
 
   local pid=$!
@@ -1163,8 +1182,210 @@ queue_periodic_cycle() {
   done
 }
 
+pick_next_task_agent() {
+  local agent_id=""
+
+  agent_id="${task_agent_ids[$next_task_agent_index]}"
+  next_task_agent_index=$((next_task_agent_index + 1))
+  if [ "$next_task_agent_index" -ge "$task_agent_count" ]; then
+    next_task_agent_index=0
+  fi
+
+  printf '%s\n' "$agent_id"
+}
+
+load_task_dispatch_agent_scope() {
+  local raw_ids="$1"
+  local entry=""
+  local trimmed_entry=""
+  local -a parsed_entries=()
+  local -A seen_dispatch_agents=()
+
+  if [ -z "$raw_ids" ]; then
+    echo "TASK_DISPATCH_AGENT_IDS is required when WATCH_TASKS=1." >&2
+    exit 1
+  fi
+
+  IFS=',' read -r -a parsed_entries <<< "$raw_ids"
+  for entry in "${parsed_entries[@]}"; do
+    trimmed_entry="$(trim "$entry")"
+    if [ -z "$trimmed_entry" ]; then
+      echo "TASK_DISPATCH_AGENT_IDS contains an empty entry." >&2
+      exit 1
+    fi
+
+    validate_agent_id "$trimmed_entry"
+    if [ -z "${agent_token_files[$trimmed_entry]:-}" ]; then
+      echo "TASK_DISPATCH_AGENT_IDS includes unknown agent id: ${trimmed_entry}" >&2
+      exit 1
+    fi
+    if [ -n "${seen_dispatch_agents[$trimmed_entry]:-}" ]; then
+      echo "TASK_DISPATCH_AGENT_IDS contains duplicate agent id: ${trimmed_entry}" >&2
+      exit 1
+    fi
+
+    seen_dispatch_agents["$trimmed_entry"]=1
+    task_agent_ids+=("$trimmed_entry")
+  done
+
+  if [ "${#task_agent_ids[@]}" -eq 0 ]; then
+    echo "TASK_DISPATCH_AGENT_IDS must include at least one agent id." >&2
+    exit 1
+  fi
+
+  task_agent_count="${#task_agent_ids[@]}"
+}
+
+claim_next_task() {
+  local response_file=""
+  local status=""
+  local repos_count=""
+
+  claimed_task_id=""
+  claimed_task_prompt=""
+  claimed_task_repo=""
+
+  response_file="$(mktemp)"
+  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${task_executor_token}" \
+    -H 'Content-Type: application/json' \
+    "$task_claim_url")"
+
+  if [ "$status" = "204" ]; then
+    rm -f "$response_file"
+    return 1
+  fi
+
+  if [ "$status" != "200" ]; then
+    log "Task claim failed with status ${status}"
+    sed 's/^/[task-claim] /' "$response_file" >&2 || true
+    rm -f "$response_file"
+    return 2
+  fi
+
+  claimed_task_id="$(jq -r '.task.task_id // empty' < "$response_file")"
+  claimed_task_prompt="$(jq -r '.task.prompt // empty' < "$response_file")"
+  repos_count="$(jq -r '(.task.repos | length) // 0' < "$response_file")"
+  if [ "$repos_count" -ne 1 ]; then
+    log "Claimed task must contain exactly one repo, got ${repos_count}"
+    rm -f "$response_file"
+    return 2
+  fi
+  claimed_task_repo="$(jq -r '.task.repos[0] // empty' < "$response_file")"
+
+  rm -f "$response_file"
+
+  if [ -z "$claimed_task_id" ] || [ -z "$claimed_task_prompt" ] || [ -z "$claimed_task_repo" ]; then
+    log "Claimed task missing required fields (task_id/prompt/repo)"
+    return 2
+  fi
+  if ! repo_name_is_valid "$claimed_task_repo"; then
+    log "Claimed task repo has invalid format: ${claimed_task_repo}"
+    return 2
+  fi
+
+  return 0
+}
+
+queue_claimed_task_job() {
+  local agent_id=""
+  local job_id=""
+
+  if [ -z "$claimed_task_id" ] || [ -z "$claimed_task_prompt" ] || [ -z "$claimed_task_repo" ]; then
+    return 1
+  fi
+
+  agent_id="$(pick_next_task_agent)"
+  job_id="$(generate_job_id)"
+
+  if launch_job "$job_id" "$claimed_task_repo" "$agent_id" "task" "$global_extra_prompt" "" "" "" "" "$claimed_task_id" "$claimed_task_prompt"; then
+    log "Queued claimed task: task_id=${claimed_task_id} repo=${claimed_task_repo} agent=${agent_id} job=${job_id}"
+    return 0
+  fi
+
+  log "Failed to queue claimed task: task_id=${claimed_task_id} repo=${claimed_task_repo}"
+  return 1
+}
+
+queue_claimed_tasks_once() {
+  local claim_status=0
+
+  while [ "${#running_pids[@]}" -lt "$controller_max_workers" ]; do
+    claim_status=0
+    claim_next_task || claim_status=$?
+    if [ "$claim_status" -eq 0 ]; then
+      if ! queue_claimed_task_job; then
+        if [ "$shutdown_requested" -eq 0 ]; then
+          failed_jobs=$((failed_jobs + 1))
+        fi
+        return 1
+      fi
+      continue
+    fi
+
+    if [ "$claim_status" -eq 1 ]; then
+      log "No pending task available"
+      return 0
+    fi
+
+    failed_jobs=$((failed_jobs + 1))
+    return 1
+  done
+
+  return 0
+}
+
+run_task_watch_loop() {
+  local claim_status=0
+  local queued_any=0
+
+  log "Task watching enabled (poll interval: ${task_poll_interval_secs}s)"
+
+  while [ "$shutdown_requested" -eq 0 ]; do
+    reap_finished_jobs
+    queued_any=0
+
+    while [ "$shutdown_requested" -eq 0 ] && [ "${#running_pids[@]}" -lt "$controller_max_workers" ]; do
+      claim_status=0
+      claim_next_task || claim_status=$?
+      if [ "$claim_status" -eq 0 ]; then
+        if queue_claimed_task_job; then
+          queued_any=1
+          continue
+        fi
+
+        if [ "$shutdown_requested" -eq 0 ]; then
+          failed_jobs=$((failed_jobs + 1))
+        fi
+        break
+      fi
+
+      if [ "$claim_status" -eq 1 ]; then
+        break
+      fi
+      sleep "$task_poll_interval_secs" &
+      wait $! || true
+      continue
+    done
+
+    if [ "$shutdown_requested" -ne 0 ]; then
+      break
+    fi
+
+    if [ "$queued_any" -eq 0 ]; then
+      sleep "$task_poll_interval_secs" &
+      wait $! || true
+    fi
+  done
+}
+
 run_once_mode() {
   run_queue_maintenance 1
+  if [ "$watch_tasks" = "1" ]; then
+    queue_claimed_tasks_once
+    return 0
+  fi
   queue_periodic_cycle
 
   if [ "$watch_mentions" = "1" ]; then
@@ -1211,6 +1432,11 @@ run_loop_mode() {
   local offset=""
 
   run_queue_maintenance 1
+
+  if [ "$watch_tasks" = "1" ]; then
+    run_task_watch_loop
+    return 0
+  fi
 
   if [ "$watch_mentions" = "1" ]; then
     start_mention_watchers
@@ -1285,7 +1511,10 @@ controller_max_workers="${CONTROLLER_MAX_WORKERS:-1}"
 periodic_interval="${PERIODIC_INTERVAL_SECS:-3600}"
 periodic_jitter="${PERIODIC_JITTER_SECS:-300}"
 watch_mentions="${WATCH_MENTIONS:-0}"
+watch_tasks="${WATCH_TASKS:-0}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
+task_poll_interval_secs=10
+task_dispatch_agent_ids="${TASK_DISPATCH_AGENT_IDS:-}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
 queue_maintenance_interval_secs="${QUEUE_MAINTENANCE_INTERVAL_SECS:-60}"
@@ -1303,17 +1532,26 @@ token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-file
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
 target_repo="${TARGET_REPO:-}"
+task_claim_url="${AGENT_TASK_CLAIM_URL:-}"
+task_execute_base_url="${AGENT_TASK_EXECUTE_BASE_URL:-}"
+task_executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
 max_agents=10
 controller_instance_id="$(date +%s)-$$"
 shutdown_requested=0
 completed_jobs=0
 failed_jobs=0
 last_queue_maintenance_epoch=0
+next_task_agent_index=0
+task_agent_count=0
+claimed_task_id=""
+claimed_task_prompt=""
+claimed_task_repo=""
 
 declare -a temp_token_files=()
 declare -a running_pids=()
 declare -a watcher_pids=()
 declare -a scheduler_pids=()
+declare -a task_agent_ids=()
 declare -A pid_to_job_id=()
 declare -A pid_to_repo=()
 declare -A pid_to_agent=()
@@ -1339,6 +1577,18 @@ case "$watch_mentions" in
     exit 1
     ;;
 esac
+case "$watch_tasks" in
+  0|1) ;;
+  *)
+    echo "WATCH_TASKS must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
+
+if [ "$watch_mentions" = "1" ] && [ "$watch_tasks" = "1" ]; then
+  echo "WATCH_MENTIONS and WATCH_TASKS cannot both be enabled." >&2
+  exit 1
+fi
 
 require_positive_integer CONTROLLER_MAX_WORKERS "$controller_max_workers"
 require_positive_integer AGENT_TIMEOUT_SECONDS "$agent_timeout_seconds"
@@ -1360,7 +1610,25 @@ case "$workspace_root" in
     ;;
 esac
 
-validate_target_repo "$target_repo"
+if [ "$watch_tasks" = "0" ]; then
+  validate_target_repo "$target_repo"
+fi
+
+if [ "$watch_tasks" = "1" ]; then
+  load_secret_from_file HIVEMOOT_AGENT_TOKEN
+  task_executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
+  if [ -z "$task_executor_token" ]; then
+    echo "HIVEMOOT_AGENT_TOKEN or HIVEMOOT_AGENT_TOKEN_FILE is required when WATCH_TASKS=1." >&2
+    exit 1
+  fi
+  if [ -z "$task_claim_url" ]; then
+    echo "AGENT_TASK_CLAIM_URL is required when WATCH_TASKS=1." >&2
+    exit 1
+  fi
+  if [ -z "$task_execute_base_url" ]; then
+    task_execute_base_url="${task_claim_url%/claim}"
+  fi
+fi
 
 if ! command -v "$docker_cmd" >/dev/null 2>&1; then
   echo "Missing required command: ${docker_cmd}" >&2
@@ -1369,6 +1637,16 @@ fi
 if ! command -v flock >/dev/null 2>&1; then
   echo "Missing required command: flock" >&2
   exit 1
+fi
+if [ "$watch_tasks" = "1" ]; then
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "Missing required command when WATCH_TASKS=1: curl" >&2
+    exit 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Missing required command when WATCH_TASKS=1: jq" >&2
+    exit 1
+  fi
 fi
 if [ "$watch_mentions" = "1" ]; then
   if ! command -v hivemoot >/dev/null 2>&1; then
@@ -1402,8 +1680,14 @@ for index in "${!agent_ids[@]}"; do
   fi
   temp_token_files+=("$token_file")
   agent_token_files["$aid"]="$token_file"
-  ensure_agent_lock_file "$target_repo" "$aid"
+  if [ -n "$target_repo" ]; then
+    ensure_agent_lock_file "$target_repo" "$aid"
+  fi
 done
+
+if [ "$watch_tasks" = "1" ]; then
+  load_task_dispatch_agent_scope "$task_dispatch_agent_ids"
+fi
 
 for slot in $(seq 1 "$max_agents"); do
   suffix="$(printf '%02d' "$slot")"
@@ -1419,7 +1703,10 @@ log "Controller starting: mode=${controller_mode} repo=${target_repo} agents=${a
 log "Worker image: ${worker_image}"
 log "Workspace root: ${workspace_root}"
 log "This controller runs on the host. Do not mount docker.sock into a container for controller execution."
-if [ "$watch_mentions" = "1" ]; then
+if [ "$watch_tasks" = "1" ]; then
+  log "Task watching enabled (claim URL: ${task_claim_url}, poll interval: ${task_poll_interval_secs}s)"
+  log "Task dispatch scope: ${task_dispatch_agent_ids}"
+elif [ "$watch_mentions" = "1" ]; then
   log "Mention watching enabled (poll interval: ${watch_poll_interval}s)"
 else
   log "Mention watching disabled (set WATCH_MENTIONS=1 to enable)"

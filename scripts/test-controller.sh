@@ -241,6 +241,84 @@ EOF_MOCK
   chmod +x "${mock_bin}/hivemoot"
 }
 
+setup_mock_curl() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/curl" <<'EOF_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${MOCK_CURL_STATE_DIR:?MOCK_CURL_STATE_DIR is required}"
+mkdir -p "$state_dir"
+
+output_file=""
+write_format=""
+auth_header=""
+url=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      output_file="${2:-}"
+      shift 2
+      ;;
+    -w)
+      write_format="${2:-}"
+      shift 2
+      ;;
+    -H)
+      if [ "${2:-}" != "" ] && [[ "${2:-}" == Authorization:* ]]; then
+        auth_header="${2:-}"
+      fi
+      shift 2
+      ;;
+    -X|-d)
+      shift 2
+      ;;
+    -s|-S|-sS)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+
+printf 'URL=%s AUTH=%s\n' "$url" "$auth_header" >> "${state_dir}/curl.log"
+
+status="200"
+body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+
+case "${MOCK_TASK_CLAIM_MODE:-task}" in
+  empty)
+    status="204"
+    body=""
+    ;;
+  error)
+    status="${MOCK_TASK_CLAIM_ERROR_STATUS:-500}"
+    body='{"error":"claim failed"}'
+    ;;
+  task)
+    body="${MOCK_TASK_CLAIM_BODY:-$body}"
+    ;;
+esac
+
+if [ -n "$output_file" ]; then
+  printf '%s' "$body" > "$output_file"
+fi
+
+if [ -n "$write_format" ]; then
+  printf '%s' "$status"
+else
+  printf '%s' "$body"
+fi
+EOF_MOCK
+
+  chmod +x "${mock_bin}/curl"
+}
+
 run_success_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -699,6 +777,189 @@ run_mentions_retry_after_failure_case() {
   echo "PASS: failed mention jobs are retried on re-emitted events"
 }
 
+run_task_watch_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+  local curl_log=""
+  local -a status_files=()
+  local -a summary_files=()
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in task-watch case"
+  assert_file_contains "$run_log" "-e RUN_MODE=task"
+  assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
+  assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
+  assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
+  assert_file_contains "$run_log" "-e AGENT_TASK_EXECUTE_BASE_URL=https://api.example.com/api/tasks"
+  assert_file_not_contains "$run_log" "-e RUN_MODE=once"
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
+
+  shopt -s nullglob
+  status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
+  summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
+  shopt -u nullglob
+  assert_eq "1" "${#status_files[@]}" "expected one status file for task-watch case"
+  assert_eq "1" "${#summary_files[@]}" "expected one summary file for task-watch case"
+  assert_eq "completed" "$(cat "${status_files[0]}")" "expected completed task-watch status"
+  assert_file_contains "${summary_files[0]}" "trigger=task"
+
+  echo "PASS: task-watch mode claims and runs delegated tasks"
+}
+
+run_task_watch_no_task_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    MOCK_TASK_CLAIM_MODE="empty" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "task-watch no-task case should not launch worker containers"
+  fi
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch no-task case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+
+  echo "PASS: task-watch mode exits cleanly when no task is available"
+}
+
+run_task_watch_invalid_repo_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  if env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    MOCK_TASK_CLAIM_BODY='{"task":{"task_id":"task-claim-evil","prompt":"Inspect queue behavior","repos":["../evil"]}}' \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"${case_dir}/controller.log" 2>&1
+  then
+    fail "task-watch invalid-claim-repo case unexpectedly succeeded"
+  fi
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "task-watch invalid-claim-repo case should not launch worker containers"
+  fi
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch invalid-claim-repo case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "${case_dir}/controller.log" "Claimed task repo has invalid format: ../evil"
+
+  echo "PASS: task-watch mode rejects invalid claimed repos"
+}
+
+run_task_watch_scope_validation_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  if env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "task-watch scope validation case unexpectedly succeeded"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "TASK_DISPATCH_AGENT_IDS is required when WATCH_TASKS=1."
+  echo "PASS: task-watch mode requires explicit dispatch scope"
+}
+
 run_shutdown_signal_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -780,5 +1041,9 @@ run_mentions_case "$repo_root" "${tmpdir}/mentions"
 run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
+run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
+run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
+run_task_watch_scope_validation_case "$repo_root" "${tmpdir}/task-watch-scope-validation"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 echo "PASS: controller script checks"

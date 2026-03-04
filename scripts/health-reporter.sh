@@ -148,11 +148,11 @@ _validate_health_payload() {
 }
 
 # Send health report with retry logic for 5xx/network errors.
-# Args: url, payload, token_file
+# Args: url, payload, token (raw token or token file path)
 _send_health_report() {
   local url="$1"
   local payload="$2"
-  local token_file="$3"
+  local token_input="${3:-}"
   local max_retries="${HEALTH_REPORT_MAX_RETRIES}"
   local timeout="${HEALTH_REPORT_TIMEOUT_SECS}"
   local attempt=0
@@ -169,11 +169,17 @@ _send_health_report() {
     # process argv and does not need to be staged in a temporary file.
     local use_auth_header_stdin=0
     local token_value=""
-    if [ -n "$token_file" ] && [ -f "$token_file" ]; then
-      if ! token_value="$(tr -d '\r\n' < "$token_file")"; then
-        echo "health-report: failed to read token file: ${token_file}" >&2
-        return 1
+    if [ -n "$token_input" ]; then
+      if [ -f "$token_input" ]; then
+        if ! token_value="$(tr -d '\r\n' < "$token_input")"; then
+          echo "health-report: failed to read token file: ${token_input}" >&2
+          return 1
+        fi
+      else
+        token_value="$token_input"
       fi
+    fi
+    if [ -n "$token_value" ]; then
       use_auth_header_stdin=1
     fi
 
@@ -265,7 +271,7 @@ _sleep_with_jitter() {
 # Args:
 #   agent_id             — agent identifier (e.g. "forager")
 #   repo                 — current repo in owner/repo format
-#   token_file           — path to bearer token file (may be empty)
+#   token                — bearer token (may be empty)
 #   run_id               — unique run identifier for idempotency
 #   outcome              — "success" | "failure" | "timeout"
 #   duration_secs        — run duration in seconds
@@ -276,7 +282,7 @@ _sleep_with_jitter() {
 report_health_to_backend() {
   local agent_id="$1"
   local repo="$2"
-  local token_file="${3:-}"
+  local token="${3:-}"
   local run_id="$4"
   local outcome="$5"
   local duration_secs="$6"
@@ -316,5 +322,5 @@ report_health_to_backend() {
     return 1
   fi
 
-  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file"
+  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token"
 }

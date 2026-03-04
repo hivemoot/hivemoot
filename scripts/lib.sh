@@ -141,6 +141,24 @@ load_provider_secrets() {
   done
 }
 
+repo_name_is_valid() {
+  local repo_name="$1"
+  local repo_segment=""
+
+  if ! printf '%s' "$repo_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$'; then
+    return 1
+  fi
+
+  repo_segment="${repo_name#*/}"
+  case "$repo_segment" in
+    .|..)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 validate_target_repo() {
   local target_repo="$1"
 
@@ -149,7 +167,7 @@ validate_target_repo() {
     exit 1
   fi
 
-  if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+  if ! repo_name_is_valid "$target_repo"; then
     echo "Invalid TARGET_REPO: ${target_repo}. Expected owner/repo." >&2
     exit 1
   fi

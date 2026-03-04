@@ -98,6 +98,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "${SCRIPT_DIR}/lib.sh"
 
 load_secret_from_file AGENT_GITHUB_TOKEN
+load_secret_from_file HIVEMOOT_AGENT_TOKEN
 load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
@@ -1118,7 +1119,7 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
   fi
 
   report_health_to_backend \
-    "$agent_name" "$target_repo" "${HEALTH_REPORT_TOKEN_FILE:-${AGENT_GITHUB_TOKEN_FILE:-}}" \
+    "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
     "$exit_code" "${_run_error:-}" "$_next_run_at" || true
 fi
