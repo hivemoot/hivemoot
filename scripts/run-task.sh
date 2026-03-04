@@ -186,27 +186,32 @@ validate_target_repo "$task_repo"
 export SESSION_RESUME=0
 unset AGENT_SESSION_KEY || true
 
+# Task mode uses the task prompt (AGENT_EXTRA_PROMPT) as its full instruction
+# set — role resolution via `hivemoot role <name>` is not needed and would fail
+# for dispatch-only agents like "attendant" that have no entry in the repo's
+# hivemoot.yml.  Clear the role so run-once.sh skips role resolution.
+unset HIVEMOOT_BUZZ_ROLE || true
+
 # Preserve system guardrails from AGENT_PROMPT_FILE/default and inject task
 # details as user instructions through AGENT_EXTRA_PROMPT.
 base_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
-task_prompt_block="$(cat <<TASK_PROMPT
-# Queen Task
-
-You are executing a delegated Queen task for a human user.
-
-## Task ID
-${task_id}
-
-## Task
-${task_prompt}
-
-## Instructions
-- Focus only on this task.
-- Be precise and concise.
-- Write your final answer in markdown.
-- If blocked, clearly explain what prevented completion.
-TASK_PROMPT
-)"
+task_prompt_template_default="/opt/hivemoot-agent/prompts/task.md"
+task_prompt_template="${AGENT_TASK_PROMPT_FILE:-$task_prompt_template_default}"
+if [ ! -f "$task_prompt_template" ]; then
+  # Source-tree runs (tests/local debugging) do not have /opt paths mounted.
+  source_tree_prompt_template="${SCRIPT_DIR}/../prompts/task.md"
+  if [ -f "$source_tree_prompt_template" ]; then
+    task_prompt_template="$source_tree_prompt_template"
+  else
+    echo "Task prompt template not found: ${task_prompt_template} (fallback checked: ${source_tree_prompt_template})" >&2
+    exit 1
+  fi
+fi
+# Substitute placeholders using safe bash parameter expansion — no eval,
+# no external tools, and arbitrary content in task_prompt is handled safely.
+task_prompt_block="$(cat "$task_prompt_template")"
+task_prompt_block="${task_prompt_block//\$\{task_id\}/$task_id}"
+task_prompt_block="${task_prompt_block//\$\{task_prompt\}/$task_prompt}"
 
 if [ -n "$base_extra_prompt" ]; then
   export AGENT_EXTRA_PROMPT="${base_extra_prompt}
