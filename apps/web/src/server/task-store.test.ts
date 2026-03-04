@@ -1262,6 +1262,31 @@ describe("retryTask", () => {
     expect(original?.error).toBe("boom");
   });
 
+  it("rejects retry of a completed task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Completed",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "done", redis);
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
   it("returns not_found for a nonexistent task", async () => {
     const result = await retryTask("inst-1", "aabbccddeeff001122334455", redis);
     expect(result).toEqual({ ok: false, reason: "not_found" });

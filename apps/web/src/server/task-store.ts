@@ -909,25 +909,27 @@ export async function deleteTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskDeleteResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskInstallationLock(installationId, redis, async () => {
+    const stored = await loadStoredTask(installationId, taskId, redis);
+    if (!stored) return { ok: false, reason: "not_found" };
 
-  if (!DELETABLE_STATUSES.has(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
-  }
+    if (!DELETABLE_STATUSES.has(stored.status)) {
+      return { ok: false, reason: "invalid_transition" };
+    }
 
-  await redis
-    .multi()
-    .del(taskKey(installationId, taskId))
-    .del(taskResultKey(installationId, taskId))
-    .del(taskProgressKey(installationId, taskId))
-    .del(taskMessagesKey(installationId, taskId))
-    .zrem(pendingKey(installationId), taskId)
-    .zrem(runningKey(installationId), taskId)
-    .zrem(recentKey(installationId), taskId)
-    .exec();
+    await redis
+      .multi()
+      .del(taskKey(installationId, taskId))
+      .del(taskResultKey(installationId, taskId))
+      .del(taskProgressKey(installationId, taskId))
+      .del(taskMessagesKey(installationId, taskId))
+      .zrem(pendingKey(installationId), taskId)
+      .zrem(runningKey(installationId), taskId)
+      .zrem(recentKey(installationId), taskId)
+      .exec();
 
-  return { ok: true };
+    return { ok: true };
+  });
 }
 
 const RETRYABLE_STATUSES = new Set<TaskStatus>(["failed", "timed_out"]);

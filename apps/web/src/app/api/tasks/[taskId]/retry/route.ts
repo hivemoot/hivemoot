@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
-import { retryTask, TASK_ID_PATTERN } from "@/server/task-store";
+import { checkTaskCreateRateLimit, retryTask, TASK_ID_PATTERN } from "@/server/task-store";
 
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
@@ -16,6 +16,21 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const rateLimit = await checkTaskCreateRateLimit(
+      auth.session.installationId,
+      auth.session.userId,
+      auth.redis,
+    );
+
+    if (!rateLimit.allowed) {
+      return taskError(
+        TASK_ERROR.RATE_LIMITED,
+        "Too many task create requests. Please retry shortly.",
+        429,
+        { retry_after_secs: rateLimit.retryAfterSeconds },
+      );
+    }
+
     const result = await retryTask(auth.session.installationId, taskId, auth.redis);
 
     if (!result.ok) {
