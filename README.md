@@ -224,18 +224,21 @@ Task mode is intentionally a thin wrapper over `run-once.sh`:
 - same prompt guardrails from `AGENT_PROMPT_FILE` / default prompt
 - same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
 - same repo clone/logging behavior
+- plus optional liveness heartbeats to keep backend task timeout aligned with active work
 
 Task mode supports two task sources:
 - **Claim flow** (recommended): set `AGENT_TASK_CLAIM_URL` and executor token
   (`HIVEMOOT_AGENT_TOKEN` or `HIVEMOOT_AGENT_TOKEN_FILE`)
 - **Direct env injection**: set `AGENT_TASK_ID`, `AGENT_TASK_PROMPT`, and
-  `TARGET_REPO` to skip claim
+  `TARGET_REPO` to skip claim (plus `AGENT_TASK_CLAIM_TOKEN` when execute updates are enabled)
 
 Task and health auth share one runtime token variable (`HIVEMOOT_AGENT_TOKEN`),
 with optional file-based input via `HIVEMOOT_AGENT_TOKEN_FILE`.
 
 For backend updates:
 - `AGENT_TASK_EXECUTE_BASE_URL` posts to `${base}/${taskId}/execute`
+- `AGENT_TASK_CLAIM_TOKEN` is sent as `X-Task-Claim-Token` on execute updates
+- `AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS` sends `{"action":"heartbeat"}` at that cadence while task execution is running (`0` disables; default `45`)
 
 Task mode writes a local markdown artifact at
 `${WORKSPACE_ROOT}/task-output/<task_id>/result.md`.

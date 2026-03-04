@@ -74,6 +74,9 @@ mock provider output line 1
 mock provider output line 2
 LOG
 fi
+if [ "${MOCK_RUN_ONCE_SLEEP_SECS:-0}" -gt 0 ]; then
+  sleep "${MOCK_RUN_ONCE_SLEEP_SECS}"
+fi
 exit "${MOCK_RUN_ONCE_EXIT_CODE:-0}"
 RUN_ONCE
 chmod +x "$mock_run_once"
@@ -96,6 +99,7 @@ output_file=""
 write_format=""
 data_payload=""
 url=""
+headers=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -112,6 +116,13 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -X|-H)
+      if [ "$1" = "-H" ]; then
+        if [ -n "$headers" ]; then
+          headers="${headers}|$2"
+        else
+          headers="$2"
+        fi
+      fi
       shift 2
       ;;
     -s|-S)
@@ -124,11 +135,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-printf 'URL=%s DATA=%s\n' "$url" "$data_payload" >> "${MOCK_CURL_CALLS:?}"
+printf 'URL=%s DATA=%s HEADERS=%s\n' "$url" "$data_payload" "$headers" >> "${MOCK_CURL_CALLS:?}"
 
 status="200"
 body='{}'
-default_claim_body='{"task":{"task_id":"claim-task-1","prompt":"Analyze the repo","repos":["owner/repo"]}}'
+default_claim_body='{"task":{"task_id":"claim-task-1","prompt":"Analyze the repo","repos":["owner/repo"]},"claim_token":"claim-token-default"}'
 
 case "$url" in
   */claim)
@@ -178,6 +189,7 @@ run_case_direct_env() {
     LOG_DIR="${case_dir}/logs" \
     HIVEMOOT_AGENT_TOKEN="task-token" \
     AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-direct" \
     AGENT_TASK_ID="task-abc" \
     AGENT_TASK_PROMPT="Find auth regressions" \
     TARGET_REPO="owner/repo" \
@@ -190,6 +202,7 @@ run_case_direct_env() {
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=0"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "Find auth regressions"
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-abc/execute"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-direct"
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "progress"'
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
 }
@@ -203,7 +216,7 @@ run_case_claim_mode() {
   export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
   export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
   export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-42","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-42","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-42"}'
   : > "$MOCK_CURL_CALLS"
   : > "$MOCK_RUN_ONCE_CALLS"
 
@@ -220,6 +233,7 @@ run_case_claim_mode() {
   assert_file_contains "$result_path" "Execution finished successfully."
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claim"
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claimed-42/execute"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-42"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/claimed"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_TIMEOUT_SECONDS=333"
 }
@@ -265,7 +279,7 @@ run_case_claim_repo_mismatch() {
   export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
   export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
   export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-99","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-99","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-99"}'
   : > "$MOCK_CURL_CALLS"
   : > "$MOCK_RUN_ONCE_CALLS"
 
@@ -284,6 +298,35 @@ run_case_claim_repo_mismatch() {
   assert_file_contains "${case_dir}/stderr.log" "Claimed task repo owner/claimed does not match TARGET_REPO owner/expected."
   if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
     fail "run-once should not execute on claim repo mismatch"
+  fi
+}
+
+run_case_claim_missing_token() {
+  local case_dir="${tmp_root}/case-claim-missing-token"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_CLAIM_MODE="task"
+  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-no-token","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when claim response omits claim_token"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "Claimed task response missing claim_token."
+  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
+    fail "run-once should not execute when claim token is missing"
   fi
 }
 
@@ -413,6 +456,7 @@ run_case_shared_agent_token() {
     LOG_DIR="${case_dir}/logs" \
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-shared" \
     AGENT_TASK_ID="task-token-check" \
     AGENT_TASK_PROMPT="Check shared token fallback" \
     TARGET_REPO="owner/repo" \
@@ -420,6 +464,38 @@ run_case_shared_agent_token() {
 
   assert_file_contains "$result_path" "Execution finished successfully."
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-token-check/execute"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-shared"
+}
+
+run_case_emits_heartbeat_updates() {
+  local case_dir="${tmp_root}/case-heartbeat-updates"
+  local result_path="${case_dir}/workspace/task-output/task-heartbeat/result.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_SLEEP_SECS=2
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS=1 \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-heartbeat" \
+    AGENT_TASK_ID="task-heartbeat" \
+    AGENT_TASK_PROMPT="Emit task heartbeat while running" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "Execution finished successfully."
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-heartbeat"
+  assert_file_contains "$MOCK_CURL_CALLS" '"action":"heartbeat"'
+  unset MOCK_RUN_ONCE_SLEEP_SECS
 }
 
 run_case_requires_agent_token() {
@@ -441,6 +517,55 @@ run_case_requires_agent_token() {
   fi
 
   assert_file_contains "${case_dir}/stderr.log" "Missing task executor token."
+}
+
+run_case_rejects_invalid_heartbeat_interval() {
+  local case_dir="${tmp_root}/case-invalid-heartbeat-interval"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS="abc" \
+    AGENT_TASK_ID="task-invalid-heartbeat" \
+    AGENT_TASK_PROMPT="Check invalid heartbeat interval" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail for invalid AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS must be a non-negative integer."
+}
+
+run_case_rejects_missing_claim_token_when_execute_enabled() {
+  local case_dir="${tmp_root}/case-missing-claim-token"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN= \
+    AGENT_TASK_ID="task-missing-claim-token" \
+    AGENT_TASK_PROMPT="Claim token should be required" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when execute URL is set but claim token is missing"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "Task claim token is required when execute URL is configured."
 }
 
 run_case_default_log_dir_when_unset() {
@@ -493,6 +618,7 @@ LOG
     LOG_DIR="${case_dir}/logs" \
     HIVEMOOT_AGENT_TOKEN="task-token" \
     AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-a" \
     AGENT_TASK_ID="task-codex" \
     AGENT_TASK_PROMPT="Return markdown answer" \
     TARGET_REPO="owner/repo" \
@@ -501,6 +627,7 @@ LOG
 
   assert_file_starts_with "$result_path" "## Final Answer"
   assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-a"
   assert_file_not_contains "$MOCK_CURL_CALLS" "thread.started"
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
@@ -528,6 +655,7 @@ LOG
     LOG_DIR="${case_dir}/logs" \
     HIVEMOOT_AGENT_TOKEN="task-token" \
     AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-b" \
     AGENT_TASK_ID="task-codex-fallback" \
     AGENT_TASK_PROMPT="Return markdown answer" \
     TARGET_REPO="owner/repo" \
@@ -536,6 +664,7 @@ LOG
 
   assert_file_contains "$result_path" "could not be extracted from Codex logs"
   assert_file_contains "$MOCK_CURL_CALLS" "could be extracted from Codex JSON logs"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-b"
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
@@ -565,6 +694,7 @@ LOG
     LOG_DIR="${case_dir}/logs" \
     HIVEMOOT_AGENT_TOKEN="task-token" \
     AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-c" \
     AGENT_TASK_ID="task-codex-malformed" \
     AGENT_TASK_PROMPT="Return markdown answer" \
     TARGET_REPO="owner/repo" \
@@ -573,6 +703,7 @@ LOG
 
   assert_file_starts_with "$result_path" "## Final Answer"
   assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-c"
   assert_file_not_contains "$MOCK_CURL_CALLS" "not-json-line"
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
@@ -581,12 +712,16 @@ run_case_direct_env
 run_case_claim_mode
 run_case_slot_token_file_bridge
 run_case_claim_repo_mismatch
+run_case_claim_missing_token
 run_case_no_pending_task
 run_case_no_stale_log_tail_on_early_failure
 run_case_rejects_invalid_repo
 run_case_allows_dot_leading_repo_segment
 run_case_shared_agent_token
+run_case_emits_heartbeat_updates
 run_case_requires_agent_token
+run_case_rejects_invalid_heartbeat_interval
+run_case_rejects_missing_claim_token_when_execute_enabled
 run_case_default_log_dir_when_unset
 run_case_codex_result_extraction
 run_case_codex_result_extraction_fallback

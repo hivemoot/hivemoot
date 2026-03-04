@@ -41,10 +41,12 @@ log_dir="${LOG_DIR:-${workspace_root}/runs}"
 
 claim_url="${AGENT_TASK_CLAIM_URL:-}"
 execute_base_url="${AGENT_TASK_EXECUTE_BASE_URL:-}"
+heartbeat_interval_seconds="${AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS:-45}"
 
 task_id="${AGENT_TASK_ID:-}"
 task_prompt="${AGENT_TASK_PROMPT:-}"
 task_repo="${TARGET_REPO:-}"
+task_claim_token="${AGENT_TASK_CLAIM_TOKEN:-}"
 target_repo_preset="$task_repo"
 
 executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
@@ -53,6 +55,13 @@ if [ -z "$executor_token" ]; then
   echo "Missing task executor token. Set HIVEMOOT_AGENT_TOKEN or HIVEMOOT_AGENT_TOKEN_FILE." >&2
   exit 1
 fi
+
+case "$heartbeat_interval_seconds" in
+  ''|*[!0-9]*)
+    echo "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS must be a non-negative integer." >&2
+    exit 1
+    ;;
+esac
 
 request_task_claim() {
   local response_file=""
@@ -85,6 +94,7 @@ request_task_claim() {
 
   task_id="$(jq -r '.task.task_id // empty' < "$response_file")"
   task_prompt="$(jq -r '.task.prompt // empty' < "$response_file")"
+  task_claim_token="$(jq -r '.claim_token // empty' < "$response_file")"
 
   repos_count="$(jq -r '(.task.repos | length) // 0' < "$response_file")"
   if [ "$repos_count" -ne 1 ]; then
@@ -94,6 +104,11 @@ request_task_claim() {
   fi
 
   task_repo="$(jq -r '.task.repos[0] // empty' < "$response_file")"
+  if [ -z "$task_claim_token" ]; then
+    echo "Claimed task response missing claim_token." >&2
+    rm -f "$response_file"
+    exit 1
+  fi
   if [ -n "$target_repo_preset" ] && [ "$task_repo" != "$target_repo_preset" ]; then
     echo "Claimed task repo ${task_repo} does not match TARGET_REPO ${target_repo_preset}." >&2
     rm -f "$response_file"
@@ -123,6 +138,7 @@ post_task_update() {
   local payload=""
   local response_file=""
   local status=""
+  local -a curl_args=()
 
   if ! update_url="$(build_execute_url)"; then
     log "Task update skipped: execute URL is not configured"
@@ -142,6 +158,9 @@ post_task_update() {
     timeout)
       payload='{"action":"timeout"}'
       ;;
+    heartbeat)
+      payload='{"action":"heartbeat"}'
+      ;;
     *)
       echo "Unsupported task action: ${action}" >&2
       return 1
@@ -149,12 +168,19 @@ post_task_update() {
   esac
 
   response_file="$(mktemp)"
-  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
-    -X POST \
-    -H "Authorization: Bearer ${executor_token}" \
-    -H 'Content-Type: application/json' \
-    -d "$payload" \
-    "$update_url")"
+  curl_args=(
+    -sS
+    -o "$response_file"
+    -w '%{http_code}'
+    -X POST
+    -H "Authorization: Bearer ${executor_token}"
+    -H 'Content-Type: application/json'
+  )
+  if [ -n "$task_claim_token" ]; then
+    curl_args+=( -H "X-Task-Claim-Token: ${task_claim_token}" )
+  fi
+  curl_args+=( -d "$payload" "$update_url" )
+  status="$(curl "${curl_args[@]}")"
 
   if [ "$status" != "200" ]; then
     log "Task update failed: action=${action} status=${status}"
@@ -167,6 +193,39 @@ post_task_update() {
   return 0
 }
 
+heartbeat_pid=""
+stop_task_heartbeat_loop() {
+  if [ -z "$heartbeat_pid" ]; then
+    return 0
+  fi
+
+  if kill -0 "$heartbeat_pid" >/dev/null 2>&1; then
+    kill "$heartbeat_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$heartbeat_pid" 2>/dev/null || true
+  heartbeat_pid=""
+}
+
+start_task_heartbeat_loop() {
+  if [ "$heartbeat_interval_seconds" -le 0 ]; then
+    return 0
+  fi
+
+  if ! build_execute_url >/dev/null; then
+    return 0
+  fi
+
+  (
+    while true; do
+      sleep "$heartbeat_interval_seconds" || exit 0
+      post_task_update heartbeat "" || true
+    done
+  ) &
+  heartbeat_pid="$!"
+}
+
+trap stop_task_heartbeat_loop EXIT
+
 if [ -z "$task_id" ] || [ -z "$task_prompt" ] || [ -z "$task_repo" ]; then
   if [ -n "$claim_url" ]; then
     request_task_claim
@@ -175,6 +234,11 @@ fi
 
 if [ -z "$task_id" ] || [ -z "$task_prompt" ] || [ -z "$task_repo" ]; then
   echo "Task context is incomplete. Require AGENT_TASK_ID + AGENT_TASK_PROMPT + TARGET_REPO or AGENT_TASK_CLAIM_URL." >&2
+  exit 1
+fi
+
+if build_execute_url >/dev/null && [ -z "$task_claim_token" ]; then
+  echo "Task claim token is required when execute URL is configured. Set AGENT_TASK_CLAIM_TOKEN or use AGENT_TASK_CLAIM_URL claim flow." >&2
   exit 1
 fi
 
@@ -237,11 +301,13 @@ if [ -d "$log_dir" ]; then
 fi
 
 run_exit_code=0
+start_task_heartbeat_loop
 if "$run_once_script"; then
   run_exit_code=0
 else
   run_exit_code=$?
 fi
+stop_task_heartbeat_loop
 
 latest_log=""
 if [ -d "$log_dir" ]; then

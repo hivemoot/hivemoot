@@ -289,7 +289,7 @@ done
 printf 'URL=%s AUTH=%s\n' "$url" "$auth_header" >> "${state_dir}/curl.log"
 
 status="200"
-body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-1"}'
 
 case "${MOCK_TASK_CLAIM_MODE:-task}" in
   empty)
@@ -816,6 +816,7 @@ run_task_watch_case() {
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
+  assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_EXECUTE_BASE_URL=https://api.example.com/api/tasks"
   assert_file_not_contains "$run_log" "-e RUN_MODE=once"
 
@@ -945,7 +946,7 @@ run_task_watch_invalid_repo_case() {
     HOME="${case_dir}/home" \
     MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
     MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
-    MOCK_TASK_CLAIM_BODY='{"task":{"task_id":"task-claim-evil","prompt":"Inspect queue behavior","repos":["../evil"]}}' \
+    MOCK_TASK_CLAIM_BODY='{"task":{"task_id":"task-claim-evil","prompt":"Inspect queue behavior","repos":["../evil"]},"claim_token":"claim-token-evil"}' \
     CONTROLLER_RUN_MODE="once" \
     WATCH_TASKS="1" \
     TASK_DISPATCH_AGENT_IDS="worker" \
