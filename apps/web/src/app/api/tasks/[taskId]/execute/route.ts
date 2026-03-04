@@ -8,16 +8,18 @@ import {
   failTask,
   getTask,
   requestFollowUp,
+  heartbeatTask,
   setTaskProgress,
   TASK_ID_PATTERN,
   timeoutTask,
+  verifyTaskClaimToken,
   type TaskTransitionResult,
 } from "@/server/task-store";
 
 const MAX_PAYLOAD_BYTES = 128 * 1024;
 const textEncoder = new TextEncoder();
 
-type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "request_follow_up";
+type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "heartbeat" | "request_follow_up";
 
 function parseAction(value: unknown): ExecuteAction | null {
   if (
@@ -25,6 +27,7 @@ function parseAction(value: unknown): ExecuteAction | null {
     || value === "complete"
     || value === "fail"
     || value === "timeout"
+    || value === "heartbeat"
     || value === "request_follow_up"
   ) {
     return value;
@@ -105,7 +108,7 @@ export async function POST(request: NextRequest) {
   if (!action) {
     return taskError(
       TASK_ERROR.INVALID_ACTION,
-      "action must be one of: progress, complete, fail, timeout, request_follow_up",
+      "action must be one of: progress, complete, fail, timeout, heartbeat, request_follow_up",
       400,
     );
   }
@@ -114,6 +117,21 @@ export async function POST(request: NextRequest) {
   const existingTask = await getTask(auth.installationId, taskId, auth.redis);
   if (!existingTask) {
     return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
+  }
+
+  const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
+  if (!claimToken) {
+    return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
+  }
+
+  const validClaimToken = await verifyTaskClaimToken(
+    auth.installationId,
+    taskId,
+    claimToken,
+    auth.redis,
+  );
+  if (!validClaimToken) {
+    return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
   }
 
   const obj = body as Record<string, unknown>;
@@ -146,6 +164,11 @@ export async function POST(request: NextRequest) {
     case "timeout": {
       const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
       return toTransitionResponse(timedOut);
+    }
+
+    case "heartbeat": {
+      const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
+      return toTransitionResponse(heartbeat);
     }
 
     case "request_follow_up": {

@@ -31,7 +31,6 @@ beforeEach(() => {
   vi.mocked(getTask).mockResolvedValue({
     task_id: TASK_ID,
     status: "running",
-    engine: "codex",
     prompt: "Investigate",
     repos: ["hivemoot/hivemoot"],
     timeout_secs: 300,

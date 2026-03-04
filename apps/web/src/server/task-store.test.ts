@@ -7,11 +7,15 @@ import {
   completeTask,
   createTask,
   DEFAULT_TASK_TIMEOUT_SECONDS,
+  deleteTask,
   getTaskMessages,
   MAX_CONCURRENT_TASKS,
+  heartbeatTask,
   markTaskRunning,
   requestFollowUp,
   resumeTaskWithFollowUp,
+  retryTask,
+  verifyTaskClaimToken,
   setTaskProgress,
   failTask,
   getTask,
@@ -170,7 +174,6 @@ describe("validateCreateTaskRequest", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate auth failures",
       repos: ["hivemoot/hivemoot", "hivemoot/hivemoot-agent"],
-      engine: "codex",
       timeout_secs: 420,
     });
 
@@ -189,7 +192,6 @@ describe("validateCreateTaskRequest", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.request.engine).toBe("codex");
       expect(result.request.timeout_secs).toBe(DEFAULT_TASK_TIMEOUT_SECONDS);
     }
   });
@@ -232,8 +234,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Deep analysis",
+          prompt: "Deep analysis",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -273,8 +274,7 @@ describe("task lifecycle", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Task ${i}`,
+              prompt: `Task ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -287,8 +287,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Overflow",
+          prompt: "Overflow",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -305,8 +304,7 @@ describe("task lifecycle", () => {
           "inst-1",
           "queen",
           {
-            engine: "codex",
-            prompt: `parallel-${index}`,
+                  prompt: `parallel-${index}`,
             repos: ["hivemoot/hivemoot"],
             timeout_secs: 300,
           },
@@ -328,8 +326,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -350,8 +347,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task2",
+          prompt: "Task2",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -374,8 +370,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
@@ -396,10 +391,133 @@ describe("task lifecycle", () => {
     redis._kv.set(taskKey, {
       ...stored,
       started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
     });
 
     const timedOut = await getTask("inst-1", created.task.task_id, redis);
     expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("extends timeout window from latest heartbeat", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 1,
+      },
+      redis,
+    );
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const taskKey = `task:inst-1:${created.task.task_id}`;
+    const stored = redis._kv.get(taskKey) as {
+      started_at?: string;
+      updated_at: string;
+    };
+
+    redis._kv.set(taskKey, {
+      ...stored,
+      started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const heartbeat = await heartbeatTask("inst-1", created.task.task_id, redis);
+    expect(heartbeat.ok).toBe(true);
+
+    const stillRunning = await getTask("inst-1", created.task.task_id, redis);
+    expect(stillRunning?.status).toBe("running");
+
+    const refreshed = redis._kv.get(taskKey) as {
+      started_at?: string;
+      updated_at: string;
+    };
+    redis._kv.set(taskKey, {
+      ...refreshed,
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const timedOut = await getTask("inst-1", created.task.task_id, redis);
+    expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("prevents stale heartbeat writes from resurrecting a finalized task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const taskStorageKey = `task:inst-1:${created.task.task_id}`;
+    let heartbeatWriteBlocked = false;
+    let signalHeartbeatBlocked!: () => void;
+    let releaseHeartbeatWrite!: () => void;
+    const heartbeatBlocked = new Promise<void>((resolve) => {
+      signalHeartbeatBlocked = resolve;
+    });
+    const heartbeatWriteReleased = new Promise<void>((resolve) => {
+      releaseHeartbeatWrite = resolve;
+    });
+
+    const setSpy = vi.spyOn(redis, "set");
+    const baseSet = setSpy.getMockImplementation();
+    if (!baseSet) {
+      throw new Error("Expected mocked redis.set implementation");
+    }
+
+    setSpy.mockImplementation(async (...args) => {
+      const [key, value, opts] = args;
+      if (
+        !heartbeatWriteBlocked
+        && key === taskStorageKey
+        && (!opts || typeof opts !== "object" || !("nx" in opts) || opts.nx !== true)
+        && typeof value === "object"
+        && value !== null
+        && (value as { status?: string }).status === "running"
+      ) {
+        heartbeatWriteBlocked = true;
+        signalHeartbeatBlocked();
+        await heartbeatWriteReleased;
+      }
+
+      return baseSet(...args);
+    });
+
+    const heartbeatPromise = heartbeatTask("inst-1", created.task.task_id, redis);
+    await heartbeatBlocked;
+    const completePromise = completeTask("inst-1", created.task.task_id, "done", redis);
+
+    releaseHeartbeatWrite();
+
+    const [heartbeatResult, completeResult] = await Promise.all([
+      heartbeatPromise,
+      completePromise,
+    ]);
+
+    expect(completeResult.ok).toBe(true);
+    expect(
+      heartbeatResult.ok
+      || (!heartbeatResult.ok && heartbeatResult.reason === "invalid_transition"),
+    ).toBe(true);
+
+    const finalTask = await getTask("inst-1", created.task.task_id, redis);
+    expect(finalTask?.status).toBe("completed");
+    expect(redis._zsets.get("tasks:running:inst-1")?.has(created.task.task_id)).toBe(false);
   });
 
   it("lists recent tasks", async () => {
@@ -407,8 +525,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "A",
+          prompt: "A",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -418,8 +535,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "B",
+          prompt: "B",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -438,8 +554,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "first",
+          prompt: "first",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -449,8 +564,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "second",
+          prompt: "second",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -463,8 +577,18 @@ describe("task lifecycle", () => {
 
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
-    expect(claimed?.status).toBe("running");
-    expect(claimed?.task_id).toBe(first.task.task_id);
+    expect(claimed?.task.status).toBe("running");
+    expect(claimed?.task.task_id).toBe(first.task.task_id);
+    expect(claimed?.claim_token).toMatch(/^[a-f0-9]{64}$/);
+
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, "bad-token", redis),
+      ).resolves.toBe(false);
+    }
   });
 
   it("does not allow two parallel claimers to claim the same task", async () => {
@@ -472,8 +596,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "single",
+          prompt: "single",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -490,7 +613,7 @@ describe("task lifecycle", () => {
 
     const successfulClaims = [firstClaim, secondClaim].filter((task) => task !== null);
     expect(successfulClaims).toHaveLength(1);
-    expect(successfulClaims[0]?.task_id).toBe(created.task.task_id);
+    expect(successfulClaims[0]?.task.task_id).toBe(created.task.task_id);
   });
 
   it("returns null when there are no pending tasks to claim", async () => {
@@ -529,8 +652,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate auth flow",
+          prompt: "Investigate auth flow",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -577,8 +699,13 @@ describe("follow-up workflow", () => {
     // Executor claims task again.
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
-    expect(claimed?.task_id).toBe(task.task_id);
-    expect(claimed?.status).toBe("running");
+    expect(claimed?.task.task_id).toBe(task.task_id);
+    expect(claimed?.task.status).toBe("running");
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+    }
   });
 
   it("rejects follow-up request from non-running task", async () => {
@@ -586,8 +713,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -656,6 +782,11 @@ describe("follow-up workflow", () => {
     await resumeTaskWithFollowUp("inst-1", task.task_id, "Info provided", redis);
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+    }
     await completeTask("inst-1", task.task_id, "Done", redis);
 
     // Now try follow-up on completed task.
@@ -676,8 +807,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
@@ -711,8 +841,7 @@ describe("follow-up workflow", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Task ${i}`,
+              prompt: `Task ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -731,8 +860,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Extra task",
+          prompt: "Extra task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -754,8 +882,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Analyze the codebase",
+          prompt: "Analyze the codebase",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -775,8 +902,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Do work",
+          prompt: "Do work",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -800,8 +926,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -848,8 +973,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -871,8 +995,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -903,8 +1026,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -936,8 +1058,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -961,5 +1082,446 @@ describe("post-transition append failure resilience", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.task.status).toBe("completed");
+  });
+
+  it("invalidates claim token after follow-up and terminal transitions", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const firstClaim = await claimNextPendingTask("inst-1", redis);
+    expect(firstClaim).not.toBeNull();
+    if (!firstClaim) return;
+
+    await expect(
+      verifyTaskClaimToken("inst-1", firstClaim.task.task_id, firstClaim.claim_token, redis),
+    ).resolves.toBe(true);
+
+    await requestFollowUp("inst-1", firstClaim.task.task_id, "Need context", redis);
+    await expect(
+      verifyTaskClaimToken("inst-1", firstClaim.task.task_id, firstClaim.claim_token, redis),
+    ).resolves.toBe(false);
+
+    await resumeTaskWithFollowUp("inst-1", firstClaim.task.task_id, "Context provided", redis);
+    const secondClaim = await claimNextPendingTask("inst-1", redis);
+    expect(secondClaim).not.toBeNull();
+    if (!secondClaim) return;
+    expect(secondClaim.claim_token).not.toBe(firstClaim.claim_token);
+    await expect(
+      verifyTaskClaimToken("inst-1", secondClaim.task.task_id, secondClaim.claim_token, redis),
+    ).resolves.toBe(true);
+
+    await completeTask("inst-1", secondClaim.task.task_id, "Done", redis);
+    await expect(
+      verifyTaskClaimToken("inst-1", secondClaim.task.task_id, secondClaim.claim_token, redis),
+    ).resolves.toBe(false);
+  });
+});
+
+describe("deleteTask", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("deletes a timed-out task and removes all Redis keys", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Task to delete",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "oops", redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: true });
+
+    // Task should no longer exist.
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched).toBeNull();
+
+    // Should not appear in recent tasks list.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    expect(recent.find((t) => t.task_id === created.task.task_id)).toBeUndefined();
+  });
+
+  it("deletes a pending task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Pending task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: true });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched).toBeNull();
+  });
+
+  it("rejects deletion of a running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Running task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    // Task should still exist.
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("running");
+  });
+
+  it("rejects deletion of a task waiting for follow-up", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Need follow-up",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need clarification", redis);
+
+    const result = await deleteTask("inst-1", created.task.task_id, redis);
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("needs_follow_up");
+  });
+
+  it("rejects deletion when task becomes running while delete waits on lock", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Race candidate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    let releaseDeleteExec!: () => void;
+    const deleteExecGate = new Promise<void>((resolve) => {
+      releaseDeleteExec = resolve;
+    });
+
+    // Delay delete's Redis transaction so legacy unlocked behavior would race.
+    const multiMock = redis.multi as unknown as {
+      mockImplementation: (fn: () => unknown) => void;
+    };
+    multiMock.mockImplementation(() => {
+      const ops: Array<() => Promise<unknown>> = [];
+      const pipeline = {
+        del: (...args: string[]) => {
+          ops.push(() => redis.del(...args));
+          return pipeline;
+        },
+        zrem: (key: string, ...members: string[]) => {
+          ops.push(() => redis.zrem(key, ...members));
+          return pipeline;
+        },
+        exec: async () => {
+          await deleteExecGate;
+          const results: unknown[] = [];
+          for (const op of ops) {
+            results.push(await op());
+          }
+          return results;
+        },
+      };
+      return pipeline;
+    });
+
+    // External owner holds lock while transitioning pending -> running.
+    await redis.set("hive:task-lock:inst-1", "external-owner", {
+      nx: true,
+      ex: 5,
+    });
+
+    const deletePromise = deleteTask("inst-1", created.task.task_id, redis);
+
+    // Let deleteTask block on lock or queued transaction.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rawTaskKey = `task:inst-1:${created.task.task_id}`;
+    const rawTask = redis._kv.get(rawTaskKey) as Record<string, unknown> | undefined;
+    expect(rawTask?.status).toBe("pending");
+
+    const now = new Date().toISOString();
+    redis._kv.set(rawTaskKey, {
+      ...rawTask,
+      status: "running",
+      started_at: now,
+      updated_at: now,
+    });
+
+    redis._zsets.get("tasks:pending:inst-1")?.delete(created.task.task_id);
+    if (!redis._zsets.has("tasks:running:inst-1")) {
+      redis._zsets.set("tasks:running:inst-1", new Map());
+    }
+    redis._zsets.get("tasks:running:inst-1")!.set(created.task.task_id, Date.now());
+
+    await redis.del("hive:task-lock:inst-1");
+    releaseDeleteExec();
+
+    const result = await deletePromise;
+    expect(result).toEqual({ ok: false, reason: "invalid_transition" });
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("running");
+  });
+
+  it("returns not_found for a nonexistent task", async () => {
+    const result = await deleteTask("inst-1", "aabbccddeeff001122334455", redis);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("frees a concurrency slot when a pending task is deleted", async () => {
+    // Fill all slots.
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      const res = await createTask(
+        "inst-1",
+        "queen",
+        {
+              prompt: `Task ${i}`,
+          repos: ["hivemoot/hivemoot"],
+          timeout_secs: 300,
+        },
+        redis,
+      );
+      expect(res.ok).toBe(true);
+    }
+
+    // Confirm we're at capacity.
+    const blocked = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Overflow",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(blocked.ok).toBe(false);
+
+    // Delete one of the pending tasks.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    await deleteTask("inst-1", recent[0].task_id, redis);
+
+    // Should now be able to create again.
+    const unblocked = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Now fits",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(unblocked.ok).toBe(true);
+  });
+});
+
+describe("retryTask", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("creates a new pending task from a timed-out task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Retry me",
+        repos: ["hivemoot/hivemoot", "hivemoot/colony"],
+        timeout_secs: 420,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    // Simulate timed_out by checking the failed state is retryable.
+    const retried = await retryTask("inst-1", created.task.task_id, redis);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+
+    // New task should have a different ID but same prompt/repos/timeout.
+    expect(retried.task.task_id).not.toBe(created.task.task_id);
+    expect(retried.task.status).toBe("pending");
+    expect(retried.task.prompt).toBe("Retry me");
+    expect(retried.task.repos).toEqual(["hivemoot/hivemoot", "hivemoot/colony"]);
+    expect(retried.task.timeout_secs).toBe(420);
+    expect(retried.task.created_by).toBe("queen");
+  });
+
+  it("rejects retry of a running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Running",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects retry of a pending task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Pending",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await retryTask("inst-1", created.task.task_id, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("respects concurrency limit on retry", async () => {
+    // Fill all slots.
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      await createTask(
+        "inst-1",
+        "queen",
+        {
+              prompt: `Slot ${i}`,
+          repos: ["hivemoot/hivemoot"],
+          timeout_secs: 300,
+        },
+        redis,
+      );
+    }
+
+    // Fail one task to make it retryable, then refill the freed slot.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    const failedId = recent[0].task_id;
+    await markTaskRunning("inst-1", failedId, redis);
+    await failTask("inst-1", failedId, "oops", redis);
+
+    // Refill the slot so we're back at MAX_CONCURRENT_TASKS.
+    const refill = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Refill slot",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(refill.ok).toBe(true);
+
+    // Retry should fail because all slots are occupied.
+    const result = await retryTask("inst-1", failedId, redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("concurrency_limited");
+    }
+  });
+
+  it("does not modify the original task on retry", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Original",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    await retryTask("inst-1", created.task.task_id, redis);
+
+    // Original task should still be failed.
+    const original = await getTask("inst-1", created.task.task_id, redis);
+    expect(original?.status).toBe("failed");
+    expect(original?.error).toBe("boom");
+  });
+
+  it("returns not_found for a nonexistent task", async () => {
+    const result = await retryTask("inst-1", "aabbccddeeff001122334455", redis);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 });

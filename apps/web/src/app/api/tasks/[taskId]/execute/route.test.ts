@@ -8,7 +8,9 @@ vi.mock("@/server/task-executor-auth", () => ({
 vi.mock("@/server/task-store", () => ({
   TASK_ID_PATTERN: /^[a-f0-9]{24}$/,
   getTask: vi.fn(),
+  verifyTaskClaimToken: vi.fn(),
   setTaskProgress: vi.fn(),
+  heartbeatTask: vi.fn(),
   completeTask: vi.fn(),
   failTask: vi.fn(),
   timeoutTask: vi.fn(),
@@ -18,7 +20,9 @@ vi.mock("@/server/task-store", () => ({
 import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
 import {
   getTask,
+  verifyTaskClaimToken,
   setTaskProgress,
+  heartbeatTask,
   completeTask,
   failTask,
   timeoutTask,
@@ -29,7 +33,6 @@ import { POST } from "./route";
 const BASE_TASK = {
   task_id: "abc123abc123abc123abc123",
   status: "running" as const,
-  engine: "codex",
   prompt: "Deep analysis",
   repos: ["hivemoot/hivemoot"],
   timeout_secs: 300,
@@ -48,17 +51,24 @@ beforeEach(() => {
   });
 
   vi.mocked(getTask).mockResolvedValue(BASE_TASK);
+  vi.mocked(verifyTaskClaimToken).mockResolvedValue(true);
   vi.mocked(setTaskProgress).mockResolvedValue({ ok: true, task: { ...BASE_TASK, progress: "step" } });
+  vi.mocked(heartbeatTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK } });
   vi.mocked(completeTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "completed" } });
   vi.mocked(failTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "failed" } });
   vi.mocked(timeoutTask).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "timed_out" } });
   vi.mocked(requestFollowUp).mockResolvedValue({ ok: true, task: { ...BASE_TASK, status: "needs_follow_up" } });
 });
 
-function makeRequest(body: unknown) {
+function makeRequest(body: unknown, claimToken = "claim-token-1") {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (claimToken) {
+    headers.set("x-task-claim-token", claimToken);
+  }
+
   return new NextRequest("https://example.com/api/tasks/abc123abc123abc123abc123/execute", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 }
@@ -73,12 +83,28 @@ describe("POST /api/tasks/[taskId]/execute", () => {
       "Scanning",
       expect.anything(),
     );
+    expect(verifyTaskClaimToken).toHaveBeenCalledWith(
+      "inst-1",
+      "abc123abc123abc123abc123",
+      "claim-token-1",
+      expect.anything(),
+    );
   });
 
   it("accepts completion updates for executor", async () => {
     const res = await POST(makeRequest({ action: "complete", result: "done" }));
     expect(res.status).toBe(200);
     expect(completeTask).toHaveBeenCalled();
+  });
+
+  it("accepts heartbeat updates for executor", async () => {
+    const res = await POST(makeRequest({ action: "heartbeat" }));
+    expect(res.status).toBe(200);
+    expect(heartbeatTask).toHaveBeenCalledWith(
+      "inst-1",
+      "abc123abc123abc123abc123",
+      expect.anything(),
+    );
   });
 
   it("returns 401 when executor token is invalid", async () => {
@@ -165,5 +191,21 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     expect(res.status).toBe(429);
     const body = await res.json();
     expect(body.code).toBe("task_concurrency_limited");
+  });
+
+  it("returns 403 when claim token is missing", async () => {
+    const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }, ""));
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("task_forbidden");
+    expect(verifyTaskClaimToken).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when claim token is invalid", async () => {
+    vi.mocked(verifyTaskClaimToken).mockResolvedValue(false);
+    const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }, "bad-token"));
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe("task_forbidden");
   });
 });

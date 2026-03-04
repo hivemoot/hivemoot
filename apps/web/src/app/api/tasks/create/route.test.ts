@@ -47,7 +47,6 @@ beforeEach(() => {
     request: {
       prompt: "Deep analysis",
       repos: ["hivemoot/hivemoot"],
-      engine: "codex",
       timeout_secs: 300,
     },
   });
@@ -62,7 +61,6 @@ beforeEach(() => {
     task: {
       task_id: "abc123abc123abc123abc123",
       status: "pending",
-      engine: "codex",
       prompt: "Deep analysis",
       repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,

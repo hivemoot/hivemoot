@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type Redis } from "@upstash/redis";
 
 export const MAX_CONCURRENT_TASKS = 3;
@@ -9,9 +9,9 @@ export const FAILED_TASK_TTL_SECONDS = 24 * 60 * 60;
 export const TASK_CREATE_RATE_LIMIT_PER_MINUTE = 10;
 const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
-const MAX_ENGINE_CHARS = 64;
 const MAX_PROGRESS_CHARS = 400;
 const MAX_RESULT_CHARS = 128_000;
+const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
 const TASK_LOCK_TTL_SECONDS = 5;
 const TASK_LOCK_MAX_WAIT_MS = 1000;
@@ -25,7 +25,6 @@ return 0
 `;
 
 const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const VALID_ENGINE_PATTERN = /^[A-Za-z0-9._:-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
 
 export type TaskStatus = "pending" | "running" | "needs_follow_up" | "completed" | "failed" | "timed_out";
@@ -47,7 +46,6 @@ const MAX_MESSAGES_PER_TASK = 200;
 export interface TaskRecord {
   task_id: string;
   status: TaskStatus;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -61,10 +59,14 @@ export interface TaskRecord {
   result?: string;
 }
 
+export interface ClaimedTask {
+  task: TaskRecord;
+  claim_token: string;
+}
+
 interface StoredTaskRecord {
   task_id: string;
   status: TaskStatus;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -77,7 +79,6 @@ interface StoredTaskRecord {
 }
 
 export interface CreateTaskRequest {
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -92,6 +93,14 @@ export type CreateTaskResult =
   | { ok: false; reason: "concurrency_limited" };
 
 export type TaskTransitionResult =
+  | { ok: true; task: TaskRecord }
+  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+
+export type TaskDeleteResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "invalid_transition" };
+
+export type TaskRetryResult =
   | { ok: true; task: TaskRecord }
   | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
 
@@ -121,6 +130,10 @@ function taskProgressKey(installationId: string, taskId: string): string {
 
 function taskMessagesKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}:messages`;
+}
+
+function taskClaimTokenHashKey(installationId: string, taskId: string): string {
+  return `task:${installationId}:${taskId}:claim-token-hash`;
 }
 
 function pendingKey(installationId: string): string {
@@ -230,7 +243,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
     || !TASK_ID_PATTERN.test(obj.task_id)
     || typeof obj.status !== "string"
     || !["pending", "running", "needs_follow_up", "completed", "failed", "timed_out"].includes(obj.status)
-    || typeof obj.engine !== "string"
     || typeof obj.prompt !== "string"
     || !Array.isArray(obj.repos)
     || obj.repos.some((repo) => typeof repo !== "string")
@@ -246,7 +258,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
   const parsed: StoredTaskRecord = {
     task_id: obj.task_id,
     status: obj.status as TaskStatus,
-    engine: obj.engine,
     prompt: obj.prompt,
     repos: obj.repos,
     timeout_secs: obj.timeout_secs,
@@ -266,16 +277,59 @@ function generateTaskId(): string {
   return randomBytes(12).toString("hex");
 }
 
-function transitionDeadlineMs(task: StoredTaskRecord): number {
-  const baseTs = task.status === "running" && task.started_at
-    ? new Date(task.started_at).getTime()
-    : new Date(task.created_at).getTime();
+function generateTaskClaimToken(): string {
+  return randomBytes(TASK_CLAIM_TOKEN_BYTES).toString("hex");
+}
 
-  if (!Number.isFinite(baseTs)) {
-    return Date.now() + task.timeout_secs * 1000;
+function hashTaskClaimToken(claimToken: string): string {
+  return createHash("sha256").update(claimToken).digest("hex");
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
+
+function parseIsoTimestampMs(value?: string): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function transitionDeadlineMs(task: StoredTaskRecord): number {
+  const baseCandidates = task.status === "running"
+    ? [task.updated_at, task.started_at, task.created_at]
+    : [task.created_at];
+
+  for (const candidate of baseCandidates) {
+    const baseTs = parseIsoTimestampMs(candidate);
+    if (baseTs !== null) {
+      return baseTs + task.timeout_secs * 1000;
+    }
   }
 
-  return baseTs + task.timeout_secs * 1000;
+  return Date.now() + task.timeout_secs * 1000;
+}
+
+async function withTaskTransitionLock(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+  operation: string,
+  fn: () => Promise<TaskTransitionResult>,
+): Promise<TaskTransitionResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, fn);
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn(operation, {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
 }
 
 async function cleanupMissingTask(
@@ -291,6 +345,7 @@ async function cleanupMissingTask(
     .del(taskResultKey(installationId, taskId))
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
+    .del(taskClaimTokenHashKey(installationId, taskId))
     .exec();
 }
 
@@ -368,7 +423,6 @@ async function maybeTimeoutTask(
   return {
     task_id: timedOut.task.task_id,
     status: timedOut.task.status,
-    engine: timedOut.task.engine,
     prompt: timedOut.task.prompt,
     repos: timedOut.task.repos,
     timeout_secs: timedOut.task.timeout_secs,
@@ -387,7 +441,7 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   }
 
   const obj = body as Record<string, unknown>;
-  const allowedFields = new Set(["prompt", "repos", "engine", "timeout_secs"]);
+  const allowedFields = new Set(["prompt", "repos", "timeout_secs"]);
   for (const key of Object.keys(obj)) {
     if (!allowedFields.has(key)) {
       return { ok: false, message: `Unknown field: ${key}` };
@@ -430,22 +484,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
 
   const repos = [...dedupedRepos];
 
-  let engine = "codex";
-  if (obj.engine !== undefined) {
-    if (
-      typeof obj.engine !== "string"
-      || obj.engine.trim().length < 1
-      || obj.engine.length > MAX_ENGINE_CHARS
-      || !VALID_ENGINE_PATTERN.test(obj.engine)
-    ) {
-      return {
-        ok: false,
-        message: `engine must be 1-${MAX_ENGINE_CHARS} chars and match [A-Za-z0-9._:-]+`,
-      };
-    }
-    engine = obj.engine.trim();
-  }
-
   let timeoutSecs = DEFAULT_TASK_TIMEOUT_SECONDS;
   if (obj.timeout_secs !== undefined) {
     if (
@@ -465,7 +503,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   return {
     ok: true,
     request: {
-      engine,
       prompt,
       repos,
       timeout_secs: timeoutSecs,
@@ -513,7 +550,6 @@ export async function createTask(
       const stored: StoredTaskRecord = {
         task_id: taskId,
         status: "pending",
-        engine: request.engine,
         prompt: request.prompt,
         repos: request.repos,
         timeout_secs: request.timeout_secs,
@@ -579,77 +615,87 @@ async function finalizeTask(
   redis: Redis,
   allowedFrom: Set<TaskStatus>,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task finalize lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (!allowedFrom.has(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (!allowedFrom.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const timestamp = nowIso();
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    status,
-    updated_at: timestamp,
-    finished_at: timestamp,
-    error: options.error ? sanitizeText(options.error, MAX_PROGRESS_CHARS) : stored.error,
-  };
+      const timestamp = nowIso();
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status,
+        updated_at: timestamp,
+        finished_at: timestamp,
+        error: options.error ? sanitizeText(options.error, MAX_PROGRESS_CHARS) : stored.error,
+      };
 
-  const ttl = terminalTtl(status);
-  const progress = options.progress
-    ? sanitizeText(options.progress, MAX_PROGRESS_CHARS)
-    : status === "completed"
-      ? "Completed"
-      : status === "timed_out"
-        ? "Timed out"
-        : "Failed";
+      const ttl = terminalTtl(status);
+      const progress = options.progress
+        ? sanitizeText(options.progress, MAX_PROGRESS_CHARS)
+        : status === "completed"
+          ? "Completed"
+          : status === "timed_out"
+            ? "Timed out"
+            : "Failed";
 
-  const multi = redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
-    .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
-    .zrem(pendingKey(installationId), taskId)
-    .zrem(runningKey(installationId), taskId)
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
+      const multi = redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
+        .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
+        .zrem(pendingKey(installationId), taskId)
+        .zrem(runningKey(installationId), taskId)
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
 
-  if (typeof options.result === "string") {
-    multi.set(
-      taskResultKey(installationId, taskId),
-      sanitizeText(options.result, MAX_RESULT_CHARS),
-      { ex: ttl },
-    );
-  }
+      if (typeof options.result === "string") {
+        multi.set(
+          taskResultKey(installationId, taskId),
+          sanitizeText(options.result, MAX_RESULT_CHARS),
+          { ex: ttl },
+        );
+      }
 
-  await multi.exec();
+      await multi.exec();
 
-  // Best-effort: expire the messages list alongside the task data.
-  // The task has already been finalized so a failure here must not propagate.
-  try {
-    await redis.expire(taskMessagesKey(installationId, taskId), ttl);
-  } catch (error) {
-    console.error("[tasks] Failed to expire messages key (task finalized)", {
-      installationId,
-      taskId,
-      error,
-    });
-  }
+      // Best-effort: expire the messages list alongside the task data.
+      // The task has already been finalized so a failure here must not propagate.
+      try {
+        await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+      } catch (error) {
+        console.error("[tasks] Failed to expire messages key (task finalized)", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress,
-      result: typeof options.result === "string"
-        ? sanitizeText(options.result, MAX_RESULT_CHARS)
-        : undefined,
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+          result: typeof options.result === "string"
+            ? sanitizeText(options.result, MAX_RESULT_CHARS)
+            : undefined,
+        },
+      };
     },
-  };
+  );
 }
 
 async function markTaskRunningUnlocked(
   installationId: string,
   taskId: string,
   redis: Redis,
+  claimTokenHash?: string,
 ): Promise<TaskTransitionResult> {
   const stored = await loadStoredTask(installationId, taskId, redis);
   if (!stored) return { ok: false, reason: "not_found" };
@@ -671,14 +717,21 @@ async function markTaskRunningUnlocked(
     updated_at: timestamp,
   };
 
-  await redis
+  const multi = redis
     .multi()
     .set(taskKey(installationId, taskId), nextStored)
     .set(taskProgressKey(installationId, taskId), "Running")
     .zrem(pendingKey(installationId), taskId)
     .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+    .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
+
+  if (typeof claimTokenHash === "string") {
+    multi.set(taskClaimTokenHashKey(installationId, taskId), claimTokenHash);
+  } else {
+    multi.del(taskClaimTokenHashKey(installationId, taskId));
+  }
+
+  await multi.exec();
 
   return {
     ok: true,
@@ -718,34 +771,80 @@ export async function setTaskProgress(
   progress: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task progress lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (isTerminal(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (isTerminal(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    updated_at: nowIso(),
-  };
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        updated_at: nowIso(),
+      };
 
-  const normalized = sanitizeText(progress, MAX_PROGRESS_CHARS);
+      const normalized = sanitizeText(progress, MAX_PROGRESS_CHARS);
 
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored)
-    .set(taskProgressKey(installationId, taskId), normalized)
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), normalized)
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress: normalized,
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress: normalized,
+        },
+      };
     },
-  };
+  );
+}
+
+export async function heartbeatTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskTransitionResult> {
+  return withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task heartbeat lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      if (stored.status !== "running") {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        updated_at: nowIso(),
+      };
+
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      return {
+        ok: true,
+        task: await buildTaskRecord(installationId, nextStored, redis),
+      };
+    },
+  );
 }
 
 export async function completeTask(
@@ -851,15 +950,27 @@ export async function listRecentTasks(
 export async function claimNextPendingTask(
   installationId: string,
   redis: Redis,
-): Promise<TaskRecord | null> {
+): Promise<ClaimedTask | null> {
   try {
     return await withTaskInstallationLock(installationId, redis, async () => {
       const candidates = await redis.zrange(pendingKey(installationId), 0, 9);
       const taskIds = candidates.filter((candidate): candidate is string => typeof candidate === "string");
 
       for (const taskId of taskIds) {
-        const transitioned = await markTaskRunningUnlocked(installationId, taskId, redis);
-        if (transitioned.ok) return transitioned.task;
+        const claimToken = generateTaskClaimToken();
+        const claimTokenHash = hashTaskClaimToken(claimToken);
+        const transitioned = await markTaskRunningUnlocked(
+          installationId,
+          taskId,
+          redis,
+          claimTokenHash,
+        );
+        if (transitioned.ok) {
+          return {
+            task: transitioned.task,
+            claim_token: claimToken,
+          };
+        }
 
         if (transitioned.reason === "not_found" || transitioned.reason === "invalid_transition") {
           await redis.zrem(pendingKey(installationId), taskId);
@@ -882,6 +993,95 @@ export async function claimNextPendingTask(
     }
     throw error;
   }
+}
+
+export async function verifyTaskClaimToken(
+  installationId: string,
+  taskId: string,
+  claimToken: string,
+  redis: Redis,
+): Promise<boolean> {
+  if (!claimToken) return false;
+
+  const storedHash = await redis.get(taskClaimTokenHashKey(installationId, taskId));
+  if (typeof storedHash !== "string" || storedHash.length === 0) {
+    return false;
+  }
+
+  const providedHash = hashTaskClaimToken(claimToken);
+  return constantTimeEqual(storedHash, providedHash);
+}
+
+// ---------------------------------------------------------------------------
+// Delete & retry
+// ---------------------------------------------------------------------------
+
+const DELETABLE_STATUSES = new Set<TaskStatus>([
+  "pending",
+  "completed",
+  "failed",
+  "timed_out",
+]);
+
+export async function deleteTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskDeleteResult> {
+  return await withTaskInstallationLock(installationId, redis, async () => {
+    const stored = await loadStoredTask(installationId, taskId, redis);
+    if (!stored) return { ok: false, reason: "not_found" };
+
+    if (!DELETABLE_STATUSES.has(stored.status)) {
+      return { ok: false, reason: "invalid_transition" };
+    }
+
+    await redis
+      .multi()
+      .del(taskKey(installationId, taskId))
+      .del(taskResultKey(installationId, taskId))
+      .del(taskProgressKey(installationId, taskId))
+      .del(taskMessagesKey(installationId, taskId))
+      .zrem(pendingKey(installationId), taskId)
+      .zrem(runningKey(installationId), taskId)
+      .zrem(recentKey(installationId), taskId)
+      .exec();
+
+    return { ok: true };
+  });
+}
+
+const RETRYABLE_STATUSES = new Set<TaskStatus>(["failed", "timed_out"]);
+
+export async function retryTask(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskRetryResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  if (!RETRYABLE_STATUSES.has(stored.status)) {
+    return { ok: false, reason: "invalid_transition" };
+  }
+
+  // Create a new task reusing the original's prompt, repos, and timeout.
+  const result = await createTask(
+    installationId,
+    stored.created_by,
+    {
+      prompt: stored.prompt,
+      repos: stored.repos,
+      timeout_secs: stored.timeout_secs,
+    },
+    redis,
+  );
+
+  if (!result.ok) {
+    return { ok: false, reason: result.reason };
+  }
+
+  return { ok: true, task: result.task };
 }
 
 // ---------------------------------------------------------------------------
@@ -956,29 +1156,47 @@ export async function requestFollowUp(
   message: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  const transitioned = await withTaskTransitionLock(
+    installationId,
+    taskId,
+    redis,
+    "[tasks] Task follow-up lock timeout",
+    async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (stored.status !== "running") {
-    return { ok: false, reason: "invalid_transition" };
-  }
+      if (stored.status !== "running") {
+        return { ok: false, reason: "invalid_transition" };
+      }
 
-  const timestamp = nowIso();
-  const nextStored: StoredTaskRecord = {
-    ...stored,
-    status: "needs_follow_up",
-    updated_at: timestamp,
-  };
+      const timestamp = nowIso();
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status: "needs_follow_up",
+        updated_at: timestamp,
+      };
 
-  const progress = sanitizeText(message, MAX_PROGRESS_CHARS);
+      const progress = sanitizeText(message, MAX_PROGRESS_CHARS);
 
-  await redis
-    .multi()
-    .set(taskKey(installationId, taskId), nextStored)
-    .set(taskProgressKey(installationId, taskId), progress)
-    .zrem(runningKey(installationId), taskId)
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), progress)
+        .zrem(runningKey(installationId), taskId)
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+        },
+      };
+    },
+  );
+  if (!transitioned.ok) return transitioned;
 
   // Best-effort: append timeline messages after the transition is committed.
   // A Redis failure here must not cause a 500 — the state change is durable.
@@ -999,13 +1217,7 @@ export async function requestFollowUp(
     });
   }
 
-  return {
-    ok: true,
-    task: {
-      ...nextStored,
-      progress,
-    },
-  };
+  return transitioned;
 }
 
 export async function resumeTaskWithFollowUp(
@@ -1041,6 +1253,7 @@ export async function resumeTaskWithFollowUp(
         .multi()
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
+        .del(taskClaimTokenHashKey(installationId, taskId))
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();

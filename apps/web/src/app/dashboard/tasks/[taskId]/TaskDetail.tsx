@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
@@ -10,7 +11,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface TaskRecord {
   task_id: string;
   status: string;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -137,6 +137,45 @@ function InfoIcon({ className }: { className?: string }) {
   );
 }
 
+function RetryIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 8a5.5 5.5 0 0 1 9.3-4" />
+      <polyline points="12 2 12 5 9 5" />
+      <path d="M13.5 8a5.5 5.5 0 0 1-9.3 4" />
+      <polyline points="4 14 4 11 7 11" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="3 4 13 4" />
+      <path d="M6 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1" />
+      <path d="M4.5 4l.7 9.1a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9L11.5 4" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -215,11 +254,20 @@ function isTerminal(status: string): boolean {
   return status === "completed" || status === "failed" || status === "timed_out";
 }
 
+function isRetryable(status: string): boolean {
+  return status === "failed" || status === "timed_out";
+}
+
+function isDeletable(status: string): boolean {
+  return status === "pending" || isTerminal(status);
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function TaskDetail({ taskId }: { taskId: string }) {
+  const router = useRouter();
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -227,6 +275,8 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
   const [followUpText, setFollowUpText] = useState("");
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
   const [followUpError, setFollowUpError] = useState("");
+  const [actionBusy, setActionBusy] = useState<"retry" | "delete" | null>(null);
+  const [actionError, setActionError] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<{ close: () => void } | null>(null);
 
@@ -393,6 +443,51 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     }
   }
 
+  // Retry handler
+  async function handleRetry() {
+    if (actionBusy) return;
+    setActionBusy("retry");
+    setActionError("");
+
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/retry`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Unknown error" }));
+        setActionError(err.message ?? "Failed to retry task.");
+        return;
+      }
+      const data = await res.json();
+      router.push(`/dashboard/tasks/${data.task_id}`);
+    } catch {
+      setActionError("Could not reach the server.");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  // Delete handler
+  async function handleDelete() {
+    if (actionBusy) return;
+    if (!window.confirm("Delete this task? This cannot be undone.")) return;
+
+    setActionBusy("delete");
+    setActionError("");
+
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Unknown error" }));
+        setActionError(err.message ?? "Failed to delete task.");
+        return;
+      }
+      router.push("/dashboard/tasks");
+    } catch {
+      setActionError("Could not reach the server.");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Loading
   // -------------------------------------------------------------------------
@@ -453,10 +548,43 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
             </div>
             <p className="mt-3 text-sm text-[#fafafa]">{task.prompt}</p>
           </div>
+
+          {/* Action buttons */}
+          <div className="flex shrink-0 items-center gap-2">
+            {isRetryable(task.status) && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={actionBusy !== null}
+                className="flex items-center gap-1.5 rounded-lg bg-honey-500 px-3 py-1.5 text-xs font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {actionBusy === "retry" ? <SpinnerIcon /> : <RetryIcon className="h-3.5 w-3.5" />}
+                Retry
+              </button>
+            )}
+            {isDeletable(task.status) && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={actionBusy !== null}
+                className="flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {actionBusy === "delete" ? <SpinnerIcon /> : <TrashIcon className="h-3.5 w-3.5" />}
+                Delete
+              </button>
+            )}
+          </div>
         </div>
 
+        {/* Action error */}
+        {actionError && (
+          <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-2">
+            <p className="text-sm text-red-400">{actionError}</p>
+          </div>
+        )}
+
         {/* Metadata */}
-        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 text-xs sm:grid-cols-4">
+        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 text-xs sm:grid-cols-3">
           <div>
             <dt className="text-zinc-600">Repos</dt>
             <dd className="mt-0.5 font-mono text-zinc-400">{task.repos.join(", ")}</dd>
@@ -464,10 +592,6 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           <div>
             <dt className="text-zinc-600">Created</dt>
             <dd className="mt-0.5 text-zinc-400">{relativeTime(task.created_at)}</dd>
-          </div>
-          <div>
-            <dt className="text-zinc-600">Engine</dt>
-            <dd className="mt-0.5 font-mono text-zinc-400">{task.engine}</dd>
           </div>
           <div>
             <dt className="text-zinc-600">Timeout</dt>
