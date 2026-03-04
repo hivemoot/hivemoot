@@ -15,6 +15,7 @@ import {
   requestFollowUp,
   resumeTaskWithFollowUp,
   retryTask,
+  verifyTaskClaimToken,
   setTaskProgress,
   failTask,
   getTask,
@@ -503,8 +504,18 @@ describe("task lifecycle", () => {
 
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
-    expect(claimed?.status).toBe("running");
-    expect(claimed?.task_id).toBe(first.task.task_id);
+    expect(claimed?.task.status).toBe("running");
+    expect(claimed?.task.task_id).toBe(first.task.task_id);
+    expect(claimed?.claim_token).toMatch(/^[a-f0-9]{64}$/);
+
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, "bad-token", redis),
+      ).resolves.toBe(false);
+    }
   });
 
   it("does not allow two parallel claimers to claim the same task", async () => {
@@ -529,7 +540,7 @@ describe("task lifecycle", () => {
 
     const successfulClaims = [firstClaim, secondClaim].filter((task) => task !== null);
     expect(successfulClaims).toHaveLength(1);
-    expect(successfulClaims[0]?.task_id).toBe(created.task.task_id);
+    expect(successfulClaims[0]?.task.task_id).toBe(created.task.task_id);
   });
 
   it("returns null when there are no pending tasks to claim", async () => {
@@ -615,8 +626,13 @@ describe("follow-up workflow", () => {
     // Executor claims task again.
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
-    expect(claimed?.task_id).toBe(task.task_id);
-    expect(claimed?.status).toBe("running");
+    expect(claimed?.task.task_id).toBe(task.task_id);
+    expect(claimed?.task.status).toBe("running");
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+    }
   });
 
   it("rejects follow-up request from non-running task", async () => {
@@ -693,6 +709,11 @@ describe("follow-up workflow", () => {
     await resumeTaskWithFollowUp("inst-1", task.task_id, "Info provided", redis);
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
+    if (claimed) {
+      await expect(
+        verifyTaskClaimToken("inst-1", claimed.task.task_id, claimed.claim_token, redis),
+      ).resolves.toBe(true);
+    }
     await completeTask("inst-1", task.task_id, "Done", redis);
 
     // Now try follow-up on completed task.
@@ -988,6 +1009,49 @@ describe("post-transition append failure resilience", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.task.status).toBe("completed");
+  });
+
+  it("invalidates claim token after follow-up and terminal transitions", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        engine: "codex",
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const firstClaim = await claimNextPendingTask("inst-1", redis);
+    expect(firstClaim).not.toBeNull();
+    if (!firstClaim) return;
+
+    await expect(
+      verifyTaskClaimToken("inst-1", firstClaim.task.task_id, firstClaim.claim_token, redis),
+    ).resolves.toBe(true);
+
+    await requestFollowUp("inst-1", firstClaim.task.task_id, "Need context", redis);
+    await expect(
+      verifyTaskClaimToken("inst-1", firstClaim.task.task_id, firstClaim.claim_token, redis),
+    ).resolves.toBe(false);
+
+    await resumeTaskWithFollowUp("inst-1", firstClaim.task.task_id, "Context provided", redis);
+    const secondClaim = await claimNextPendingTask("inst-1", redis);
+    expect(secondClaim).not.toBeNull();
+    if (!secondClaim) return;
+    expect(secondClaim.claim_token).not.toBe(firstClaim.claim_token);
+    await expect(
+      verifyTaskClaimToken("inst-1", secondClaim.task.task_id, secondClaim.claim_token, redis),
+    ).resolves.toBe(true);
+
+    await completeTask("inst-1", secondClaim.task.task_id, "Done", redis);
+    await expect(
+      verifyTaskClaimToken("inst-1", secondClaim.task.task_id, secondClaim.claim_token, redis),
+    ).resolves.toBe(false);
   });
 });
 

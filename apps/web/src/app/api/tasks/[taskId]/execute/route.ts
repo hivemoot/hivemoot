@@ -12,6 +12,7 @@ import {
   setTaskProgress,
   TASK_ID_PATTERN,
   timeoutTask,
+  verifyTaskClaimToken,
   type TaskTransitionResult,
 } from "@/server/task-store";
 
@@ -116,6 +117,21 @@ export async function POST(request: NextRequest) {
   const existingTask = await getTask(auth.installationId, taskId, auth.redis);
   if (!existingTask) {
     return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
+  }
+
+  const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
+  if (!claimToken) {
+    return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
+  }
+
+  const validClaimToken = await verifyTaskClaimToken(
+    auth.installationId,
+    taskId,
+    claimToken,
+    auth.redis,
+  );
+  if (!validClaimToken) {
+    return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
   }
 
   const obj = body as Record<string, unknown>;

@@ -26,22 +26,29 @@ beforeEach(() => {
 describe("POST /api/tasks/claim", () => {
   it("returns claimed task", async () => {
     vi.mocked(claimNextPendingTask).mockResolvedValue({
-      task_id: "abc123abc123abc123abc123",
-      status: "running",
-      prompt: "Deep analysis",
-      repos: ["hivemoot/hivemoot"],
-      timeout_secs: 300,
-      created_by: "queen",
-      created_at: "2026-03-03T12:00:00.000Z",
-      updated_at: "2026-03-03T12:00:00.000Z",
-      started_at: "2026-03-03T12:01:00.000Z",
-      progress: "Running",
+      claim_token: "claim-token-abc",
+      task: {
+        task_id: "abc123abc123abc123abc123",
+        status: "running",
+        engine: "codex",
+        prompt: "Deep analysis",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+        created_by: "queen",
+        created_at: "2026-03-03T12:00:00.000Z",
+        updated_at: "2026-03-03T12:00:00.000Z",
+        started_at: "2026-03-03T12:01:00.000Z",
+        progress: "Running",
+      },
     });
 
     const req = new NextRequest("https://example.com/api/tasks/claim", { method: "POST" });
     const res = await POST(req);
 
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.claim_token).toBe("claim-token-abc");
+    expect(body.task.task_id).toBe("abc123abc123abc123abc123");
     expect(claimNextPendingTask).toHaveBeenCalledWith("inst-1", expect.anything());
   });
 

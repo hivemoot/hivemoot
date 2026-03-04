@@ -8,12 +8,12 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return auth.response;
 
   try {
-    const task = await claimNextPendingTask(auth.installationId, auth.redis);
-    if (!task) {
+    const claimed = await claimNextPendingTask(auth.installationId, auth.redis);
+    if (!claimed) {
       return new NextResponse(null, { status: 204 });
     }
 
-    return NextResponse.json({ task });
+    return NextResponse.json(claimed);
   } catch (error) {
     console.error("[tasks] Failed to claim pending task", {
       installationId: auth.installationId,

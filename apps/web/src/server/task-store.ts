@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type Redis } from "@upstash/redis";
 
 export const MAX_CONCURRENT_TASKS = 3;
@@ -11,6 +11,7 @@ const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
 const MAX_RESULT_CHARS = 128_000;
+const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
 const TASK_LOCK_TTL_SECONDS = 5;
 const TASK_LOCK_MAX_WAIT_MS = 1000;
@@ -56,6 +57,11 @@ export interface TaskRecord {
   error?: string;
   progress?: string;
   result?: string;
+}
+
+export interface ClaimedTask {
+  task: TaskRecord;
+  claim_token: string;
 }
 
 interface StoredTaskRecord {
@@ -124,6 +130,10 @@ function taskProgressKey(installationId: string, taskId: string): string {
 
 function taskMessagesKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}:messages`;
+}
+
+function taskClaimTokenHashKey(installationId: string, taskId: string): string {
+  return `task:${installationId}:${taskId}:claim-token-hash`;
 }
 
 function pendingKey(installationId: string): string {
@@ -267,6 +277,19 @@ function generateTaskId(): string {
   return randomBytes(12).toString("hex");
 }
 
+function generateTaskClaimToken(): string {
+  return randomBytes(TASK_CLAIM_TOKEN_BYTES).toString("hex");
+}
+
+function hashTaskClaimToken(claimToken: string): string {
+  return createHash("sha256").update(claimToken).digest("hex");
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
+
 function parseIsoTimestampMs(value?: string): number | null {
   if (!value) return null;
   const parsed = new Date(value).getTime();
@@ -301,6 +324,7 @@ async function cleanupMissingTask(
     .del(taskResultKey(installationId, taskId))
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
+    .del(taskClaimTokenHashKey(installationId, taskId))
     .exec();
 }
 
@@ -601,6 +625,7 @@ async function finalizeTask(
     .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
     .zrem(pendingKey(installationId), taskId)
     .zrem(runningKey(installationId), taskId)
+    .del(taskClaimTokenHashKey(installationId, taskId))
     .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
 
   if (typeof options.result === "string") {
@@ -641,6 +666,7 @@ async function markTaskRunningUnlocked(
   installationId: string,
   taskId: string,
   redis: Redis,
+  claimTokenHash?: string,
 ): Promise<TaskTransitionResult> {
   const stored = await loadStoredTask(installationId, taskId, redis);
   if (!stored) return { ok: false, reason: "not_found" };
@@ -662,14 +688,21 @@ async function markTaskRunningUnlocked(
     updated_at: timestamp,
   };
 
-  await redis
+  const multi = redis
     .multi()
     .set(taskKey(installationId, taskId), nextStored)
     .set(taskProgressKey(installationId, taskId), "Running")
     .zrem(pendingKey(installationId), taskId)
     .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
-    .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-    .exec();
+    .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
+
+  if (typeof claimTokenHash === "string") {
+    multi.set(taskClaimTokenHashKey(installationId, taskId), claimTokenHash);
+  } else {
+    multi.del(taskClaimTokenHashKey(installationId, taskId));
+  }
+
+  await multi.exec();
 
   return {
     ok: true,
@@ -872,15 +905,27 @@ export async function listRecentTasks(
 export async function claimNextPendingTask(
   installationId: string,
   redis: Redis,
-): Promise<TaskRecord | null> {
+): Promise<ClaimedTask | null> {
   try {
     return await withTaskInstallationLock(installationId, redis, async () => {
       const candidates = await redis.zrange(pendingKey(installationId), 0, 9);
       const taskIds = candidates.filter((candidate): candidate is string => typeof candidate === "string");
 
       for (const taskId of taskIds) {
-        const transitioned = await markTaskRunningUnlocked(installationId, taskId, redis);
-        if (transitioned.ok) return transitioned.task;
+        const claimToken = generateTaskClaimToken();
+        const claimTokenHash = hashTaskClaimToken(claimToken);
+        const transitioned = await markTaskRunningUnlocked(
+          installationId,
+          taskId,
+          redis,
+          claimTokenHash,
+        );
+        if (transitioned.ok) {
+          return {
+            task: transitioned.task,
+            claim_token: claimToken,
+          };
+        }
 
         if (transitioned.reason === "not_found" || transitioned.reason === "invalid_transition") {
           await redis.zrem(pendingKey(installationId), taskId);
@@ -903,6 +948,23 @@ export async function claimNextPendingTask(
     }
     throw error;
   }
+}
+
+export async function verifyTaskClaimToken(
+  installationId: string,
+  taskId: string,
+  claimToken: string,
+  redis: Redis,
+): Promise<boolean> {
+  if (!claimToken) return false;
+
+  const storedHash = await redis.get(taskClaimTokenHashKey(installationId, taskId));
+  if (typeof storedHash !== "string" || storedHash.length === 0) {
+    return false;
+  }
+
+  const providedHash = hashTaskClaimToken(claimToken);
+  return constantTimeEqual(storedHash, providedHash);
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1132,7 @@ export async function requestFollowUp(
     .set(taskKey(installationId, taskId), nextStored)
     .set(taskProgressKey(installationId, taskId), progress)
     .zrem(runningKey(installationId), taskId)
+    .del(taskClaimTokenHashKey(installationId, taskId))
     .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
     .exec();
 
@@ -1134,6 +1197,7 @@ export async function resumeTaskWithFollowUp(
         .multi()
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
+        .del(taskClaimTokenHashKey(installationId, taskId))
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();
