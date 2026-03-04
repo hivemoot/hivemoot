@@ -10,7 +10,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface TaskRecord {
   task_id: string;
   status: string;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;

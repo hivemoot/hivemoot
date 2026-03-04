@@ -28,7 +28,6 @@ describe("POST /api/tasks/claim", () => {
     vi.mocked(claimNextPendingTask).mockResolvedValue({
       task_id: "abc123abc123abc123abc123",
       status: "running",
-      engine: "codex",
       prompt: "Deep analysis",
       repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,

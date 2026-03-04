@@ -29,7 +29,6 @@ import { POST } from "./route";
 const BASE_TASK = {
   task_id: "abc123abc123abc123abc123",
   status: "running" as const,
-  engine: "codex",
   prompt: "Deep analysis",
   repos: ["hivemoot/hivemoot"],
   timeout_secs: 300,

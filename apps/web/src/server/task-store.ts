@@ -9,7 +9,6 @@ export const FAILED_TASK_TTL_SECONDS = 24 * 60 * 60;
 export const TASK_CREATE_RATE_LIMIT_PER_MINUTE = 10;
 const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
-const MAX_ENGINE_CHARS = 64;
 const MAX_PROGRESS_CHARS = 400;
 const MAX_RESULT_CHARS = 128_000;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
@@ -25,7 +24,6 @@ return 0
 `;
 
 const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const VALID_ENGINE_PATTERN = /^[A-Za-z0-9._:-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
 
 export type TaskStatus = "pending" | "running" | "needs_follow_up" | "completed" | "failed" | "timed_out";
@@ -47,7 +45,6 @@ const MAX_MESSAGES_PER_TASK = 200;
 export interface TaskRecord {
   task_id: string;
   status: TaskStatus;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -64,7 +61,6 @@ export interface TaskRecord {
 interface StoredTaskRecord {
   task_id: string;
   status: TaskStatus;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -77,7 +73,6 @@ interface StoredTaskRecord {
 }
 
 export interface CreateTaskRequest {
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -238,7 +233,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
     || !TASK_ID_PATTERN.test(obj.task_id)
     || typeof obj.status !== "string"
     || !["pending", "running", "needs_follow_up", "completed", "failed", "timed_out"].includes(obj.status)
-    || typeof obj.engine !== "string"
     || typeof obj.prompt !== "string"
     || !Array.isArray(obj.repos)
     || obj.repos.some((repo) => typeof repo !== "string")
@@ -254,7 +248,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
   const parsed: StoredTaskRecord = {
     task_id: obj.task_id,
     status: obj.status as TaskStatus,
-    engine: obj.engine,
     prompt: obj.prompt,
     repos: obj.repos,
     timeout_secs: obj.timeout_secs,
@@ -376,7 +369,6 @@ async function maybeTimeoutTask(
   return {
     task_id: timedOut.task.task_id,
     status: timedOut.task.status,
-    engine: timedOut.task.engine,
     prompt: timedOut.task.prompt,
     repos: timedOut.task.repos,
     timeout_secs: timedOut.task.timeout_secs,
@@ -395,7 +387,7 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   }
 
   const obj = body as Record<string, unknown>;
-  const allowedFields = new Set(["prompt", "repos", "engine", "timeout_secs"]);
+  const allowedFields = new Set(["prompt", "repos", "timeout_secs"]);
   for (const key of Object.keys(obj)) {
     if (!allowedFields.has(key)) {
       return { ok: false, message: `Unknown field: ${key}` };
@@ -438,22 +430,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
 
   const repos = [...dedupedRepos];
 
-  let engine = "codex";
-  if (obj.engine !== undefined) {
-    if (
-      typeof obj.engine !== "string"
-      || obj.engine.trim().length < 1
-      || obj.engine.length > MAX_ENGINE_CHARS
-      || !VALID_ENGINE_PATTERN.test(obj.engine)
-    ) {
-      return {
-        ok: false,
-        message: `engine must be 1-${MAX_ENGINE_CHARS} chars and match [A-Za-z0-9._:-]+`,
-      };
-    }
-    engine = obj.engine.trim();
-  }
-
   let timeoutSecs = DEFAULT_TASK_TIMEOUT_SECONDS;
   if (obj.timeout_secs !== undefined) {
     if (
@@ -473,7 +449,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   return {
     ok: true,
     request: {
-      engine,
       prompt,
       repos,
       timeout_secs: timeoutSecs,
@@ -521,7 +496,6 @@ export async function createTask(
       const stored: StoredTaskRecord = {
         task_id: taskId,
         status: "pending",
-        engine: request.engine,
         prompt: request.prompt,
         repos: request.repos,
         timeout_secs: request.timeout_secs,
@@ -945,12 +919,11 @@ export async function retryTask(
     return { ok: false, reason: "invalid_transition" };
   }
 
-  // Create a new task reusing the original's prompt, repos, engine, and timeout.
+  // Create a new task reusing the original's prompt, repos, and timeout.
   const result = await createTask(
     installationId,
     stored.created_by,
     {
-      engine: stored.engine,
       prompt: stored.prompt,
       repos: stored.repos,
       timeout_secs: stored.timeout_secs,

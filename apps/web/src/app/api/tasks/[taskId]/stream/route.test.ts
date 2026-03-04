@@ -31,7 +31,6 @@ beforeEach(() => {
   vi.mocked(getTask).mockResolvedValue({
     task_id: "abc123abc123abc123abc123",
     status: "completed",
-    engine: "codex",
     prompt: "Deep analysis",
     repos: ["hivemoot/hivemoot"],
     timeout_secs: 300,
@@ -60,8 +59,7 @@ describe("GET /api/tasks/[taskId]/stream", () => {
     vi.mocked(getTask).mockResolvedValue({
       task_id: "abc123abc123abc123abc123",
       status: "needs_follow_up",
-      engine: "codex",
-      prompt: "Deep analysis",
+        prompt: "Deep analysis",
       repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,
       created_by: "queen",

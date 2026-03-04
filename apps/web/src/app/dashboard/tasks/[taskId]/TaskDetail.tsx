@@ -11,7 +11,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface TaskRecord {
   task_id: string;
   status: string;
-  engine: string;
   prompt: string;
   repos: string[];
   timeout_secs: number;
@@ -585,7 +584,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         )}
 
         {/* Metadata */}
-        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 text-xs sm:grid-cols-4">
+        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-white/[0.06] pt-4 text-xs sm:grid-cols-3">
           <div>
             <dt className="text-zinc-600">Repos</dt>
             <dd className="mt-0.5 font-mono text-zinc-400">{task.repos.join(", ")}</dd>
@@ -593,10 +592,6 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           <div>
             <dt className="text-zinc-600">Created</dt>
             <dd className="mt-0.5 text-zinc-400">{relativeTime(task.created_at)}</dd>
-          </div>
-          <div>
-            <dt className="text-zinc-600">Engine</dt>
-            <dd className="mt-0.5 font-mono text-zinc-400">{task.engine}</dd>
           </div>
           <div>
             <dt className="text-zinc-600">Timeout</dt>

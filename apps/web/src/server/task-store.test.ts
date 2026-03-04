@@ -172,7 +172,6 @@ describe("validateCreateTaskRequest", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate auth failures",
       repos: ["hivemoot/hivemoot", "hivemoot/hivemoot-agent"],
-      engine: "codex",
       timeout_secs: 420,
     });
 
@@ -191,7 +190,6 @@ describe("validateCreateTaskRequest", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.request.engine).toBe("codex");
       expect(result.request.timeout_secs).toBe(DEFAULT_TASK_TIMEOUT_SECONDS);
     }
   });
@@ -234,8 +232,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Deep analysis",
+          prompt: "Deep analysis",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -275,8 +272,7 @@ describe("task lifecycle", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Task ${i}`,
+              prompt: `Task ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -289,8 +285,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Overflow",
+          prompt: "Overflow",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -307,8 +302,7 @@ describe("task lifecycle", () => {
           "inst-1",
           "queen",
           {
-            engine: "codex",
-            prompt: `parallel-${index}`,
+                  prompt: `parallel-${index}`,
             repos: ["hivemoot/hivemoot"],
             timeout_secs: 300,
           },
@@ -330,8 +324,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -352,8 +345,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task2",
+          prompt: "Task2",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -376,8 +368,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
@@ -409,8 +400,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "A",
+          prompt: "A",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -420,8 +410,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "B",
+          prompt: "B",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -440,8 +429,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "first",
+          prompt: "first",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -451,8 +439,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "second",
+          prompt: "second",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -474,8 +461,7 @@ describe("task lifecycle", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "single",
+          prompt: "single",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -531,8 +517,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate auth flow",
+          prompt: "Investigate auth flow",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -588,8 +573,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -678,8 +662,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task",
+          prompt: "Task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
@@ -713,8 +696,7 @@ describe("follow-up workflow", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Task ${i}`,
+              prompt: `Task ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -733,8 +715,7 @@ describe("follow-up workflow", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Extra task",
+          prompt: "Extra task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -756,8 +737,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Analyze the codebase",
+          prompt: "Analyze the codebase",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -777,8 +757,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Do work",
+          prompt: "Do work",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -802,8 +781,7 @@ describe("task messages", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -850,8 +828,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -873,8 +850,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -905,8 +881,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -938,8 +913,7 @@ describe("post-transition append failure resilience", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Investigate",
+          prompt: "Investigate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -978,8 +952,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Task to delete",
+          prompt: "Task to delete",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1008,8 +981,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Pending task",
+          prompt: "Pending task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1030,8 +1002,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Running task",
+          prompt: "Running task",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1055,8 +1026,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Need follow-up",
+          prompt: "Need follow-up",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1080,8 +1050,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Race candidate",
+          prompt: "Race candidate",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1174,8 +1143,7 @@ describe("deleteTask", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Task ${i}`,
+              prompt: `Task ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -1189,8 +1157,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Overflow",
+          prompt: "Overflow",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1207,8 +1174,7 @@ describe("deleteTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Now fits",
+          prompt: "Now fits",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1230,8 +1196,7 @@ describe("retryTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Retry me",
+          prompt: "Retry me",
         repos: ["hivemoot/hivemoot", "hivemoot/colony"],
         timeout_secs: 420,
       },
@@ -1248,12 +1213,11 @@ describe("retryTask", () => {
     expect(retried.ok).toBe(true);
     if (!retried.ok) return;
 
-    // New task should have a different ID but same prompt/repos/engine.
+    // New task should have a different ID but same prompt/repos/timeout.
     expect(retried.task.task_id).not.toBe(created.task.task_id);
     expect(retried.task.status).toBe("pending");
     expect(retried.task.prompt).toBe("Retry me");
     expect(retried.task.repos).toEqual(["hivemoot/hivemoot", "hivemoot/colony"]);
-    expect(retried.task.engine).toBe("codex");
     expect(retried.task.timeout_secs).toBe(420);
     expect(retried.task.created_by).toBe("queen");
   });
@@ -1263,8 +1227,7 @@ describe("retryTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Running",
+          prompt: "Running",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1287,8 +1250,7 @@ describe("retryTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Pending",
+          prompt: "Pending",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1311,8 +1273,7 @@ describe("retryTask", () => {
         "inst-1",
         "queen",
         {
-          engine: "codex",
-          prompt: `Slot ${i}`,
+              prompt: `Slot ${i}`,
           repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
@@ -1331,8 +1292,7 @@ describe("retryTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Refill slot",
+          prompt: "Refill slot",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
@@ -1353,8 +1313,7 @@ describe("retryTask", () => {
       "inst-1",
       "queen",
       {
-        engine: "codex",
-        prompt: "Original",
+          prompt: "Original",
         repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
