@@ -263,6 +263,58 @@ function isDeletable(status: string): boolean {
   return status === "pending" || isTerminal(status);
 }
 
+function canSendMessage(status: string): boolean {
+  return status !== "running";
+}
+
+function messageBannerText(status: string): string | null {
+  switch (status) {
+    case "needs_follow_up":
+      return "The agent is waiting for your input to continue working on this task.";
+    case "pending":
+      return "This task is queued. Add a message to provide more context before the agent picks it up.";
+    case "completed":
+      return "This task is complete. Send a message to reopen it with new instructions.";
+    case "failed":
+    case "timed_out":
+      return "This task did not succeed. Send a message to retry with additional context.";
+    default:
+      return null;
+  }
+}
+
+function messageBannerColor(status: string): string {
+  switch (status) {
+    case "needs_follow_up":
+      return "border-amber-500/20 bg-amber-500/5";
+    case "pending":
+      return "border-zinc-500/20 bg-zinc-500/5";
+    case "completed":
+      return "border-green-500/20 bg-green-500/5";
+    case "failed":
+    case "timed_out":
+      return "border-red-500/20 bg-red-500/5";
+    default:
+      return "border-white/[0.06] bg-white/[0.02]";
+  }
+}
+
+function messageBannerTextColor(status: string): string {
+  switch (status) {
+    case "needs_follow_up":
+      return "text-amber-400";
+    case "pending":
+      return "text-zinc-400";
+    case "completed":
+      return "text-green-400";
+    case "failed":
+    case "timed_out":
+      return "text-red-400";
+    default:
+      return "text-zinc-400";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Markdown renderer
 // ---------------------------------------------------------------------------
@@ -463,8 +515,8 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     };
   }, [task?.status, taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Follow-up submission
-  async function handleFollowUp(e: React.FormEvent) {
+  // Message submission (works for all non-running states)
+  async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
     if (followUpSubmitting) return;
 
@@ -478,7 +530,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     setFollowUpError("");
 
     try {
-      const res = await fetch(`/api/tasks/${taskId}/follow-up`, {
+      const res = await fetch(`/api/tasks/${taskId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: trimmed }),
@@ -486,14 +538,14 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Unknown error" }));
-        setFollowUpError(err.message ?? "Failed to send follow-up.");
+        setFollowUpError(err.message ?? "Failed to send message.");
         return;
       }
 
       const data = await res.json();
       if (data.task) setTask(data.task);
       setFollowUpText("");
-      // Refresh messages to show the follow-up in the timeline.
+      // Refresh messages to show the new message in the timeline.
       await fetchTask();
     } catch {
       setFollowUpError("Could not reach the server.");
@@ -742,14 +794,16 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           </div>
         )}
 
-        {/* Follow-up input — shown when task needs follow-up */}
-        {task.status === "needs_follow_up" && (
+        {/* Message input — shown for all non-running states */}
+        {canSendMessage(task.status) && (
           <div className="mt-4 border-t border-white/[0.06] pt-4">
-            <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3">
-              <p className="text-sm text-amber-400">
-                The agent is waiting for your input to continue working on this task.
-              </p>
-            </div>
+            {messageBannerText(task.status) && (
+              <div className={`mb-3 rounded-lg border px-4 py-3 ${messageBannerColor(task.status)}`}>
+                <p className={`text-sm ${messageBannerTextColor(task.status)}`}>
+                  {messageBannerText(task.status)}
+                </p>
+              </div>
+            )}
 
             {followUpError && (
               <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
@@ -757,12 +811,12 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
               </div>
             )}
 
-            <form onSubmit={handleFollowUp} className="flex gap-3">
+            <form onSubmit={handleSendMessage} className="flex gap-3">
               <textarea
                 rows={2}
                 value={followUpText}
                 onChange={(e) => setFollowUpText(e.target.value)}
-                placeholder="Type your follow-up message…"
+                placeholder="Type a message…"
                 className="flex-1 resize-y rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
               />
               <button

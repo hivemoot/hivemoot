@@ -96,6 +96,10 @@ export type TaskTransitionResult =
   | { ok: true; task: TaskRecord }
   | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" | "lock_timeout" };
 
+export type AddUserMessageResult =
+  | { ok: true; task: TaskRecord }
+  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+
 export type TaskDeleteResult =
   | { ok: true }
   | { ok: false; reason: "not_found" | "invalid_transition" };
@@ -1023,6 +1027,14 @@ const DELETABLE_STATUSES = new Set<TaskStatus>([
   "timed_out",
 ]);
 
+const MESSAGE_ALLOWED_STATUSES = new Set<TaskStatus>([
+  "pending",
+  "needs_follow_up",
+  "completed",
+  "failed",
+  "timed_out",
+]);
+
 export async function deleteTask(
   installationId: string,
   taskId: string,
@@ -1294,6 +1306,189 @@ export async function resumeTaskWithFollowUp(
   } catch (error) {
     if (error instanceof TaskLockTimeoutError) {
       console.warn("[tasks] Task follow-up lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User messages (chat-like interface)
+// ---------------------------------------------------------------------------
+
+async function removeTaskTtls(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<void> {
+  await Promise.all([
+    redis.persist(taskKey(installationId, taskId)),
+    redis.persist(taskResultKey(installationId, taskId)),
+    redis.persist(taskProgressKey(installationId, taskId)),
+    redis.persist(taskMessagesKey(installationId, taskId)),
+  ]);
+}
+
+export async function addUserMessage(
+  installationId: string,
+  taskId: string,
+  message: string,
+  redis: Redis,
+): Promise<AddUserMessageResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      if (!MESSAGE_ALLOWED_STATUSES.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const timestamp = nowIso();
+      const sanitizedMessage = sanitizeText(message, MAX_MESSAGE_CONTENT_CHARS);
+
+      // --- Pending: just append the message, no state change ---
+      if (stored.status === "pending") {
+        const nextStored: StoredTaskRecord = {
+          ...stored,
+          updated_at: timestamp,
+        };
+
+        await redis
+          .multi()
+          .set(taskKey(installationId, taskId), nextStored)
+          .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+          .exec();
+
+        try {
+          await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+        } catch (error) {
+          console.error("[tasks] Failed to append user message to pending task", {
+            installationId,
+            taskId,
+            error,
+          });
+        }
+
+        return {
+          ok: true,
+          task: await buildTaskRecord(installationId, nextStored, redis),
+        };
+      }
+
+      // --- needs_follow_up: transition to pending ---
+      if (stored.status === "needs_follow_up") {
+        const activeTaskCount = await countActiveTasks(installationId, redis);
+        if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+          return { ok: false, reason: "concurrency_limited" };
+        }
+
+        const nextStored: StoredTaskRecord = {
+          ...stored,
+          status: "pending",
+          updated_at: timestamp,
+          started_at: undefined,
+        };
+
+        await redis
+          .multi()
+          .set(taskKey(installationId, taskId), nextStored)
+          .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
+          .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+          .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+          .exec();
+
+        try {
+          await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+          await appendTaskMessage(
+            installationId,
+            taskId,
+            "system",
+            "Follow-up received \u2014 task re-queued.",
+            redis,
+          );
+        } catch (error) {
+          console.error("[tasks] Failed to append follow-up messages (transition committed)", {
+            installationId,
+            taskId,
+            error,
+          });
+        }
+
+        return {
+          ok: true,
+          task: {
+            ...nextStored,
+            progress: "Re-queued after follow-up",
+          },
+        };
+      }
+
+      // --- Terminal (completed/failed/timed_out): revive to pending ---
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        status: "pending",
+        updated_at: timestamp,
+        started_at: undefined,
+        finished_at: undefined,
+        error: undefined,
+      };
+
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
+        .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      // Remove TTLs set by finalizeTask so data doesn't expire mid-run.
+      try {
+        await removeTaskTtls(installationId, taskId, redis);
+      } catch (error) {
+        console.error("[tasks] Failed to remove TTLs on terminal revival", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
+
+      try {
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "system",
+          "New message received \u2014 task re-queued.",
+          redis,
+        );
+      } catch (error) {
+        console.error("[tasks] Failed to append revival messages", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress: "Re-queued with new message",
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Add user message lock timeout", {
         installationId,
         taskId,
       });
