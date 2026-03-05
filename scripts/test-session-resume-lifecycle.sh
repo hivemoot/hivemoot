@@ -329,7 +329,7 @@ run_run_once() {
   local repo_root="$1"
   shift
 
-  env \
+  env -u HIVEMOOT_BUZZ_ROLE \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
     TARGET_REPO="owner/repo" \
@@ -449,7 +449,7 @@ run_run_once_claude() {
   local repo_root="$1"
   shift
 
-  env \
+  env -u HIVEMOOT_BUZZ_ROLE \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
     TARGET_REPO="owner/repo" \
