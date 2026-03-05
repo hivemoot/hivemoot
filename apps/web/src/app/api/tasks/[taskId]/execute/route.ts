@@ -170,13 +170,17 @@ export async function POST(request: NextRequest) {
         return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
       }
 
-      // Validate executor_outcome when present.
-      if (obj.executor_outcome !== undefined && parseExecutorOutcome(obj.executor_outcome) === null) {
-        return taskError(
-          TASK_ERROR.VALIDATION_FAILED,
-          "executor_outcome must be one of: success, auth_failed, runtime_failed, timeout",
-          400,
-        );
+      // Parse executor_outcome once; null means "not provided" after validation.
+      let outcome: ExecutorOutcome | null = null;
+      if (obj.executor_outcome !== undefined) {
+        outcome = parseExecutorOutcome(obj.executor_outcome);
+        if (outcome === null) {
+          return taskError(
+            TASK_ERROR.VALIDATION_FAILED,
+            "executor_outcome must be one of: success, auth_failed, runtime_failed, timeout",
+            400,
+          );
+        }
       }
 
       // Validate exit_code when present: must be an integer.
@@ -186,7 +190,6 @@ export async function POST(request: NextRequest) {
 
       // Guard: if executor signals a failure outcome, down-convert to fail so the
       // backend never records a false success when the runtime misbehaves.
-      const outcome = obj.executor_outcome !== undefined ? parseExecutorOutcome(obj.executor_outcome) : null;
       if (outcome !== null && outcome !== "success") {
         const exitSuffix = typeof obj.exit_code === "number" ? ` (exit_code=${obj.exit_code})` : "";
         const failError = `Executor reported ${outcome}${exitSuffix}: ${obj.result}`;
