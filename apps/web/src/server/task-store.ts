@@ -1031,7 +1031,6 @@ const DELETABLE_STATUSES = new Set<TaskStatus>([
 
 const MESSAGE_ALLOWED_STATUSES = new Set<TaskStatus>([
   "pending",
-  "needs_follow_up",
   "completed",
   "failed",
   "timed_out",
@@ -1361,56 +1360,6 @@ export async function addUserMessage(
         return {
           ok: true,
           task: await buildTaskRecord(installationId, nextStored, redis),
-        };
-      }
-
-      // --- needs_follow_up: transition to pending ---
-      if (stored.status === "needs_follow_up") {
-        const activeTaskCount = await countActiveTasks(installationId, redis);
-        if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
-          return { ok: false, reason: "concurrency_limited" };
-        }
-
-        const nextStored: StoredTaskRecord = {
-          ...stored,
-          status: "pending",
-          updated_at: timestamp,
-          started_at: undefined,
-        };
-
-        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
-
-        await redis
-          .multi()
-          .set(taskKey(installationId, taskId), nextStored)
-          .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
-          .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
-          .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
-          .del(taskClaimTokenHashKey(installationId, taskId))
-          .exec();
-
-        try {
-          await appendTaskMessage(
-            installationId,
-            taskId,
-            "system",
-            "Follow-up received \u2014 task re-queued.",
-            redis,
-          );
-        } catch (error) {
-          console.error("[tasks] Failed to append follow-up system message", {
-            installationId,
-            taskId,
-            error,
-          });
-        }
-
-        return {
-          ok: true,
-          task: {
-            ...nextStored,
-            progress: "Re-queued after follow-up",
-          },
         };
       }
 

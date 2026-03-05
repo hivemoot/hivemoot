@@ -267,6 +267,10 @@ function canSendMessage(status: string): boolean {
   return status !== "running";
 }
 
+function messageEndpoint(status: string): "messages" | "follow-up" {
+  return status === "needs_follow_up" ? "follow-up" : "messages";
+}
+
 function messageBannerText(status: string): string | null {
   switch (status) {
     case "needs_follow_up":
@@ -515,7 +519,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     };
   }, [task?.status, taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Message submission (works for all non-running states)
+  // Message submission (uses follow-up route for needs_follow_up, messages route otherwise)
   async function handleSendMessage(e: React.FormEvent) {
     e.preventDefault();
     if (followUpSubmitting) return;
@@ -530,7 +534,8 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     setFollowUpError("");
 
     try {
-      const res = await fetch(`/api/tasks/${taskId}/messages`, {
+      const endpoint = messageEndpoint(task?.status ?? "running");
+      const res = await fetch(`/api/tasks/${taskId}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: trimmed }),
@@ -538,7 +543,10 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Unknown error" }));
-        setFollowUpError(err.message ?? "Failed to send message.");
+        setFollowUpError(
+          err.message
+          ?? (endpoint === "follow-up" ? "Failed to send follow-up." : "Failed to send message."),
+        );
         return;
       }
 
@@ -816,7 +824,11 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                 rows={2}
                 value={followUpText}
                 onChange={(e) => setFollowUpText(e.target.value)}
-                placeholder="Type a message…"
+                placeholder={
+                  task.status === "needs_follow_up"
+                    ? "Type your follow-up message…"
+                    : "Type a message…"
+                }
                 className="flex-1 resize-y rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
               />
               <button

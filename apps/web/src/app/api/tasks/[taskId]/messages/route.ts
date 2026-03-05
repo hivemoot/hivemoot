@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
       if (result.reason === "invalid_transition") {
         return taskError(
           TASK_ERROR.FOLLOW_UP_NOT_ALLOWED,
-          "Cannot send messages to a running task",
+          "Task is not in a state that accepts messages",
           409,
         );
       }

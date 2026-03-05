@@ -1570,37 +1570,6 @@ describe("addUserMessage", () => {
     expect(messages[1].content).toBe("More context");
   });
 
-  it("transitions needs_follow_up to pending", async () => {
-    const created = await createTask(
-      "inst-1",
-      "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
-      redis,
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await markTaskRunning("inst-1", created.task.task_id, redis);
-    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
-    await redis.set(
-      `task:inst-1:${created.task.task_id}:claim-token-hash`,
-      "stale-claim-hash",
-    );
-
-    const result = await addUserMessage("inst-1", created.task.task_id, "Here is the info", redis);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.task.status).toBe("pending");
-    expect(await redis.get(`task:inst-1:${created.task.task_id}:claim-token-hash`)).toBeNull();
-
-    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
-    // initial prompt + agent follow-up + system pause + user reply + system re-queued
-    expect(messages).toHaveLength(5);
-    expect(messages[3].role).toBe("user");
-    expect(messages[3].content).toBe("Here is the info");
-    expect(messages[4].role).toBe("system");
-  });
-
   it("revives completed task to pending", async () => {
     const created = await createTask(
       "inst-1",
@@ -1710,6 +1679,26 @@ describe("addUserMessage", () => {
     }
   });
 
+  it("rejects message to needs_follow_up task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Hello", redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
   it("returns not_found for nonexistent task", async () => {
     const result = await addUserMessage("inst-1", "aabbccddeeff001122334455", "Hello", redis);
     expect(result).toEqual({ ok: false, reason: "not_found" });
@@ -1737,31 +1726,6 @@ describe("addUserMessage", () => {
     expect(messages).toHaveLength(1);
   });
 
-  it("does not return success when follow-up user message append fails", async () => {
-    const created = await createTask(
-      "inst-1",
-      "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
-      redis,
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await markTaskRunning("inst-1", created.task.task_id, redis);
-    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
-
-    vi.mocked(redis.rpush).mockImplementationOnce(async () => {
-      throw new Error("simulated message write failure");
-    });
-
-    await expect(
-      addUserMessage("inst-1", created.task.task_id, "Here is the info", redis),
-    ).rejects.toThrow("simulated message write failure");
-
-    const task = await getTask("inst-1", created.task.task_id, redis);
-    expect(task?.status).toBe("needs_follow_up");
-  });
-
   it("does not return success when terminal revival user message append fails", async () => {
     const created = await createTask(
       "inst-1",
@@ -1785,40 +1749,6 @@ describe("addUserMessage", () => {
 
     const task = await getTask("inst-1", created.task.task_id, redis);
     expect(task?.status).toBe("completed");
-  });
-
-  it("keeps transition success when follow-up system annotation append fails", async () => {
-    const created = await createTask(
-      "inst-1",
-      "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
-      redis,
-    );
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await markTaskRunning("inst-1", created.task.task_id, redis);
-    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
-
-    const rpushImpl = vi.mocked(redis.rpush).getMockImplementation();
-    let rpushCalls = 0;
-    vi.mocked(redis.rpush).mockImplementation(async (...args: Parameters<typeof redis.rpush>) => {
-      rpushCalls += 1;
-      if (rpushCalls === 2) {
-        throw new Error("simulated system annotation failure");
-      }
-      if (!rpushImpl) return 0;
-      return rpushImpl(...args);
-    });
-
-    const result = await addUserMessage("inst-1", created.task.task_id, "Here is the info", redis);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
-    const lastMessage = messages[messages.length - 1];
-    expect(lastMessage.role).toBe("user");
-    expect(lastMessage.content).toBe("Here is the info");
   });
 
   it("removes TTLs when reviving a completed task", async () => {
