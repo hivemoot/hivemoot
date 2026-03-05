@@ -850,6 +850,46 @@ describe("follow-up workflow", () => {
     expect(fetched?.status).toBe("needs_follow_up");
   });
 
+  it("resets timeout base when resuming a stale needs_follow_up task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Task",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 5,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
+
+    const taskKey = `task:inst-1:${created.task.task_id}`;
+    const stale = redis._kv.get(taskKey) as Record<string, unknown>;
+    redis._kv.set(taskKey, {
+      ...stale,
+      created_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const resumed = await resumeTaskWithFollowUp(
+      "inst-1",
+      created.task.task_id,
+      "Here's what you need",
+      redis,
+    );
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.task.status).toBe("pending");
+    expect(resumed.task.created_at).not.toBe("2020-01-01T00:00:00.000Z");
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("pending");
+  });
+
   it("needs_follow_up tasks do not count against max concurrent limit", async () => {
     // Create and start MAX tasks, then move one to needs_follow_up.
     const tasks = [];
@@ -1395,7 +1435,7 @@ describe("retryTask", () => {
     redis = makeMockRedis();
   });
 
-  it("creates a new pending task from a timed-out task", async () => {
+  it("retries a failed task in-place while preserving request fields", async () => {
     const created = await createTask(
       "inst-1",
       "queen",
@@ -1417,13 +1457,14 @@ describe("retryTask", () => {
     expect(retried.ok).toBe(true);
     if (!retried.ok) return;
 
-    // New task should have a different ID but same prompt/repos/timeout.
-    expect(retried.task.task_id).not.toBe(created.task.task_id);
+    expect(retried.task.task_id).toBe(created.task.task_id);
     expect(retried.task.status).toBe("pending");
     expect(retried.task.prompt).toBe("Retry me");
     expect(retried.task.repos).toEqual(["hivemoot/hivemoot", "hivemoot/colony"]);
     expect(retried.task.timeout_secs).toBe(420);
     expect(retried.task.created_by).toBe("queen");
+    expect(retried.task.error).toBeUndefined();
+    expect(retried.task.finished_at).toBeUndefined();
   });
 
   it("rejects retry of a running task", async () => {
@@ -1512,7 +1553,7 @@ describe("retryTask", () => {
     }
   });
 
-  it("does not modify the original task on retry", async () => {
+  it("resets timeout window when retrying a stale timed-out task", async () => {
     const created = await createTask(
       "inst-1",
       "queen",
@@ -1527,14 +1568,59 @@ describe("retryTask", () => {
     if (!created.ok) return;
 
     await markTaskRunning("inst-1", created.task.task_id, redis);
+    const taskMetaKey = `task:inst-1:${created.task.task_id}`;
+    const stale = redis._kv.get(taskMetaKey) as {
+      created_at: string;
+      started_at?: string;
+      updated_at?: string;
+    };
+    redis._kv.set(taskMetaKey, {
+      ...stale,
+      created_at: "2020-01-01T00:00:00.000Z",
+      started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const timedOut = await getTask("inst-1", created.task.task_id, redis);
+    expect(timedOut?.status).toBe("timed_out");
+
+    const retried = await retryTask("inst-1", created.task.task_id, redis);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+    expect(retried.task.status).toBe("pending");
+    expect(retried.task.created_at).not.toBe("2020-01-01T00:00:00.000Z");
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("pending");
+  });
+
+  it("preserves existing timeline messages when retrying in-place", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+          prompt: "Original",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await appendTaskMessage("inst-1", created.task.task_id, "agent", "Investigating", redis);
     await failTask("inst-1", created.task.task_id, "boom", redis);
 
-    await retryTask("inst-1", created.task.task_id, redis);
+    const beforeRetry = await getTaskMessages("inst-1", created.task.task_id, redis);
+    const retried = await retryTask("inst-1", created.task.task_id, redis);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
 
-    // Original task should still be failed.
-    const original = await getTask("inst-1", created.task.task_id, redis);
-    expect(original?.status).toBe("failed");
-    expect(original?.error).toBe("boom");
+    const afterRetry = await getTaskMessages("inst-1", created.task.task_id, redis);
+    expect(afterRetry.length).toBe(beforeRetry.length + 1);
+    expect(afterRetry[afterRetry.length - 1].role).toBe("system");
+    expect(afterRetry[afterRetry.length - 1].content).toContain("retried");
   });
 
   it("returns not_found for a nonexistent task", async () => {
@@ -1634,7 +1720,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 1 },
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 5 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1648,6 +1734,7 @@ describe("addUserMessage", () => {
     };
     redis._kv.set(taskKey, {
       ...stored,
+      created_at: "2020-01-01T00:00:00.000Z",
       started_at: "2020-01-01T00:00:00.000Z",
       updated_at: "2020-01-01T00:00:00.000Z",
     });
@@ -1661,6 +1748,10 @@ describe("addUserMessage", () => {
 
     expect(result.task.status).toBe("pending");
     expect(result.task.finished_at).toBeUndefined();
+    expect(result.task.created_at).not.toBe("2020-01-01T00:00:00.000Z");
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.status).toBe("pending");
   });
 
   it("rejects message to running task", async () => {

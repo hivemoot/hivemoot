@@ -594,7 +594,12 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         return;
       }
       const data = await res.json();
-      router.push(`/dashboard/tasks/${data.task_id}`);
+      if (data.task) setTask(data.task);
+      if (typeof data.task_id === "string" && data.task_id !== taskId) {
+        router.push(`/dashboard/tasks/${data.task_id}`);
+        return;
+      }
+      await fetchTask();
     } catch {
       setActionError("Could not reach the server.");
     } finally {

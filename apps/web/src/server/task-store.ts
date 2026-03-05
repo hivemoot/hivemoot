@@ -311,6 +311,19 @@ function transitionDeadlineMs(task: StoredTaskRecord): number {
   return Date.now() + task.timeout_secs * 1000;
 }
 
+function requeueTaskToPending(stored: StoredTaskRecord, timestamp: string): StoredTaskRecord {
+  return {
+    ...stored,
+    status: "pending",
+    // Reset lifecycle timestamps so timeout checks use the new attempt window.
+    created_at: timestamp,
+    updated_at: timestamp,
+    started_at: undefined,
+    finished_at: undefined,
+    error: undefined,
+  };
+}
+
 async function withTaskTransitionLock(
   installationId: string,
   taskId: string,
@@ -1075,30 +1088,71 @@ export async function retryTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskRetryResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (!RETRYABLE_STATUSES.has(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
+      if (!RETRYABLE_STATUSES.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const timestamp = nowIso();
+      const nextStored = requeueTaskToPending(stored, timestamp);
+      const progress = "Re-queued via retry";
+
+      await redis
+        .multi()
+        .persist(taskKey(installationId, taskId))
+        .persist(taskProgressKey(installationId, taskId))
+        .persist(taskMessagesKey(installationId, taskId))
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), progress)
+        .zrem(runningKey(installationId), taskId)
+        .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .exec();
+
+      try {
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "system",
+          "Task retried - re-queued.",
+          redis,
+        );
+      } catch (error) {
+        console.error("[tasks] Failed to append retry system message", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof TaskLockTimeoutError) {
+      console.warn("[tasks] Task retry lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
   }
-
-  // Create a new task reusing the original's prompt, repos, and timeout.
-  const result = await createTask(
-    installationId,
-    stored.created_by,
-    {
-      prompt: stored.prompt,
-      repos: stored.repos,
-      timeout_secs: stored.timeout_secs,
-    },
-    redis,
-  );
-
-  if (!result.ok) {
-    return { ok: false, reason: result.reason };
-  }
-
-  return { ok: true, task: result.task };
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,13 +1316,7 @@ export async function resumeTaskWithFollowUp(
       }
 
       const timestamp = nowIso();
-      const nextStored: StoredTaskRecord = {
-        ...stored,
-        status: "pending",
-        updated_at: timestamp,
-        // Clear started_at so the timeout clock resets on the next claim.
-        started_at: undefined,
-      };
+      const nextStored = requeueTaskToPending(stored, timestamp);
 
       await redis
         .multi()
@@ -1374,12 +1422,7 @@ export async function addUserMessage(
       }
 
       const nextStored: StoredTaskRecord = {
-        ...stored,
-        status: "pending",
-        updated_at: timestamp,
-        started_at: undefined,
-        finished_at: undefined,
-        error: undefined,
+        ...requeueTaskToPending(stored, timestamp),
       };
 
       await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
