@@ -13,14 +13,14 @@ export async function POST(request: NextRequest) {
       return new NextResponse(null, { status: 204 });
     }
 
-    // Include full message history so the agent has conversation context
-    // (especially important for follow-up and revived terminal tasks).
-    // Best-effort: if message retrieval fails, return the task anyway
-    // since the agent can still use task.prompt for the initial instruction.
+    // Include full message history so the agent has conversation context.
+    // If this fetch fails, explicitly signal degraded context to the agent.
     let messages: Awaited<ReturnType<typeof getTaskMessages>> = [];
+    let messagesError = false;
     try {
       messages = await getTaskMessages(auth.installationId, claimed.task.task_id, auth.redis);
     } catch (error) {
+      messagesError = true;
       console.error("[tasks] Failed to fetch messages for claimed task", {
         installationId: auth.installationId,
         taskId: claimed.task.task_id,
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ ...claimed, messages });
+    return NextResponse.json({ ...claimed, messages, messagesError });
   } catch (error) {
     console.error("[tasks] Failed to claim pending task", {
       installationId: auth.installationId,

@@ -92,21 +92,23 @@ export type CreateTaskResult =
   | { ok: true; task: TaskRecord }
   | { ok: false; reason: "concurrency_limited" };
 
-export type TaskTransitionResult =
+type TaskMutationFailureReason =
+  | "not_found"
+  | "invalid_transition"
+  | "concurrency_limited"
+  | "lock_timeout";
+type TaskMutationResult =
   | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" | "lock_timeout" };
+  | { ok: false; reason: TaskMutationFailureReason };
 
-export type AddUserMessageResult =
-  | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+export type TaskTransitionResult = TaskMutationResult;
+export type AddUserMessageResult = TaskMutationResult;
 
 export type TaskDeleteResult =
   | { ok: true }
   | { ok: false; reason: "not_found" | "invalid_transition" };
 
-export type TaskRetryResult =
-  | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+export type TaskRetryResult = TaskMutationResult;
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -1150,8 +1152,12 @@ export async function getTaskMessages(
           created_at: parsed.created_at,
         });
       }
-    } catch {
-      // Skip malformed message entries.
+    } catch (error) {
+      console.warn("[tasks] Dropped malformed task message entry", {
+        installationId,
+        taskId,
+        error,
+      });
     }
   }
 
@@ -1350,15 +1356,7 @@ export async function addUserMessage(
           .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
           .exec();
 
-        try {
-          await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
-        } catch (error) {
-          console.error("[tasks] Failed to append user message to pending task", {
-            installationId,
-            taskId,
-            error,
-          });
-        }
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
 
         return {
           ok: true,
@@ -1386,10 +1384,12 @@ export async function addUserMessage(
           .set(taskProgressKey(installationId, taskId), "Re-queued after follow-up")
           .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
           .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+          .del(taskClaimTokenHashKey(installationId, taskId))
           .exec();
 
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
         try {
-          await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
           await appendTaskMessage(
             installationId,
             taskId,
@@ -1398,7 +1398,7 @@ export async function addUserMessage(
             redis,
           );
         } catch (error) {
-          console.error("[tasks] Failed to append follow-up messages (transition committed)", {
+          console.error("[tasks] Failed to append follow-up system message", {
             installationId,
             taskId,
             error,
@@ -1434,17 +1434,19 @@ export async function addUserMessage(
       await redis
         .multi()
         .persist(taskKey(installationId, taskId))
-        .persist(taskResultKey(installationId, taskId))
+        .del(taskResultKey(installationId, taskId))
         .persist(taskProgressKey(installationId, taskId))
         .persist(taskMessagesKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .del(taskClaimTokenHashKey(installationId, taskId))
         .exec();
 
+      await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
       try {
-        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
         await appendTaskMessage(
           installationId,
           taskId,
@@ -1453,7 +1455,7 @@ export async function addUserMessage(
           redis,
         );
       } catch (error) {
-        console.error("[tasks] Failed to append revival messages", {
+        console.error("[tasks] Failed to append revival system message", {
           installationId,
           taskId,
           error,

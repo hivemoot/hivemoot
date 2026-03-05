@@ -54,6 +54,7 @@ describe("POST /api/tasks/claim", () => {
     expect(body.claim_token).toBe("claim-token-abc");
     expect(body.task.task_id).toBe("abc123abc123abc123abc123");
     expect(body.messages).toHaveLength(1);
+    expect(body.messagesError).toBe(false);
     expect(claimNextPendingTask).toHaveBeenCalledWith("inst-1", expect.anything());
     expect(getTaskMessages).toHaveBeenCalledWith(
       "inst-1",
@@ -69,6 +70,34 @@ describe("POST /api/tasks/claim", () => {
     const res = await POST(req);
 
     expect(res.status).toBe(204);
+  });
+
+  it("returns claimed task with messagesError when message fetch fails", async () => {
+    vi.mocked(claimNextPendingTask).mockResolvedValue({
+      claim_token: "claim-token-abc",
+      task: {
+        task_id: "abc123abc123abc123abc123",
+        status: "running",
+        prompt: "Deep analysis",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+        created_by: "queen",
+        created_at: "2026-03-03T12:00:00.000Z",
+        updated_at: "2026-03-03T12:00:00.000Z",
+        started_at: "2026-03-03T12:01:00.000Z",
+        progress: "Running",
+      },
+    });
+    vi.mocked(getTaskMessages).mockRejectedValue(new Error("redis down"));
+
+    const req = new NextRequest("https://example.com/api/tasks/claim", { method: "POST" });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.task.task_id).toBe("abc123abc123abc123abc123");
+    expect(body.messages).toEqual([]);
+    expect(body.messagesError).toBe(true);
   });
 
   it("forwards auth failures", async () => {
