@@ -1601,7 +1601,7 @@ describe("addUserMessage", () => {
     expect(await redis.get(`task:inst-1:${created.task.task_id}:claim-token-hash`)).toBeNull();
     expect(redis._kv.has(`task:inst-1:${created.task.task_id}:result`)).toBe(false);
 
-    const refreshed = await getTask("inst-1", created.task.task_id, redis);
+    await getTask("inst-1", created.task.task_id, redis);
 
     // Task should be claimable again.
     const claimed = await claimNextPendingTask("inst-1", redis);
