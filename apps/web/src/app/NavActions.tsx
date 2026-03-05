@@ -32,7 +32,7 @@ export default function NavActions() {
   if (user) {
     return (
       <a
-        href="/dashboard"
+        href="/api/auth/github/start-discover"
         aria-label={`Continue as @${user}`}
         className="flex items-center gap-2 rounded-full border border-zinc-700/60 bg-zinc-900/70 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:border-honey-500/40 hover:bg-zinc-900"
       >

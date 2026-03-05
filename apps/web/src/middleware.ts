@@ -9,7 +9,7 @@ import { SETUP_SESSION_COOKIE } from "@/constants/cookies";
  * server component for each protected page. This guard prevents the page
  * from rendering for users who have no session token at all.
  *
- * Note: the setup session is short-lived (30 min). Users who return to
+ * Note: the setup session has a 24-hour TTL. Users who return to
  * /dashboard after their session expires will be redirected to /setup.
  * This is expected behavior with the current auth model.
  */

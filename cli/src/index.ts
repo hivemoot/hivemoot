@@ -8,6 +8,9 @@ import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
+import { issueVoteCommand } from "./commands/issue-vote.js";
+import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
+import { notificationsPullCommand } from "./commands/notifications-pull.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -128,6 +131,61 @@ Examples:
   )
   .action(watchCommand);
 
+const issueProgram = program
+  .command("issue")
+  .description("Issue workflow helpers for autonomous agents");
+
+issueProgram
+  .command("vote")
+  .description("Cast a vote on an issue in the voting phase")
+  .argument("<issue>", "Issue number")
+  .argument("<vote>", 'Vote direction: "up" (👍) or "down" (👎)')
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve target without applying reaction")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  vote applied (or already voted — idempotent)
+  2  actionable guard: no_voting_target or conflicting_vote
+  >=3 execution error
+
+Examples:
+  $ hivemoot issue vote 42 up --repo hivemoot/hivemoot --json
+    Vote 👍 on issue #42 and output structured result
+
+  $ hivemoot issue vote 42 down --dry-run
+    Resolve the voting target without casting a vote`,
+  )
+  .action(issueVoteCommand);
+
+issueProgram
+  .command("post-comment")
+  .description("Post a comment on an issue")
+  .argument("<issue>", "Issue number")
+  .option("--body <text>", "Comment body text (mutually exclusive with --body-file)")
+  .option("--body-file <path>", "Read comment body from file (mutually exclusive with --body)")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve without posting the comment")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot issue post-comment 42 --body "LGTM" --repo hivemoot/hivemoot
+    Post a comment on issue #42
+
+  $ hivemoot issue post-comment 42 --body-file ./comment.md --json
+    Post comment from file and output structured result
+
+  $ hivemoot issue post-comment 42 --body "Test" --dry-run
+    Resolve without posting (useful for agent preflight checks)`,
+  )
+  .action(issuePostCommentCommand);
+
 const prProgram = program
   .command("pr")
   .description("Pull request workflow helpers for autonomous agents");
@@ -171,6 +229,37 @@ Examples:
     Evaluate blockers/warnings with deterministic codes`,
   )
   .action(prPreflightCommand);
+
+const notificationsProgram = program
+  .command("notifications")
+  .description("Notification helpers for autonomous agents");
+
+notificationsProgram
+  .command("pull")
+  .description("Fetch unread notifications as a stable JSON payload")
+  .requiredOption("--repo <owner/repo>", "Target repository")
+  .option("--reason <list>", "Comma-separated reason filter (e.g. mention,author), or * for all", "*")
+  .option("--state-file <path>", "Watch state file for cursor-based deduplication")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0   success (including empty notification list)
+  >=3 execution error
+
+Examples:
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --json
+    Fetch all unread notifications as JSON
+
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --reason mention
+    Fetch only mention notifications
+
+  $ hivemoot notifications pull --repo hivemoot/hivemoot --state-file .hivemoot-watch.json
+    Skip notifications already processed by hivemoot watch/ack`,
+  )
+  .action(notificationsPullCommand);
 
 program
   .command("ack")

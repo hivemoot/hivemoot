@@ -11,14 +11,13 @@ type ResolverSuccess = {
   keyVersion: string;
   provider: string;
   model: string;
-  fingerprint: string;
 };
 
 type ResolverFailure = {
   ok: false;
   code:
-    | "byok_not_configured"
-    | "byok_revoked"
+    | typeof BYOK_ERROR.NOT_CONFIGURED
+    | typeof BYOK_ERROR.REVOKED
     | typeof BYOK_ERROR.DECRYPT_FAILED
     | typeof BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE;
 };
@@ -82,7 +81,6 @@ async function writeActiveEnvelope(args: {
   keyring: Map<string, Buffer>;
   provider?: string;
   model?: string;
-  fingerprint?: string;
 }): Promise<ByokEnvelope> {
   const provider = args.provider ?? "anthropic";
   const model = args.model ?? "claude-sonnet-4-20250514";
@@ -102,7 +100,7 @@ async function writeActiveEnvelope(args: {
     status: "active",
     updatedAt: makeNowIso(),
     updatedBy: "guard",
-    fingerprint: args.fingerprint ?? "abcd",
+    fingerprint: "",
   };
 
   await setByokEnvelope(args.installationId, envelope, args.redis);
@@ -185,11 +183,11 @@ async function resolveByokForBot(
 ): Promise<ResolverResult> {
   const envelope = await getByokEnvelope(installationId, redis);
   if (!envelope) {
-    return { ok: false, code: "byok_not_configured" };
+    return { ok: false, code: BYOK_ERROR.NOT_CONFIGURED };
   }
 
   if (envelope.status === "revoked") {
-    return { ok: false, code: "byok_revoked" };
+    return { ok: false, code: BYOK_ERROR.REVOKED };
   }
 
   try {
@@ -212,7 +210,6 @@ async function resolveByokForBot(
       keyVersion: envelope.keyVersion,
       provider: payload.provider,
       model: payload.model,
-      fingerprint: envelope.fingerprint,
     };
   } catch (err) {
     if (err instanceof ByokCryptoError && err.code === BYOK_ERROR.ACTIVE_KEY_VERSION_UNAVAILABLE) {
@@ -339,7 +336,7 @@ describe("BYOK contract acceptance", () => {
     const keyring = parseKeyring(JSON.stringify({ v1: "a".repeat(64) }));
 
     const result = await resolveByokForBot("404", redis, keyring);
-    expect(result).toEqual({ ok: false, code: "byok_not_configured" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.NOT_CONFIGURED });
   });
 
   it("returns byok_revoked without exposing key material", async () => {
@@ -356,13 +353,13 @@ describe("BYOK contract acceptance", () => {
       status: "revoked",
       updatedAt: makeNowIso(),
       updatedBy: "guard",
-      fingerprint: "abcd",
+      fingerprint: "",
     };
 
     await setByokEnvelope("200", revokedEnvelope, redis);
 
     const result = await resolveByokForBot("200", redis, keyring);
-    expect(result).toEqual({ ok: false, code: "byok_revoked" });
+    expect(result).toEqual({ ok: false, code: BYOK_ERROR.REVOKED });
   });
 
   it("fails closed with byok_decrypt_failed when ciphertext is tampered", async () => {
@@ -425,7 +422,6 @@ describe("BYOK contract acceptance", () => {
       plaintextKey: "sk-installation-a",
       keyVersion: "v1",
       keyring,
-      fingerprint: "1111",
     });
 
     await writeActiveEnvelope({
@@ -434,7 +430,6 @@ describe("BYOK contract acceptance", () => {
       plaintextKey: "sk-installation-b",
       keyVersion: "v1",
       keyring,
-      fingerprint: "2222",
     });
 
     const installationA = await resolveByokForBot("501", redis, keyring);
@@ -444,7 +439,6 @@ describe("BYOK contract acceptance", () => {
       expect.objectContaining({
         ok: true,
         key: "sk-installation-a",
-        fingerprint: "1111",
       }),
     );
 
@@ -452,7 +446,6 @@ describe("BYOK contract acceptance", () => {
       expect.objectContaining({
         ok: true,
         key: "sk-installation-b",
-        fingerprint: "2222",
       }),
     );
   });

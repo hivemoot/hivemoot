@@ -10,7 +10,7 @@ import {
   buildMentionEvent,
   isAgentMentioned,
 } from "../github/notifications.js";
-import { loadState, saveState, mergeAckJournal, addProcessedId } from "../watch/state.js";
+import { loadState, saveState, mergeAckJournal, addProcessedId, buildLatestProcessedByThread } from "../watch/state.js";
 
 function log(message: string): void {
   process.stderr.write(`[watch ${new Date().toISOString()}] ${message}\n`);
@@ -38,26 +38,6 @@ function parseIsoMillis(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
-}
-
-function buildLatestProcessedByThread(processedKeys: string[]): Map<string, string> {
-  const byThread = new Map<string, string>();
-
-  for (const key of processedKeys) {
-    const separatorIndex = key.indexOf(":");
-    if (separatorIndex <= 0 || separatorIndex === key.length - 1) continue;
-
-    const threadId = key.slice(0, separatorIndex);
-    const updatedAt = key.slice(separatorIndex + 1);
-    if (parseIsoMillis(updatedAt) === null) continue;
-
-    const existing = byThread.get(threadId);
-    if (!existing || updatedAt > existing) {
-      byThread.set(threadId, updatedAt);
-    }
-  }
-
-  return byThread;
 }
 
 function isCommentAtOrBeforeNotification(
