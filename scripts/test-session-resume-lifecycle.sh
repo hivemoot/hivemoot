@@ -337,7 +337,7 @@ run_run_once() {
     AGENT_AUTH_MODE="api_key" \
     OPENAI_API_KEY="test-openai-key" \
     AGENT_GITHUB_TOKEN="test-gh-token" \
-    AGENT_PROMPT_FILE="${repo_root}/prompts/default.md" \
+    AGENT_PROMPT_FILE="${repo_root}/prompts/system/autonomous.md" \
     WORKSPACE_ROOT="${case_dir}/workspace" \
     REPO_DIR="${case_dir}/repo" \
     LOG_DIR="${case_dir}/logs" \
@@ -457,7 +457,7 @@ run_run_once_claude() {
     AGENT_AUTH_MODE="api_key" \
     ANTHROPIC_API_KEY="test-anthropic-key" \
     AGENT_GITHUB_TOKEN="test-gh-token" \
-    AGENT_PROMPT_FILE="${repo_root}/prompts/default.md" \
+    AGENT_PROMPT_FILE="${repo_root}/prompts/system/autonomous.md" \
     WORKSPACE_ROOT="${case_dir}/workspace" \
     REPO_DIR="${case_dir}/repo" \
     LOG_DIR="${case_dir}/logs" \

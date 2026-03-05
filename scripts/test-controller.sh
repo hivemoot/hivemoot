@@ -453,6 +453,45 @@ run_success_case() {
   echo "PASS: success case writes expected spawn flags and job artifacts"
 }
 
+run_custom_prompt_companion_base_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local prompt_dir="${case_dir}/custom-prompts"
+  local prompt_file="${prompt_dir}/task.md"
+  local base_file="${prompt_dir}/base.md"
+  local run_log=""
+
+  mkdir -p "$prompt_dir"
+  printf 'custom base prompt\n' > "$base_file"
+  printf 'custom task prompt\n' > "$prompt_file"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_PROMPT_FILE="${prompt_file}" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in custom prompt case"
+  assert_file_contains "$run_log" "-e AGENT_PROMPT_FILE=${prompt_file}"
+  assert_file_contains "$run_log" "-v ${prompt_file}:${prompt_file}:ro"
+  assert_file_contains "$run_log" "-v ${base_file}:${base_file}:ro"
+
+  echo "PASS: custom prompt case mounts sibling base prompt"
+}
+
 run_failure_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1474,6 +1513,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
+run_custom_prompt_companion_base_case "$repo_root" "${tmpdir}/custom-prompt-companion-base"
 run_failure_case "$repo_root" "${tmpdir}/failure"
 run_spawn_failure_cleanup_case "$repo_root" "${tmpdir}/spawn-failure"
 run_mentions_case "$repo_root" "${tmpdir}/mentions"

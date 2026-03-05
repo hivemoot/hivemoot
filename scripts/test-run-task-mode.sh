@@ -62,6 +62,7 @@ printf '%s\n' "AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-}" >> "${MOCK_ENV_
 printf '%s\n' "SESSION_RESUME=${SESSION_RESUME:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_GITHUB_TOKEN=${AGENT_GITHUB_TOKEN:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_GITHUB_TOKEN_FILE=${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf '%s\n' "AGENT_PROMPT_FILE=${AGENT_PROMPT_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_EXTRA_PROMPT_START" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_EXTRA_PROMPT_END" >> "${MOCK_ENV_SNAPSHOT:?}"
@@ -200,11 +201,42 @@ run_case_direct_env() {
   assert_file_contains "$result_path" "Execution finished successfully."
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/repo"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=0"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "system/task.md"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "Find auth regressions"
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-abc/execute"
   assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-direct"
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "progress"'
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+}
+
+run_case_preserves_explicit_prompt_override() {
+  local case_dir="${tmp_root}/case-explicit-prompt-override"
+  local result_path="${case_dir}/workspace/task-output/task-custom-prompt/result.md"
+  local custom_prompt="${case_dir}/custom.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  printf 'custom system prompt\n' > "$custom_prompt"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_ID="task-custom-prompt" \
+    AGENT_TASK_PROMPT="Use my custom system prompt" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROMPT_FILE="$custom_prompt" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "Execution finished successfully."
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_PROMPT_FILE=${custom_prompt}"
+  assert_file_not_contains "$MOCK_ENV_SNAPSHOT" "system/task.md"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Use my custom system prompt"
 }
 
 run_case_direct_env_messages_file() {
@@ -750,6 +782,7 @@ LOG
 }
 
 run_case_direct_env
+run_case_preserves_explicit_prompt_override
 run_case_direct_env_messages_file
 run_case_claim_mode
 run_case_slot_token_file_bridge

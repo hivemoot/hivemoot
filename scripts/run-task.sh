@@ -302,14 +302,29 @@ unset AGENT_SESSION_KEY || true
 # hivemoot.yml.  Clear the role so run-once.sh skips role resolution.
 unset HIVEMOOT_BUZZ_ROLE || true
 
-# Preserve system guardrails from AGENT_PROMPT_FILE/default and inject task
-# details as user instructions through AGENT_EXTRA_PROMPT.
+# Task mode uses a focused system prompt by default, but preserves an explicit
+# AGENT_PROMPT_FILE override for operators who provide their own system prompt.
+if [ -z "${AGENT_PROMPT_FILE:-}" ]; then
+  task_system_prompt="/opt/hivemoot-agent/prompts/system/task.md"
+  if [ ! -f "$task_system_prompt" ]; then
+    source_tree_system_prompt="${SCRIPT_DIR}/../prompts/system/task.md"
+    if [ -f "$source_tree_system_prompt" ]; then
+      task_system_prompt="$source_tree_system_prompt"
+    fi
+  fi
+  if [ -f "$task_system_prompt" ]; then
+    export AGENT_PROMPT_FILE="$task_system_prompt"
+  fi
+fi
+
+# Preserve system guardrails from the default task prompt or an explicit
+# AGENT_PROMPT_FILE override, and inject task details as user instructions.
 base_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
-task_prompt_template_default="/opt/hivemoot-agent/prompts/task.md"
+task_prompt_template_default="/opt/hivemoot-agent/prompts/messages/task.md"
 task_prompt_template="${AGENT_TASK_PROMPT_FILE:-$task_prompt_template_default}"
 if [ ! -f "$task_prompt_template" ]; then
   # Source-tree runs (tests/local debugging) do not have /opt paths mounted.
-  source_tree_prompt_template="${SCRIPT_DIR}/../prompts/task.md"
+  source_tree_prompt_template="${SCRIPT_DIR}/../prompts/messages/task.md"
   if [ -f "$source_tree_prompt_template" ]; then
     task_prompt_template="$source_tree_prompt_template"
   else

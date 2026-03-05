@@ -116,7 +116,7 @@ log "Randomized launch order: ${agent_ids[*]}"
 preflight_check() {
   local provider="${AGENT_PROVIDER:-claude}"
   local auth_mode="${AGENT_AUTH_MODE:-auto}"
-  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+  local prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
   local failures=0
 
   log "Pre-flight: validating configuration"
@@ -127,10 +127,18 @@ preflight_check() {
     failures=$((failures + 1))
   fi
 
-  # Prompt file exists
   if [ ! -f "$prompt_file" ]; then
     echo "Pre-flight: prompt file not found: ${prompt_file}" >&2
     failures=$((failures + 1))
+  else
+    # Built-in prompts require the shared base prompt; standalone custom
+    # prompts remain valid without a sibling base.md.
+    if ! resolve_companion_base_prompt "$prompt_file" >/dev/null; then
+      if prompt_requires_companion_base "$prompt_file"; then
+        echo "Pre-flight: base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+        failures=$((failures + 1))
+      fi
+    fi
   fi
 
   # Provider auth check

@@ -221,7 +221,7 @@ RUN_MODE=task docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agen
 
 Task mode is intentionally a thin wrapper over `run-once.sh`:
 - same provider/auth selection
-- same prompt guardrails from `AGENT_PROMPT_FILE` / default prompt
+- same task prompt assembly path, using `prompts/system/task.md` by default or `AGENT_PROMPT_FILE` when explicitly overridden
 - same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
 - same repo clone/logging behavior
 - plus optional liveness heartbeats to keep backend task timeout aligned with active work
@@ -516,8 +516,9 @@ Override the built-in system prompt by setting `AGENT_PROMPT_FILE` in `.env`:
 AGENT_PROMPT_FILE=/opt/hivemoot-agent/prompts/custom.md
 ```
 
-The path must be absolute inside the container. To make a custom prompt available,
-mount it via a volume in `docker-compose.override.yml`:
+The path must be absolute inside the container.
+
+For a standalone full prompt file, mount that file in `docker-compose.override.yml`:
 
 ```yaml
 services:
@@ -526,10 +527,34 @@ services:
       - ./my-prompt.md:/opt/hivemoot-agent/prompts/custom.md:ro
 ```
 
-Custom prompts must preserve the non-overridable security guardrails from
-`prompts/default.md` (or an equivalent section with the same protections).
+For a mode-specific prompt with a sibling `base.md`, point `AGENT_PROMPT_FILE`
+at the mode-specific file and mount the containing directory (or both files):
 
-When unset, agents use the default prompt at `prompts/default.md`.
+```bash
+AGENT_PROMPT_FILE=/opt/hivemoot-agent/prompts/custom/task.md
+```
+
+```yaml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./my-prompts:/opt/hivemoot-agent/prompts/custom:ro
+```
+
+Custom prompts can be either:
+- a standalone full system prompt file
+- a mode-specific prompt that sits beside a shared `base.md`
+
+Standalone custom prompts must preserve the non-overridable security guardrails
+from `prompts/system/base.md` (or an equivalent section with the same
+protections).
+
+`scripts/controller.sh` also supports the two-file layout and automatically
+mounts a sibling `base.md` when it exists next to the host `AGENT_PROMPT_FILE`.
+
+When unset, standing agents use `prompts/system/autonomous.md` (prepended by
+`prompts/system/base.md`) and task mode uses `prompts/system/task.md`
+(also prepended by `prompts/system/base.md`).
 
 ## Optional Override Services
 

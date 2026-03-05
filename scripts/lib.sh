@@ -216,6 +216,35 @@ validate_workspace_root() {
   esac
 }
 
+resolve_companion_base_prompt() {
+  local prompt_file="$1"
+  local sibling_base_file=""
+
+  sibling_base_file="$(dirname "$prompt_file")/base.md"
+  if [ "$sibling_base_file" = "$prompt_file" ]; then
+    return 1
+  fi
+
+  if [ -f "$sibling_base_file" ]; then
+    printf '%s' "$sibling_base_file"
+    return 0
+  fi
+
+  return 1
+}
+
+prompt_requires_companion_base() {
+  local prompt_file="$1"
+
+  case "$prompt_file" in
+    /opt/hivemoot-agent/prompts/system/autonomous.md|/opt/hivemoot-agent/prompts/system/task.md)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 validate_agent_id() {
   local agent_id="$1"
 

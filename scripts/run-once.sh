@@ -260,7 +260,7 @@ hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
-prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
+prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -445,10 +445,23 @@ if [ ! -f "$prompt_file" ]; then
   exit 1
 fi
 
-# Build system instructions (base prompt + role) separately from task context
-# (extra_prompt). Claude uses --append-system-prompt for the former and the
-# user message for the latter; other providers concatenate everything.
+base_prompt_file=""
+if base_prompt_file="$(resolve_companion_base_prompt "$prompt_file")"; then
+  :
+elif prompt_requires_companion_base "$prompt_file"; then
+  echo "Base prompt file not found: $(dirname "$prompt_file")/base.md" >&2
+  exit 1
+fi
+
+# Build system instructions separately from task context (extra_prompt). When
+# a companion base prompt exists, prepend it to the mode-specific prompt;
+# standalone custom prompts continue to work as a complete system prompt.
 system_prompt="$(cat "$prompt_file")"
+if [ -n "$base_prompt_file" ]; then
+  system_prompt="$(cat "$base_prompt_file")
+
+$(cat "$prompt_file")"
+fi
 if [ -n "$hivemoot_buzz_role" ]; then
   role_prompt_block=""
   if ! role_prompt_block="$(resolve_role_prompt_block "$hivemoot_buzz_role" "$target_repo")"; then

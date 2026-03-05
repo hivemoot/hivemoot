@@ -224,6 +224,7 @@ spawn_worker() {
 
   local container_name="${worker_name_prefix}-${job_id}"
   local prompt_file="${AGENT_PROMPT_FILE:-}"
+  local companion_base_prompt=""
   local worker_run_mode="once"
 
   if [ "$trigger_type" = "task" ]; then
@@ -332,6 +333,9 @@ spawn_worker() {
         return 1
         ;;
     esac
+    if companion_base_prompt="$(resolve_companion_base_prompt "$prompt_file")"; then
+      docker_run_args+=( -v "${companion_base_prompt}:${companion_base_prompt}:ro" )
+    fi
     docker_run_args+=( -v "${prompt_file}:${prompt_file}:ro" )
   fi
 
