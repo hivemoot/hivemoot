@@ -160,6 +160,10 @@ function makeMockRedis() {
       multiOps.push(() => client.zrem(...args));
       return pipeline;
     }),
+    persist: vi.fn((...args: Parameters<typeof client.persist>) => {
+      multiOps.push(() => client.persist(...args));
+      return pipeline;
+    }),
     exec: vi.fn(async () => {
       const results: unknown[] = [];
       for (const op of multiOps) {
@@ -1615,7 +1619,7 @@ describe("addUserMessage", () => {
     // Task should be claimable again.
     const claimed = await claimNextPendingTask("inst-1", redis);
     expect(claimed).not.toBeNull();
-    expect(claimed?.task_id).toBe(created.task.task_id);
+    expect(claimed?.task.task_id).toBe(created.task.task_id);
   });
 
   it("revives failed task to pending", async () => {
@@ -1684,6 +1688,35 @@ describe("addUserMessage", () => {
 
     // TTLs should be removed by persist().
     expect(redis._ttl.has(taskTtlKey)).toBe(false);
+  });
+
+  it("does not return success when terminal TTL removal fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    const taskTtlKey = `task:inst-1:${created.task.task_id}`;
+    expect(redis._ttl.has(taskTtlKey)).toBe(true);
+
+    vi.mocked(redis.persist).mockImplementationOnce(async () => {
+      throw new Error("simulated persist failure");
+    });
+
+    await expect(
+      addUserMessage("inst-1", created.task.task_id, "Reopen", redis),
+    ).rejects.toThrow("simulated persist failure");
+
+    const taskAfterFailure = await getTask("inst-1", created.task.task_id, redis);
+    expect(taskAfterFailure?.status).toBe("completed");
+    expect(redis._ttl.has(taskTtlKey)).toBe(true);
   });
 
   it("respects concurrency limit when reviving terminal task", async () => {

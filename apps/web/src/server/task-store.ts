@@ -1319,19 +1319,6 @@ export async function resumeTaskWithFollowUp(
 // User messages (chat-like interface)
 // ---------------------------------------------------------------------------
 
-async function removeTaskTtls(
-  installationId: string,
-  taskId: string,
-  redis: Redis,
-): Promise<void> {
-  await Promise.all([
-    redis.persist(taskKey(installationId, taskId)),
-    redis.persist(taskResultKey(installationId, taskId)),
-    redis.persist(taskProgressKey(installationId, taskId)),
-    redis.persist(taskMessagesKey(installationId, taskId)),
-  ]);
-}
-
 export async function addUserMessage(
   installationId: string,
   taskId: string,
@@ -1442,24 +1429,19 @@ export async function addUserMessage(
         error: undefined,
       };
 
+      // Clear terminal TTLs in the same transaction as the state transition so
+      // success guarantees the revived task will not expire mid-run.
       await redis
         .multi()
+        .persist(taskKey(installationId, taskId))
+        .persist(taskResultKey(installationId, taskId))
+        .persist(taskProgressKey(installationId, taskId))
+        .persist(taskMessagesKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();
-
-      // Remove TTLs set by finalizeTask so data doesn't expire mid-run.
-      try {
-        await removeTaskTtls(installationId, taskId, redis);
-      } catch (error) {
-        console.error("[tasks] Failed to remove TTLs on terminal revival", {
-          installationId,
-          taskId,
-          error,
-        });
-      }
 
       try {
         await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
