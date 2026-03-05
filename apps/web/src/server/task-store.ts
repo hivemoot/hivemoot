@@ -10,7 +10,6 @@ export const TASK_CREATE_RATE_LIMIT_PER_MINUTE = 10;
 const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
-const MAX_RESULT_CHARS = 128_000;
 const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
 const TASK_LOCK_TTL_SECONDS = 5;
@@ -40,7 +39,7 @@ export interface TaskMessage {
   created_at: string;
 }
 
-const MAX_MESSAGE_CONTENT_CHARS = 8000;
+const MAX_MESSAGE_CONTENT_CHARS = 128_000;
 const MAX_MESSAGES_PER_TASK = 200;
 
 export interface TaskRecord {
@@ -56,7 +55,6 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-  result?: string;
 }
 
 export interface ClaimedTask {
@@ -124,10 +122,6 @@ class TaskLockTimeoutError extends Error {
 
 function taskKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}`;
-}
-
-function taskResultKey(installationId: string, taskId: string): string {
-  return `task:${installationId}:${taskId}:result`;
 }
 
 function taskProgressKey(installationId: string, taskId: string): string {
@@ -348,7 +342,6 @@ async function cleanupMissingTask(
     .zrem(pendingKey(installationId), taskId)
     .zrem(runningKey(installationId), taskId)
     .zrem(recentKey(installationId), taskId)
-    .del(taskResultKey(installationId, taskId))
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
     .del(taskClaimTokenHashKey(installationId, taskId))
@@ -378,16 +371,12 @@ async function buildTaskRecord(
   stored: StoredTaskRecord,
   redis: Redis,
 ): Promise<TaskRecord> {
-  const [resultRaw, progressRaw] = await Promise.all([
-    redis.get(taskResultKey(installationId, stored.task_id)),
-    redis.get(taskProgressKey(installationId, stored.task_id)),
-  ]);
+  const progressRaw = await redis.get(taskProgressKey(installationId, stored.task_id));
 
   const task: TaskRecord = {
     ...stored,
   };
 
-  if (typeof resultRaw === "string") task.result = resultRaw;
   if (typeof progressRaw === "string") task.progress = progressRaw;
 
   return task;
@@ -412,14 +401,18 @@ async function maybeTimeoutTask(
   const deadlineMs = transitionDeadlineMs(stored);
   if (Date.now() <= deadlineMs) return stored;
 
-  const timeoutMessage = `Timed out after ${stored.timeout_secs} seconds`;
+  const errorDetail = `Timed out after ${stored.timeout_secs} seconds`;
+  const timestamp = nowIso();
   const timedOut = await finalizeTask(
     installationId,
     stored.task_id,
     "timed_out",
     {
-      error: timeoutMessage,
-      progress: timeoutMessage,
+      error: errorDetail,
+      progress: errorDetail,
+      messages: [
+        { role: "system", content: "Task timed out.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -615,8 +608,8 @@ async function finalizeTask(
   status: Extract<TaskStatus, "completed" | "failed" | "timed_out">,
   options: {
     error?: string;
-    result?: string;
     progress?: string;
+    messages?: TaskMessage[];
   },
   redis: Redis,
   allowedFrom: Set<TaskStatus>,
@@ -632,6 +625,14 @@ async function finalizeTask(
 
       if (!allowedFrom.has(stored.status)) {
         return { ok: false, reason: "invalid_transition" };
+      }
+
+      // Append timeline messages before the status change so they are
+      // visible when consumers see the terminal status.
+      if (options.messages && options.messages.length > 0) {
+        for (const msg of options.messages) {
+          await appendTaskMessageRaw(installationId, taskId, msg, redis);
+        }
       }
 
       const timestamp = nowIso();
@@ -652,24 +653,15 @@ async function finalizeTask(
             ? "Timed out"
             : "Failed";
 
-      const multi = redis
+      await redis
         .multi()
         .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
         .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
         .zrem(pendingKey(installationId), taskId)
         .zrem(runningKey(installationId), taskId)
         .del(taskClaimTokenHashKey(installationId, taskId))
-        .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
-
-      if (typeof options.result === "string") {
-        multi.set(
-          taskResultKey(installationId, taskId),
-          sanitizeText(options.result, MAX_RESULT_CHARS),
-          { ex: ttl },
-        );
-      }
-
-      await multi.exec();
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
 
       // Best-effort: expire the messages list alongside the task data.
       // The task has already been finalized so a failure here must not propagate.
@@ -688,9 +680,6 @@ async function finalizeTask(
         task: {
           ...nextStored,
           progress,
-          result: typeof options.result === "string"
-            ? sanitizeText(options.result, MAX_RESULT_CHARS)
-            : undefined,
         },
       };
     },
@@ -859,13 +848,19 @@ export async function completeTask(
   result: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+  const sanitizedResult = sanitizeText(result, MAX_MESSAGE_CONTENT_CHARS);
+
   return finalizeTask(
     installationId,
     taskId,
     "completed",
     {
-      result,
       progress: "Completed",
+      messages: [
+        { role: "agent", content: sanitizedResult, created_at: timestamp },
+        { role: "system", content: "Task completed.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -878,6 +873,8 @@ export async function failTask(
   error: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+
   return finalizeTask(
     installationId,
     taskId,
@@ -885,6 +882,9 @@ export async function failTask(
     {
       error,
       progress: error,
+      messages: [
+        { role: "system", content: `Task failed: ${sanitizeText(error, MAX_MESSAGE_CONTENT_CHARS)}`, created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -896,6 +896,8 @@ export async function timeoutTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+
   return finalizeTask(
     installationId,
     taskId,
@@ -903,6 +905,9 @@ export async function timeoutTask(
     {
       error: "Timed out",
       progress: "Timed out",
+      messages: [
+        { role: "system", content: "Task timed out.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -1052,7 +1057,6 @@ export async function deleteTask(
     await redis
       .multi()
       .del(taskKey(installationId, taskId))
-      .del(taskResultKey(installationId, taskId))
       .del(taskProgressKey(installationId, taskId))
       .del(taskMessagesKey(installationId, taskId))
       .zrem(pendingKey(installationId), taskId)
