@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Markdown from "react-markdown";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -260,6 +261,47 @@ function isRetryable(status: string): boolean {
 
 function isDeletable(status: string): boolean {
   return status === "pending" || isTerminal(status);
+}
+
+// ---------------------------------------------------------------------------
+// Markdown renderer
+// ---------------------------------------------------------------------------
+
+function MarkdownContent({ children, className }: { children: string; className?: string }) {
+  return (
+    <div className={`text-sm text-zinc-300 ${className ?? ""}`}>
+      <Markdown
+        components={{
+          h1: ({ children: c }) => <h1 className="mb-2 mt-4 text-base font-bold text-[#fafafa]">{c}</h1>,
+          h2: ({ children: c }) => <h2 className="mb-1.5 mt-3 text-sm font-bold text-[#fafafa]">{c}</h2>,
+          h3: ({ children: c }) => <h3 className="mb-1 mt-2 text-sm font-semibold text-zinc-200">{c}</h3>,
+          p: ({ children: c }) => <p className="my-1.5">{c}</p>,
+          ul: ({ children: c }) => <ul className="my-1.5 ml-4 list-disc">{c}</ul>,
+          ol: ({ children: c }) => <ol className="my-1.5 ml-4 list-decimal">{c}</ol>,
+          li: ({ children: c }) => <li className="mt-0.5">{c}</li>,
+          code: ({ className: codeClass, children: c }) => (
+            codeClass
+              ? <code className={`${codeClass} font-mono text-xs`}>{c}</code>
+              : <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-xs">{c}</code>
+          ),
+          pre: ({ children: c }) => (
+            <pre className="my-2 overflow-auto rounded-lg bg-black/30 p-3 text-xs">{c}</pre>
+          ),
+          a: ({ href, children: c }) => (
+            <a href={href} className="text-honey-500 hover:underline" target="_blank" rel="noopener noreferrer">{c}</a>
+          ),
+          strong: ({ children: c }) => <strong className="font-semibold text-[#fafafa]">{c}</strong>,
+          em: ({ children: c }) => <em className="italic text-zinc-400">{c}</em>,
+          blockquote: ({ children: c }) => (
+            <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 italic text-zinc-500">{c}</blockquote>
+          ),
+          hr: () => <hr className="my-3 border-white/10" />,
+        }}
+      >
+        {children}
+      </Markdown>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -619,9 +661,9 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         {task.result && (
           <div className="mt-4 border-t border-white/[0.06] pt-4">
             <h4 className="mb-2 text-xs font-semibold text-zinc-500">Result</h4>
-            <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-4 text-xs text-zinc-300">
-              {task.result}
-            </pre>
+            <div className="max-h-96 overflow-auto rounded-lg bg-black/30 px-4 py-3">
+              <MarkdownContent>{task.result}</MarkdownContent>
+            </div>
           </div>
         )}
       </div>
@@ -669,9 +711,13 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                       {formatTime(msg.created_at)}
                     </span>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-300">
-                    {msg.content}
-                  </p>
+                  {msg.role === "agent" ? (
+                    <MarkdownContent className="mt-1">{msg.content}</MarkdownContent>
+                  ) : (
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-300">
+                      {msg.content}
+                    </p>
+                  )}
                 </div>
               </div>
             ))}
