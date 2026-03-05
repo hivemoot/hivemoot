@@ -54,18 +54,18 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     continue
   fi
 
-  if [[ "$line" =~ (CVE-[0-9]{4}-[0-9]+) ]]; then
-    cve="${BASH_REMATCH[1]}"
-    entries+="${cve}"$'\t'"${pending_expiry}"$'\n'
+  if [[ "$line" =~ (CVE-[0-9]{4}-[0-9]+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}) ]]; then
+    vuln_id="${BASH_REMATCH[1]}"
+    entries+="${vuln_id}"$'\t'"${pending_expiry}"$'\n'
     pending_expiry=""
   fi
 done < "$ignore_file"
 entries="${entries%$'\n'}"
 
-ignored_cves="$(printf '%s\n' "$entries" | cut -f1 | grep -E '^CVE-[0-9]{4}-[0-9]+$' | sort -u || true)"
+ignored_ids="$(printf '%s\n' "$entries" | cut -f1 | grep -E '^(CVE-[0-9]{4}-[0-9]+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})$' | sort -u || true)"
 
-if [ -z "$ignored_cves" ]; then
-  echo "No CVEs listed in $ignore_file"
+if [ -z "$ignored_ids" ]; then
+  echo "No vulnerability IDs listed in $ignore_file"
   exit 0
 fi
 
@@ -75,11 +75,11 @@ present_cves="$(jq -r '
   | select(has("VulnerabilityID"))
   | .VulnerabilityID
 ' "$report_file" \
-  | { grep -E '^CVE-[0-9]{4}-[0-9]+$' || true; } \
+  | { grep -E '^(CVE-[0-9]{4}-[0-9]+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})$' || true; } \
   | sort -u)"
 
 stale_cves="$(comm -23 \
-  <(printf '%s\n' "$ignored_cves") \
+  <(printf '%s\n' "$ignored_ids") \
   <(printf '%s\n' "$present_cves"))"
 
 exit_code=0
@@ -95,30 +95,30 @@ if [ -n "$invalid_expiries" ]; then
 fi
 
 if [ -n "$stale_cves" ]; then
-  echo "Stale CVE suppressions found in $ignore_file:" >&2
-  while IFS= read -r cve; do
-    [ -n "$cve" ] || continue
-    echo "  - $cve" >&2
+  echo "Stale vulnerability suppressions found in $ignore_file:" >&2
+  while IFS= read -r vuln_id; do
+    [ -n "$vuln_id" ] || continue
+    echo "  - $vuln_id" >&2
   done <<< "$stale_cves"
   echo "Remove stale entries or rerun Trivy if the report is outdated." >&2
   exit_code=1
 fi
 
 expired_entries="$(
-  while IFS=$'\t' read -r cve expiry; do
-    [ -n "$cve" ] || continue
+  while IFS=$'\t' read -r vuln_id expiry; do
+    [ -n "$vuln_id" ] || continue
     [ -n "$expiry" ] || continue
     if [[ "$expiry" < "$today_utc" ]]; then
-      printf '%s\t%s\n' "$cve" "$expiry"
+      printf '%s\t%s\n' "$vuln_id" "$expiry"
     fi
   done <<< "$entries"
 )"
 
 if [ -n "$expired_entries" ]; then
-  echo "Expired CVE suppressions found in $ignore_file (today: $today_utc UTC):" >&2
-  while IFS=$'\t' read -r cve expiry; do
-    [ -n "$cve" ] || continue
-    echo "  - $cve (expired $expiry)" >&2
+  echo "Expired vulnerability suppressions found in $ignore_file (today: $today_utc UTC):" >&2
+  while IFS=$'\t' read -r vuln_id expiry; do
+    [ -n "$vuln_id" ] || continue
+    echo "  - $vuln_id (expired $expiry)" >&2
   done <<< "$expired_entries"
   echo "Update or remove expired entries and rerun validation." >&2
   exit_code=1
@@ -128,4 +128,4 @@ if [ "$exit_code" -ne 0 ]; then
   exit "$exit_code"
 fi
 
-echo "All CVEs in $ignore_file are present in $report_file and have valid expiries"
+echo "All vulnerability suppressions in $ignore_file are present in $report_file and have valid expiries"

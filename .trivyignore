@@ -3,3 +3,15 @@
 # exp:2026-04-30
 CVE-2026-27903
 CVE-2026-27904
+
+# tar Hardlink Path Traversal — transitive dep of a provider CLI (tar < 7.5.10).
+# Drive-relative linkpath attack is Windows-specific; not exploitable in Linux containers.
+# Track in #295. Remove once upstream provider releases a version pinning tar >= 7.5.10.
+# exp:2026-05-30
+GHSA-qffp-2rhf-9h96
+
+# docker/cli Uncontrolled Search Path in plugin loading — embedded in the gh CLI Go binary.
+# Requires a malicious plugin in PATH; not applicable in our container runtime context.
+# Remove once gh ships a release embedding docker/cli >= 29.2.0.
+# exp:2026-05-30
+CVE-2025-15558

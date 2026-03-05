@@ -122,4 +122,29 @@ CVE-2025-10001
 EOF
 expect_fail "invalid calendar expiry date" "$ignore_invalid_date" "$report_file"
 
+report_file_ghsa="$tmpdir/report-ghsa.json"
+write_report "$report_file_ghsa" \
+  "GHSA-qffp-2rhf-9h96" \
+  "CVE-2025-10001"
+
+ignore_ghsa_present="$tmpdir/ghsa-present.trivyignore"
+cat > "$ignore_ghsa_present" <<EOF
+# exp:$tomorrow_utc
+GHSA-qffp-2rhf-9h96
+EOF
+expect_pass "GHSA entry present in report" "$ignore_ghsa_present" "$report_file_ghsa"
+
+ignore_ghsa_stale="$tmpdir/ghsa-stale.trivyignore"
+cat > "$ignore_ghsa_stale" <<'EOF'
+GHSA-0000-0000-0000
+EOF
+expect_fail "GHSA stale suppression not found in report" "$ignore_ghsa_stale" "$report_file_ghsa"
+
+ignore_ghsa_expired="$tmpdir/ghsa-expired.trivyignore"
+cat > "$ignore_ghsa_expired" <<EOF
+# exp:$yesterday_utc
+GHSA-qffp-2rhf-9h96
+EOF
+expect_fail "GHSA expired entry" "$ignore_ghsa_expired" "$report_file_ghsa"
+
 echo "All trivyignore checks passed"
