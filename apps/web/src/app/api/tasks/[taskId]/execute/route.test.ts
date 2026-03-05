@@ -191,6 +191,20 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     expect(res.status).toBe(429);
     const body = await res.json();
     expect(body.code).toBe("task_concurrency_limited");
+    expect(body.message).toBe("Maximum concurrent tasks reached (3)");
+  });
+
+  it("returns a distinct 429 when lock acquisition times out", async () => {
+    vi.mocked(setTaskProgress).mockResolvedValue({
+      ok: false,
+      reason: "lock_timeout",
+    });
+
+    const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }));
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe("task_lock_timeout");
+    expect(body.message).toBe("Task state is temporarily busy, retry shortly");
   });
 
   it("returns 403 when claim token is missing", async () => {

@@ -94,7 +94,7 @@ export type CreateTaskResult =
 
 export type TaskTransitionResult =
   | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" | "lock_timeout" };
 
 export type TaskDeleteResult =
   | { ok: true }
@@ -326,7 +326,7 @@ async function withTaskTransitionLock(
         installationId,
         taskId,
       });
-      return { ok: false, reason: "concurrency_limited" };
+      return { ok: false, reason: "lock_timeout" };
     }
     throw error;
   }

@@ -52,6 +52,14 @@ function toTransitionResponse(result: TaskTransitionResult) {
     );
   }
 
+  if (result.reason === "lock_timeout") {
+    return taskError(
+      TASK_ERROR.LOCK_TIMEOUT,
+      "Task state is temporarily busy, retry shortly",
+      429,
+    );
+  }
+
   return taskError(
     TASK_ERROR.CONCURRENCY_LIMITED,
     "Maximum concurrent tasks reached (3)",
