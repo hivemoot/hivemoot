@@ -207,6 +207,33 @@ cleanup_job_home_credentials() {
   rmdir "${job_home}/.codex" 2>/dev/null || true
 }
 
+# POST action=fail to the task execute endpoint from the controller.
+# Safety net for crashes/OOM where run-task.sh exits before self-reporting.
+# Best-effort: errors are logged but never affect the caller's flow.
+#
+# Requires globals: task_execute_base_url, task_executor_token
+report_task_failure_from_controller() {
+  local task_id="$1"
+  local exit_code="$2"
+  local url=""
+  local payload=""
+
+  if [ -z "${task_execute_base_url:-}" ] || [ -z "${task_executor_token:-}" ]; then
+    return 0
+  fi
+
+  url="${task_execute_base_url%/}/${task_id}/execute"
+  payload="$(jq -cn --arg action "fail" --arg error "Worker exited with code ${exit_code}" \
+    '{action: $action, error: $error}')"
+
+  curl -sf -X POST "$url" \
+    -H "Authorization: Bearer ${task_executor_token}" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    --max-time 10 \
+    >/dev/null 2>&1
+}
+
 spawn_worker() {
   local job_id="$1"
   local repo="$2"
@@ -1231,6 +1258,16 @@ run_job() {
         exit_code=125
         ;;
     esac
+  fi
+
+  # Task failure reporting: safety net for crashes/OOM where run-task.sh
+  # could not self-report. Best-effort: errors never affect the run outcome.
+  if [ "$exit_code" -ne 0 ] && [ "$trigger_type" = "task" ] && [ -n "$task_id" ]; then
+    if report_task_failure_from_controller "$task_id" "$exit_code"; then
+      log "Task failure reported to backend: task_id=${task_id} exit_code=${exit_code}"
+    else
+      log "Task failure report to backend failed (best-effort): task_id=${task_id} exit_code=${exit_code}"
+    fi
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
