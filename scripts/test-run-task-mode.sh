@@ -207,6 +207,44 @@ run_case_direct_env() {
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
 }
 
+run_case_direct_env_messages_file() {
+  local case_dir="${tmp_root}/case-direct-messages-file"
+  local result_path="${case_dir}/workspace/task-output/task-msg-file/result.md"
+  local messages_file="${case_dir}/messages.json"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  cat > "$messages_file" <<'JSON'
+[
+  {"role":"user","content":"Original task details","created_at":"2026-03-05T03:00:00.000Z"},
+  {"role":"system","content":"Task reopened by user","created_at":"2026-03-05T03:05:00.000Z"}
+]
+JSON
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-msg-file" \
+    AGENT_TASK_ID="task-msg-file" \
+    AGENT_TASK_PROMPT="Use complete timeline context" \
+    AGENT_TASK_MESSAGES_FILE="$messages_file" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "Execution finished successfully."
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "## Conversation Context"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Original task details"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Task reopened by user"
+}
+
 run_case_claim_mode() {
   local case_dir="${tmp_root}/case-claim"
   local result_path="${case_dir}/workspace/task-output/claimed-42/result.md"
@@ -216,7 +254,7 @@ run_case_claim_mode() {
   export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
   export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
   export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-42","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-42"}'
+  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-42","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-42","messages":[{"role":"user","content":"Original prompt from user","created_at":"2026-03-05T03:00:00.000Z"},{"role":"system","content":"Task was reopened","created_at":"2026-03-05T03:05:00.000Z"}]}'
   : > "$MOCK_CURL_CALLS"
   : > "$MOCK_RUN_ONCE_CALLS"
 
@@ -236,6 +274,9 @@ run_case_claim_mode() {
   assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-42"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/claimed"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_TIMEOUT_SECONDS=333"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "## Conversation Context"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Original prompt from user"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Task was reopened"
 }
 
 run_case_slot_token_file_bridge() {
@@ -709,6 +750,7 @@ LOG
 }
 
 run_case_direct_env
+run_case_direct_env_messages_file
 run_case_claim_mode
 run_case_slot_token_file_bridge
 run_case_claim_repo_mismatch

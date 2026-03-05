@@ -47,6 +47,8 @@ task_id="${AGENT_TASK_ID:-}"
 task_prompt="${AGENT_TASK_PROMPT:-}"
 task_repo="${TARGET_REPO:-}"
 task_claim_token="${AGENT_TASK_CLAIM_TOKEN:-}"
+task_messages_file="${AGENT_TASK_MESSAGES_FILE:-}"
+task_messages_tmp_file=""
 target_repo_preset="$task_repo"
 
 executor_token="${HIVEMOOT_AGENT_TOKEN:-}"
@@ -95,6 +97,14 @@ request_task_claim() {
   task_id="$(jq -r '.task.task_id // empty' < "$response_file")"
   task_prompt="$(jq -r '.task.prompt // empty' < "$response_file")"
   task_claim_token="$(jq -r '.claim_token // empty' < "$response_file")"
+  task_messages_tmp_file="$(mktemp)"
+  if ! jq -c '(.messages // []) | if type=="array" then . else [] end' < "$response_file" > "$task_messages_tmp_file"; then
+    echo "Claimed task response has invalid messages payload." >&2
+    rm -f "$response_file" "$task_messages_tmp_file"
+    task_messages_tmp_file=""
+    exit 1
+  fi
+  task_messages_file="$task_messages_tmp_file"
 
   repos_count="$(jq -r '(.task.repos | length) // 0' < "$response_file")"
   if [ "$repos_count" -ne 1 ]; then
@@ -120,6 +130,36 @@ request_task_claim() {
   fi
 
   rm -f "$response_file"
+}
+
+render_task_messages_block() {
+  local messages_source_file="$1"
+
+  if [ ! -f "$messages_source_file" ]; then
+    echo "Task messages file not found: ${messages_source_file}" >&2
+    return 1
+  fi
+
+  jq -r '
+    if type != "array" then
+      error("task messages payload must be an array")
+    elif length == 0 then
+      ""
+    else
+      "## Conversation Context\n"
+      + "Use this complete timeline as additional context for follow-up/reopened work.\n\n"
+      + (
+          to_entries
+          | map(
+              "### Message " + ((.key + 1) | tostring)
+              + " (" + ((.value.role // "unknown") | tostring)
+              + " @ " + ((.value.created_at // "unknown") | tostring) + ")\n"
+              + ((.value.content // "") | tostring)
+            )
+          | join("\n\n")
+        )
+    end
+  ' "$messages_source_file"
 }
 
 build_execute_url() {
@@ -224,7 +264,13 @@ start_task_heartbeat_loop() {
   heartbeat_pid="$!"
 }
 
-trap stop_task_heartbeat_loop EXIT
+trap '
+  stop_task_heartbeat_loop
+  if [ -n "$task_messages_tmp_file" ]; then
+    rm -f "$task_messages_tmp_file"
+    task_messages_tmp_file=""
+  fi
+' EXIT
 
 if [ -z "$task_id" ] || [ -z "$task_prompt" ] || [ -z "$task_repo" ]; then
   if [ -n "$claim_url" ]; then
@@ -276,6 +322,20 @@ fi
 task_prompt_block="$(cat "$task_prompt_template")"
 task_prompt_block="${task_prompt_block//\$\{task_id\}/$task_id}"
 task_prompt_block="${task_prompt_block//\$\{task_prompt\}/$task_prompt}"
+
+task_messages_block=""
+if [ -n "$task_messages_file" ]; then
+  if ! task_messages_block="$(render_task_messages_block "$task_messages_file")"; then
+    echo "Failed to parse task messages from ${task_messages_file}." >&2
+    exit 1
+  fi
+fi
+
+if [ -n "$task_messages_block" ]; then
+  task_prompt_block="${task_prompt_block}
+
+${task_messages_block}"
+fi
 
 if [ -n "$base_extra_prompt" ]; then
   export AGENT_EXTRA_PROMPT="${base_extra_prompt}

@@ -289,7 +289,7 @@ done
 printf 'URL=%s AUTH=%s\n' "$url" "$auth_header" >> "${state_dir}/curl.log"
 
 status="200"
-body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-1"}'
+  body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-1","messages":[{"role":"user","content":"Initial context","created_at":"2026-03-05T03:00:00.000Z"},{"role":"system","content":"Task reopened","created_at":"2026-03-05T03:05:00.000Z"}]}'
 
 case "${MOCK_TASK_CLAIM_MODE:-task}" in
   empty)
@@ -782,6 +782,7 @@ run_task_watch_case() {
   local case_dir="$2"
   local run_log=""
   local curl_log=""
+  local -a messages_files=()
   local -a status_files=()
   local -a summary_files=()
 
@@ -816,6 +817,7 @@ run_task_watch_case() {
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
+  assert_file_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE=/workspace/task-input/task-claim-1/messages.json"
   assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_EXECUTE_BASE_URL=https://api.example.com/api/tasks"
   assert_file_not_contains "$run_log" "-e RUN_MODE=once"
@@ -826,11 +828,15 @@ run_task_watch_case() {
   assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
 
   shopt -s nullglob
+  messages_files=("${case_dir}/workspace"/workspaces/*/task-input/task-claim-1/messages.json)
   status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
   shopt -u nullglob
+  assert_eq "1" "${#messages_files[@]}" "expected one task messages file for task-watch case"
   assert_eq "1" "${#status_files[@]}" "expected one status file for task-watch case"
   assert_eq "1" "${#summary_files[@]}" "expected one summary file for task-watch case"
+  assert_file_contains "${messages_files[0]}" "\"role\":\"user\""
+  assert_file_contains "${messages_files[0]}" "\"content\":\"Initial context\""
   assert_eq "completed" "$(cat "${status_files[0]}")" "expected completed task-watch status"
   assert_file_contains "${summary_files[0]}" "trigger=task"
 

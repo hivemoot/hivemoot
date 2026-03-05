@@ -220,6 +220,7 @@ spawn_worker() {
   local task_id="${10:-}"
   local task_prompt="${11:-}"
   local task_claim_token="${12:-}"
+  local task_messages_file="${13:-}"
 
   local container_name="${worker_name_prefix}-${job_id}"
   local prompt_file="${AGENT_PROMPT_FILE:-}"
@@ -283,6 +284,9 @@ spawn_worker() {
   if [ "$worker_run_mode" = "task" ]; then
     docker_run_args+=( -e "AGENT_TASK_ID=${task_id}" )
     docker_run_args+=( -e "AGENT_TASK_PROMPT=${task_prompt}" )
+    if [ -n "$task_messages_file" ]; then
+      docker_run_args+=( -e "AGENT_TASK_MESSAGES_FILE=${task_messages_file}" )
+    fi
     if [ -n "$task_claim_token" ]; then
       docker_run_args+=( -e "AGENT_TASK_CLAIM_TOKEN=${task_claim_token}" )
     fi
@@ -1033,6 +1037,7 @@ run_job() {
   local task_id="${7:-}"
   local task_prompt="${8:-}"
   local task_claim_token="${9:-}"
+  local task_messages_json="${10:-}"
 
   local token_file="${agent_token_files[$agent_id]}"
   local lock_key="${repo}:${agent_id}"
@@ -1049,6 +1054,8 @@ run_job() {
   local exit_code=125
   local log_pid=0
   local log_follow_deadline=0
+  local task_messages_file=""
+  local task_messages_host_path=""
 
   if [ -z "$repo_lock_file" ]; then
     ensure_agent_lock_file "$repo" "$agent_id"
@@ -1077,7 +1084,18 @@ run_job() {
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
-  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key" "$trigger_type" "$task_id" "$task_prompt" "$task_claim_token")"; then
+  if [ "$trigger_type" = "task" ] && [ -n "$task_messages_json" ] && [ -n "$task_id" ]; then
+    task_messages_host_path="${job_workspace}/task-input/${task_id}/messages.json"
+    mkdir -p "$(dirname "$task_messages_host_path")"
+    printf '%s' "$task_messages_json" > "$task_messages_host_path"
+    chmod 600 "$task_messages_host_path" 2>/dev/null || true
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      chown 1000:1000 "$task_messages_host_path" 2>/dev/null || true
+    fi
+    task_messages_file="/workspace/task-input/${task_id}/messages.json"
+  fi
+
+  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key" "$trigger_type" "$task_id" "$task_prompt" "$task_claim_token" "$task_messages_file")"; then
     cleanup_job_home_credentials "$job_home"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     return 125
@@ -1146,6 +1164,7 @@ launch_job() {
   local task_id="${10:-}"
   local task_prompt="${11:-}"
   local task_claim_token="${12:-}"
+  local task_messages_json="${13:-}"
 
   ensure_agent_lock_file "$repo" "$agent_id"
 
@@ -1183,7 +1202,7 @@ launch_job() {
   fi
 
   (
-    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key" "$task_id" "$task_prompt" "$task_claim_token"
+    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key" "$task_id" "$task_prompt" "$task_claim_token" "$task_messages_json"
   ) &
 
   local pid=$!
@@ -1280,6 +1299,7 @@ claim_next_task() {
   claimed_task_prompt=""
   claimed_task_repo=""
   claimed_task_claim_token=""
+  claimed_task_messages_json=""
 
   response_file="$(mktemp)"
   status="$(curl -sS -o "$response_file" -w '%{http_code}' \
@@ -1303,6 +1323,11 @@ claim_next_task() {
   claimed_task_id="$(jq -r '.task.task_id // empty' < "$response_file")"
   claimed_task_prompt="$(jq -r '.task.prompt // empty' < "$response_file")"
   claimed_task_claim_token="$(jq -r '.claim_token // empty' < "$response_file")"
+  if ! claimed_task_messages_json="$(jq -c '(.messages // []) | if type=="array" then . else [] end' < "$response_file")"; then
+    log "Claimed task response contains invalid messages payload"
+    rm -f "$response_file"
+    return 2
+  fi
   repos_count="$(jq -r '(.task.repos | length) // 0' < "$response_file")"
   if [ "$repos_count" -ne 1 ]; then
     log "Claimed task must contain exactly one repo, got ${repos_count}"
@@ -1336,7 +1361,7 @@ queue_claimed_task_job() {
   agent_id="$(pick_next_task_agent)"
   job_id="$(generate_job_id)"
 
-  if launch_job "$job_id" "$claimed_task_repo" "$agent_id" "task" "$global_extra_prompt" "" "" "" "" "$claimed_task_id" "$claimed_task_prompt" "$claimed_task_claim_token"; then
+  if launch_job "$job_id" "$claimed_task_repo" "$agent_id" "task" "$global_extra_prompt" "" "" "" "" "$claimed_task_id" "$claimed_task_prompt" "$claimed_task_claim_token" "$claimed_task_messages_json"; then
     log "Queued claimed task: task_id=${claimed_task_id} repo=${claimed_task_repo} agent=${agent_id} job=${job_id}"
     return 0
   fi
@@ -1584,6 +1609,7 @@ claimed_task_id=""
 claimed_task_prompt=""
 claimed_task_repo=""
 claimed_task_claim_token=""
+claimed_task_messages_json=""
 
 declare -a temp_token_files=()
 declare -a running_pids=()
