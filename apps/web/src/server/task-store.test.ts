@@ -265,7 +265,12 @@ describe("task lifecycle", () => {
 
     const fetched = await getTask("inst-1", created.task.task_id, redis);
     expect(fetched?.status).toBe("completed");
-    expect(fetched?.result).toContain("Result");
+
+    // Result is now stored as an agent message in the timeline.
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    const agentMessages = messages.filter((m) => m.role === "agent");
+    expect(agentMessages.length).toBeGreaterThanOrEqual(1);
+    expect(agentMessages[agentMessages.length - 1].content).toContain("Result");
   });
 
   it("enforces max concurrent active tasks", async () => {

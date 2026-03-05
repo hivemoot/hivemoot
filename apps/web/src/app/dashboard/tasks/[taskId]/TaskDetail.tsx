@@ -22,7 +22,6 @@ interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-  result?: string;
 }
 
 interface TaskMessage {
@@ -253,6 +252,21 @@ function statusLabel(status: string): string {
 
 function isTerminal(status: string): boolean {
   return status === "completed" || status === "failed" || status === "timed_out";
+}
+
+const TERMINAL_SYSTEM_MESSAGES = new Set([
+  "Task completed.",
+  "Task timed out.",
+]);
+
+function isTerminalSystemMessage(msg: TaskMessage): boolean {
+  return msg.role === "system" && (
+    TERMINAL_SYSTEM_MESSAGES.has(msg.content) || msg.content.startsWith("Task failed:")
+  );
+}
+
+function isCompletionResult(msg: TaskMessage, nextMsg: TaskMessage | undefined): boolean {
+  return msg.role === "agent" && !!nextMsg && nextMsg.content === "Task completed." && nextMsg.role === "system";
 }
 
 function isRetryable(status: string): boolean {
@@ -674,15 +688,6 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           </div>
         )}
 
-        {/* Result display */}
-        {task.result && (
-          <div className="mt-4 border-t border-white/[0.06] pt-4">
-            <h4 className="mb-2 text-xs font-semibold text-zinc-500">Result</h4>
-            <div className="max-h-96 overflow-auto rounded-lg bg-black/30 px-4 py-3">
-              <MarkdownContent>{task.result}</MarkdownContent>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Message timeline */}
@@ -693,51 +698,79 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           <p className="text-sm text-zinc-500">No messages yet.</p>
         ) : (
           <div className="space-y-3">
-            {messages.map((msg, i) => (
-              <div
-                key={`${msg.created_at}-${i}`}
-                className={`flex gap-3 rounded-lg px-4 py-3 ${
-                  msg.role === "user"
-                    ? "border border-honey-500/10 bg-honey-500/5"
-                    : msg.role === "agent"
-                      ? "border border-blue-500/10 bg-blue-500/5"
-                      : "border border-white/[0.04] bg-white/[0.02]"
-                }`}
-              >
-                <div className="mt-0.5 shrink-0">
-                  {msg.role === "user" ? (
-                    <UserIcon className="h-4 w-4 text-honey-500/70" />
-                  ) : msg.role === "agent" ? (
-                    <BotIcon className="h-4 w-4 text-blue-400/70" />
-                  ) : (
-                    <InfoIcon className="h-4 w-4 text-zinc-600" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs font-medium ${
-                      msg.role === "user"
-                        ? "text-honey-500/70"
+            {messages.map((msg, i) => {
+              const isResult = isCompletionResult(msg, messages[i + 1]);
+              const isTermSys = isTerminalSystemMessage(msg);
+              const isSuccess = isTermSys && msg.content === "Task completed.";
+              const isFailure = isTermSys && !isSuccess;
+
+              return (
+                <div
+                  key={`${msg.created_at}-${i}`}
+                  className={`flex gap-3 rounded-lg px-4 py-3 ${
+                    msg.role === "user"
+                      ? "border border-honey-500/10 bg-honey-500/5"
+                      : isResult
+                        ? "border border-green-500/15 bg-green-500/5"
                         : msg.role === "agent"
-                          ? "text-blue-400/70"
-                          : "text-zinc-600"
-                    }`}>
-                      {msg.role === "user" ? "You" : msg.role === "agent" ? "Agent" : "System"}
-                    </span>
-                    <span className="text-xs text-zinc-700">
-                      {formatTime(msg.created_at)}
-                    </span>
+                          ? "border border-blue-500/10 bg-blue-500/5"
+                          : isSuccess
+                            ? "border border-green-500/10 bg-green-500/5"
+                            : isFailure
+                              ? "border border-red-500/10 bg-red-500/5"
+                              : "border border-white/[0.04] bg-white/[0.02]"
+                  }`}
+                >
+                  <div className="mt-0.5 shrink-0">
+                    {msg.role === "user" ? (
+                      <UserIcon className="h-4 w-4 text-honey-500/70" />
+                    ) : msg.role === "agent" ? (
+                      <BotIcon className={`h-4 w-4 ${isResult ? "text-green-400/70" : "text-blue-400/70"}`} />
+                    ) : (
+                      <InfoIcon className={`h-4 w-4 ${isSuccess ? "text-green-400/70" : isFailure ? "text-red-400/70" : "text-zinc-600"}`} />
+                    )}
                   </div>
-                  {msg.role === "agent" ? (
-                    <MarkdownContent className="mt-1">{msg.content}</MarkdownContent>
-                  ) : (
-                    <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-300">
-                      {msg.content}
-                    </p>
-                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium ${
+                        msg.role === "user"
+                          ? "text-honey-500/70"
+                          : isResult
+                            ? "text-green-400/70"
+                            : msg.role === "agent"
+                              ? "text-blue-400/70"
+                              : isSuccess
+                                ? "text-green-400/70"
+                                : isFailure
+                                  ? "text-red-400/70"
+                                  : "text-zinc-600"
+                      }`}>
+                        {msg.role === "user" ? "You" : msg.role === "agent" ? "Agent" : "System"}
+                      </span>
+                      {isResult && (
+                        <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-green-400/80">
+                          Result
+                        </span>
+                      )}
+                      <span className="text-xs text-zinc-700">
+                        {formatTime(msg.created_at)}
+                      </span>
+                    </div>
+                    {msg.role === "agent" ? (
+                      <div className={isResult ? "mt-1 max-h-96 overflow-auto" : "mt-1"}>
+                        <MarkdownContent>{msg.content}</MarkdownContent>
+                      </div>
+                    ) : (
+                      <p className={`mt-1 whitespace-pre-wrap text-sm ${
+                        isSuccess ? "text-green-300" : isFailure ? "text-red-300" : "text-zinc-300"
+                      }`}>
+                        {msg.content}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         )}
