@@ -1089,7 +1089,7 @@ export async function retryTask(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task retry lock timeout", {
         installationId,
         taskId,
@@ -1411,7 +1411,7 @@ export async function addUserMessage(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Add user message lock timeout", {
         installationId,
         taskId,
