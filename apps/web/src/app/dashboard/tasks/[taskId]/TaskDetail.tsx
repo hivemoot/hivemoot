@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import Markdown from "react-markdown";
+import Markdown, { type ExtraProps } from "react-markdown";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -267,6 +267,29 @@ function isDeletable(status: string): boolean {
 // Markdown renderer
 // ---------------------------------------------------------------------------
 
+// Context lets the pre component signal to the code component that it is
+// rendering inside a fenced code block. Without this, code blocks that have
+// no language specifier (e.g. plain ```) have no className, making them
+// indistinguishable from inline backtick code via className alone.
+const InPre = createContext(false);
+
+function MdPre({ children }: React.ComponentPropsWithoutRef<"pre"> & ExtraProps) {
+  return (
+    <InPre.Provider value={true}>
+      <pre className="my-2 overflow-auto rounded-lg bg-black/30 p-3 text-xs">{children}</pre>
+    </InPre.Provider>
+  );
+}
+
+function MdCode({ className, children }: React.ComponentPropsWithoutRef<"code"> & ExtraProps) {
+  const inPre = useContext(InPre);
+  if (inPre) {
+    // Block code: the pre container already provides background/padding.
+    return <code className={`${className ?? ""} font-mono text-xs`}>{children}</code>;
+  }
+  return <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-xs">{children}</code>;
+}
+
 function MarkdownContent({ children, className }: { children: string; className?: string }) {
   return (
     <div className={`text-sm text-zinc-300 ${className ?? ""}`}>
@@ -279,14 +302,8 @@ function MarkdownContent({ children, className }: { children: string; className?
           ul: ({ children: c }) => <ul className="my-1.5 ml-4 list-disc">{c}</ul>,
           ol: ({ children: c }) => <ol className="my-1.5 ml-4 list-decimal">{c}</ol>,
           li: ({ children: c }) => <li className="mt-0.5">{c}</li>,
-          code: ({ className: codeClass, children: c }) => (
-            codeClass
-              ? <code className={`${codeClass} font-mono text-xs`}>{c}</code>
-              : <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-xs">{c}</code>
-          ),
-          pre: ({ children: c }) => (
-            <pre className="my-2 overflow-auto rounded-lg bg-black/30 p-3 text-xs">{c}</pre>
-          ),
+          code: MdCode,
+          pre: MdPre,
           a: ({ href, children: c }) => (
             <a href={href} className="text-honey-500 hover:underline" target="_blank" rel="noopener noreferrer">{c}</a>
           ),
