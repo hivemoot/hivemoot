@@ -738,6 +738,95 @@ prune_queue_artifacts() {
   done
 }
 
+prune_stale_workspaces() {
+  local now=0
+  local mtime=0
+  local age_secs=0
+  local job_dir=""
+  local job_id=""
+  local status_file=""
+  local status=""
+  local pruned=0
+  local failed=0
+  local prune_failed=0
+  local target=""
+  local -a workspace_dirs=()
+  local -a stale_job_ids=()
+  local -a prune_targets=()
+
+  if [ "$workspace_ttl_secs" -le 0 ]; then
+    return 0
+  fi
+
+  now="$(date +%s)"
+  shopt -s nullglob
+  workspace_dirs=("${workspaces_root}"/*/)
+  shopt -u nullglob
+
+  # Collect stale candidates first so deletion order cannot affect iteration.
+  for job_dir in "${workspace_dirs[@]}"; do
+    [ -d "$job_dir" ] || continue
+    job_id="$(basename "$job_dir")"
+
+    # Only prune jobs in a terminal state.
+    status_file="${job_dir}/.hivemoot/status"
+    if [ ! -f "$status_file" ]; then
+      continue
+    fi
+    status="$(cat "$status_file" 2>/dev/null || true)"
+    case "$status" in
+      completed|failed|cancelled) ;;
+      *) continue ;;
+    esac
+
+    mtime="$(file_mtime_epoch "$status_file" "$now")"
+    age_secs=$((now - mtime))
+    if [ "$age_secs" -le "$workspace_ttl_secs" ]; then
+      continue
+    fi
+
+    stale_job_ids+=("$job_id")
+  done
+
+  for job_id in "${stale_job_ids[@]}"; do
+    prune_targets=(
+      "${homes_root:?}/${job_id}"
+      "${runs_root:?}/${job_id}"
+      "${jobs_root:?}/${job_id}"
+      "${workspaces_root:?}/${job_id}"
+    )
+    prune_failed=0
+
+    for target in "${prune_targets[@]}"; do
+      if ! rm -rf -- "$target"; then
+        log "WARN: failed to remove stale workspace path: job_id=${job_id} path=${target}"
+        prune_failed=1
+      fi
+    done
+
+    for target in "${prune_targets[@]}"; do
+      if [ -e "$target" ]; then
+        log "WARN: stale workspace prune incomplete: job_id=${job_id} path=${target}"
+        prune_failed=1
+      fi
+    done
+
+    if [ "$prune_failed" -eq 0 ]; then
+      pruned=$((pruned + 1))
+    else
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [ "$pruned" -gt 0 ]; then
+    log "Pruned ${pruned} stale workspace(s) (ttl=${workspace_ttl_secs}s)"
+  fi
+
+  if [ "$failed" -gt 0 ]; then
+    log "WARN: failed to fully prune ${failed} stale workspace(s) (ttl=${workspace_ttl_secs}s)"
+  fi
+}
+
 run_queue_maintenance() {
   local force_run="${1:-0}"
   local now=0
@@ -751,6 +840,7 @@ run_queue_maintenance() {
 
   recover_orphaned_triggers
   prune_queue_artifacts
+  prune_stale_workspaces
   last_queue_maintenance_epoch="$(date +%s)"
 }
 
@@ -1579,6 +1669,7 @@ task_poll_interval_secs="${TASK_POLL_INTERVAL_SECS:-120}"
 task_dispatch_agent_ids="${TASK_DISPATCH_AGENT_IDS:-}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
+workspace_ttl_secs="${WORKSPACE_TTL_SECS:-86400}"
 queue_maintenance_interval_secs="${QUEUE_MAINTENANCE_INTERVAL_SECS:-60}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
@@ -1661,6 +1752,7 @@ require_positive_integer PERIODIC_INTERVAL_SECS "$periodic_interval"
 require_non_negative_integer PERIODIC_JITTER_SECS "$periodic_jitter"
 require_non_negative_integer ORPHAN_RECOVERY_GRACE_SECS "$orphan_recovery_grace_secs"
 require_non_negative_integer QUEUE_ARTIFACT_TTL_SECS "$queue_artifact_ttl_secs"
+require_non_negative_integer WORKSPACE_TTL_SECS "$workspace_ttl_secs"
 require_non_negative_integer QUEUE_MAINTENANCE_INTERVAL_SECS "$queue_maintenance_interval_secs"
 if [ "$watch_mentions" = "1" ]; then
   require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
