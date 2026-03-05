@@ -1350,13 +1350,13 @@ export async function addUserMessage(
           updated_at: timestamp,
         };
 
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
         await redis
           .multi()
           .set(taskKey(installationId, taskId), nextStored)
           .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
           .exec();
-
-        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
 
         return {
           ok: true,
@@ -1378,6 +1378,8 @@ export async function addUserMessage(
           started_at: undefined,
         };
 
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
         await redis
           .multi()
           .set(taskKey(installationId, taskId), nextStored)
@@ -1386,8 +1388,6 @@ export async function addUserMessage(
           .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
           .del(taskClaimTokenHashKey(installationId, taskId))
           .exec();
-
-        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
 
         try {
           await appendTaskMessage(
@@ -1429,6 +1429,8 @@ export async function addUserMessage(
         error: undefined,
       };
 
+      await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
       // Clear terminal TTLs in the same transaction as the state transition so
       // success guarantees the revived task will not expire mid-run.
       await redis
@@ -1443,8 +1445,6 @@ export async function addUserMessage(
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .del(taskClaimTokenHashKey(installationId, taskId))
         .exec();
-
-      await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
 
       try {
         await appendTaskMessage(

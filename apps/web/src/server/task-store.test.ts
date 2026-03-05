@@ -1759,7 +1759,7 @@ describe("addUserMessage", () => {
     ).rejects.toThrow("simulated message write failure");
 
     const task = await getTask("inst-1", created.task.task_id, redis);
-    expect(task?.status).toBe("pending");
+    expect(task?.status).toBe("needs_follow_up");
   });
 
   it("does not return success when terminal revival user message append fails", async () => {
@@ -1784,7 +1784,7 @@ describe("addUserMessage", () => {
     ).rejects.toThrow("simulated message write failure");
 
     const task = await getTask("inst-1", created.task.task_id, redis);
-    expect(task?.status).toBe("pending");
+    expect(task?.status).toBe("completed");
   });
 
   it("keeps transition success when follow-up system annotation append fails", async () => {
