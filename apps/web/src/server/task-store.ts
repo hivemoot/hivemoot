@@ -395,17 +395,17 @@ async function maybeTimeoutTask(
   const deadlineMs = transitionDeadlineMs(stored);
   if (Date.now() <= deadlineMs) return stored;
 
-  const timeoutMessage = `Timed out after ${stored.timeout_secs} seconds`;
+  const errorDetail = `Timed out after ${stored.timeout_secs} seconds`;
   const timestamp = nowIso();
   const timedOut = await finalizeTask(
     installationId,
     stored.task_id,
     "timed_out",
     {
-      error: timeoutMessage,
-      progress: timeoutMessage,
+      error: errorDetail,
+      progress: errorDetail,
       messages: [
-        { role: "system", content: timeoutMessage, created_at: timestamp },
+        { role: "system", content: "Task timed out.", created_at: timestamp },
       ],
     },
     redis,
