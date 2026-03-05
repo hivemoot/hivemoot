@@ -10,16 +10,22 @@ TESTS_RUN=0
 TESTS_PASSED=0
 
 setup() {
-  TEST_TMP="$(mktemp -d)"
+  # Use SCRIPT_DIR to avoid failures on hosts where /tmp is mounted noexec.
+  TEST_TMP="$(mktemp -d "${SCRIPT_DIR}/.tmp-test-health-reporter.XXXXXX")"
+  trap teardown EXIT
 }
 
 teardown() {
-  rm -rf "$TEST_TMP"
+  local rc=$?
+  if [ -n "${TEST_TMP:-}" ]; then
+    rm -rf "$TEST_TMP"
+    TEST_TMP=""
+  fi
+  return "$rc"
 }
 
 fail() {
   echo "FAIL: $*" >&2
-  teardown
   exit 1
 }
 
@@ -47,6 +53,10 @@ source_lib() {
 source_reporter() {
   unset HIVEMOOT_HEALTH_REPORTER_LOADED 2>/dev/null || true
   unset HIVEMOOT_LIB_LOADED 2>/dev/null || true
+  # Clear bash's cached curl path so mock PATH overrides take effect reliably.
+  # Without this, bash reuses a cached system curl even after PATH is prepended
+  # with a mock directory. See issue #242.
+  hash -d curl 2>/dev/null || true
   # shellcheck source=scripts/lib.sh
   . "${SCRIPT_DIR}/lib.sh"
   # shellcheck source=scripts/health-reporter.sh
@@ -874,7 +884,5 @@ run_test test_sends_optional_fields_on_failure
 run_test test_sends_next_run_at_when_provided
 run_test test_omits_next_run_at_when_empty
 echo ""
-
-teardown
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"
