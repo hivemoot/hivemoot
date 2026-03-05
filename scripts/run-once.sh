@@ -695,6 +695,15 @@ case "$provider" in
       codex_cmd_common+=(--config "model_reasoning_effort=\"${codex_reasoning_effort}\"")
       log "Codex reasoning effort: ${codex_reasoning_effort}"
     fi
+    # In task mode, request a native answer sidecar via --output-last-message.
+    # run-task.sh sets CODEX_ANSWER_FILE to the expected path before invoking
+    # this script. The sidecar is written atomically at turn end and is more
+    # reliable than JSONL log parsing.
+    if [ -n "${CODEX_ANSWER_FILE:-}" ]; then
+      mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
+      codex_cmd_common+=(--output-last-message "$CODEX_ANSWER_FILE")
+      log "Codex output-last-message: ${CODEX_ANSWER_FILE}"
+    fi
     codex_fresh_cmd=(codex exec "${codex_cmd_common[@]}" "$prompt")
 
     if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
@@ -778,7 +787,14 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Gemini auth mode resolved to: ${gemini_auth_mode}"
 
-    cmd=(gemini --yolo --output-format stream-json -p "$prompt")
+    # In task mode, use text output format so the log IS the answer text and
+    # no log parsing is required. Keep stream-json for non-task runs where
+    # structured events are useful for telemetry and session diagnostics.
+    if [ -n "${AGENT_TASK_ID:-}" ]; then
+      cmd=(gemini --yolo --output-format text -p "$prompt")
+    else
+      cmd=(gemini --yolo --output-format stream-json -p "$prompt")
+    fi
     if [ -n "$agent_model" ]; then
       cmd+=(-m "$agent_model")
     fi
@@ -817,7 +833,15 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
-    claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    # In task mode, use text output format so the log IS the answer text.
+    # Remove --verbose to keep stdout clean (verbose lines would pollute the
+    # extracted result). Keep stream-json + verbose for non-task runs where
+    # structured events enable session resume and telemetry.
+    if [ -n "${AGENT_TASK_ID:-}" ]; then
+      claude_fresh_cmd=(claude -p --output-format text --dangerously-skip-permissions)
+    else
+      claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
+    fi
     claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       claude_fresh_cmd+=(--model "$agent_model")
@@ -866,7 +890,11 @@ You are resuming a prior session for this mention thread. Some data in your cont
       claude_resume_user_message="${user_message}
 
 You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
-      cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
+      if [ -n "${AGENT_TASK_ID:-}" ]; then
+        cmd=(claude --resume "$claude_active_session_id" -p --output-format text --dangerously-skip-permissions)
+      else
+        cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
+      fi
       cmd+=(--append-system-prompt "$system_prompt")
       if [ -n "$agent_model" ]; then
         cmd+=(--model "$agent_model")

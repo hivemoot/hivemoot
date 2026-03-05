@@ -69,11 +69,19 @@ printf '%s\n' "AGENT_EXTRA_PROMPT_END" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
 if [ -n "${MOCK_RUN_ONCE_LOG_JSONL_FILE:-}" ]; then
   cat "${MOCK_RUN_ONCE_LOG_JSONL_FILE}" > "${LOG_DIR}/mock-run.log"
+elif [ -n "${MOCK_RUN_ONCE_LOG_TEXT:-}" ]; then
+  printf '%s' "$MOCK_RUN_ONCE_LOG_TEXT" > "${LOG_DIR}/mock-run.log"
 else
   cat > "${LOG_DIR}/mock-run.log" <<'LOG'
 mock provider output line 1
 mock provider output line 2
 LOG
+fi
+# If CODEX_ANSWER_FILE is set, write MOCK_CODEX_ANSWER_CONTENT to it so tests
+# can exercise the sidecar preference path without running a real codex CLI.
+if [ -n "${CODEX_ANSWER_FILE:-}" ] && [ -n "${MOCK_CODEX_ANSWER_CONTENT:-}" ]; then
+  mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
+  printf '%s' "$MOCK_CODEX_ANSWER_CONTENT" > "$CODEX_ANSWER_FILE"
 fi
 if [ "${MOCK_RUN_ONCE_SLEEP_SECS:-0}" -gt 0 ]; then
   sleep "${MOCK_RUN_ONCE_SLEEP_SECS}"
@@ -781,6 +789,148 @@ LOG
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
+run_case_codex_sidecar_result() {
+  local case_dir="${tmp_root}/case-codex-sidecar"
+  local result_path="${case_dir}/workspace/task-output/task-codex-sidecar/result.md"
+  local codex_log="${case_dir}/codex-jsonl-bg.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  # JSONL log has an older answer — sidecar should take priority.
+  cat > "$codex_log" <<'LOG'
+{"type":"item.completed","item":{"type":"agent_message","text":"## JSONL Answer\n\n- old"}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  export MOCK_CODEX_ANSWER_CONTENT="## Sidecar Answer
+
+- alpha
+- beta"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-codex-sidecar" \
+    AGENT_TASK_ID="task-codex-sidecar" \
+    AGENT_TASK_PROMPT="Return answer via sidecar" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Sidecar Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## Sidecar Answer"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "## JSONL Answer"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+  unset MOCK_CODEX_ANSWER_CONTENT
+}
+
+run_case_codex_sidecar_fallback_to_jsonl() {
+  local case_dir="${tmp_root}/case-codex-sidecar-fallback"
+  local result_path="${case_dir}/workspace/task-output/task-codex-sf/result.md"
+  local codex_log="${case_dir}/codex-fallback.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  cat > "$codex_log" <<'LOG'
+{"type":"item.completed","item":{"type":"agent_message","text":"## JSONL Answer\n\n- fresh"}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  # MOCK_CODEX_ANSWER_CONTENT not set — sidecar file is written but empty
+  # by run-task.sh mkdir, so [ -s sidecar ] is false and JSONL path is taken.
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-codex-sf" \
+    AGENT_TASK_ID="task-codex-sf" \
+    AGENT_TASK_PROMPT="Return answer via JSONL fallback" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## JSONL Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## JSONL Answer"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
+run_case_gemini_text_result() {
+  local case_dir="${tmp_root}/case-gemini-text"
+  local result_path="${case_dir}/workspace/task-output/task-gemini-text/result.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_TEXT="## Gemini Answer
+
+Some text response."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-gemini-text" \
+    AGENT_TASK_ID="task-gemini-text" \
+    AGENT_TASK_PROMPT="Return text answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="gemini" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Gemini Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## Gemini Answer"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "thread.started"
+  unset MOCK_RUN_ONCE_LOG_TEXT
+}
+
+run_case_claude_text_result() {
+  local case_dir="${tmp_root}/case-claude-text"
+  local result_path="${case_dir}/workspace/task-output/task-claude-text/result.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_TEXT="## Claude Answer
+
+Some text response."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-claude-text" \
+    AGENT_TASK_ID="task-claude-text" \
+    AGENT_TASK_PROMPT="Return text answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="claude" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Claude Answer"
+  assert_file_contains "$MOCK_CURL_CALLS" "## Claude Answer"
+  unset MOCK_RUN_ONCE_LOG_TEXT
+}
+
 run_case_direct_env
 run_case_preserves_explicit_prompt_override
 run_case_direct_env_messages_file
@@ -801,5 +951,9 @@ run_case_default_log_dir_when_unset
 run_case_codex_result_extraction
 run_case_codex_result_extraction_fallback
 run_case_codex_result_extraction_with_malformed_lines
+run_case_codex_sidecar_result
+run_case_codex_sidecar_fallback_to_jsonl
+run_case_gemini_text_result
+run_case_claude_text_result
 
 echo "PASS: task mode checks"
