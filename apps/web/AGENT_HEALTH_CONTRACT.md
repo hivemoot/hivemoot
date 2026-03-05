@@ -61,7 +61,7 @@ Validation behavior:
 
 Success:
 - `200` + `{"received": true, "received_at": "<iso>"}` for new accepted reports.
-- `200` + `{"received": true, "received_at": "<iso>", "duplicate": true}` for exact idempotent retry.
+- `200` + `{"received": true, "received_at": "<iso>", "duplicate": true}` for an idempotent retry with the same dedupe identity (`agent_id`, `repo`, `run_id`, `outcome`, `duration_secs`, `consecutive_failures`, `error`, `exit_code`, `next_run_at`); metadata-only differences (`model`, `trigger`, `token_usage`) are still treated as duplicates.
 
 Error:
 - `401` `agent_health_not_authenticated` for missing/invalid agent token.
