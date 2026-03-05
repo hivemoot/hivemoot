@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
+  addUserMessage,
   appendTaskMessage,
   checkTaskCreateRateLimit,
   claimNextPendingTask,
@@ -105,6 +106,13 @@ function makeMockRedis() {
       ttl.set(key, seconds);
       return 1;
     }),
+    persist: vi.fn(async (key: string) => {
+      if (ttl.has(key)) {
+        ttl.delete(key);
+        return 1;
+      }
+      return 0;
+    }),
     rpush: vi.fn(async (key: string, ...values: string[]) => {
       if (!lists.has(key)) lists.set(key, []);
       lists.get(key)!.push(...values);
@@ -150,6 +158,10 @@ function makeMockRedis() {
     }),
     zrem: vi.fn((...args: Parameters<typeof client.zrem>) => {
       multiOps.push(() => client.zrem(...args));
+      return pipeline;
+    }),
+    persist: vi.fn((...args: Parameters<typeof client.persist>) => {
+      multiOps.push(() => client.persist(...args));
       return pipeline;
     }),
     exec: vi.fn(async () => {
@@ -265,7 +277,12 @@ describe("task lifecycle", () => {
 
     const fetched = await getTask("inst-1", created.task.task_id, redis);
     expect(fetched?.status).toBe("completed");
-    expect(fetched?.result).toContain("Result");
+
+    // Result is now stored as an agent message in the timeline.
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    const agentMessages = messages.filter((m) => m.role === "agent");
+    expect(agentMessages.length).toBeGreaterThanOrEqual(1);
+    expect(agentMessages[agentMessages.length - 1].content).toContain("Result");
   });
 
   it("enforces max concurrent active tasks", async () => {
@@ -1523,5 +1540,327 @@ describe("retryTask", () => {
   it("returns not_found for a nonexistent task", async () => {
     const result = await retryTask("inst-1", "aabbccddeeff001122334455", redis);
     expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addUserMessage
+// ---------------------------------------------------------------------------
+
+describe("addUserMessage", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("appends message to pending task without changing status", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Original prompt", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "More context", redis);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("pending");
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    expect(messages).toHaveLength(2); // initial prompt + new message
+    expect(messages[1].role).toBe("user");
+    expect(messages[1].content).toBe("More context");
+  });
+
+  it("revives completed task to pending", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+    await redis.set(
+      `task:inst-1:${created.task.task_id}:claim-token-hash`,
+      "stale-claim-hash",
+    );
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Actually, do more", redis);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("pending");
+    expect(result.task.finished_at).toBeUndefined();
+    expect(result.task.error).toBeUndefined();
+    expect(await redis.get(`task:inst-1:${created.task.task_id}:claim-token-hash`)).toBeNull();
+    expect(redis._kv.has(`task:inst-1:${created.task.task_id}:result`)).toBe(false);
+
+    await getTask("inst-1", created.task.task_id, redis);
+
+    // Task should be claimable again.
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).not.toBeNull();
+    expect(claimed?.task.task_id).toBe(created.task.task_id);
+  });
+
+  it("revives failed task to pending", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Try again with this", redis);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("pending");
+    expect(result.task.error).toBeUndefined();
+    expect(result.task.finished_at).toBeUndefined();
+  });
+
+  it("revives timed_out task to pending", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 1 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    const taskKey = `task:inst-1:${created.task.task_id}`;
+    const stored = redis._kv.get(taskKey) as {
+      started_at?: string;
+      updated_at?: string;
+    };
+    redis._kv.set(taskKey, {
+      ...stored,
+      started_at: "2020-01-01T00:00:00.000Z",
+      updated_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const timedOut = await getTask("inst-1", created.task.task_id, redis);
+    expect(timedOut?.status).toBe("timed_out");
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Requeue with context", redis);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.task.status).toBe("pending");
+    expect(result.task.finished_at).toBeUndefined();
+  });
+
+  it("rejects message to running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Hello", redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("rejects message to needs_follow_up task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await requestFollowUp("inst-1", created.task.task_id, "Need info", redis);
+
+    const result = await addUserMessage("inst-1", created.task.task_id, "Hello", redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_transition");
+    }
+  });
+
+  it("returns not_found for nonexistent task", async () => {
+    const result = await addUserMessage("inst-1", "aabbccddeeff001122334455", "Hello", redis);
+    expect(result).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("does not return success when pending message append fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Original prompt", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    vi.mocked(redis.rpush).mockImplementationOnce(async () => {
+      throw new Error("simulated message write failure");
+    });
+
+    await expect(
+      addUserMessage("inst-1", created.task.task_id, "More context", redis),
+    ).rejects.toThrow("simulated message write failure");
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    expect(messages).toHaveLength(1);
+  });
+
+  it("does not return success when terminal revival user message append fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    vi.mocked(redis.rpush).mockImplementationOnce(async () => {
+      throw new Error("simulated message write failure");
+    });
+
+    await expect(
+      addUserMessage("inst-1", created.task.task_id, "Reopen", redis),
+    ).rejects.toThrow("simulated message write failure");
+
+    const task = await getTask("inst-1", created.task.task_id, redis);
+    expect(task?.status).toBe("completed");
+  });
+
+  it("removes TTLs when reviving a completed task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    // Verify TTLs were set by finalizeTask.
+    const taskTtlKey = `task:inst-1:${created.task.task_id}`;
+    expect(redis._ttl.has(taskTtlKey)).toBe(true);
+
+    await addUserMessage("inst-1", created.task.task_id, "Reopen", redis);
+
+    // TTLs should be removed by persist().
+    expect(redis._ttl.has(taskTtlKey)).toBe(false);
+  });
+
+  it("does not return success when terminal TTL removal fails", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    const taskTtlKey = `task:inst-1:${created.task.task_id}`;
+    expect(redis._ttl.has(taskTtlKey)).toBe(true);
+
+    vi.mocked(redis.persist).mockImplementationOnce(async () => {
+      throw new Error("simulated persist failure");
+    });
+
+    await expect(
+      addUserMessage("inst-1", created.task.task_id, "Reopen", redis),
+    ).rejects.toThrow("simulated persist failure");
+
+    const taskAfterFailure = await getTask("inst-1", created.task.task_id, redis);
+    expect(taskAfterFailure?.status).toBe("completed");
+    expect(redis._ttl.has(taskTtlKey)).toBe(true);
+  });
+
+  it("respects concurrency limit when reviving terminal task", async () => {
+    // Fill all concurrency slots.
+    for (let i = 0; i < MAX_CONCURRENT_TASKS; i += 1) {
+      await createTask(
+        "inst-1",
+        "queen",
+        { prompt: `Slot ${i}`, repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+        redis,
+      );
+    }
+
+    // Complete one task to create a terminal task, then refill the slot.
+    const recent = await listRecentTasks("inst-1", 10, redis);
+    const targetId = recent[0].task_id;
+    await markTaskRunning("inst-1", targetId, redis);
+    await completeTask("inst-1", targetId, "done", redis);
+
+    // Refill the slot.
+    await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Refill", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+
+    // Try to revive the completed task — should fail due to concurrency.
+    const result = await addUserMessage("inst-1", targetId, "Reopen", redis);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("concurrency_limited");
+    }
+  });
+
+  it("appends system message when reviving terminal task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    await addUserMessage("inst-1", created.task.task_id, "Do more", redis);
+
+    const messages = await getTaskMessages("inst-1", created.task.task_id, redis);
+    const lastMsg = messages[messages.length - 1];
+    expect(lastMsg.role).toBe("system");
+    expect(lastMsg.content).toContain("re-queued");
+
+    const userMsg = messages[messages.length - 2];
+    expect(userMsg.role).toBe("user");
+    expect(userMsg.content).toBe("Do more");
   });
 });

@@ -20,7 +20,6 @@ interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-  result?: string;
 }
 
 type CreateFormStatus = "idle" | "submitting" | "success" | "error";
