@@ -327,6 +327,7 @@ spawn_worker() {
   append_env_if_set AGENT_AUTH_MODE
   append_env_if_set AGENT_MODEL
   append_env_if_set AGENT_PROMPT_FILE
+  append_env_if_set AGENT_SKILLS
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
   append_env_if_set GIT_CLONE_DEPTH

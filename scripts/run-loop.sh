@@ -161,6 +161,19 @@ preflight_check() {
     fi
   fi
 
+  # Skill files exist
+  if [ -n "${AGENT_SKILLS:-}" ]; then
+    local skill_name
+    while IFS= read -r skill_name; do
+      skill_name="$(trim "$skill_name")"
+      [ -z "$skill_name" ] && continue
+      if [ ! -f "/opt/hivemoot-agent/prompts/skills/${skill_name}/SKILL.md" ]; then
+        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/prompts/skills/${skill_name}/SKILL.md" >&2
+        failures=$((failures + 1))
+      fi
+    done < <(tr ',' '\n' <<< "${AGENT_SKILLS}")
+  fi
+
   # Provider auth check
   local auth_failures=0
   preflight_check_provider_auth "$provider" "$auth_mode" || auth_failures=$?

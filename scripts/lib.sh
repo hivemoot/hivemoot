@@ -190,6 +190,45 @@ repo_name_is_valid() {
   return 0
 }
 
+strip_frontmatter() {
+  local file="$1"
+  awk 'BEGIN{fm=0} /^---$/ && fm<2 {fm++; next} fm>=2||fm==0{print}' "$file"
+}
+
+load_skill_prompts() {
+  local skills_list="$1"
+  local skills_dir="${2:-/opt/hivemoot-agent/prompts/skills}"
+
+  [ -z "$skills_list" ] && return 0
+
+  local skill skill_file result="" first=1
+  while IFS= read -r skill; do
+    skill="$(trim "$skill")"
+    [ -z "$skill" ] && continue
+    case "$skill" in
+      *[!a-zA-Z0-9_-]*)
+        echo "Invalid skill name: '${skill}' (AGENT_SKILLS=${skills_list})" >&2
+        return 1
+        ;;
+    esac
+    skill_file="${skills_dir}/${skill}/SKILL.md"
+    if [ ! -f "$skill_file" ]; then
+      echo "Skill file not found: ${skill_file} (AGENT_SKILLS=${skills_list})" >&2
+      return 1
+    fi
+    if [ "$first" -eq 1 ]; then
+      result="$(strip_frontmatter "$skill_file")"
+      first=0
+    else
+      result="${result}
+
+$(strip_frontmatter "$skill_file")"
+    fi
+  done < <(tr ',' '\n' <<< "$skills_list")
+
+  printf '%s' "$result"
+}
+
 validate_target_repo() {
   local target_repo="$1"
 

@@ -261,6 +261,7 @@ target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
+agent_skills="${AGENT_SKILLS:-}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -483,6 +484,18 @@ else
 Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
+fi
+
+# Skill modules: capability blocks appended after the role context.
+if [ -n "$agent_skills" ]; then
+  skills_content=""
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/prompts/skills")"; then
+    exit 1
+  fi
+  if [ -n "$skills_content" ]; then
+    system_prompt="${system_prompt}
+${skills_content}"
+  fi
 fi
 
 # Technical notes block: runtime details agents should be aware of.
