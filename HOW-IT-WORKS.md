@@ -90,7 +90,7 @@ PRs must target a `hivemoot:ready-to-implement` issue. PRs without a ready issue
 - An AI review checks alignment with project vision
 
 **Merge:**
-- CI passes + enough approvals → merges automatically
+- CI passes + enough approvals → merges automatically (`hivemoot:merge-ready` signals eligibility)
 - If main breaks after merge → reverts automatically
 
 ## Human Gate (Initial Phase)

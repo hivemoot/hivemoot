@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type Redis } from "@upstash/redis";
+import { withRedisLock, LockTimeoutError } from "@/server/redis-lock";
 
 export const MAX_CONCURRENT_TASKS = 3;
 export const DEFAULT_TASK_TIMEOUT_SECONDS = 5 * 60;
@@ -12,16 +13,6 @@ const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
 const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
-const TASK_LOCK_TTL_SECONDS = 5;
-const TASK_LOCK_MAX_WAIT_MS = 1000;
-const TASK_LOCK_RETRY_MIN_MS = 8;
-const TASK_LOCK_RETRY_MAX_MS = 20;
-const RELEASE_TASK_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("del", KEYS[1])
-end
-return 0
-`;
 
 const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
@@ -113,12 +104,6 @@ export interface RateLimitResult {
   retryAfterSeconds: number;
 }
 
-class TaskLockTimeoutError extends Error {
-  constructor(installationId: string) {
-    super(`Timed out acquiring task lock for installation ${installationId}`);
-    this.name = "TaskLockTimeoutError";
-  }
-}
 
 function taskKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}`;
@@ -164,58 +149,18 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomTaskLockRetryDelayMs(): number {
-  return TASK_LOCK_RETRY_MIN_MS
-    + Math.floor(Math.random() * (TASK_LOCK_RETRY_MAX_MS - TASK_LOCK_RETRY_MIN_MS + 1));
-}
-
-async function releaseTaskLock(
-  lockKey: string,
-  lockOwnerToken: string,
-  redis: Redis,
-): Promise<void> {
-  await redis.eval(RELEASE_TASK_LOCK_SCRIPT, [lockKey], [lockOwnerToken]);
-}
-
-async function withTaskInstallationLock<T>(
+function withTaskInstallationLock<T>(
   installationId: string,
   redis: Redis,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const lockKey = taskLockKey(installationId);
-  const lockOwnerToken = randomBytes(16).toString("hex");
-  const deadline = Date.now() + TASK_LOCK_MAX_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    const acquired = await redis.set(lockKey, lockOwnerToken, {
-      nx: true,
-      ex: TASK_LOCK_TTL_SECONDS,
-    });
-
-    if (acquired === "OK") {
-      try {
-        return await fn();
-      } finally {
-        try {
-          await releaseTaskLock(lockKey, lockOwnerToken, redis);
-        } catch (error) {
-          // Lock cleanup is best-effort so operation results are preserved.
-          console.error("[tasks] Failed to release task lock", {
-            installationId,
-            error,
-          });
-        }
-      }
-    }
-
-    await sleep(randomTaskLockRetryDelayMs());
-  }
-
-  throw new TaskLockTimeoutError(installationId);
+  return withRedisLock(taskLockKey(installationId), redis, fn, {
+    onReleaseError: (error) =>
+      console.error("[tasks] Failed to release task lock", {
+        installationId,
+        error,
+      }),
+  });
 }
 
 function isTerminal(status: TaskStatus): boolean {
@@ -334,7 +279,7 @@ async function withTaskTransitionLock(
   try {
     return await withTaskInstallationLock(installationId, redis, fn);
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn(operation, {
         installationId,
         taskId,
@@ -605,7 +550,7 @@ export async function createTask(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task create lock timeout", {
         installationId,
       });
@@ -762,7 +707,7 @@ export async function markTaskRunning(
       () => markTaskRunningUnlocked(installationId, taskId, redis),
     );
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task start lock timeout", {
         installationId,
         taskId,
@@ -1009,7 +954,7 @@ export async function claimNextPendingTask(
       return null;
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task claim lock timeout", {
         installationId,
       });
@@ -1361,7 +1306,7 @@ export async function resumeTaskWithFollowUp(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task follow-up lock timeout", {
         installationId,
         taskId,
