@@ -1389,7 +1389,6 @@ export async function addUserMessage(
       await redis
         .multi()
         .persist(taskKey(installationId, taskId))
-        .del(taskResultKey(installationId, taskId))
         .persist(taskProgressKey(installationId, taskId))
         .persist(taskMessagesKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)

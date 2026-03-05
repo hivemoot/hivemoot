@@ -1598,12 +1598,10 @@ describe("addUserMessage", () => {
     expect(result.task.status).toBe("pending");
     expect(result.task.finished_at).toBeUndefined();
     expect(result.task.error).toBeUndefined();
-    expect(result.task.result).toBeUndefined();
     expect(await redis.get(`task:inst-1:${created.task.task_id}:claim-token-hash`)).toBeNull();
     expect(redis._kv.has(`task:inst-1:${created.task.task_id}:result`)).toBe(false);
 
     const refreshed = await getTask("inst-1", created.task.task_id, redis);
-    expect(refreshed?.result).toBeUndefined();
 
     // Task should be claimable again.
     const claimed = await claimNextPendingTask("inst-1", redis);
