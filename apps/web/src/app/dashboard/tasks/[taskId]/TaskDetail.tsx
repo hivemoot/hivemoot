@@ -174,6 +174,58 @@ function MessageSquareIcon({ className }: { className?: string }) {
   );
 }
 
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="4 6 8 10 12 6" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-3.5 w-3.5"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5V8l2.5 1.5" />
+    </svg>
+  );
+}
+
+function RepoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-3.5 w-3.5"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 2v12M4 4h6a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H4" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -191,6 +243,14 @@ function relativeTime(iso: string): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 function statusColor(status: string): string {
@@ -345,6 +405,14 @@ function messageBannerTextColor(status: string): string {
   }
 }
 
+// Threshold for collapsing long agent messages
+const COLLAPSE_CHARS = 800;
+
+// Stable key for tracking expanded state across re-renders
+function mKey(msg: TaskMessage): string {
+  return `${msg.created_at}-${msg.role}`;
+}
+
 // ---------------------------------------------------------------------------
 // Markdown renderer
 // ---------------------------------------------------------------------------
@@ -354,7 +422,7 @@ const InPre = createContext(false);
 function MdPre({ children }: React.ComponentPropsWithoutRef<"pre"> & ExtraProps) {
   return (
     <InPre.Provider value={true}>
-      <pre className="my-2.5 overflow-auto rounded-lg bg-black/40 p-3.5 text-[13px] leading-relaxed">{children}</pre>
+      <pre className="my-2.5 overflow-x-auto rounded-lg bg-black/40 p-3.5 text-[13px] leading-relaxed">{children}</pre>
     </InPre.Provider>
   );
 }
@@ -413,10 +481,41 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
   const [followUpError, setFollowUpError] = useState("");
   const [actionBusy, setActionBusy] = useState<"retry" | "delete" | null>(null);
   const [actionError, setActionError] = useState("");
+  const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sseRef = useRef<{ close: () => void } | null>(null);
 
-  // Fetch task + messages
+  // ---- Draft persistence via sessionStorage ----
+  const draftKey = `task-draft-${taskId}`;
+
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(draftKey);
+      if (saved) setFollowUpText(saved);
+    } catch {
+      // sessionStorage unavailable (SSR or restricted)
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    try {
+      if (followUpText) sessionStorage.setItem(draftKey, followUpText);
+      else sessionStorage.removeItem(draftKey);
+    } catch {
+      // Best-effort persistence.
+    }
+  }, [followUpText, draftKey]);
+
+  // ---- Auto-resize textarea ----
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [followUpText]);
+
+  // ---- Fetch task + messages ----
   const fetchTask = useCallback(async () => {
     try {
       const [taskRes, msgRes] = await Promise.all([
@@ -425,14 +524,8 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
       ]);
 
       if (!taskRes.ok) {
-        if (taskRes.status === 401) {
-          setError("Session expired — please log in again.");
-          return;
-        }
-        if (taskRes.status === 404) {
-          setError("Task not found.");
-          return;
-        }
+        if (taskRes.status === 401) { setError("Session expired \u2014 please log in again."); return; }
+        if (taskRes.status === 404) { setError("Task not found."); return; }
         setError("Failed to load task.");
         return;
       }
@@ -444,25 +537,22 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         const msgData = await msgRes.json();
         setMessages(msgData.messages ?? []);
       }
-
       setError(null);
     } catch {
-      setError("Network error — could not reach server.");
+      setError("Network error \u2014 could not reach server.");
     } finally {
       setLoading(false);
     }
   }, [taskId]);
 
-  useEffect(() => {
-    fetchTask();
-  }, [fetchTask]);
+  useEffect(() => { fetchTask(); }, [fetchTask]);
 
-  // Auto-scroll messages when new ones arrive
+  // Auto-scroll on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // SSE streaming for live updates
+  // ---- SSE streaming for live updates ----
   useEffect(() => {
     if (!task || isTerminal(task.status) || task.status === "needs_follow_up") return;
 
@@ -470,83 +560,68 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
     function connectSSE() {
       if (closed) return;
+      const es = new EventSource(`/api/tasks/${taskId}/stream`);
 
-      const eventSource = new EventSource(`/api/tasks/${taskId}/stream`);
-
-      eventSource.addEventListener("snapshot", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          if (data.task) setTask(data.task);
-        } catch {
-          // Ignore malformed SSE data.
-        }
+      es.addEventListener("snapshot", (e: MessageEvent) => {
+        try { const d = JSON.parse(e.data); if (d.task) setTask(d.task); } catch { /* ignore */ }
       });
 
-      eventSource.addEventListener("task", (e: MessageEvent) => {
+      es.addEventListener("task", (e: MessageEvent) => {
         try {
-          const data = JSON.parse(e.data);
-          if (data.task) {
-            setTask(data.task);
+          const d = JSON.parse(e.data);
+          if (d.task) {
+            setTask(d.task);
             fetch(`/api/tasks/${taskId}/messages`)
-              .then((res) => (res.ok ? res.json() : null))
-              .then((data) => {
-                if (data?.messages) setMessages(data.messages);
-              })
-              .catch(() => {
-                // Best-effort message refresh.
-              });
+              .then((r) => (r.ok ? r.json() : null))
+              .then((r) => { if (r?.messages) setMessages(r.messages); })
+              .catch(() => { /* best-effort */ });
           }
-        } catch {
-          // Ignore malformed SSE data.
-        }
+        } catch { /* ignore */ }
       });
 
-      eventSource.addEventListener("done", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          if (data.task) setTask(data.task);
-        } catch {
-          // Ignore malformed SSE data.
-        }
-        eventSource.close();
+      es.addEventListener("done", (e: MessageEvent) => {
+        try { const d = JSON.parse(e.data); if (d.task) setTask(d.task); } catch { /* ignore */ }
+        es.close();
         fetch(`/api/tasks/${taskId}/messages`)
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => {
-            if (data?.messages) setMessages(data.messages);
-          })
-          .catch(() => {
-            // Best-effort.
-          });
+          .then((r) => (r.ok ? r.json() : null))
+          .then((r) => { if (r?.messages) setMessages(r.messages); })
+          .catch(() => { /* best-effort */ });
       });
 
-      eventSource.addEventListener("error", () => {
-        eventSource.close();
-        if (!closed) {
-          setTimeout(connectSSE, 3000);
-        }
+      es.addEventListener("error", () => {
+        es.close();
+        if (!closed) setTimeout(connectSSE, 3000);
       });
 
-      sseRef.current = { close: () => eventSource.close() };
+      sseRef.current = { close: () => es.close() };
     }
 
     connectSSE();
-
-    return () => {
-      closed = true;
-      sseRef.current?.close();
-    };
+    return () => { closed = true; sseRef.current?.close(); };
   }, [task?.status, taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Message submission (uses follow-up route for needs_follow_up, messages route otherwise)
-  async function handleSendMessage(e: React.FormEvent) {
-    e.preventDefault();
-    if (followUpSubmitting) return;
+  // ---- Filter first message if it duplicates the prompt ----
+  const filteredMessages = task
+    ? messages.filter((msg, i) => {
+        if (i === 0 && msg.role === "user" && msg.content.trim() === task.prompt.trim()) return false;
+        return true;
+      })
+    : messages;
 
+  // ---- Toggle expanded state for long agent messages ----
+  function toggleExpanded(key: string) {
+    setExpandedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  // ---- Submit message ----
+  async function submitMessage() {
+    if (followUpSubmitting) return;
     const trimmed = followUpText.trim();
-    if (!trimmed) {
-      setFollowUpError("Please enter a message.");
-      return;
-    }
+    if (!trimmed) { setFollowUpError("Please enter a message."); return; }
 
     setFollowUpSubmitting(true);
     setFollowUpError("");
@@ -558,20 +633,15 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: trimmed }),
       });
-
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Unknown error" }));
-        setFollowUpError(
-          err.message
-          ?? (endpoint === "follow-up" ? "Failed to send follow-up." : "Failed to send message."),
-        );
+        setFollowUpError(err.message ?? (endpoint === "follow-up" ? "Failed to send follow-up." : "Failed to send message."));
         return;
       }
-
       const data = await res.json();
       if (data.task) setTask(data.task);
       setFollowUpText("");
-      // Refresh messages to show the new message in the timeline.
+      try { sessionStorage.removeItem(draftKey); } catch { /* noop */ }
       await fetchTask();
     } catch {
       setFollowUpError("Could not reach the server.");
@@ -580,12 +650,16 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     }
   }
 
-  // Retry handler
+  function handleSendMessage(e: React.FormEvent) {
+    e.preventDefault();
+    submitMessage();
+  }
+
+  // ---- Retry ----
   async function handleRetry() {
     if (actionBusy) return;
     setActionBusy("retry");
     setActionError("");
-
     try {
       const res = await fetch(`/api/tasks/${taskId}/retry`, { method: "POST" });
       if (!res.ok) {
@@ -607,14 +681,12 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     }
   }
 
-  // Delete handler
+  // ---- Delete ----
   async function handleDelete() {
     if (actionBusy) return;
     if (!window.confirm("Delete this task? This cannot be undone.")) return;
-
     setActionBusy("delete");
     setActionError("");
-
     try {
       const res = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
       if (!res.ok) {
@@ -630,15 +702,15 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Loading
-  // -------------------------------------------------------------------------
+  // =====================================================================
+  // Loading / Error states
+  // =====================================================================
 
   if (loading) {
     return (
       <div className="flex items-center gap-3 py-16 text-sm text-zinc-500">
         <SpinnerIcon />
-        Loading task...
+        Loading task&hellip;
       </div>
     );
   }
@@ -648,57 +720,46 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
       <div>
         <Link
           href="/dashboard/tasks"
-          className="group mb-8 inline-flex items-center gap-2 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+          className="group mb-6 inline-flex items-center gap-2 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
         >
           <ArrowLeftIcon className="h-3.5 w-3.5 transition-transform group-hover:-translate-x-0.5" />
-          Back to tasks
+          Tasks
         </Link>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-6">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6">
           <p className="text-sm text-red-400">{error ?? "Task not found."}</p>
         </div>
       </div>
     );
   }
 
-  // -------------------------------------------------------------------------
+  // =====================================================================
   // Render
-  // -------------------------------------------------------------------------
+  // =====================================================================
 
   return (
-    <div>
+    <div className="animate-fade-in">
       {/* Back link */}
       <Link
         href="/dashboard/tasks"
-        className="group mb-8 inline-flex items-center gap-2 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+        className="group mb-6 inline-flex items-center gap-2 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
       >
         <ArrowLeftIcon className="h-3.5 w-3.5 transition-transform group-hover:-translate-x-0.5" />
-        Back to tasks
+        Tasks
       </Link>
 
-      {/* Task header */}
-      <div className="mb-6 rounded-xl border border-white/[0.06] bg-[#141414] p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            {/* Status pill */}
-            <div className="flex items-center gap-3">
-              <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 ${statusBgColor(task.status)}`}>
-                <span className={`h-2 w-2 rounded-full ${statusDotColor(task.status)} ${
-                  task.status === "running" ? "animate-pulse" : ""
-                }`} />
-                <span className={`text-xs font-semibold ${statusColor(task.status)}`}>
-                  {statusLabel(task.status)}
-                </span>
-              </div>
-              {task.status === "running" && (
-                <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-blue-400" />
-              )}
+      {/* ── Header card ──────────────────────────────────────────────── */}
+      <div className="mb-5 rounded-2xl border border-white/[0.06] bg-[#141414] p-4 sm:p-6">
+        {/* Status row */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 ${statusBgColor(task.status)}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${statusDotColor(task.status)} ${task.status === "running" ? "animate-pulse" : ""}`} />
+              <span className={`text-xs font-medium ${statusColor(task.status)}`}>{statusLabel(task.status)}</span>
             </div>
-
-            {/* Prompt */}
-            <p className="mt-4 text-[15px] leading-relaxed text-zinc-200">{task.prompt}</p>
+            {task.status === "running" && <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-blue-400" />}
+            <span className="text-xs text-zinc-600" title={formatTime(task.created_at)} suppressHydrationWarning>{relativeTime(task.created_at)}</span>
           </div>
 
-          {/* Action buttons */}
           <div className="flex shrink-0 items-center gap-2">
             {isRetryable(task.status) && (
               <button
@@ -716,7 +777,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                 type="button"
                 onClick={handleDelete}
                 disabled={actionBusy !== null}
-                className="flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-red-500/20 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {actionBusy === "delete" ? <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> : <TrashIcon className="h-3.5 w-3.5" />}
                 Delete
@@ -725,181 +786,167 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           </div>
         </div>
 
-        {/* Action error */}
         {actionError && (
-          <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-2">
+          <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
             <p className="text-sm text-red-400">{actionError}</p>
           </div>
         )}
 
-        {/* Metadata */}
-        <dl className="mt-5 grid grid-cols-2 gap-4 border-t border-white/[0.06] pt-5 sm:grid-cols-3">
-          <div>
-            <dt className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">Repos</dt>
-            <dd className="mt-1 font-mono text-xs text-zinc-400">{task.repos.join(", ")}</dd>
-          </div>
-          <div>
-            <dt className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">Created</dt>
-            <dd className="mt-1 text-xs text-zinc-400" title={formatTime(task.created_at)}>
-              {relativeTime(task.created_at)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">Timeout</dt>
-            <dd className="mt-1 text-xs text-zinc-400">{task.timeout_secs}s</dd>
-          </div>
-        </dl>
+        {/* Prompt as title */}
+        <h1 className="mt-4 text-[15px] font-medium leading-relaxed text-[#fafafa] sm:text-base">{task.prompt}</h1>
 
-        {/* Progress */}
+        {/* Metadata chips */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {task.repos.map((repo) => (
+            <span key={repo} className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2.5 py-1 text-xs text-zinc-400">
+              <RepoIcon className="h-3 w-3 text-zinc-500" />
+              <span className="font-mono">{repo}</span>
+            </span>
+          ))}
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2.5 py-1 text-xs text-zinc-400">
+            <ClockIcon className="h-3 w-3 text-zinc-500" />
+            {formatDuration(task.timeout_secs)}
+          </span>
+        </div>
+
+        {/* Progress (running tasks) */}
         {task.progress && !isTerminal(task.status) && task.status !== "needs_follow_up" && (
-          <div className="mt-4 border-t border-white/[0.06] pt-4">
-            <p className="text-xs text-zinc-500">{task.progress}</p>
-          </div>
+          <p className="mt-4 text-xs text-zinc-500">{task.progress}</p>
         )}
 
-        {/* Error display */}
+        {/* Error (terminal tasks) */}
         {task.error && isTerminal(task.status) && (
-          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5">
             <p className="text-sm text-red-400">{task.error}</p>
           </div>
         )}
       </div>
 
-      {/* Messages */}
-      <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.04]">
-              <MessageSquareIcon className="h-4 w-4 text-zinc-600" />
+      {/* ── Messages ─────────────────────────────────────────────────── */}
+      <div className="space-y-4">
+        {filteredMessages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.03]">
+              <MessageSquareIcon className="h-4 w-4 text-zinc-700" />
             </div>
             <p className="text-sm text-zinc-500">No messages yet</p>
-            <p className="mt-1 text-xs text-zinc-700">
-              Messages will appear here once the task starts.
-            </p>
+            <p className="mt-1 text-xs text-zinc-700">Messages will appear here once the task starts.</p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {messages.map((msg, i) => {
-              const isTermSys = isTerminalSystemMessage(msg);
-              const isSuccess = isTermSys && msg.content === "Task completed.";
-              const isFailure = isTermSys && !isSuccess;
+          filteredMessages.map((msg, i) => {
+            const isTermSys = isTerminalSystemMessage(msg);
+            const isSuccess = isTermSys && msg.content === "Task completed.";
+            const isFailure = isTermSys && !isSuccess;
 
-              // System messages render as centered status dividers
-              if (msg.role === "system") {
-                return (
-                  <div key={`${msg.created_at}-${i}`} className="flex items-center gap-3 py-1">
-                    <div className="h-px flex-1 bg-white/[0.06]" />
-                    <div className="flex shrink-0 items-center gap-2.5">
-                      <span className={`h-2.5 w-2.5 rounded-full ${
-                        isSuccess ? "bg-green-400" : isFailure ? "bg-red-400" : "bg-zinc-600"
-                      }`} />
-                      <span className={`text-xs font-medium ${
-                        isSuccess ? "text-green-400" : isFailure ? "text-red-400" : "text-zinc-500"
-                      }`}>
-                        {msg.content}
-                      </span>
-                      <span className="text-xs text-zinc-600">{relativeTime(msg.created_at)}</span>
-                    </div>
-                    <div className="h-px flex-1 bg-white/[0.06]" />
-                  </div>
-                );
-              }
-
-              // User / agent messages render as chat bubbles
-              const isUser = msg.role === "user";
-
+            // System messages: centered status divider
+            if (msg.role === "system") {
               return (
-                <div key={`${msg.created_at}-${i}`} className="flex gap-3.5">
-                  {/* Avatar */}
-                  <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-                    isUser
-                      ? "bg-honey-500/10 ring-1 ring-honey-500/20"
-                      : "bg-blue-500/10 ring-1 ring-blue-500/20"
-                  }`}>
-                    {isUser ? (
-                      <UserIcon className="h-3.5 w-3.5 text-honey-500" />
-                    ) : (
-                      <BotIcon className="h-3.5 w-3.5 text-blue-400" />
-                    )}
+                <div key={`${msg.created_at}-${i}`} className="animate-message-in flex items-center gap-3 py-2" style={{ animationDelay: `${i * 40}ms` }}>
+                  <div className="h-px flex-1 bg-white/[0.04]" />
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className={`h-1.5 w-1.5 rounded-full ${isSuccess ? "bg-green-400" : isFailure ? "bg-red-400" : "bg-zinc-600"}`} />
+                    <span className={`text-xs ${isSuccess ? "text-green-400" : isFailure ? "text-red-400" : "text-zinc-500"}`}>{msg.content}</span>
                   </div>
-
-                  {/* Content */}
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-2 flex items-baseline gap-2">
-                      <span className={`text-[13px] font-semibold ${
-                        isUser ? "text-honey-500" : "text-blue-400"
-                      }`}>
-                        {isUser ? "You" : "Agent"}
-                      </span>
-                      <span className="text-xs text-zinc-600">{relativeTime(msg.created_at)}</span>
-                    </div>
-                    <div className={`rounded-lg px-4 py-3 ${
-                      isUser
-                        ? "bg-honey-500/[0.06]"
-                        : "bg-blue-500/[0.04]"
-                    }`}>
-                      {msg.role === "agent" ? (
-                        <div className="max-h-[32rem] overflow-auto">
-                          <MarkdownContent>{msg.content}</MarkdownContent>
-                        </div>
-                      ) : (
-                        <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">
-                          {msg.content}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                  <div className="h-px flex-1 bg-white/[0.04]" />
                 </div>
               );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
+            }
+
+            // User / Agent messages
+            const isUser = msg.role === "user";
+            const key = mKey(msg);
+            const isLong = msg.role === "agent" && msg.content.length > COLLAPSE_CHARS;
+            const isExpanded = expandedMessages.has(key);
+
+            return (
+              <div key={`${msg.created_at}-${i}`} className="animate-message-in" style={{ animationDelay: `${i * 40}ms` }}>
+                {/* Header: avatar + name + time on one row */}
+                <div className="mb-1.5 flex items-center gap-2">
+                  <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isUser ? "bg-honey-500/10 ring-1 ring-honey-500/20" : "bg-blue-500/10 ring-1 ring-blue-500/20"}`}>
+                    {isUser ? <UserIcon className="h-3 w-3 text-honey-500" /> : <BotIcon className="h-3 w-3 text-blue-400" />}
+                  </div>
+                  <span className={`text-xs font-semibold ${isUser ? "text-honey-500" : "text-blue-400"}`}>
+                    {isUser ? "You" : "Agent"}
+                  </span>
+                  <span className="text-[11px] text-zinc-600" suppressHydrationWarning>{relativeTime(msg.created_at)}</span>
+                </div>
+
+                {/* Bubble — indented to align under the name */}
+                <div className={`rounded-xl px-3 py-2.5 sm:ml-8 sm:px-4 sm:py-3 ${isUser ? "border border-honey-500/[0.08] bg-honey-500/[0.04]" : "border border-white/[0.04] bg-white/[0.02]"}`}>
+                  {msg.role === "agent" ? (
+                    <div className="relative">
+                      <div className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${isLong && !isExpanded ? "mask-fade-bottom max-h-52" : ""}`}>
+                        <MarkdownContent>{msg.content}</MarkdownContent>
+                      </div>
+                      {isLong && (
+                        <button
+                          type="button"
+                          onClick={() => toggleExpanded(key)}
+                          className="mt-2 flex items-center gap-1 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                        >
+                          <ChevronDownIcon className={`h-3 w-3 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} />
+                          {isExpanded ? "Show less" : "Show full response"}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">{msg.content}</p>
+                  )}
+                </div>
+              </div>
+            );
+          })
         )}
+        <div ref={messagesEndRef} />
+      </div>
 
-        {/* Message input */}
-        {canSendMessage(task.status) && (
-          <div className="mt-6 border-t border-white/[0.06] pt-5">
-            {messageBannerText(task.status) && (
-              <div className={`mb-4 rounded-lg border px-4 py-3 ${messageBannerColor(task.status)}`}>
-                <p className={`text-sm ${messageBannerTextColor(task.status)}`}>
-                  {messageBannerText(task.status)}
-                </p>
-              </div>
-            )}
+      {/* ── Follow-up input (sticky) ─────────────────────────────────── */}
+      {canSendMessage(task.status) && (
+        <div className="sticky bottom-0 z-10 -mx-4 mt-4 bg-gradient-to-t from-[var(--bg-primary)] from-80% to-transparent px-4 pb-3 pt-4 sm:-mx-6 sm:px-6">
+          {messageBannerText(task.status) && (
+            <div className={`mb-3 rounded-xl border px-3 py-2.5 sm:px-4 ${messageBannerColor(task.status)}`}>
+              <p className={`text-sm ${messageBannerTextColor(task.status)}`}>{messageBannerText(task.status)}</p>
+            </div>
+          )}
 
-            {followUpError && (
-              <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-2.5">
-                <p className="text-sm text-red-400">{followUpError}</p>
-              </div>
-            )}
+          {followUpError && (
+            <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+              <p className="text-sm text-red-400">{followUpError}</p>
+            </div>
+          )}
 
-            <form onSubmit={handleSendMessage} className="flex items-end gap-3">
+          <form onSubmit={handleSendMessage}>
+            <div className="relative rounded-2xl border border-white/[0.08] bg-[#141414] transition-all focus-within:border-honey-500/30 focus-within:ring-2 focus-within:ring-honey-500/10">
               <textarea
-                rows={2}
+                ref={textareaRef}
+                rows={1}
                 value={followUpText}
                 onChange={(e) => setFollowUpText(e.target.value)}
-                placeholder={
-                  task.status === "needs_follow_up"
-                    ? "Type your follow-up message..."
-                    : "Type a message..."
-                }
-                className="flex-1 resize-y rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-[#fafafa] placeholder-zinc-600 transition-all focus:border-honey-500/30 focus:outline-none focus:ring-2 focus:ring-honey-500/10"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    submitMessage();
+                  }
+                }}
+                placeholder={task.status === "needs_follow_up" ? "Type your follow-up\u2026" : "Type a message\u2026"}
+                className="w-full resize-none bg-transparent px-4 pb-12 pt-3.5 text-sm leading-relaxed text-[#fafafa] placeholder-zinc-600 focus:outline-none"
               />
-              <button
-                type="submit"
-                disabled={followUpSubmitting}
-                className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-honey-500 text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {followUpSubmitting ? (
-                  <SpinnerIcon className="h-4 w-4 animate-spin" />
-                ) : (
-                  <SendIcon className="h-4 w-4" />
-                )}
-              </button>
-            </form>
-          </div>
-        )}
-      </div>
+              <div className="absolute bottom-3 right-3 flex items-center gap-2.5">
+                <span className="hidden text-[11px] text-zinc-600 sm:inline">
+                  {"\u2318"}Enter
+                </span>
+                <button
+                  type="submit"
+                  disabled={followUpSubmitting || !followUpText.trim()}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-honey-500 text-[#0a0a0a] transition-all hover:bg-honey-400 disabled:opacity-30 sm:h-9 sm:w-9"
+                >
+                  {followUpSubmitting ? <SpinnerIcon className="h-4 w-4 animate-spin" /> : <SendIcon className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

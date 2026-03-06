@@ -26,7 +26,7 @@ export default function DashboardLayout({
         </div>
       </nav>
 
-      <main className="mx-auto max-w-5xl px-6 py-12">{children}</main>
+      <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6">{children}</main>
 
       <footer className="border-t border-white/5">
         <div className="mx-auto max-w-5xl px-6 py-6">
