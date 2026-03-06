@@ -9,6 +9,7 @@ CVE-2026-27904
 # Track in #295. Remove once upstream provider releases a version pinning tar >= 7.5.10.
 # exp:2026-05-30
 GHSA-qffp-2rhf-9h96
+CVE-2026-29786
 
 # docker/cli Uncontrolled Search Path in plugin loading — embedded in the gh CLI Go binary.
 # Requires a malicious plugin in PATH; not applicable in our container runtime context.
