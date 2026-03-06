@@ -66,9 +66,9 @@ describe("parseSubjectNumber()", () => {
 
 describe("fetchNotifications()", () => {
   it("returns map of unread notifications keyed by issue number", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "mention", updated_at: "2025-06-15T10:00:00Z" }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
@@ -82,42 +82,44 @@ describe("fetchNotifications()", () => {
     });
   });
 
-  it("calls gh with correct API path", async () => {
-    mockedGh.mockResolvedValue("[]");
+  it("calls gh with --paginate --slurp and correct API path", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchNotifications(repo);
 
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
+      "--paginate",
+      "--slurp",
       "/repos/hivemoot/colony/notifications",
     ]);
   });
 
   it("filters out read notifications", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ unread: false }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(0);
   });
 
   it("filters out non-issue/PR subject types", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ subject: { url: "https://api.github.com/repos/hivemoot/colony/releases/5", type: "Release" } }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(0);
   });
 
   it("handles PullRequest subject type", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({
         subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/99", type: "PullRequest", title: "Add search", latest_comment_url: null },
         reason: "review_requested",
       }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
@@ -132,10 +134,10 @@ describe("fetchNotifications()", () => {
   });
 
   it("keeps most recent notification when duplicates exist for same item", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "comment", updated_at: "2025-06-15T08:00:00Z" }),
       makeNotification({ reason: "mention", updated_at: "2025-06-15T12:00:00Z" }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(1);
@@ -150,17 +152,17 @@ describe("fetchNotifications()", () => {
   });
 
   it("keeps earlier notification when it appears after a later one", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "mention", updated_at: "2025-06-15T12:00:00Z" }),
       makeNotification({ reason: "comment", updated_at: "2025-06-15T08:00:00Z" }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.get(42)?.reason).toBe("mention");
   });
 
   it("handles multiple different items", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({
         subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/10", type: "Issue", title: "Bug report", latest_comment_url: null },
         reason: "comment",
@@ -169,7 +171,7 @@ describe("fetchNotifications()", () => {
         subject: { url: "https://api.github.com/repos/hivemoot/colony/pulls/20", type: "PullRequest", title: "Refactor", latest_comment_url: null },
         reason: "author",
       }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(2);
@@ -177,19 +179,35 @@ describe("fetchNotifications()", () => {
     expect(result.get(20)?.reason).toBe("author");
   });
 
+  it("handles multi-page responses (array of arrays)", async () => {
+    const page1 = [makeNotification({ reason: "mention" })];
+    const page2 = [
+      makeNotification({
+        id: "1002",
+        subject: { url: "https://api.github.com/repos/hivemoot/colony/issues/43", type: "Issue", title: "Another issue", latest_comment_url: null },
+      }),
+    ];
+    mockedGh.mockResolvedValue(JSON.stringify([page1, page2]));
+
+    const result = await fetchNotifications(repo);
+    expect(result.size).toBe(2);
+    expect(result.get(42)?.reason).toBe("mention");
+    expect(result.get(43)?.title).toBe("Another issue");
+  });
+
   it("returns empty map when API returns empty array", async () => {
-    mockedGh.mockResolvedValue("[]");
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(0);
   });
 
   it("skips notifications with unparseable subject URLs", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({
         subject: { url: "https://api.github.com/repos/hivemoot/colony", type: "Issue" },
       }),
-    ]));
+    ]]));
 
     const result = await fetchNotifications(repo);
     expect(result.size).toBe(0);
@@ -197,32 +215,34 @@ describe("fetchNotifications()", () => {
 });
 
 describe("fetchMentionNotifications()", () => {
-  it("calls gh with repo and all=false (no since by default)", async () => {
-    mockedGh.mockResolvedValue("[]");
+  it("calls gh with --paginate --slurp and repo and all=false (no since by default)", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"]);
 
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
+      "--slurp",
       "/repos/hivemoot/colony/notifications?all=false",
     ]);
   });
 
   it("includes since param when provided", async () => {
-    mockedGh.mockResolvedValue("[]");
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-01-15T00:00:00Z");
 
     expect(mockedGh).toHaveBeenCalledWith([
       "api",
       "--paginate",
+      "--slurp",
       "/repos/hivemoot/colony/notifications?all=false&since=2026-01-15T00%3A00%3A00Z",
     ]);
   });
 
   it("embeds params as URL query string, not as -f body fields", async () => {
-    mockedGh.mockResolvedValue("[]");
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"]);
 
@@ -230,36 +250,36 @@ describe("fetchMentionNotifications()", () => {
     // Must NOT contain -f flags (which send body fields and cause 404 on GET)
     expect(args).not.toContain("-f");
     // URL must contain query string
-    expect(args[2]).toMatch(/\?all=false/);
+    expect(args[3]).toMatch(/\?all=false/);
   });
 
   it("URL-encodes since timestamps with colons correctly", async () => {
-    mockedGh.mockResolvedValue("[]");
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"], "2026-02-13T02:11:08.000Z");
 
-    const url = mockedGh.mock.calls[0][0][2];
+    const url = mockedGh.mock.calls[0][0][3];
     // Colons in ISO timestamps must be percent-encoded in the query string
     expect(url).toContain("since=2026-02-13T02%3A11%3A08.000Z");
     expect(url).not.toContain("-f");
   });
 
   it("omits since param when not provided", async () => {
-    mockedGh.mockResolvedValue("[]");
+    mockedGh.mockResolvedValue(JSON.stringify([[]]));
 
     await fetchMentionNotifications("hivemoot/colony", ["mention"]);
 
-    const url = mockedGh.mock.calls[0][0][2];
+    const url = mockedGh.mock.calls[0][0][3];
     expect(url).not.toContain("since");
     expect(url).toBe("/repos/hivemoot/colony/notifications?all=false");
   });
 
   it("filters by specified reasons", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "mention" }),
       makeNotification({ id: "1002", reason: "comment" }),
       makeNotification({ id: "1003", reason: "author" }),
-    ]));
+    ]]));
 
     const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
     expect(result).toHaveLength(1);
@@ -267,31 +287,31 @@ describe("fetchMentionNotifications()", () => {
   });
 
   it("supports multiple reasons", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "mention" }),
       makeNotification({ id: "1002", reason: "comment" }),
-    ]));
+    ]]));
 
     const result = await fetchMentionNotifications("hivemoot/colony", ["mention", "comment"]);
     expect(result).toHaveLength(2);
   });
 
   it("filters out read notifications", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({ reason: "mention", unread: false }),
-    ]));
+    ]]));
 
     const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
     expect(result).toHaveLength(0);
   });
 
   it("filters out non-Issue/PR types", async () => {
-    mockedGh.mockResolvedValue(JSON.stringify([
+    mockedGh.mockResolvedValue(JSON.stringify([[
       makeNotification({
         reason: "mention",
         subject: { url: "https://api.github.com/repos/hivemoot/colony/releases/5", type: "Release", title: "v1", latest_comment_url: null },
       }),
-    ]));
+    ]]));
 
     const result = await fetchMentionNotifications("hivemoot/colony", ["mention"]);
     expect(result).toHaveLength(0);
