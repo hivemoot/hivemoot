@@ -408,10 +408,6 @@ function messageBannerTextColor(status: string): string {
 // Threshold for collapsing long agent messages
 const COLLAPSE_CHARS = 800;
 
-// Stable key for tracking expanded state across re-renders
-function mKey(msg: TaskMessage): string {
-  return `${msg.created_at}-${msg.role}`;
-}
 
 // ---------------------------------------------------------------------------
 // Markdown renderer
@@ -496,7 +492,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     } catch {
       // sessionStorage unavailable (SSR or restricted)
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [draftKey]);
 
   useEffect(() => {
     try {
@@ -854,7 +850,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
             // User / Agent messages
             const isUser = msg.role === "user";
-            const key = mKey(msg);
+            const key = `${i}-${msg.role}`;
             const isLong = msg.role === "agent" && msg.content.length > COLLAPSE_CHARS;
             const isExpanded = expandedMessages.has(key);
 
@@ -875,7 +871,9 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                 <div className={`rounded-xl px-3 py-2.5 sm:ml-8 sm:px-4 sm:py-3 ${isUser ? "border border-honey-500/[0.08] bg-honey-500/[0.04]" : "border border-white/[0.04] bg-white/[0.02]"}`}>
                   {msg.role === "agent" ? (
                     <div className="relative">
-                      <div className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${isLong && !isExpanded ? "mask-fade-bottom max-h-52" : ""}`}>
+                      {/* max-h-[2000px] when expanded gives CSS a concrete target to transition toward;
+                         CSS cannot interpolate from a value to `auto`. */}
+                      <div className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${isLong && !isExpanded ? "mask-fade-bottom max-h-52" : isLong ? "max-h-[2000px]" : ""}`}>
                         <MarkdownContent>{msg.content}</MarkdownContent>
                       </div>
                       {isLong && (

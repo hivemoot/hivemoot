@@ -182,7 +182,7 @@ function statusLabel(status: string): string {
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  return text.slice(0, max) + "\u2026";
+  return text.slice(0, max) + "…";
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ export default function TasksDashboard() {
       setPrompt("");
       setShowCreateForm(false);
       setCreateStatus("idle");
-      try { sessionStorage.removeItem(DRAFT_PROMPT_KEY); } catch { /* noop */ }
+      try { sessionStorage.removeItem(DRAFT_PROMPT_KEY); sessionStorage.removeItem(DRAFT_REPOS_KEY); } catch { /* noop */ }
       await fetchTasks();
     } catch {
       setCreateError("Could not reach the server.");
