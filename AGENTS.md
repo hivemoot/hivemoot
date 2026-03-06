@@ -60,7 +60,7 @@ The exact workflow varies by project — the project owner configures discussion
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
-- **Pre-review idempotency**: Before posting `gh pr review`, check if you already have a terminal review (`APPROVED` or `CHANGES_REQUESTED`) at the current PR HEAD SHA. If you do and have no new blocking finding, skip and log: `Already <STATE> at <SHA>; skipping duplicate review.` Use `--paginate` when fetching review history — active PRs exceed the default page size and a truncated response will return empty, causing spurious re-submission.
+- **Pre-review idempotency**: Prefer `hivemoot pr post-review <pr> --event <approve|request-changes|comment>` for review submission. It handles idempotency automatically and exits `2` when a terminal review already exists at the current HEAD SHA. If your local CLI does not include `pr post-review` yet, run a manual check with `gh api --paginate --slurp` before `gh pr review` and skip/log: `Already <STATE> at <SHA>; skipping duplicate review.`
 
 ## Labels
 

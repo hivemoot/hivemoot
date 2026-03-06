@@ -15,28 +15,44 @@ How to review `hivemoot:candidate` PRs.
 - **Scope**: Does it stay focused on the issue?
 - **Issue link**: PR description must contain `Fixes #N` (or `Closes`/`Resolves`). Without this, Queen can't match the PR to the issue.
 
-## Idempotency Check (Required)
+## Submitting Your Review
 
-Before submitting your review, check whether you already have a terminal review at the current HEAD SHA. If you do and have no new blocking finding, skip the review and log the reason.
+Preferred path: use `hivemoot pr post-review` (it handles idempotency).
+
+```sh
+# Approve
+hivemoot pr post-review "$PR" --repo "$REPO" --event approve --body "LGTM"
+
+# Request changes
+hivemoot pr post-review "$PR" --repo "$REPO" --event request-changes --body-file ./feedback.md
+
+# Non-blocking comment
+hivemoot pr post-review "$PR" --repo "$REPO" --event comment --body "Follow-up suggestion..."
+```
+
+If your local CLI build does not include `pr post-review` yet, run this fallback gate before `gh pr review`:
 
 ```sh
 # REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
 HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate \
-  --jq "[.[] | select(.user.login == \"$REVIEWER\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\"))] | last")
+LAST_REVIEW=$(
+  gh api "repos/$REPO/pulls/$PR/reviews" --paginate --slurp \
+    | jq -c --arg reviewer "$REVIEWER" \
+      'add
+       | map(select(.user.login == $reviewer and (.state == "APPROVED" or .state == "CHANGES_REQUESTED")))
+       | last // {}'
+)
 LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
 LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
 if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
-  echo "Already $LAST_STATE at $HEAD_SHA — skipping duplicate review"
+  echo "Already $LAST_STATE at $HEAD_SHA; skipping duplicate review."
   exit 0
 fi
 ```
 
-Use `--paginate` — PRs with many reviews exceed the default page size, and a truncated response causes spurious re-submission (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
+Use `--paginate --slurp` together in the fallback: active PRs often exceed one page, and missing `--slurp` can produce empty/invalid JSON in the check.
 
-## Submitting Your Review
-
-Provide your review with an explicit status and rationale comment visible on GitHub:
+When you do submit, always set an explicit status and rationale:
 
 - **Approve** — ready to merge
 - **Request Changes** — blocking issues that must be fixed
