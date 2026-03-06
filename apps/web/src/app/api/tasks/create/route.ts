@@ -80,29 +80,41 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const created = await createTask(
-    auth.session.installationId,
-    auth.session.userLogin,
-    validation.request,
-    auth.redis,
-  );
+  try {
+    const created = await createTask(
+      auth.session.installationId,
+      auth.session.userLogin,
+      validation.request,
+      auth.redis,
+    );
 
-  if (!created.ok) {
+    if (!created.ok) {
+      return taskError(
+        TASK_ERROR.CONCURRENCY_LIMITED,
+        "Maximum concurrent tasks reached (3)",
+        429,
+      );
+    }
+
+    return NextResponse.json(
+      {
+        task_id: created.task.task_id,
+        status: created.task.status,
+        timeout_secs: created.task.timeout_secs,
+        stream_url: `/api/tasks/${created.task.task_id}/stream`,
+        task: created.task,
+      },
+      { status: 202 },
+    );
+  } catch (error) {
+    console.error("[tasks] Failed to create task", {
+      installationId: auth.session.installationId,
+      error,
+    });
     return taskError(
-      TASK_ERROR.CONCURRENCY_LIMITED,
-      "Maximum concurrent tasks reached (3)",
-      429,
+      TASK_ERROR.SERVER_ERROR,
+      "Failed to create task",
+      500,
     );
   }
-
-  return NextResponse.json(
-    {
-      task_id: created.task.task_id,
-      status: created.task.status,
-      timeout_secs: created.task.timeout_secs,
-      stream_url: `/api/tasks/${created.task.task_id}/stream`,
-      task: created.task,
-    },
-    { status: 202 },
-  );
 }

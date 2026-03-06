@@ -122,72 +122,86 @@ export async function POST(request: NextRequest) {
   }
 
   // Installation scoping from executor token enforces tenant isolation.
-  const existingTask = await getTask(auth.installationId, taskId, auth.redis);
-  if (!existingTask) {
-    return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
-  }
+  try {
+    const existingTask = await getTask(auth.installationId, taskId, auth.redis);
+    if (!existingTask) {
+      return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
+    }
 
-  const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
-  if (!claimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
-  }
+    const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
+    if (!claimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
+    }
 
-  const validClaimToken = await verifyTaskClaimToken(
-    auth.installationId,
-    taskId,
-    claimToken,
-    auth.redis,
-  );
-  if (!validClaimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
-  }
+    const validClaimToken = await verifyTaskClaimToken(
+      auth.installationId,
+      taskId,
+      claimToken,
+      auth.redis,
+    );
+    if (!validClaimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
+    }
 
-  const obj = body as Record<string, unknown>;
+    const obj = body as Record<string, unknown>;
 
-  switch (action) {
-    case "progress": {
-      if (typeof obj.progress !== "string" || obj.progress.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "progress is required for action=progress", 400);
+    switch (action) {
+      case "progress": {
+        if (typeof obj.progress !== "string" || obj.progress.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "progress is required for action=progress", 400);
+        }
+        const updated = await setTaskProgress(auth.installationId, taskId, obj.progress, auth.redis);
+        return toTransitionResponse(updated);
       }
-      const updated = await setTaskProgress(auth.installationId, taskId, obj.progress, auth.redis);
-      return toTransitionResponse(updated);
-    }
 
-    case "complete": {
-      if (typeof obj.result !== "string" || obj.result.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
+      case "complete": {
+        if (typeof obj.result !== "string" || obj.result.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
+        }
+        const completed = await completeTask(auth.installationId, taskId, obj.result, auth.redis);
+        return toTransitionResponse(completed);
       }
-      const completed = await completeTask(auth.installationId, taskId, obj.result, auth.redis);
-      return toTransitionResponse(completed);
-    }
 
-    case "fail": {
-      if (typeof obj.error !== "string" || obj.error.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "error is required for action=fail", 400);
+      case "fail": {
+        if (typeof obj.error !== "string" || obj.error.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "error is required for action=fail", 400);
+        }
+        const failed = await failTask(auth.installationId, taskId, obj.error, auth.redis);
+        return toTransitionResponse(failed);
       }
-      const failed = await failTask(auth.installationId, taskId, obj.error, auth.redis);
-      return toTransitionResponse(failed);
-    }
 
-    case "timeout": {
-      const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
-      return toTransitionResponse(timedOut);
-    }
-
-    case "heartbeat": {
-      const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
-      return toTransitionResponse(heartbeat);
-    }
-
-    case "request_follow_up": {
-      if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
+      case "timeout": {
+        const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
+        return toTransitionResponse(timedOut);
       }
-      const followUp = await requestFollowUp(auth.installationId, taskId, obj.message.trim(), auth.redis);
-      return toTransitionResponse(followUp);
-    }
 
-    default:
-      return taskError(TASK_ERROR.INVALID_ACTION, "Unsupported action", 400);
+      case "heartbeat": {
+        const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
+        return toTransitionResponse(heartbeat);
+      }
+
+      case "request_follow_up": {
+        if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
+        }
+        const followUp = await requestFollowUp(auth.installationId, taskId, obj.message.trim(), auth.redis);
+        return toTransitionResponse(followUp);
+      }
+
+      default:
+        return taskError(TASK_ERROR.INVALID_ACTION, "Unsupported action", 400);
+    }
+  } catch (error) {
+    console.error("[tasks] Failed to execute task action", {
+      installationId: auth.installationId,
+      taskId,
+      action,
+      error,
+    });
+    return taskError(
+      TASK_ERROR.SERVER_ERROR,
+      "Failed to execute task action",
+      500,
+    );
   }
 }
