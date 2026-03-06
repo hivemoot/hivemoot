@@ -489,7 +489,7 @@ fi
 # Skill modules: capability blocks appended after the role context.
 if [ -n "$agent_skills" ]; then
   skills_content=""
-  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/prompts/skills")"; then
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
     exit 1
   fi
   if [ -n "$skills_content" ]; then

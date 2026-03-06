@@ -256,6 +256,62 @@ test_empty_skill_list() {
   echo "  ✓ Empty skill list returns nothing"
 }
 
+test_shipped_skills_load() {
+  echo "Testing shipped skill files load correctly..."
+
+  source_lib
+
+  local skills_dir="${SCRIPT_DIR}/../skills"
+  local expected_skills="security-reviewer code-reviewer test-advocate dep-auditor pr-hygiene"
+
+  for skill in $expected_skills; do
+    local skill_file="${skills_dir}/${skill}/SKILL.md"
+    if [ ! -f "$skill_file" ]; then
+      fail "Shipped skill file missing: ${skill_file}"
+    fi
+
+    local result
+    result="$(load_skill_prompts "$skill" "$skills_dir")"
+
+    if [ -z "$result" ]; then
+      fail "Skill '${skill}' loaded empty content"
+    fi
+
+    # Frontmatter must be stripped
+    if [[ "$result" == *"name: ${skill}"* ]]; then
+      fail "Skill '${skill}' frontmatter not stripped"
+    fi
+
+    # Body must contain the skill heading
+    if [[ "$result" != *"## Skill:"* ]]; then
+      fail "Skill '${skill}' missing expected heading"
+    fi
+  done
+
+  # Test loading all shipped skills at once
+  local all_csv
+  all_csv="$(echo "$expected_skills" | tr ' ' ',')"
+  local combined
+  combined="$(load_skill_prompts "$all_csv" "$skills_dir")"
+
+  for skill_name in $expected_skills; do
+    # Each skill should appear in combined output (check a unique word from each)
+    local check_word
+    case "$skill_name" in
+      security-reviewer) check_word="Rationalizations to Reject" ;;
+      code-reviewer)     check_word="Review Priorities" ;;
+      test-advocate)     check_word="Test Advocate" ;;
+      dep-auditor)       check_word="Dependency Auditor" ;;
+      pr-hygiene)        check_word="PR Hygiene" ;;
+    esac
+    if [[ "$combined" != *"$check_word"* ]]; then
+      fail "Combined load missing content from '${skill_name}'"
+    fi
+  done
+
+  echo "  ✓ All shipped skills load correctly (${expected_skills// /, })"
+}
+
 echo "Running skill loading tests..."
 echo
 
@@ -266,6 +322,7 @@ test_load_multiple_skills
 test_invalid_skill_name
 test_missing_skill_file
 test_empty_skill_list
+test_shipped_skills_load
 
 echo
 echo "All skill loading tests passed!"

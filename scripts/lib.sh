@@ -197,7 +197,7 @@ strip_frontmatter() {
 
 load_skill_prompts() {
   local skills_list="$1"
-  local skills_dir="${2:-/opt/hivemoot-agent/prompts/skills}"
+  local skills_dir="${2:-/opt/hivemoot-agent/skills}"
 
   [ -z "$skills_list" ] && return 0
 

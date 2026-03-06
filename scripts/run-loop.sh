@@ -167,8 +167,8 @@ preflight_check() {
     while IFS= read -r skill_name; do
       skill_name="$(trim "$skill_name")"
       [ -z "$skill_name" ] && continue
-      if [ ! -f "/opt/hivemoot-agent/prompts/skills/${skill_name}/SKILL.md" ]; then
-        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/prompts/skills/${skill_name}/SKILL.md" >&2
+      if [ ! -f "/opt/hivemoot-agent/skills/${skill_name}/SKILL.md" ]; then
+        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/skills/${skill_name}/SKILL.md" >&2
         failures=$((failures + 1))
       fi
     done < <(tr ',' '\n' <<< "${AGENT_SKILLS}")
