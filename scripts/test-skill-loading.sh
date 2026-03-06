@@ -172,7 +172,15 @@ test_load_single_skill() {
     fail "load_skill_prompts should strip frontmatter"
   fi
 
-  echo "  ✓ Single skill loads correctly"
+  if [[ "$result" != *'<skill name="skill-one">'* ]]; then
+    fail "load_skill_prompts should wrap skill in <skill> tag"
+  fi
+
+  if [[ "$result" != *'</skill>'* ]]; then
+    fail "load_skill_prompts should close </skill> tag"
+  fi
+
+  echo "  ✓ Single skill loads correctly with XML wrapper"
 }
 
 test_load_multiple_skills() {
@@ -196,7 +204,21 @@ test_load_multiple_skills() {
     fail "load_skill_prompts should load second skill"
   fi
 
-  echo "  ✓ Multiple skills load correctly"
+  if [[ "$result" != *'<skill name="skill-one">'* ]]; then
+    fail "load_skill_prompts should wrap first skill in <skill> tag"
+  fi
+
+  if [[ "$result" != *'<skill name="skill-two">'* ]]; then
+    fail "load_skill_prompts should wrap second skill in <skill> tag"
+  fi
+
+  local skill_tag_count
+  skill_tag_count="$(echo "$result" | grep -c '</skill>' || true)"
+  if [ "$skill_tag_count" -ne 2 ]; then
+    fail "Expected 2 </skill> closing tags, found $skill_tag_count"
+  fi
+
+  echo "  ✓ Multiple skills load correctly with XML wrappers"
 }
 
 test_invalid_skill_name() {
@@ -285,6 +307,15 @@ test_shipped_skills_load() {
     # Body must contain the skill heading
     if [[ "$result" != *"## Skill:"* ]]; then
       fail "Skill '${skill}' missing expected heading"
+    fi
+
+    # Must be wrapped in XML skill tag
+    if [[ "$result" != *"<skill name=\"${skill}\">"* ]]; then
+      fail "Skill '${skill}' missing <skill> XML wrapper"
+    fi
+
+    if [[ "$result" != *"</skill>"* ]]; then
+      fail "Skill '${skill}' missing </skill> closing tag"
     fi
   done
 

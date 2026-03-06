@@ -216,13 +216,19 @@ load_skill_prompts() {
       echo "Skill file not found: ${skill_file} (AGENT_SKILLS=${skills_list})" >&2
       return 1
     fi
+    local body
+    body="$(strip_frontmatter "$skill_file")"
     if [ "$first" -eq 1 ]; then
-      result="$(strip_frontmatter "$skill_file")"
+      result="<skill name=\"${skill}\">
+${body}
+</skill>"
       first=0
     else
       result="${result}
 
-$(strip_frontmatter "$skill_file")"
+<skill name=\"${skill}\">
+${body}
+</skill>"
     fi
   done < <(tr ',' '\n' <<< "$skills_list")
 

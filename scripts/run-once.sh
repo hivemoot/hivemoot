@@ -494,7 +494,10 @@ if [ -n "$agent_skills" ]; then
   fi
   if [ -n "$skills_content" ]; then
     system_prompt="${system_prompt}
-${skills_content}"
+
+<skills>
+${skills_content}
+</skills>"
   fi
 fi
 
