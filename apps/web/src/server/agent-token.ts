@@ -13,6 +13,7 @@
 import { randomBytes, createHash } from "crypto";
 import { type Redis } from "@upstash/redis";
 import { encrypt, decrypt, type EncryptedEnvelope } from "@/server/crypto";
+import { withRedisLock, LockTimeoutError } from "@/server/redis-lock";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -21,16 +22,6 @@ import { encrypt, decrypt, type EncryptedEnvelope } from "@/server/crypto";
 const TOKEN_PREFIX = "hive:agent-token:";
 const HASH_PREFIX = "agent-token-hash:";
 const LOCK_PREFIX = "hive:agent-token-lock:";
-const LOCK_TTL_SECONDS = 5;
-const LOCK_MAX_WAIT_MS = 1000;
-const LOCK_RETRY_MIN_MS = 8;
-const LOCK_RETRY_MAX_MS = 20;
-const RELEASE_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("del", KEYS[1])
-end
-return 0
-`;
 
 // Atomic rotate: DEL old hash (if any), SET envelope, SET new hash index.
 // KEYS: [oldHashKey, envelopeKey, newHashKey]
@@ -79,12 +70,8 @@ export interface AgentTokenRecord {
   createdBy: string;
 }
 
-export class LockTimeoutError extends Error {
-  constructor(installationId: string) {
-    super(`Timed out acquiring agent-token lock for installation ${installationId}`);
-    this.name = "LockTimeoutError";
-  }
-}
+// Re-exported so API route consumers can import from a single location.
+export { LockTimeoutError } from "@/server/redis-lock";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,57 +93,18 @@ function redisLockKey(installationId: string): string {
   return `${LOCK_PREFIX}${installationId}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomRetryDelayMs(): number {
-  return LOCK_RETRY_MIN_MS + Math.floor(Math.random() * (LOCK_RETRY_MAX_MS - LOCK_RETRY_MIN_MS + 1));
-}
-
-async function releaseInstallationLock(
-  lockKey: string,
-  lockOwnerToken: string,
-  redis: Redis,
-): Promise<void> {
-  await redis.eval(RELEASE_LOCK_SCRIPT, [lockKey], [lockOwnerToken]);
-}
-
-async function withInstallationLock<T>(
+function withInstallationLock<T>(
   installationId: string,
   redis: Redis,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const lockKey = redisLockKey(installationId);
-  const lockOwnerToken = randomBytes(16).toString("hex");
-  const deadline = Date.now() + LOCK_MAX_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    const acquired = await redis.set(lockKey, lockOwnerToken, {
-      nx: true,
-      ex: LOCK_TTL_SECONDS,
-    });
-
-    if (acquired === "OK") {
-      try {
-        return await fn();
-      } finally {
-        try {
-          await releaseInstallationLock(lockKey, lockOwnerToken, redis);
-        } catch (error) {
-          // Lock cleanup is best-effort so we never hide the primary operation result.
-          console.error("[agent-token] Failed to release installation lock", {
-            installationId,
-            error,
-          });
-        }
-      }
-    }
-
-    await sleep(randomRetryDelayMs());
-  }
-
-  throw new LockTimeoutError(installationId);
+  return withRedisLock(redisLockKey(installationId), redis, fn, {
+    onReleaseError: (error) =>
+      console.error("[agent-token] Failed to release installation lock", {
+        installationId,
+        error,
+      }),
+  });
 }
 
 // ---------------------------------------------------------------------------

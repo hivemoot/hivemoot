@@ -13,7 +13,6 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-  result?: string;
 }
 
 export interface TaskMessage {
