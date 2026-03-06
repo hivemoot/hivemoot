@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DRAFT_PROMPT_KEY, DRAFT_REPOS_KEY } from "./task-helpers";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,13 +191,6 @@ function truncate(text: string, max: number): string {
 // ---------------------------------------------------------------------------
 
 const REFRESH_INTERVAL_MS = 10_000;
-
-// ---------------------------------------------------------------------------
-// SessionStorage keys for draft persistence
-// ---------------------------------------------------------------------------
-
-const DRAFT_PROMPT_KEY = "create-task-draft-prompt";
-const DRAFT_REPOS_KEY = "create-task-draft-repos";
 
 // ---------------------------------------------------------------------------
 // Component

@@ -4,6 +4,8 @@ import Link from "next/link";
 import Markdown, { type ExtraProps } from "react-markdown";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { draftStorageKey, filterDuplicatePrompt, isSubmitShortcut } from "../task-helpers";
+import type { TaskMessage } from "../task-helpers";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,12 +24,6 @@ interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-}
-
-interface TaskMessage {
-  role: "user" | "agent" | "system";
-  content: string;
-  created_at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +479,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
   const sseRef = useRef<{ close: () => void } | null>(null);
 
   // ---- Draft persistence via sessionStorage ----
-  const draftKey = `task-draft-${taskId}`;
+  const draftKey = draftStorageKey(taskId);
 
   useEffect(() => {
     try {
@@ -598,10 +594,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
   // ---- Filter first message if it duplicates the prompt ----
   const filteredMessages = task
-    ? messages.filter((msg, i) => {
-        if (i === 0 && msg.role === "user" && msg.content.trim() === task.prompt.trim()) return false;
-        return true;
-      })
+    ? filterDuplicatePrompt(messages, task.prompt)
     : messages;
 
   // ---- Toggle expanded state for long agent messages ----
@@ -921,7 +914,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                 value={followUpText}
                 onChange={(e) => setFollowUpText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  if (isSubmitShortcut(e)) {
                     e.preventDefault();
                     submitMessage();
                   }
