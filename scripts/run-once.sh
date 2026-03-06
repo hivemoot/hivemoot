@@ -96,6 +96,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-observability.sh
+. "${SCRIPT_DIR}/lib-observability.sh"
 
 load_secret_from_file AGENT_GITHUB_TOKEN
 load_secret_from_file HIVEMOOT_AGENT_TOKEN

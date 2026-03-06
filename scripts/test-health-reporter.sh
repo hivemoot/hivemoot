@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test suite for health-reporter.sh and update_agent_stats() from lib.sh.
+# Test suite for health-reporter.sh and update_agent_stats() from lib-observability.sh.
 # Runs in CI without network access — all HTTP interactions are mocked.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -41,12 +41,15 @@ run_test() {
 
 # ── helpers ──────────────────────────────────────────────────────
 
-# Source lib.sh for update_agent_stats
+# Source lib.sh and lib-observability.sh for update_agent_stats
 source_lib() {
-  # Reset the guard so we can re-source
+  # Reset the guards so we can re-source
   unset HIVEMOOT_LIB_LOADED 2>/dev/null || true
+  unset HIVEMOOT_LIB_OBSERVABILITY_LOADED 2>/dev/null || true
   # shellcheck source=scripts/lib.sh
   . "${SCRIPT_DIR}/lib.sh"
+  # shellcheck source=scripts/lib-observability.sh
+  . "${SCRIPT_DIR}/lib-observability.sh"
 }
 
 # Source health-reporter.sh with lib.sh already loaded
