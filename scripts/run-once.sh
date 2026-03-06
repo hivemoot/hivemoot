@@ -1168,6 +1168,11 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
 
   # Compute next_run_at when running on a periodic schedule.
   # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  # This is a nominal floor (now + interval), not a hard guarantee. On failure,
+  # run-loop.sh applies exponential backoff that can defer the actual next run
+  # beyond this timestamp. Dashboards should treat this as best-effort and avoid
+  # tight "overdue" thresholds — a run landing later than next_run_at is not
+  # necessarily late, especially when PERIODIC_INTERVAL_SECS < backoff minimums.
   _next_run_at=""
   if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
     _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
