@@ -4,31 +4,7 @@ import Link from "next/link";
 import Markdown, { type ExtraProps } from "react-markdown";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface TaskRecord {
-  task_id: string;
-  status: string;
-  prompt: string;
-  repos: string[];
-  timeout_secs: number;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  started_at?: string;
-  finished_at?: string;
-  error?: string;
-  progress?: string;
-}
-
-interface TaskMessage {
-  role: "user" | "agent" | "system";
-  content: string;
-  created_at: string;
-}
+import { type TaskRecord, type TaskMessage } from "../types";
 
 // ---------------------------------------------------------------------------
 // Icons
