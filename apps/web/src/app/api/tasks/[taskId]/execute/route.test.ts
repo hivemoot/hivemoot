@@ -207,6 +207,106 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     expect(body.message).toBe("Task state is temporarily busy, retry shortly");
   });
 
+  describe("executor_outcome guard", () => {
+    it("completes normally when executor_outcome=success", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "done", executor_outcome: "success" }),
+      );
+      expect(res.status).toBe(200);
+      expect(completeTask).toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    });
+
+    it("completes normally without executor_outcome (backward compat)", async () => {
+      const res = await POST(makeRequest({ action: "complete", result: "done" }));
+      expect(res.status).toBe(200);
+      expect(completeTask).toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    });
+
+    it("down-converts complete to fail when executor_outcome=auth_failed", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "auth error occurred", executor_outcome: "auth_failed" }),
+      );
+      expect(res.status).toBe(200);
+      expect(failTask).toHaveBeenCalledWith(
+        "inst-1",
+        "abc123abc123abc123abc123",
+        expect.stringContaining("auth_failed"),
+        expect.anything(),
+      );
+      expect(completeTask).not.toHaveBeenCalled();
+    });
+
+    it("down-converts complete to fail when executor_outcome=runtime_failed", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "runtime crashed", executor_outcome: "runtime_failed" }),
+      );
+      expect(res.status).toBe(200);
+      expect(failTask).toHaveBeenCalledWith(
+        "inst-1",
+        "abc123abc123abc123abc123",
+        expect.stringContaining("runtime_failed"),
+        expect.anything(),
+      );
+      expect(completeTask).not.toHaveBeenCalled();
+    });
+
+    it("down-converts complete to fail when executor_outcome=timeout", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "timed out", executor_outcome: "timeout" }),
+      );
+      expect(res.status).toBe(200);
+      expect(failTask).toHaveBeenCalled();
+      expect(completeTask).not.toHaveBeenCalled();
+    });
+
+    it("includes exit_code in fail error message when provided", async () => {
+      const res = await POST(
+        makeRequest({
+          action: "complete",
+          result: "non-zero exit",
+          executor_outcome: "runtime_failed",
+          exit_code: 1,
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(failTask).toHaveBeenCalledWith(
+        "inst-1",
+        "abc123abc123abc123abc123",
+        expect.stringContaining("exit_code=1"),
+        expect.anything(),
+      );
+    });
+
+    it("returns 400 for unknown executor_outcome value", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "done", executor_outcome: "bad_value" }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe("task_validation_failed");
+    });
+
+    it("returns 400 when exit_code is not an integer", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "done", exit_code: 1.5 }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe("task_validation_failed");
+    });
+
+    it("returns 400 when exit_code is a string", async () => {
+      const res = await POST(
+        makeRequest({ action: "complete", result: "done", exit_code: "1" }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe("task_validation_failed");
+    });
+  });
+
   it("returns 403 when claim token is missing", async () => {
     const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }, ""));
     expect(res.status).toBe(403);

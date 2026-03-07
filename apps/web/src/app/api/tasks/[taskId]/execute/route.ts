@@ -21,6 +21,26 @@ const textEncoder = new TextEncoder();
 
 type ExecuteAction = "progress" | "complete" | "fail" | "timeout" | "heartbeat" | "request_follow_up";
 
+// Structured outcome metadata the executor can send alongside action=complete.
+// When outcome signals a failure, the backend down-converts to action=fail so a
+// runtime bug (e.g. posting complete after an auth error) cannot produce a false
+// success on the dashboard.
+type ExecutorOutcome = "success" | "auth_failed" | "runtime_failed" | "timeout";
+
+const VALID_EXECUTOR_OUTCOMES = new Set<ExecutorOutcome>([
+  "success",
+  "auth_failed",
+  "runtime_failed",
+  "timeout",
+]);
+
+function parseExecutorOutcome(value: unknown): ExecutorOutcome | null {
+  if (VALID_EXECUTOR_OUTCOMES.has(value as ExecutorOutcome)) {
+    return value as ExecutorOutcome;
+  }
+  return null;
+}
+
 function parseAction(value: unknown): ExecuteAction | null {
   if (
     value === "progress"
@@ -157,6 +177,34 @@ export async function POST(request: NextRequest) {
       if (typeof obj.result !== "string" || obj.result.trim().length === 0) {
         return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
       }
+
+      // Parse executor_outcome once; null means "not provided" after validation.
+      let outcome: ExecutorOutcome | null = null;
+      if (obj.executor_outcome !== undefined) {
+        outcome = parseExecutorOutcome(obj.executor_outcome);
+        if (outcome === null) {
+          return taskError(
+            TASK_ERROR.VALIDATION_FAILED,
+            "executor_outcome must be one of: success, auth_failed, runtime_failed, timeout",
+            400,
+          );
+        }
+      }
+
+      // Validate exit_code when present: must be an integer.
+      if (obj.exit_code !== undefined && (!Number.isInteger(obj.exit_code) || typeof obj.exit_code !== "number")) {
+        return taskError(TASK_ERROR.VALIDATION_FAILED, "exit_code must be an integer", 400);
+      }
+
+      // Guard: if executor signals a failure outcome, down-convert to fail so the
+      // backend never records a false success when the runtime misbehaves.
+      if (outcome !== null && outcome !== "success") {
+        const exitSuffix = typeof obj.exit_code === "number" ? ` (exit_code=${obj.exit_code})` : "";
+        const failError = `Executor reported ${outcome}${exitSuffix}: ${obj.result}`;
+        const failed = await failTask(auth.installationId, taskId, failError, auth.redis);
+        return toTransitionResponse(failed);
+      }
+
       const completed = await completeTask(auth.installationId, taskId, obj.result, auth.redis);
       return toTransitionResponse(completed);
     }

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DRAFT_PROMPT_KEY, DRAFT_REPOS_KEY } from "./task-helpers";
 import { type TaskRecord } from "./types";
 
 type CreateFormStatus = "idle" | "submitting" | "success" | "error";
@@ -188,14 +189,38 @@ export default function TasksDashboard() {
   const [repos, setRepos] = useState("hivemoot/hivemoot");
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
+  // ---- Restore drafts from sessionStorage ----
+  useEffect(() => {
+    try {
+      const savedPrompt = sessionStorage.getItem(DRAFT_PROMPT_KEY);
+      const savedRepos = sessionStorage.getItem(DRAFT_REPOS_KEY);
+      if (savedPrompt) { setPrompt(savedPrompt); setShowCreateForm(true); }
+      if (savedRepos) setRepos(savedRepos);
+    } catch {
+      // sessionStorage unavailable
+    }
+  }, []);
+
+  // ---- Persist drafts ----
+  useEffect(() => {
+    try {
+      if (prompt) sessionStorage.setItem(DRAFT_PROMPT_KEY, prompt);
+      else sessionStorage.removeItem(DRAFT_PROMPT_KEY);
+    } catch { /* noop */ }
+  }, [prompt]);
+
+  useEffect(() => {
+    try {
+      if (repos && repos !== "hivemoot/hivemoot") sessionStorage.setItem(DRAFT_REPOS_KEY, repos);
+      else sessionStorage.removeItem(DRAFT_REPOS_KEY);
+    } catch { /* noop */ }
+  }, [repos]);
+
   const fetchTasks = useCallback(async () => {
     try {
       const res = await fetch("/api/tasks?limit=20");
       if (!res.ok) {
-        if (res.status === 401) {
-          setError("Session expired — please log in again.");
-          return;
-        }
+        if (res.status === 401) { setError("Session expired \u2014 please log in again."); return; }
         setError("Failed to load tasks.");
         return;
       }
@@ -203,7 +228,7 @@ export default function TasksDashboard() {
       setTasks(data.tasks ?? []);
       setError(null);
     } catch {
-      setError("Network error — could not reach server.");
+      setError("Network error \u2014 could not reach server.");
     } finally {
       setLoading(false);
     }
@@ -220,20 +245,10 @@ export default function TasksDashboard() {
     if (createStatus === "submitting") return;
 
     const trimmedPrompt = prompt.trim();
-    if (!trimmedPrompt) {
-      setCreateError("Please enter a task prompt.");
-      return;
-    }
+    if (!trimmedPrompt) { setCreateError("Please enter a task prompt."); return; }
 
-    const repoList = repos
-      .split(",")
-      .map((r) => r.trim())
-      .filter(Boolean);
-
-    if (repoList.length === 0) {
-      setCreateError("Please enter at least one repository.");
-      return;
-    }
+    const repoList = repos.split(",").map((r) => r.trim()).filter(Boolean);
+    if (repoList.length === 0) { setCreateError("Please enter at least one repository."); return; }
 
     setCreateStatus("submitting");
     setCreateError("");
@@ -242,10 +257,7 @@ export default function TasksDashboard() {
       const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          repos: repoList,
-        }),
+        body: JSON.stringify({ prompt: trimmedPrompt, repos: repoList }),
       });
 
       if (!res.ok) {
@@ -259,6 +271,7 @@ export default function TasksDashboard() {
       setPrompt("");
       setShowCreateForm(false);
       setCreateStatus("idle");
+      try { sessionStorage.removeItem(DRAFT_PROMPT_KEY); sessionStorage.removeItem(DRAFT_REPOS_KEY); } catch { /* noop */ }
       await fetchTasks();
     } catch {
       setCreateError("Could not reach the server.");
@@ -274,14 +287,14 @@ export default function TasksDashboard() {
     return (
       <div className="flex items-center gap-3 text-sm text-zinc-500">
         <SpinnerIcon />
-        Loading tasks…
+        Loading tasks&hellip;
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-6">
+      <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6">
         <p className="text-sm text-red-400">{error}</p>
       </div>
     );
@@ -292,7 +305,7 @@ export default function TasksDashboard() {
   // -------------------------------------------------------------------------
 
   return (
-    <div className="space-y-6">
+    <div className="animate-fade-in space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -318,7 +331,7 @@ export default function TasksDashboard() {
 
       {/* Create form */}
       {showCreateForm && (
-        <section className="rounded-xl border border-white/[0.06] bg-[#141414] p-6">
+        <section className="animate-slide-down rounded-2xl border border-white/[0.06] bg-[#141414] p-4 sm:p-6">
           <h3 className="mb-4 text-sm font-semibold text-[#fafafa]">Create Task</h3>
 
           {createError && (
@@ -339,8 +352,8 @@ export default function TasksDashboard() {
                 rows={3}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe what the agent should do…"
-                className="w-full resize-y rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+                placeholder="Describe what the agent should do\u2026"
+                className="w-full resize-y rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
               />
             </div>
 
@@ -354,7 +367,7 @@ export default function TasksDashboard() {
                 value={repos}
                 onChange={(e) => setRepos(e.target.value)}
                 placeholder="hivemoot/hivemoot"
-                className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
+                className="w-full rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
               />
             </div>
 
@@ -367,7 +380,7 @@ export default function TasksDashboard() {
                 {createStatus === "submitting" ? (
                   <>
                     <SpinnerIcon />
-                    Creating…
+                    Creating&hellip;
                   </>
                 ) : (
                   <>
@@ -394,29 +407,24 @@ export default function TasksDashboard() {
 
       {/* Task list */}
       {tasks.length === 0 ? (
-        <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-8 text-center">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#141414] p-8 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-honey-500/10">
             <TaskIcon className="h-5 w-5 text-honey-500" />
           </div>
-          <h3 className="mt-4 text-sm font-semibold text-[#fafafa]">
-            No tasks yet
-          </h3>
-          <p className="mt-2 text-sm text-zinc-400">
-            Create a task to delegate work to an agent.
-          </p>
+          <h3 className="mt-4 text-sm font-semibold text-[#fafafa]">No tasks yet</h3>
+          <p className="mt-2 text-sm text-zinc-400">Create a task to delegate work to an agent.</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {tasks.map((task) => (
+          {tasks.map((task, i) => (
             <Link
               key={task.task_id}
               href={`/dashboard/tasks/${task.task_id}`}
-              className="group flex items-start gap-4 rounded-xl border border-white/[0.06] bg-[#141414] px-5 py-4 transition-colors hover:border-white/10"
+              className="animate-message-in group flex items-start gap-4 rounded-2xl border border-white/[0.06] bg-[#141414] px-4 py-3.5 transition-colors hover:border-white/10 sm:px-5 sm:py-4"
+              style={{ animationDelay: `${i * 30}ms` }}
             >
-              <div className="mt-1 flex items-center gap-2.5">
-                <span
-                  className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${statusDotColor(task.status)}`}
-                />
+              <div className="mt-1.5 flex items-center gap-2.5">
+                <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotColor(task.status)} ${task.status === "running" ? "animate-pulse" : ""}`} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
@@ -429,17 +437,13 @@ export default function TasksDashboard() {
                 </div>
                 <div className="mt-1.5 flex items-center gap-3 text-xs text-zinc-600">
                   <span className="font-mono">{task.repos.join(", ")}</span>
-                  <span>{relativeTime(task.created_at)}</span>
+                  <span suppressHydrationWarning>{relativeTime(task.created_at)}</span>
                 </div>
                 {task.progress && task.status !== "pending" && (
-                  <p className="mt-1 truncate text-xs text-zinc-500">
-                    {task.progress}
-                  </p>
+                  <p className="mt-1 truncate text-xs text-zinc-500">{task.progress}</p>
                 )}
                 {task.status === "needs_follow_up" && (
-                  <p className="mt-1 text-xs text-amber-400/80">
-                    Agent is waiting for your input
-                  </p>
+                  <p className="mt-1 text-xs text-amber-400/80">Agent is waiting for your input</p>
                 )}
               </div>
             </Link>
