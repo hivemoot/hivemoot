@@ -565,6 +565,25 @@ When unset, standing agents use `prompts/system/autonomous.md` (prepended by
 `prompts/system/base.md`) and task mode uses `prompts/system/task.md`
 (also prepended by `prompts/system/base.md`).
 
+## Skills
+
+Use `AGENT_SKILLS` to inject a comma-separated list of skill modules from
+`/opt/hivemoot-agent/skills/<name>/SKILL.md` into the composed system prompt.
+Built-in image skills and read-only bind mounts both resolve through that same
+path.
+
+When running the host controller, `AGENT_SKILL_BIND_MOUNTS` can expose custom
+skill directories into worker containers. Each mount must use an absolute host
+path and the exact read-only destination format
+`/host/path:/opt/hivemoot-agent/skills/<name>:ro`. Provide multiple mounts as
+newline-separated specs; destinations outside `/opt/hivemoot-agent/skills/` and
+any `..` segments are rejected.
+
+Managed multi-agent runtimes can also set `AGENT_SKILLS_01` through
+`AGENT_SKILLS_10`. The controller resolves the matching slot for each
+configured `AGENT_ID_XX` and forwards only that skill list to the worker job.
+When a slot-specific value is unset, the runtime falls back to `AGENT_SKILLS`.
+
 ## Optional Override Services
 
 To target multiple repos from one setup, create `docker-compose.override.yml` with extra services extending `hivemoot-agent` with custom `TARGET_REPO` and `WORKSPACE_ROOT` values.

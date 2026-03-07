@@ -464,6 +464,110 @@ run_success_case() {
   echo "PASS: success case writes expected spawn flags and job artifacts"
 }
 
+run_per_agent_skill_routing_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local custom_skill_dir="${case_dir}/custom-skills/skill-one"
+  local custom_mount=""
+  local run_log=""
+  local worker_line=""
+  local builder_line=""
+
+  mkdir -p "$custom_skill_dir"
+  cat > "${custom_skill_dir}/SKILL.md" <<'EOF_SKILL'
+---
+name: skill-one
+description: Test custom skill
+---
+## Skill: Test Custom Skill
+EOF_SKILL
+
+  custom_mount="${custom_skill_dir}:/opt/hivemoot-agent/skills/skill-one:ro"
+
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_SKILLS_01="skill-one,release-readiness" \
+    AGENT_ID_02="builder" \
+    AGENT_GITHUB_TOKEN_02="token-2" \
+    AGENT_SKILLS_02="proposal-architect" \
+    AGENT_SKILL_BIND_MOUNTS="${custom_mount}" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in per-agent skill routing case"
+
+  worker_line="$(grep -F "AGENT_ID_01=worker" "$run_log" | head -n 1 || true)"
+  builder_line="$(grep -F "AGENT_ID_01=builder" "$run_log" | head -n 1 || true)"
+  [ -n "$worker_line" ] || fail "missing worker launch in per-agent skill routing case"
+  [ -n "$builder_line" ] || fail "missing builder launch in per-agent skill routing case"
+
+  if [[ "$worker_line" != *"AGENT_SKILLS=skill-one,release-readiness"* ]]; then
+    fail "worker launch did not receive worker-specific skills"
+  fi
+
+  if [[ "$builder_line" != *"AGENT_SKILLS=proposal-architect"* ]]; then
+    fail "builder launch did not receive builder-specific skills"
+  fi
+
+  if [[ "$worker_line" != *"${custom_mount}"* ]]; then
+    fail "custom skill bind mount missing from worker launch"
+  fi
+
+  if [[ "$builder_line" != *"${custom_mount}"* ]]; then
+    fail "custom skill bind mount missing from builder launch"
+  fi
+
+  echo "PASS: controller routes per-agent skills and custom skill bind mounts"
+}
+
+run_invalid_skill_bind_mount_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local mount_spec="$3"
+  local expected_error="$4"
+  local controller_log="${case_dir}/controller.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  if env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_SKILL_BIND_MOUNTS="${mount_spec}" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1; then
+    fail "controller succeeded unexpectedly for invalid skill bind mount: ${mount_spec}"
+  fi
+
+  assert_file_contains "$controller_log" "$expected_error"
+  if [ -f "$run_log" ] && [ -s "$run_log" ]; then
+    fail "controller should reject invalid skill bind mounts before docker run"
+  fi
+
+  echo "PASS: invalid skill bind mount rejected (${mount_spec})"
+}
+
 run_custom_prompt_companion_base_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1565,6 +1669,22 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Running controller script checks"
 run_success_case "$repo_root" "${tmpdir}/success"
+run_per_agent_skill_routing_case "$repo_root" "${tmpdir}/per-agent-skill-routing"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-traversal" \
+  "${tmpdir}/custom-skill:/opt/hivemoot-agent/skills/../../etc:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains path traversal:"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-relative" \
+  "relative-skill:/opt/hivemoot-agent/skills/skill-one:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains invalid mount spec:"
+run_invalid_skill_bind_mount_case \
+  "$repo_root" \
+  "${tmpdir}/invalid-skill-bind-mount-destination" \
+  "${tmpdir}/custom-skill:/opt/hivemoot-agent/custom-skills/skill-one:ro" \
+  "AGENT_SKILL_BIND_MOUNTS contains invalid mount spec:"
 run_custom_prompt_companion_base_case "$repo_root" "${tmpdir}/custom-prompt-companion-base"
 run_failure_case "$repo_root" "${tmpdir}/failure"
 run_spawn_failure_cleanup_case "$repo_root" "${tmpdir}/spawn-failure"

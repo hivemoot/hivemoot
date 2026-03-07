@@ -169,6 +169,31 @@ append_env_if_set() {
   fi
 }
 
+append_bind_mount_specs() {
+  local var_name="$1"
+  local mounts="${!var_name:-}"
+  local mount_spec=""
+
+  [ -z "$mounts" ] && return 0
+
+  while IFS= read -r mount_spec; do
+    mount_spec="$(trim "$mount_spec")"
+    [ -z "$mount_spec" ] && continue
+    case "$mount_spec" in
+      *..*)
+        echo "${var_name} contains path traversal: ${mount_spec}" >&2
+        return 1
+        ;;
+      /*:/opt/hivemoot-agent/skills/*:ro) ;;
+      *)
+        echo "${var_name} contains invalid mount spec: ${mount_spec}" >&2
+        return 1
+        ;;
+    esac
+    docker_run_args+=( -v "$mount_spec" )
+  done <<< "$mounts"
+}
+
 append_secret_env() {
   local var_name="$1"
   local file_var_name="${var_name}_FILE"
@@ -254,11 +279,14 @@ spawn_worker() {
   local container_name="${worker_name_prefix}-${job_id}"
   local prompt_file="${AGENT_PROMPT_FILE:-}"
   local companion_base_prompt=""
+  local job_agent_skills=""
   local worker_run_mode="once"
 
   if [ "$trigger_type" = "task" ]; then
     worker_run_mode="task"
   fi
+
+  job_agent_skills="$(resolve_agent_skill_list "$agent_id")"
 
   docker_run_args=(
     run
@@ -329,7 +357,9 @@ spawn_worker() {
   append_env_if_set AGENT_AUTH_MODE
   append_env_if_set AGENT_MODEL
   append_env_if_set AGENT_PROMPT_FILE
-  append_env_if_set AGENT_SKILLS
+  if [ -n "$job_agent_skills" ]; then
+    docker_run_args+=( -e "AGENT_SKILLS=${job_agent_skills}" )
+  fi
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
   append_env_if_set GIT_CLONE_DEPTH
@@ -367,6 +397,10 @@ spawn_worker() {
       docker_run_args+=( -v "${companion_base_prompt}:${companion_base_prompt}:ro" )
     fi
     docker_run_args+=( -v "${prompt_file}:${prompt_file}:ro" )
+  fi
+
+  if ! append_bind_mount_specs AGENT_SKILL_BIND_MOUNTS; then
+    return 1
   fi
 
   docker_run_args+=( "$worker_image" )
@@ -1892,6 +1926,7 @@ mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 declare -A seen_agents=()
+declare -A agent_skill_lists=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
 load_agent_slots "$max_agents"

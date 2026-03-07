@@ -221,6 +221,30 @@ test_load_multiple_skills() {
   echo "  ✓ Multiple skills load correctly with XML wrappers"
 }
 
+test_ensure_skill_files_exist() {
+  echo "Testing skill file validation..."
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  setup_test_skills "$tmp_dir"
+  source_lib
+
+  ensure_skill_files_exist "skill-one,skill-two" "$tmp_dir" || \
+    fail "ensure_skill_files_exist should accept valid skills"
+
+  if ensure_skill_files_exist "../escape" "$tmp_dir" 2>/dev/null; then
+    fail "ensure_skill_files_exist should reject invalid skill names"
+  fi
+
+  if ensure_skill_files_exist "missing-skill" "$tmp_dir" 2>/dev/null; then
+    fail "ensure_skill_files_exist should fail when a skill file is missing"
+  fi
+
+  echo "  ✓ Skill file validation behaves correctly"
+}
+
 test_invalid_skill_name() {
   echo "Testing invalid skill name rejection..."
 
@@ -276,6 +300,89 @@ test_empty_skill_list() {
   fi
 
   echo "  ✓ Empty skill list returns nothing"
+}
+
+test_slot_specific_skill_loading() {
+  echo "Testing slot-specific skill loading..."
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  source_lib
+
+  export AGENT_ID_01="worker"
+  export AGENT_GITHUB_TOKEN_01="token-one"
+  export AGENT_SKILLS_01="skill-one,skill-two"
+  export AGENT_ID_02="builder"
+  export AGENT_GITHUB_TOKEN_02="token-two"
+  export AGENT_SKILLS="global-skill"
+
+  declare -A seen_agents=()
+  declare -A agent_skill_lists=()
+  declare -a agent_ids=()
+  declare -a agent_tokens=()
+  load_agent_slots 2
+
+  if [ "${agent_skill_lists[worker]:-}" != "skill-one,skill-two" ]; then
+    fail "load_agent_slots should record slot-specific skills for worker"
+  fi
+
+  if [ "${agent_skill_lists[builder]+_}" = "_" ]; then
+    fail "load_agent_slots should not create an empty slot-specific skill entry"
+  fi
+
+  if [ "$(resolve_agent_skill_list "worker")" != "skill-one,skill-two" ]; then
+    fail "resolve_agent_skill_list should prefer slot-specific skills"
+  fi
+
+  if [ "$(resolve_agent_skill_list "builder")" != "global-skill" ]; then
+    fail "resolve_agent_skill_list should fall back to AGENT_SKILLS"
+  fi
+
+  unset AGENT_ID_01 AGENT_GITHUB_TOKEN_01 AGENT_SKILLS_01
+  unset AGENT_ID_02 AGENT_GITHUB_TOKEN_02 AGENT_SKILLS
+
+  echo "  ✓ Slot-specific skills resolve correctly"
+}
+
+test_preflight_check_agent_skill_lists() {
+  echo "Testing preflight agent skill validation..."
+
+  local tmp_dir
+  local failures=0
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  setup_test_skills "$tmp_dir"
+  source_lib
+
+  export AGENT_ID_01="worker"
+  export AGENT_GITHUB_TOKEN_01="token-one"
+  export AGENT_SKILLS_01="skill-one"
+  export AGENT_ID_02="builder"
+  export AGENT_GITHUB_TOKEN_02="token-two"
+  export AGENT_SKILLS_02="skill-one"
+  export AGENT_ID_03="reviewer"
+  export AGENT_GITHUB_TOKEN_03="token-three"
+  export AGENT_SKILLS_03="missing-skill"
+
+  declare -A seen_agents=()
+  declare -A agent_skill_lists=()
+  declare -a agent_ids=()
+  declare -a agent_tokens=()
+  load_agent_slots 3
+
+  preflight_check_agent_skill_lists "$tmp_dir" 2>/dev/null || failures=$?
+  if [ "$failures" -ne 1 ]; then
+    fail "preflight_check_agent_skill_lists should count one missing skill list"
+  fi
+
+  unset AGENT_ID_01 AGENT_GITHUB_TOKEN_01 AGENT_SKILLS_01
+  unset AGENT_ID_02 AGENT_GITHUB_TOKEN_02 AGENT_SKILLS_02
+  unset AGENT_ID_03 AGENT_GITHUB_TOKEN_03 AGENT_SKILLS_03
+
+  echo "  ✓ Preflight agent skill validation deduplicates shared lists"
 }
 
 test_shipped_skills_load() {
@@ -350,9 +457,12 @@ test_strip_frontmatter
 test_frontmatter_with_divider
 test_load_single_skill
 test_load_multiple_skills
+test_ensure_skill_files_exist
 test_invalid_skill_name
 test_missing_skill_file
 test_empty_skill_list
+test_slot_specific_skill_loading
+test_preflight_check_agent_skill_lists
 test_shipped_skills_load
 
 echo

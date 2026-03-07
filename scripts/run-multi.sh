@@ -94,6 +94,7 @@ shuffle_agents() {
 }
 
 declare -A seen_agents=()
+declare -A agent_skill_lists=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
 load_agent_slots "$max_agents"
@@ -142,17 +143,9 @@ preflight_check() {
   fi
 
   # Skill files exist
-  if [ -n "${AGENT_SKILLS:-}" ]; then
-    local skill_name
-    while IFS= read -r skill_name; do
-      skill_name="$(trim "$skill_name")"
-      [ -z "$skill_name" ] && continue
-      if [ ! -f "/opt/hivemoot-agent/skills/${skill_name}/SKILL.md" ]; then
-        echo "Pre-flight: skill file not found: /opt/hivemoot-agent/skills/${skill_name}/SKILL.md" >&2
-        failures=$((failures + 1))
-      fi
-    done < <(tr ',' '\n' <<< "${AGENT_SKILLS}")
-  fi
+  local skill_failures=0
+  preflight_check_agent_skill_lists "/opt/hivemoot-agent/skills" || skill_failures=$?
+  failures=$((failures + skill_failures))
 
   # Provider auth check
   local auth_failures=0
@@ -229,6 +222,7 @@ for index in "${!agent_ids[@]}"; do
   agent_log_dir="${workspace_root}/runs/${agent_id}"
   agent_home="$(resolve_managed_agent_home "$workspace_root" "$agent_id" "$effective_auth_mode")"
   wrapper_log="${agent_log_dir}/$(date '+%Y%m%d-%H%M%S')-${agent_id}-wrapper.log"
+  agent_skills="$(resolve_agent_skill_list "$agent_id")"
 
   mkdir -p "$agent_workspace" "$agent_log_dir" "$agent_home"
   chmod 700 "$agent_workspace" "$agent_log_dir" "$agent_home" 2>/dev/null || true
@@ -262,6 +256,11 @@ for index in "${!agent_ids[@]}"; do
     export AGENT_GIT_NAME="$agent_id"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$agent_extra_prompt"
+    if [ -n "$agent_skills" ]; then
+      export AGENT_SKILLS="$agent_skills"
+    else
+      unset AGENT_SKILLS
+    fi
 
     exec /opt/hivemoot-agent/scripts/run-once.sh
   ) > "$agent_fifo" 2>&1 &

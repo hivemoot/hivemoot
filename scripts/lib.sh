@@ -195,27 +195,46 @@ strip_frontmatter() {
   awk 'BEGIN{fm=0} /^---$/ && fm<2 {fm++; next} fm>=2||fm==0{print}' "$file"
 }
 
+ensure_skill_files_exist() {
+  local skills_list="$1"
+  local skills_dir="${2:-/opt/hivemoot-agent/skills}"
+  local context="${3:-AGENT_SKILLS=${skills_list}}"
+
+  [ -z "$skills_list" ] && return 0
+
+  local skill skill_file
+  while IFS= read -r skill; do
+    skill="$(trim "$skill")"
+    [ -z "$skill" ] && continue
+    case "$skill" in
+      *[!a-zA-Z0-9_-]*)
+        echo "Invalid skill name: '${skill}' (${context})" >&2
+        return 1
+        ;;
+    esac
+    skill_file="${skills_dir}/${skill}/SKILL.md"
+    if [ ! -f "$skill_file" ]; then
+      echo "Skill file not found: ${skill_file} (${context})" >&2
+      return 1
+    fi
+  done < <(tr ',' '\n' <<< "$skills_list")
+}
+
 load_skill_prompts() {
   local skills_list="$1"
   local skills_dir="${2:-/opt/hivemoot-agent/skills}"
 
   [ -z "$skills_list" ] && return 0
 
+  if ! ensure_skill_files_exist "$skills_list" "$skills_dir" "AGENT_SKILLS=${skills_list}"; then
+    return 1
+  fi
+
   local skill skill_file result="" first=1
   while IFS= read -r skill; do
     skill="$(trim "$skill")"
     [ -z "$skill" ] && continue
-    case "$skill" in
-      *[!a-zA-Z0-9_-]*)
-        echo "Invalid skill name: '${skill}' (AGENT_SKILLS=${skills_list})" >&2
-        return 1
-        ;;
-    esac
     skill_file="${skills_dir}/${skill}/SKILL.md"
-    if [ ! -f "$skill_file" ]; then
-      echo "Skill file not found: ${skill_file} (AGENT_SKILLS=${skills_list})" >&2
-      return 1
-    fi
     local body
     body="$(strip_frontmatter "$skill_file")"
     if [ "$first" -eq 1 ]; then
@@ -364,33 +383,49 @@ load_slot_token() {
   printf '%s' "$token"
 }
 
+load_slot_skills() {
+  local suffix="$1"
+  local skills_var="AGENT_SKILLS_${suffix}"
+  printf '%s' "$(trim "${!skills_var:-}")"
+}
+
 # Populate caller-declared seen_agents, agent_ids, and agent_tokens by reading
 # AGENT_ID_XX / AGENT_GITHUB_TOKEN_XX(_FILE) env vars for slots 1..<max_slots>.
+# If the caller declares agent_skill_lists as an associative array, populate it
+# from optional AGENT_SKILLS_XX values for matching slots.
 # Arrays must be declared in the caller scope before calling this function:
 #   declare -A seen_agents=()
 #   declare -a agent_ids=()
 #   declare -a agent_tokens=()
+#   declare -A agent_skill_lists=()
 load_agent_slots() {
   local max_slots="${1:-10}"
-  local slot suffix id_var token_var token_file_var
-  local agent_id agent_token token_inline token_file
+  local slot suffix id_var token_var token_file_var skills_var
+  local agent_id agent_token token_inline token_file agent_skill_list
+  local populate_skill_lists=0
+
+  if declare -p agent_skill_lists >/dev/null 2>&1; then
+    populate_skill_lists=1
+  fi
 
   for slot in $(seq 1 "$max_slots"); do
     suffix="$(printf '%02d' "$slot")"
     id_var="AGENT_ID_${suffix}"
     token_var="AGENT_GITHUB_TOKEN_${suffix}"
     token_file_var="${token_var}_FILE"
+    skills_var="AGENT_SKILLS_${suffix}"
 
     agent_id="$(trim "${!id_var:-}")"
     token_inline="${!token_var:-}"
     token_file="${!token_file_var:-}"
+    agent_skill_list="$(load_slot_skills "$suffix")"
 
-    if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ]; then
+    if [ -z "$agent_id" ] && [ -z "$token_inline" ] && [ -z "$token_file" ] && [ -z "$agent_skill_list" ]; then
       continue
     fi
 
     if [ -z "$agent_id" ]; then
-      echo "${id_var} is required when ${token_var} or ${token_file_var} is set." >&2
+      echo "${id_var} is required when ${token_var}, ${token_file_var}, or ${skills_var} is set." >&2
       exit 1
     fi
 
@@ -410,12 +445,51 @@ load_agent_slots() {
 
     agent_ids+=("$agent_id")
     agent_tokens+=("$agent_token")
+    if [ "$populate_skill_lists" -eq 1 ] && [ -n "$agent_skill_list" ]; then
+      agent_skill_lists["$agent_id"]="$agent_skill_list"
+    fi
   done
 
   if [ "${#agent_ids[@]}" -eq 0 ]; then
     echo "No agents configured. Set AGENT_ID_01 + AGENT_GITHUB_TOKEN_01 (up to _10)." >&2
     exit 1
   fi
+}
+
+resolve_agent_skill_list() {
+  local agent_id="$1"
+  local fallback="${2:-${AGENT_SKILLS:-}}"
+
+  if declare -p agent_skill_lists >/dev/null 2>&1; then
+    if [ "${agent_skill_lists[$agent_id]+_}" = "_" ]; then
+      printf '%s' "${agent_skill_lists[$agent_id]}"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$fallback"
+}
+
+preflight_check_agent_skill_lists() {
+  local skills_dir="${1:-/opt/hivemoot-agent/skills}"
+  local agent_id=""
+  local skills_list=""
+  local failures=0
+  declare -A checked_skill_lists=()
+
+  for agent_id in "${agent_ids[@]}"; do
+    skills_list="$(resolve_agent_skill_list "$agent_id")"
+    [ -z "$skills_list" ] && continue
+    if [ -n "${checked_skill_lists[$skills_list]:-}" ]; then
+      continue
+    fi
+    checked_skill_lists["$skills_list"]=1
+    if ! ensure_skill_files_exist "$skills_list" "$skills_dir" "AGENT_SKILLS(${agent_id})=${skills_list}"; then
+      failures=$((failures + 1))
+    fi
+  done
+
+  return "$failures"
 }
 
 preflight_check_provider_auth() {
