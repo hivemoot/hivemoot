@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { parseContentLength } from "@/server/request-utils";
 import { TASK_ERROR, taskError } from "@/server/task-error";
+import { preflightTaskRepos } from "@/server/task-repo-preflight";
 import {
   checkTaskCreateRateLimit,
   createTask,
@@ -77,6 +78,20 @@ export async function POST(request: NextRequest) {
       "Too many task create requests. Please retry shortly.",
       429,
       { retry_after_secs: rateLimit.retryAfterSeconds },
+    );
+  }
+
+  const repoAccess = await preflightTaskRepos(
+    validation.request.repos,
+    auth.session.installationId,
+  );
+  if (!repoAccess.ok) {
+    return taskError(
+      repoAccess.reason === "repo_unavailable"
+        ? TASK_ERROR.REPO_UNAVAILABLE
+        : TASK_ERROR.SERVER_ERROR,
+      repoAccess.message,
+      repoAccess.reason === "repo_unavailable" ? 403 : 503,
     );
   }
 
