@@ -51,6 +51,10 @@ assert_contains "$run_once" "system_prompt=\"\$(cat \"\$prompt_file\")\""
 assert_contains "$run_once" "system_prompt=\"\$(cat \"\$base_prompt_file\")"
 assert_contains "$run_once" "prompt=\"\${system_prompt}"
 assert_contains "$run_once" "cmd+=(--append-system-prompt \"\$system_prompt\")"
+assert_contains "$run_once" "claude_fresh_cmd+=(--disallowedTools \"\${claude_disallowed_tools[@]}\")"
+assert_contains "$run_once" "cmd+=(--disallowedTools \"\${claude_disallowed_tools[@]}\")"
+assert_contains "$run_once" "\"Bash(env)\""
+assert_contains "$run_once" "\"Read(/run/secrets/*)\""
 
 prompt_arg_count="$(grep -Fc "cmd+=(\"\$prompt\")" "$run_once")"
 if [ "$prompt_arg_count" -lt 2 ]; then

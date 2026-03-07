@@ -851,6 +851,28 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
+    # Deny rules are enforced even with --dangerously-skip-permissions;
+    # they block naive single-command exfiltration patterns from prompt injection.
+    # See issue #94 for analysis and rationale.
+    # Note: Bash(*) access means sufficiently creative shell invocations
+    # (e.g. bash -c 'env', python3 -c 'import os; print(os.environ)') cannot
+    # be blocked by deny lists alone — container isolation is the primary defense.
+    claude_disallowed_tools=(
+      "Bash(env)"
+      "Bash(env *)"
+      "Bash(printenv)"
+      "Bash(printenv *)"
+      "Bash(set)"
+      "Bash(set *)"
+      "Bash(export)"
+      "Bash(export *)"
+      "Bash(declare)"
+      "Bash(declare *)"
+      "Bash(cat /run/secrets/*)"
+      "Bash(* /run/secrets/*)"
+      "Read(/run/secrets/*)"
+    )
+
     # In task mode, use text output format so the log IS the answer text.
     # Remove --verbose to keep stdout clean (verbose lines would pollute the
     # extracted result). Keep stream-json + verbose for non-task runs where
@@ -860,6 +882,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
     else
       claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
     fi
+    claude_fresh_cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
     claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       claude_fresh_cmd+=(--model "$agent_model")
@@ -913,6 +936,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
       else
         cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
       fi
+      cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
       cmd+=(--append-system-prompt "$system_prompt")
       if [ -n "$agent_model" ]; then
         cmd+=(--model "$agent_model")
