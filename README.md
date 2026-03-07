@@ -175,6 +175,10 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 
 **Loop** — run agents periodically on a schedule:
 
+> **Deprecated:** `RUN_MODE=loop` (Phase 1 in-container supervisor) is deprecated.
+> Migrate to the [Host Controller](#host-controller-phase-2-mvp) (`scripts/controller.sh`)
+> for the recommended deployment. The in-container loop mode will be removed in a future release.
+
 ```bash
 RUN_MODE=loop docker compose up hivemoot-agent
 ```
