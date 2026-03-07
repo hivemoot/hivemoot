@@ -1,4 +1,4 @@
-import type { GitHubPR } from "../config/types.js";
+import type { GitHubPR, LabelMapping } from "../config/types.js";
 
 export const GOVERNANCE_LABEL_ALIASES = {
   DISCUSSION: ["hivemoot:discussion", "phase:discussion"],
@@ -15,6 +15,54 @@ export const GOVERNANCE_LABEL_ALIASES = {
 } as const;
 
 export type GovernanceLabelKey = keyof typeof GOVERNANCE_LABEL_ALIASES;
+
+/**
+ * Resolved label aliases that merge built-in defaults with user-configured overrides.
+ * Custom labels are additive — built-in defaults always remain active.
+ */
+export type ResolvedLabelAliases = {
+  readonly [K in GovernanceLabelKey]: readonly string[];
+};
+
+/**
+ * Merge user-configured label overrides with the built-in defaults.
+ * Custom labels are additive: built-in aliases are never removed.
+ */
+export function resolveLabelAliases(override?: LabelMapping): ResolvedLabelAliases {
+  return {
+    DISCUSSION: override?.discussion?.length
+      ? [...GOVERNANCE_LABEL_ALIASES.DISCUSSION, ...override.discussion]
+      : GOVERNANCE_LABEL_ALIASES.DISCUSSION,
+    VOTING: override?.voting?.length
+      ? [...GOVERNANCE_LABEL_ALIASES.VOTING, ...override.voting]
+      : GOVERNANCE_LABEL_ALIASES.VOTING,
+    EXTENDED_VOTING: override?.extendedVoting?.length
+      ? [...GOVERNANCE_LABEL_ALIASES.EXTENDED_VOTING, ...override.extendedVoting]
+      : GOVERNANCE_LABEL_ALIASES.EXTENDED_VOTING,
+    READY_TO_IMPLEMENT: override?.readyToImplement?.length
+      ? [...GOVERNANCE_LABEL_ALIASES.READY_TO_IMPLEMENT, ...override.readyToImplement]
+      : GOVERNANCE_LABEL_ALIASES.READY_TO_IMPLEMENT,
+    NEEDS_HUMAN: override?.needsHuman?.length
+      ? [...GOVERNANCE_LABEL_ALIASES.NEEDS_HUMAN, ...override.needsHuman]
+      : GOVERNANCE_LABEL_ALIASES.NEEDS_HUMAN,
+    IMPLEMENTATION: GOVERNANCE_LABEL_ALIASES.IMPLEMENTATION,
+    REJECTED: GOVERNANCE_LABEL_ALIASES.REJECTED,
+    INCONCLUSIVE: GOVERNANCE_LABEL_ALIASES.INCONCLUSIVE,
+    STALE: GOVERNANCE_LABEL_ALIASES.STALE,
+    IMPLEMENTED: GOVERNANCE_LABEL_ALIASES.IMPLEMENTED,
+    MERGE_READY: GOVERNANCE_LABEL_ALIASES.MERGE_READY,
+  };
+}
+
+/**
+ * Check whether any label in a set matches a list of alias strings.
+ */
+export function hasLabelInList(
+  labels: Array<{ name: string }>,
+  aliases: readonly string[],
+): boolean {
+  return labels.some((label) => aliases.some((alias) => alias === label.name.toLowerCase()));
+}
 
 export function hasGovernanceLabel(
   labels: Array<{ name: string }>,
@@ -64,12 +112,15 @@ export function commentContext(
 
 /**
  * Whether an issue is in a voting phase based on its labels.
- * Matches canonical/legacy voting labels, or the keyword "vote".
+ * Matches canonical/legacy voting labels, the keyword "vote", and any custom voting aliases.
  */
-export function isVotingIssue(labels: Array<{ name: string }>): boolean {
+export function isVotingIssue(
+  labels: Array<{ name: string }>,
+  aliases: ResolvedLabelAliases = resolveLabelAliases(),
+): boolean {
   return (
-    hasGovernanceLabel(labels, "VOTING") ||
-    hasGovernanceLabel(labels, "EXTENDED_VOTING") ||
+    hasLabelInList(labels, aliases.VOTING) ||
+    hasLabelInList(labels, aliases.EXTENDED_VOTING) ||
     hasLabel(labels, "vote")
   );
 }

@@ -813,4 +813,228 @@ team:
     expect(config.roles.engineer.description).toHaveLength(500);
     expect(config.roles.engineer.instructions).toHaveLength(10_000);
   });
+
+  // ── governance.labelMapping ──────────────────────────────────────
+
+  it("parses governance.labelMapping with all phases", async () => {
+    const withMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: ["status:in-discussion"],
+          voting: ["status:vote"],
+          extendedVoting: ["status:extended-vote"],
+          readyToImplement: ["status:approved"],
+          needsHuman: ["needs:attention"],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withMapping));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping).toEqual({
+      discussion: ["status:in-discussion"],
+      voting: ["status:vote"],
+      extendedVoting: ["status:extended-vote"],
+      readyToImplement: ["status:approved"],
+      needsHuman: ["needs:attention"],
+    });
+  });
+
+  it("parses governance.labelMapping with only some phases", async () => {
+    const withMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          readyToImplement: ["custom:ready", "approved"],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withMapping));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping?.readyToImplement).toEqual(["custom:ready", "approved"]);
+    expect(config.labelMapping?.discussion).toBeUndefined();
+  });
+
+  it("returns undefined labelMapping when governance section is absent", async () => {
+    mockedGh.mockResolvedValue(encode(validYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping).toBeUndefined();
+  });
+
+  it("returns undefined labelMapping when governance.labelMapping is absent", async () => {
+    const withGovernance = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: { voting: { threshold: 0.6 } },
+    });
+    mockedGh.mockResolvedValue(encode(withGovernance));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping).toBeUndefined();
+  });
+
+  it("normalizes labelMapping values to lowercase", async () => {
+    const withMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: ["Status:In-Discussion"],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withMapping));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping?.discussion).toEqual(["status:in-discussion"]);
+  });
+
+  it("throws INVALID_CONFIG when governance.labelMapping is not an object", async () => {
+    const badMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: "not-an-object",
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badMapping));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("governance.labelMapping must be an object"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a phase value is not an array", async () => {
+    const badMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: "not-an-array",
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badMapping));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("governance.labelMapping.discussion must be an array"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a label in the array is not a string", async () => {
+    const badMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: [123],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badMapping));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("governance.labelMapping.discussion must contain non-empty strings"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a label exceeds 100 chars", async () => {
+    const longLabel = "a".repeat(101);
+    const badMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          readyToImplement: [longLabel],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badMapping));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("exceeds 100 characters"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a phase has more than 50 labels", async () => {
+    const tooManyLabels = Array.from({ length: 51 }, (_, i) => `label-${i}`);
+    const badMapping = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          voting: tooManyLabels,
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(badMapping));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("exceeds maximum of 50 labels"),
+    });
+  });
+
+  it("silently ignores unknown keys in governance.labelMapping", async () => {
+    const withExtra = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: ["custom:discussion"],
+          unknownPhase: ["custom:unknown"],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withExtra));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.labelMapping?.discussion).toEqual(["custom:discussion"]);
+    expect(config.labelMapping).not.toHaveProperty("unknownPhase");
+  });
 });

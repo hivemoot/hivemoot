@@ -9,11 +9,25 @@ export interface FocusBlock {
   objective: string;
 }
 
+/**
+ * Custom label overrides for governance phase bucketing.
+ * Each field is additive — custom labels extend the built-in defaults rather than replacing them.
+ * Labels are matched case-insensitively.
+ */
+export interface LabelMapping {
+  discussion?: string[];
+  voting?: string[];
+  extendedVoting?: string[];
+  readyToImplement?: string[];
+  needsHuman?: string[];
+}
+
 export interface TeamConfig {
   name?: string;
   onboarding?: string;
   roles: Record<string, RoleConfig>;
   focus?: string;
+  labelMapping?: LabelMapping;
 }
 
 export interface HivemootConfig {

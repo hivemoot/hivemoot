@@ -1,6 +1,7 @@
 import type {
   GitHubIssue,
   GitHubPR,
+  LabelMapping,
   NotificationRef,
   PrioritySignal,
   RepoRef,
@@ -11,8 +12,8 @@ import type {
 import type { VoteMap } from "../github/votes.js";
 import type { NotificationMap } from "../github/notifications.js";
 import {
-  GOVERNANCE_LABEL_ALIASES,
   hasLabel,
+  hasLabelInList,
   hasCIFailure,
   checkStatus,
   mergeStatus,
@@ -25,8 +26,9 @@ import {
   latestCommentAge,
   commentContext,
   daysSince,
-  hasGovernanceLabel,
   hasGovernanceLabelName,
+  resolveLabelAliases,
+  type ResolvedLabelAliases,
 } from "./utils.js";
 
 interface IssuePipelineCounts {
@@ -35,12 +37,15 @@ interface IssuePipelineCounts {
   readyToImplement: number;
 }
 
-const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set<string>([
-  GOVERNANCE_LABEL_ALIASES.DISCUSSION[0],
-  GOVERNANCE_LABEL_ALIASES.VOTING[0],
-  GOVERNANCE_LABEL_ALIASES.EXTENDED_VOTING[0],
-  GOVERNANCE_LABEL_ALIASES.READY_TO_IMPLEMENT[0],
-]);
+
+function buildKnownPhaseLabels(aliases: ResolvedLabelAliases): Set<string> {
+  return new Set([
+    ...aliases.DISCUSSION,
+    ...aliases.VOTING,
+    ...aliases.EXTENDED_VOTING,
+    ...aliases.READY_TO_IMPLEMENT,
+  ]);
+}
 
 const OMITTED_PIPELINE_NOTE =
   "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.";
@@ -86,6 +91,7 @@ function classifyIssue(
   issue: GitHubIssue,
   currentUser: string,
   now: Date,
+  aliases: ResolvedLabelAliases,
 ): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified"; item: SummaryItem } {
   const age = timeAgo(issue.createdAt, now);
   const assigned =
@@ -119,21 +125,21 @@ function classifyIssue(
   }
 
   // Issues needing human attention are excluded from all actionable buckets
-  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) {
+  if (hasLabelInList(issue.labels, aliases.NEEDS_HUMAN)) {
     return {
       bucket: "needsHuman",
       item: { ...base, assigned },
     };
   }
 
-  // Bot governance labels (canonical + legacy aliases)
-  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) {
+  // Governance phase labels (built-in defaults + user-configured custom labels)
+  if (hasLabelInList(issue.labels, aliases.VOTING) || hasLabelInList(issue.labels, aliases.EXTENDED_VOTING)) {
     return { bucket: "voteOn", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) {
+  if (hasLabelInList(issue.labels, aliases.DISCUSSION)) {
     return { bucket: "discuss", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) {
+  if (hasLabelInList(issue.labels, aliases.READY_TO_IMPLEMENT)) {
     return { bucket: "implement", item: { ...base, assigned } };
   }
 
@@ -319,7 +325,9 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  labelMapping?: LabelMapping,
 ): RepoSummary {
+  const aliases = resolveLabelAliases(labelMapping);
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
   const discuss: SummaryItem[] = [];
@@ -331,7 +339,7 @@ export function buildSummary(
   const notes: string[] = [];
 
   for (const issue of issues) {
-    const { bucket, item } = classifyIssue(issue, currentUser, now);
+    const { bucket, item } = classifyIssue(issue, currentUser, now, aliases);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
@@ -480,8 +488,9 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
+  const knownPhaseLabels = buildKnownPhaseLabels(aliases);
   const hasDefaultPhaseLabels = issues.some((issue) =>
-    issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
+    issue.labels.some((label) => knownPhaseLabels.has(label.name.toLowerCase()))
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
     ? {

@@ -1274,8 +1274,8 @@ describe("buildSummary()", () => {
 
   it("omits issue pipeline and implementation-gap without default hivemoot phase labels", () => {
     const issues = [
-      makeIssue({ number: 401, labels: [{ name: "phase:ready-to-implement" }] }),
-      makeIssue({ number: 402, labels: [{ name: "phase:discussion" }] }),
+      makeIssue({ number: 401, labels: [{ name: "custom:approved" }] }),
+      makeIssue({ number: 402, labels: [{ name: "custom:in-review" }] }),
     ];
     const prs = [
       makePR({
@@ -1291,5 +1291,85 @@ describe("buildSummary()", () => {
     expect(summary.notes).toContain(
       "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
     );
+  });
+
+  // ── Custom label mapping ─────────────────────────────────────────
+
+  it("buckets issues using custom discussion label", () => {
+    const issue = makeIssue({ number: 10, labels: [{ name: "status:in-discussion" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      discussion: ["status:in-discussion"],
+    });
+
+    expect(summary.discuss).toHaveLength(1);
+    expect(summary.discuss[0].number).toBe(10);
+    expect(summary.implement).toHaveLength(0);
+    expect(summary.unclassified).toHaveLength(0);
+  });
+
+  it("buckets issues using custom readyToImplement label", () => {
+    const issue = makeIssue({ number: 11, labels: [{ name: "status:approved" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      readyToImplement: ["status:approved"],
+    });
+
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.implement[0].number).toBe(11);
+  });
+
+  it("buckets issues using custom voting label", () => {
+    const issue = makeIssue({ number: 12, labels: [{ name: "status:vote" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      voting: ["status:vote"],
+    });
+
+    expect(summary.voteOn).toHaveLength(1);
+    expect(summary.voteOn[0].number).toBe(12);
+  });
+
+  it("buckets issues using custom needsHuman label", () => {
+    const issue = makeIssue({ number: 13, labels: [{ name: "needs:attention" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      needsHuman: ["needs:attention"],
+    });
+
+    expect(summary.needsHuman).toHaveLength(1);
+    expect(summary.needsHuman[0].number).toBe(13);
+  });
+
+  it("keeps default hivemoot labels working alongside custom labels", () => {
+    const hivemootIssue = makeIssue({ number: 20, labels: [{ name: "hivemoot:discussion" }] });
+    const customIssue = makeIssue({ number: 21, labels: [{ name: "custom:discussion" }] });
+
+    const summary = buildSummary(repo, [hivemootIssue, customIssue], [], "testuser", now, undefined, undefined, undefined, {
+      discussion: ["custom:discussion"],
+    });
+
+    expect(summary.discuss).toHaveLength(2);
+  });
+
+  it("shows pipeline metrics when only custom phase labels are present", () => {
+    const issue = makeIssue({ number: 30, labels: [{ name: "status:ready" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      readyToImplement: ["status:ready"],
+    });
+
+    expect(summary.repositoryHealth?.issuePipeline).toBeDefined();
+    expect(summary.repositoryHealth?.issuePipeline?.readyToImplement).toBe(1);
+  });
+
+  it("does not show pipeline metrics when label mapping is provided but no matching labels exist", () => {
+    const issue = makeIssue({ number: 31, labels: [{ name: "bug" }] });
+
+    const summary = buildSummary(repo, [issue], [], "testuser", now, undefined, undefined, undefined, {
+      readyToImplement: ["status:ready"],
+    });
+
+    expect(summary.repositoryHealth?.issuePipeline).toBeUndefined();
   });
 });

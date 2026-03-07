@@ -18,7 +18,7 @@ import { fetchNotifications } from "../github/notifications.js";
 import type { NotificationMap } from "../github/notifications.js";
 import { fetchRecentClosedByAuthor } from "../github/recent.js";
 import { buildSummary } from "../summary/builder.js";
-import { isVotingIssue, timeAgo } from "../summary/utils.js";
+import { isVotingIssue, resolveLabelAliases, timeAgo } from "../summary/utils.js";
 import { formatBuzz, formatStatus } from "../output/formatter.js";
 import { jsonBuzz, jsonStatus } from "../output/json.js";
 import { loadStateWithStatus, mergeAckJournal } from "../watch/state.js";
@@ -147,9 +147,10 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const currentUser = userResult.status === "fulfilled" ? userResult.value : "";
   const notifications: NotificationMap = notificationsResult.status === "fulfilled" ? notificationsResult.value : new Map();
 
-  // Fetch vote reactions for voting-phase issues
+  // Fetch vote reactions for voting-phase issues (respects custom label mapping)
+  const labelAliases = resolveLabelAliases(teamConfig?.labelMapping);
   const votingIssueNumbers = issues
-    .filter((issue: GitHubIssue) => isVotingIssue(issue.labels))
+    .filter((issue: GitHubIssue) => isVotingIssue(issue.labels, labelAliases))
     .map((issue: GitHubIssue) => issue.number);
 
   let votes = new Map<number, { reaction: string; createdAt: string }>();
@@ -183,6 +184,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     votes,
     notifications,
     teamConfig?.focus,
+    teamConfig?.labelMapping,
   );
   const processedThreadIds = await processedThreadIdsPromise;
   summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
