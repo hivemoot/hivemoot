@@ -11,6 +11,8 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/health-reporter.sh
+. "${SCRIPT_DIR}/health-reporter.sh"
 
 bash_major="${BASH_VERSINFO[0]:-0}"
 print_bash_upgrade_hint() {
@@ -1621,6 +1623,21 @@ start_agent_scheduler() {
   log "Agent scheduler started: agent=${agent_id} offset=${offset}s (pid=${pid})"
 }
 
+# Send a liveness heartbeat for each configured agent. Best-effort.
+# next_run_at is approximated as now + periodic_interval; the controller loop
+# does not track exact per-agent wake times from scheduler subshells.
+fire_heartbeats() {
+  local next_run_at agent_id token_file
+  next_run_at="$(date -u -d "+${periodic_interval} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -v "+${periodic_interval}S" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || true)"
+  for agent_id in "${agent_ids[@]}"; do
+    token_file="${agent_token_files[$agent_id]:-}"
+    send_heartbeat "$agent_id" "$target_repo" "$token_file" "$next_run_at" || true
+    log "Heartbeat attempted: agent=${agent_id}"
+  done
+}
+
 run_loop_mode() {
   local agent_id=""
   local offset=""
@@ -1669,6 +1686,16 @@ run_loop_mode() {
       break
     fi
 
+    # Heartbeat: fire periodically when enabled (HEARTBEAT_INTERVAL_SECS > 0).
+    if [ "$heartbeat_interval_secs" -gt 0 ] && [ -n "${HEALTH_REPORT_URL:-}" ]; then
+      local now_epoch
+      now_epoch="$(date +%s)"
+      if [ $((now_epoch - last_heartbeat_epoch)) -ge "$heartbeat_interval_secs" ]; then
+        fire_heartbeats
+        last_heartbeat_epoch="$now_epoch"
+      fi
+    fi
+
     sleep 1 &
     wait $! || true
   done
@@ -1713,6 +1740,7 @@ orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
 workspace_ttl_secs="${WORKSPACE_TTL_SECS:-86400}"
 queue_maintenance_interval_secs="${QUEUE_MAINTENANCE_INTERVAL_SECS:-60}"
+heartbeat_interval_secs="${HEARTBEAT_INTERVAL_SECS:-1800}"
 shutdown_grace_secs="${CONTROLLER_SHUTDOWN_GRACE_SECS:-30}"
 workspace_root="${CONTROLLER_WORKSPACE_ROOT:-${WORKSPACE_ROOT:-$(pwd)/data/controller}}"
 shutdown_flag_file="${workspace_root}/shutdown.requested"
@@ -1743,6 +1771,7 @@ claimed_task_prompt=""
 claimed_task_repo=""
 claimed_task_claim_token=""
 claimed_task_messages_json=""
+last_heartbeat_epoch=0
 
 declare -a temp_token_files=()
 declare -a running_pids=()
@@ -1796,6 +1825,7 @@ require_non_negative_integer ORPHAN_RECOVERY_GRACE_SECS "$orphan_recovery_grace_
 require_non_negative_integer QUEUE_ARTIFACT_TTL_SECS "$queue_artifact_ttl_secs"
 require_non_negative_integer WORKSPACE_TTL_SECS "$workspace_ttl_secs"
 require_non_negative_integer QUEUE_MAINTENANCE_INTERVAL_SECS "$queue_maintenance_interval_secs"
+require_non_negative_integer HEARTBEAT_INTERVAL_SECS "$heartbeat_interval_secs"
 if [ "$watch_mentions" = "1" ]; then
   require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
 fi

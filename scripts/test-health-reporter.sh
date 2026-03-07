@@ -16,7 +16,8 @@ setup() {
 }
 
 teardown() {
-  local rc=$?
+  local rc
+  rc=$?
   if [ -n "${TEST_TMP:-}" ]; then
     rm -rf "$TEST_TMP"
     TEST_TMP=""
@@ -81,6 +82,18 @@ echo "$http_code"
 MOCK
   chmod +x "$mock_path"
   printf '%s' "$mock_path"
+}
+
+set_mock_path() {
+  local mock_dir="$1"
+  PATH="${mock_dir}:$PATH"
+  hash -r 2>/dev/null || true
+}
+
+restore_path() {
+  local original_path="$1"
+  PATH="$original_path"
+  hash -r 2>/dev/null || true
 }
 
 # Build a valid payload for testing (matches backend HealthReport schema)
@@ -391,16 +404,16 @@ test_response_200() {
 
   # Override curl with mock
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
   # Rename mock to curl
   cp "$mock_curl" "$(dirname "$mock_curl")/curl"
   chmod +x "$(dirname "$mock_curl")/curl"
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "200 should succeed"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
   pass "200 response succeeds"
 }
 
@@ -458,13 +471,13 @@ test_response_400() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "400 should fail without retry"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
   pass "400 response fails without retry"
 }
 
@@ -478,11 +491,11 @@ test_response_401() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
 
   local stderr_output
   stderr_output="$(_send_health_report "http://localhost/api/agent-health" "$payload" "" 2>&1 || true)"
-  PATH="$original_path"
+  restore_path "$original_path"
 
   echo "$stderr_output" | grep -q "authentication failed" || fail "401 should log auth error"
   pass "401 response logs auth error"
@@ -498,13 +511,13 @@ test_response_413() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "413 should fail"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
   pass "413 response fails without retry"
 }
 
@@ -518,11 +531,11 @@ test_response_429() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
 
   local stderr_output
   stderr_output="$(_send_health_report "http://localhost/api/agent-health" "$payload" "" 2>&1 || true)"
-  PATH="$original_path"
+  restore_path "$original_path"
 
   echo "$stderr_output" | grep -q "rate limited" || fail "429 should log rate limit"
   pass "429 response skips retries"
@@ -553,7 +566,7 @@ MOCK
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
 
   # Override sleep to avoid delays in tests
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -563,10 +576,10 @@ MOCK
   HEALTH_REPORT_MAX_RETRIES=2
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "5xx should eventually succeed after retries"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
 
   local call_count
   call_count="$(cat "$counter_file")"
@@ -584,7 +597,7 @@ test_response_5xx_gives_up() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="$(dirname "$mock_curl"):$PATH"
+  set_mock_path "$(dirname "$mock_curl")"
 
   # Override sleep to avoid delays
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -594,10 +607,10 @@ test_response_5xx_gives_up() {
   HEALTH_REPORT_MAX_RETRIES=1
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "persistent 5xx should fail after max retries"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
   pass "5xx gives up after max retries"
 }
 
@@ -628,7 +641,7 @@ MOCK
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
 
   # Override sleep to avoid delays
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -638,10 +651,10 @@ MOCK
   HEALTH_REPORT_MAX_RETRIES=2
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    PATH="$original_path"
+    restore_path "$original_path"
     fail "000 network error should retry and eventually succeed"
   fi
-  PATH="$original_path"
+  restore_path "$original_path"
 
   local call_count
   call_count="$(cat "$counter_file")"
@@ -682,13 +695,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   report_health_to_backend "forager" "hivemoot/sandbox" "" "20260226-run-1" "success" "120" "0" "0" 2>/dev/null || true
 
-  PATH="$original_path"
+  restore_path "$original_path"
 
   if [ -f "$captured_file" ]; then
     local agent_val repo_val run_id_val outcome_val
@@ -725,13 +738,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   report_health_to_backend "guard" "hivemoot/bot" "" "20260226-run-2" "failure" "60" "3" "1" "provider timeout" 2>/dev/null || true
 
-  PATH="$original_path"
+  restore_path "$original_path"
 
   if [ -f "$captured_file" ]; then
     local exit_val error_val
@@ -819,12 +832,182 @@ MOCK
   pass "omits next_run_at from payload when empty"
 }
 
+# ── send_heartbeat tests ─────────────────────────────────────────
+
+test_heartbeat_skips_when_url_empty() {
+  source_reporter
+  HEALTH_REPORT_URL=""
+  if ! send_heartbeat "agent" "owner/repo" "" "" 2>/dev/null; then
+    fail "send_heartbeat should return 0 when HEALTH_REPORT_URL is empty"
+  fi
+  pass "heartbeat skips when HEALTH_REPORT_URL is empty"
+}
+
+test_heartbeat_sends_minimal_payload() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-minimal"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+
+  local outcome_val agent_val repo_val fields
+  outcome_val="$(jq -r '.outcome' "$captured_file")"
+  agent_val="$(jq -r '.agent_id' "$captured_file")"
+  repo_val="$(jq -r '.repo' "$captured_file")"
+  fields="$(jq -r 'keys | .[]' "$captured_file" | sort | tr '\n' ' ' | sed 's/ $//')"
+
+  [ "$outcome_val" = "heartbeat" ] || fail "expected outcome=heartbeat, got ${outcome_val}"
+  [ "$agent_val" = "forager" ] || fail "expected agent_id=forager, got ${agent_val}"
+  [ "$repo_val" = "hivemoot/sandbox" ] || fail "expected repo=hivemoot/sandbox, got ${repo_val}"
+  # Must NOT include run_id, duration_secs, or consecutive_failures
+  [ "$fields" = "agent_id outcome repo" ] || fail "unexpected heartbeat fields: ${fields}"
+  pass "heartbeat payload is minimal (no run_id, duration_secs, or consecutive_failures)"
+}
+
+test_heartbeat_includes_next_run_at() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "2026-03-03T12:00:00Z" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local next_val
+  next_val="$(jq -r '.next_run_at' "$captured_file")"
+  [ "$next_val" = "2026-03-03T12:00:00Z" ] || fail "expected next_run_at='2026-03-03T12:00:00Z', got '${next_val}'"
+  pass "heartbeat includes next_run_at when provided"
+}
+
+test_heartbeat_omits_next_run_at_when_absent() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-no-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local has_next
+  has_next="$(jq 'has("next_run_at")' "$captured_file")"
+  [ "$has_next" = "false" ] || fail "expected next_run_at to be absent when not provided"
+  pass "heartbeat omits next_run_at when not provided"
+}
+
+test_heartbeat_bounded_on_slow_backend() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-bounded"
+  mkdir -p "$mock_dir"
+
+  local counter_file="${mock_dir}/call-count"
+  local maxtime_file="${mock_dir}/max-time-arg"
+  echo 0 > "$counter_file"
+
+  # Mock curl that captures --max-time and the call count, then returns a
+  # network error (exit 1, no output). This exercises the retry guard: with
+  # HEALTH_REPORT_MAX_RETRIES=0 the function must call curl exactly once.
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+count=\$(cat "${counter_file}")
+echo \$(( count + 1 )) > "${counter_file}"
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --max-time) shift; echo "\$1" > "${maxtime_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+exit 1
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+  HEALTH_REPORT_MAX_RETRIES=5
+  HEALTH_REPORT_TIMEOUT_SECS=30
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  local call_count max_time_used
+  call_count="$(cat "$counter_file")"
+  max_time_used="$(cat "$maxtime_file" 2>/dev/null || echo "missing")"
+
+  # Heartbeat must not retry — one attempt only, regardless of caller globals.
+  [ "$call_count" -eq 1 ] || fail "expected 1 curl call, got ${call_count} (heartbeat must not retry)"
+  # Heartbeat must cap --max-time at 3, not inherit caller's 30.
+  [ "$max_time_used" = "3" ] || fail "expected --max-time 3, got ${max_time_used} (heartbeat timeout not bounded)"
+  pass "heartbeat uses bounded timeout (max-time=3) and no retries against a failing backend"
+}
+
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
 echo ""
 
 setup
+trap teardown EXIT
 
 echo "  update_agent_stats:"
 run_test test_stats_creates_new_file
@@ -886,6 +1069,14 @@ run_test test_sends_correct_payload
 run_test test_sends_optional_fields_on_failure
 run_test test_sends_next_run_at_when_provided
 run_test test_omits_next_run_at_when_empty
+echo ""
+
+echo "  Heartbeat:"
+run_test test_heartbeat_skips_when_url_empty
+run_test test_heartbeat_sends_minimal_payload
+run_test test_heartbeat_includes_next_run_at
+run_test test_heartbeat_omits_next_run_at_when_absent
+run_test test_heartbeat_bounded_on_slow_backend
 echo ""
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"
