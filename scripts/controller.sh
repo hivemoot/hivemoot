@@ -1248,7 +1248,9 @@ run_job() {
     printf '%s' "$task_messages_json" > "$task_messages_host_path"
     chmod 600 "$task_messages_host_path" 2>/dev/null || true
     if [[ "$(uname -s)" == "Linux" ]]; then
-      chown 1000:1000 "$task_messages_host_path" 2>/dev/null || true
+      # chown the entire task-input tree — mkdir creates intermediate dirs as
+      # root, but the container runs as uid 1000 and needs traverse access.
+      chown -R 1000:1000 "${job_workspace}/task-input" 2>/dev/null || true
     fi
     task_messages_file="/workspace/task-input/${task_id}/messages.json"
   fi

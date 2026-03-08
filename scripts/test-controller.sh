@@ -346,6 +346,35 @@ EOF_MOCK
   chmod +x "${mock_bin}/curl"
 }
 
+setup_mock_uname_linux() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/uname" <<'EOF_MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "Linux"
+EOF_MOCK
+
+  chmod +x "${mock_bin}/uname"
+}
+
+setup_mock_chown_logger() {
+  local mock_bin="$1"
+  mkdir -p "$mock_bin"
+
+  cat > "${mock_bin}/chown" <<'EOF_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${MOCK_CHOWN_STATE_DIR:?MOCK_CHOWN_STATE_DIR is required}"
+mkdir -p "$state_dir"
+
+printf '%s\n' "$*" >> "${state_dir}/chown.log"
+EOF_MOCK
+
+  chmod +x "${mock_bin}/chown"
+}
+
 setup_mock_rm_failer() {
   local mock_bin="$1"
   mkdir -p "$mock_bin"
@@ -1052,6 +1081,54 @@ run_task_watch_case() {
   echo "PASS: task-watch mode claims and runs delegated tasks"
 }
 
+run_task_watch_linux_permission_repair_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local chown_log=""
+  local task_input_dir=""
+  local -a messages_files=()
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+  setup_mock_uname_linux "${case_dir}/mock-bin"
+  setup_mock_chown_logger "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    MOCK_CHOWN_STATE_DIR="${case_dir}/chown-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  shopt -s nullglob
+  messages_files=("${case_dir}/workspace"/workspaces/*/task-input/task-claim-1/messages.json)
+  shopt -u nullglob
+  assert_eq "1" "${#messages_files[@]}" "expected one task messages file for Linux permission repair case"
+
+  task_input_dir="$(dirname "$(dirname "${messages_files[0]}")")"
+  chown_log="${case_dir}/chown-state/chown.log"
+  [ -f "$chown_log" ] || fail "missing chown log in Linux permission repair case"
+  assert_file_contains "$chown_log" "-R 1000:1000 ${task_input_dir}"
+
+  echo "PASS: task-watch mode repairs Linux task-input ownership before worker start"
+}
+
 run_task_watch_token_file_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1693,6 +1770,7 @@ run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
 run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
 run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
