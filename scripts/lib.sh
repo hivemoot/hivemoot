@@ -666,11 +666,11 @@ seed_provider_auth() {
   fi
   # Codex: skip conversations/, cache/
 
-  # Gemini: seed only known auth/credential files; skip session state
-  # (memory.md, settings.json, state.json, telemetry, etc.)
+  # Gemini: seed auth/credential files + settings.json (contains auth method
+  # selection); skip session state (memory.md, state.json, telemetry, etc.)
   if [ -d "${source_home}/.gemini" ]; then
     mkdir -p "${agent_home}/.gemini"
-    for f in oauth_creds.json google_accounts.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
+    for f in oauth_creds.json google_accounts.json settings.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
       if [ -f "${source_home}/.gemini/$f" ]; then
         cp "${source_home}/.gemini/$f" "${agent_home}/.gemini/$f"
       fi

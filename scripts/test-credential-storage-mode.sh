@@ -84,12 +84,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$tmp_source_home/.claude" "$tmp_source_home/.config/claude"
+mkdir -p "$tmp_source_home/.claude" "$tmp_source_home/.config/claude" "$tmp_source_home/.gemini"
 printf '%s' '{"claudeAiOauth":{"accessToken":"api-key-mode-token","expiresAt":4102444800000}}' \
   > "$tmp_source_home/.claude/.credentials.json"
 printf '%s' '{"hasCompletedOnboarding":true}' \
   > "$tmp_source_home/.claude.json"
 printf '%s' '{"foo":"bar"}' > "$tmp_source_home/.config/claude/settings.json"
+printf '%s' '{"refresh_token":"api-key-mode-gemini-token"}' \
+  > "$tmp_source_home/.gemini/oauth_creds.json"
+printf '%s' '{"selectedType":"oauth-personal"}' \
+  > "$tmp_source_home/.gemini/settings.json"
 
 AGENT_PROVIDER=claude
 seed_provider_auth "$api_key_job_home" "$tmp_source_home"
@@ -97,9 +101,15 @@ seed_shared_provider_state "$api_key_agent_home" "$tmp_source_home"
 
 [ -f "$api_key_job_home/.claude/.credentials.json" ] \
   || fail "run-once auth seeding missing credentials in api_key HOME"
+[ -f "$api_key_job_home/.gemini/oauth_creds.json" ] \
+  || fail "run-once auth seeding missing Gemini OAuth creds in api_key HOME"
+[ -f "$api_key_job_home/.gemini/settings.json" ] \
+  || fail "run-once auth seeding missing Gemini settings.json in api_key HOME"
 [ -f "$api_key_agent_home/.claude/.credentials.json" ] \
   || fail "managed auth seeding missing credentials in api_key HOME"
 [ -f "$api_key_agent_home/.claude.json" ] \
   || fail "managed auth seeding missing onboarding file in api_key HOME"
+grep -Fq '"selectedType":"oauth-personal"' "$api_key_job_home/.gemini/settings.json" \
+  || fail "run-once auth seeding copied wrong Gemini settings.json contents"
 
 echo "PASS: Credential storage mode checks"

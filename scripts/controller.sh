@@ -234,6 +234,7 @@ cleanup_job_home_credentials() {
   local -a gemini_auth_files=(
     "oauth_creds.json"
     "google_accounts.json"
+    "settings.json"
     "mcp-oauth-tokens.json"
     "mcp-oauth-tokens-v2.json"
     ".env"
@@ -339,7 +340,7 @@ spawn_worker() {
   local gemini_auth_dir="${GEMINI_AUTH_DIR:-}"
   if [ -n "$gemini_auth_dir" ] && [ -d "$gemini_auth_dir" ]; then
     mkdir -p "${job_home}/.gemini"
-    for f in oauth_creds.json google_accounts.json; do
+    for f in oauth_creds.json google_accounts.json settings.json; do
       if [ -f "${gemini_auth_dir}/${f}" ]; then
         cp "${gemini_auth_dir}/${f}" "${job_home}/.gemini/${f}"
         chmod 600 "${job_home}/.gemini/${f}"

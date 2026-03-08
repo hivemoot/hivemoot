@@ -78,6 +78,7 @@ assert_no_gemini_auth_residue() {
   local -a gemini_auth_files=(
     "oauth_creds.json"
     "google_accounts.json"
+    "settings.json"
     "mcp-oauth-tokens.json"
     "mcp-oauth-tokens-v2.json"
     ".env"
@@ -102,6 +103,7 @@ seed_gemini_auth_dir() {
   mkdir -p "$gemini_auth_dir"
   printf '{"refresh_token":"gemini-test-token"}\n' > "${gemini_auth_dir}/oauth_creds.json"
   printf '[{"email":"gemini@example.com"}]\n' > "${gemini_auth_dir}/google_accounts.json"
+  printf '{"selectedType":"oauth-personal"}\n' > "${gemini_auth_dir}/settings.json"
 }
 
 setup_mock_docker() {
@@ -167,6 +169,44 @@ next_id() {
   printf 'mock-container-%s' "$current"
 }
 
+snapshot_job_home() {
+  local arg=""
+  local mount_spec=""
+  local job_home=""
+  local snapshot_file="${state_dir}/job-home-snapshots.log"
+
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+      -v)
+        mount_spec="${2:-}"
+        if [[ "$mount_spec" == *:/home/node ]]; then
+          job_home="${mount_spec%:/home/node}"
+        fi
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "$job_home" ]; then
+    printf '%s\n' "job_home=missing gemini_settings=missing" >> "$snapshot_file"
+    return 0
+  fi
+
+  if [ -f "${job_home}/.gemini/settings.json" ]; then
+    printf 'job_home=%s gemini_settings=%s\n' \
+      "$job_home" \
+      "$(tr -d '\n' < "${job_home}/.gemini/settings.json")" \
+      >> "$snapshot_file"
+    return 0
+  fi
+
+  printf 'job_home=%s gemini_settings=missing\n' "$job_home" >> "$snapshot_file"
+}
+
 case "$cmd" in
   run)
     # mkdir is atomic and keeps overlap detection deterministic under concurrency.
@@ -174,6 +214,7 @@ case "$cmd" in
       echo "overlap" >> "$overlap_file"
     fi
 
+    snapshot_job_home "$@"
     printf '%s\n' "$*" >> "$run_log_file"
 
     if [ "${MOCK_DOCKER_RUN_FAIL:-0}" = "1" ]; then
@@ -452,6 +493,8 @@ run_success_case() {
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
   local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
+  local settings_snapshot=""
+  local settings_count=""
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
@@ -487,6 +530,8 @@ run_success_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log"
+  settings_snapshot="${case_dir}/mock-state/job-home-snapshots.log"
+  [ -f "$settings_snapshot" ] || fail "missing job home snapshot log"
 
   assert_file_contains "$run_log" "--cap-drop=ALL"
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
@@ -498,6 +543,10 @@ run_success_case() {
   assert_file_contains "$run_log" "-e HIVEMOOT_CLI_UPDATE=skip"
   assert_file_contains "$run_log" "-e GIT_CLONE_DEPTH=1"
   assert_file_contains "$run_log" "-e SHARED_CLONE_CACHE=0"
+  assert_file_not_contains "$settings_snapshot" "gemini_settings=missing"
+  assert_file_contains "$settings_snapshot" 'gemini_settings={"selectedType":"oauth-personal"}'
+  settings_count="$(grep -Fc 'gemini_settings={"selectedType":"oauth-personal"}' "$settings_snapshot" | tr -d '[:space:]')"
+  assert_eq "2" "$settings_count" "expected Gemini settings.json in each job home before launch"
 
   shopt -s nullglob
   status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
