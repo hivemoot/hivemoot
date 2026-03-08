@@ -53,8 +53,26 @@ assert_contains "$run_once" "prompt=\"\${system_prompt}"
 assert_contains "$run_once" "cmd+=(--append-system-prompt \"\$system_prompt\")"
 assert_contains "$run_once" "claude_fresh_cmd+=(--disallowedTools \"\${claude_disallowed_tools[@]}\")"
 assert_contains "$run_once" "cmd+=(--disallowedTools \"\${claude_disallowed_tools[@]}\")"
+# Shell-builtin env dumps — each must be denied individually.
 assert_contains "$run_once" "\"Bash(env)\""
+assert_contains "$run_once" "\"Bash(printenv)\""
+assert_contains "$run_once" "\"Bash(set)\""
+assert_contains "$run_once" "\"Bash(export)\""
+assert_contains "$run_once" "\"Bash(declare)\""
+# Mounted secrets reads.
+assert_contains "$run_once" "\"Bash(cat /run/secrets/*)\""
+assert_contains "$run_once" "\"Bash(* /run/secrets/*)\""
 assert_contains "$run_once" "\"Read(/run/secrets/*)\""
+# /proc/*/environ: full env via proc filesystem (bypasses shell-builtin rules).
+assert_contains "$run_once" "\"Bash(cat /proc/*/environ)\""
+assert_contains "$run_once" "\"Bash(* /proc/*/environ)\""
+assert_contains "$run_once" "\"Read(/proc/*/environ)\""
+# Deny list must be wired into both fresh-start and resume Claude invocations.
+# shellcheck disable=SC2016  # single quotes intentional — literal grep pattern, not expansion
+disallowed_wiring_count="$(grep -Fc 'disallowedTools "${claude_disallowed_tools' "$run_once")"
+if [ "$disallowed_wiring_count" -lt 2 ]; then
+  fail "expected --disallowedTools wired in at least 2 Claude command paths, found ${disallowed_wiring_count}"
+fi
 
 prompt_arg_count="$(grep -Fc "cmd+=(\"\$prompt\")" "$run_once")"
 if [ "$prompt_arg_count" -lt 2 ]; then

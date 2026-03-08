@@ -871,6 +871,13 @@ You are resuming a prior session for this mention thread. Some data in your cont
       "Bash(cat /run/secrets/*)"
       "Bash(* /run/secrets/*)"
       "Read(/run/secrets/*)"
+      # /proc/*/environ contains the full process environment as null-separated
+      # KEY=VALUE pairs — reading it bypasses all shell-builtin deny rules above.
+      # Glob covers /proc/self/environ, /proc/1/environ, and arbitrary PID paths.
+      # Linux-specific; consistent with the /run/secrets/* entries above.
+      "Bash(cat /proc/*/environ)"
+      "Bash(* /proc/*/environ)"
+      "Read(/proc/*/environ)"
     )
 
     # In task mode, use text output format so the log IS the answer text.
