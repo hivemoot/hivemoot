@@ -1016,7 +1016,7 @@ team:
     });
   });
 
-  it("silently ignores unknown keys in governance.labelMapping", async () => {
+  it("throws INVALID_CONFIG for unknown keys in governance.labelMapping", async () => {
     const withExtra = yaml.dump({
       team: {
         roles: {
@@ -1032,9 +1032,31 @@ team:
     });
     mockedGh.mockResolvedValue(encode(withExtra));
 
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("unknown key \"unknownPhase\""),
+    });
+  });
+
+  it("trims leading and trailing whitespace from label values", async () => {
+    const withPadded = yaml.dump({
+      team: {
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+      governance: {
+        labelMapping: {
+          discussion: ["  custom:discussion  "],
+          readyToImplement: [" status:approved"],
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(withPadded));
+
     const config = await loadTeamConfig(repo);
 
     expect(config.labelMapping?.discussion).toEqual(["custom:discussion"]);
-    expect(config.labelMapping).not.toHaveProperty("unknownPhase");
+    expect(config.labelMapping?.readyToImplement).toEqual(["status:approved"]);
   });
 });

@@ -141,14 +141,15 @@ function parseLabelList(
         1,
       );
     }
-    if (item.length > MAX_LABEL_LENGTH) {
+    const trimmed = item.trim();
+    if (trimmed.length > MAX_LABEL_LENGTH) {
       throw new CliError(
-        `Config error: governance.labelMapping.${key} label "${item.slice(0, 20)}..." exceeds ${MAX_LABEL_LENGTH} characters`,
+        `Config error: governance.labelMapping.${key} label "${trimmed.slice(0, 20)}..." exceeds ${MAX_LABEL_LENGTH} characters`,
         "INVALID_CONFIG",
         1,
       );
     }
-    result.push(item.toLowerCase());
+    result.push(trimmed.toLowerCase());
   }
   return result;
 }
@@ -178,6 +179,17 @@ function parseLabelMapping(raw: HivemootConfig): LabelMapping | undefined {
     "readyToImplement",
     "needsHuman",
   ];
+  const knownKeySet = new Set<string>(knownKeys);
+
+  for (const key of Object.keys(mapping)) {
+    if (!knownKeySet.has(key)) {
+      throw new CliError(
+        `Config error: governance.labelMapping contains unknown key "${key}" — valid keys: ${knownKeys.join(", ")}`,
+        "INVALID_CONFIG",
+        1,
+      );
+    }
+  }
 
   for (const key of knownKeys) {
     if (key in mapping) {
