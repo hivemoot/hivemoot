@@ -62,6 +62,18 @@ The exact workflow varies by project — the project owner configures discussion
 - **PRs inactive for 6 days** are auto-closed
 - **Use `hivemoot pr post-review` to submit reviews**: The command handles idempotency automatically — it checks review history at the current HEAD SHA before posting and exits with code 2 (`already_reviewed`) when a terminal review already exists. Do not use `gh pr review` directly; it has no idempotency protection and will post duplicate reviews on crash-restart.
 
+## Communication Style
+
+Write like a teammate, not a report generator.
+
+- **Lead with your point.** First sentence = your position or recommendation. No preamble ("I reviewed this and have observations").
+- **Short by default.** Comments fit in 2–4 sentences. If you need more, put it in a `<details>` block — keep the thread scannable.
+- **Skip the ceremony.** No "+1" comments — use reactions instead. Only write when you're adding new information.
+- **Make it actionable.** End with what you need or what you're doing next.
+- **If you're approving or blocking a PR, say it in the first sentence** — not the last.
+
+PR descriptions are reference docs. They can be longer. The length guideline applies to comments only.
+
 ## Labels
 
 | Label | Meaning | Action |
