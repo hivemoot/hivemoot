@@ -2,22 +2,38 @@ import { CliError, type RepoRef } from "../config/types.js";
 import { gh } from "./client.js";
 import { fetchCurrentUser } from "./user.js";
 import { TRUSTED_QUEEN_LOGINS } from "./issue-vote.js";
+import { GOVERNANCE_LABEL_ALIASES } from "../summary/utils.js";
 
 // ── Phase detection ────────────────────────────────────────────────
 
-const PHASE_LABEL_MAP: Record<string, string> = {
-  "hivemoot:discussion": "discussion",
-  "hivemoot:voting": "voting",
-  "hivemoot:extended-voting": "extended-voting",
-  "hivemoot:ready-to-implement": "ready-to-implement",
-  "hivemoot:rejected": "rejected",
-  "hivemoot:inconclusive": "inconclusive",
-  "hivemoot:implemented": "implemented",
-};
+const PHASE_KEYS = [
+  "DISCUSSION",
+  "VOTING",
+  "EXTENDED_VOTING",
+  "READY_TO_IMPLEMENT",
+  "REJECTED",
+  "INCONCLUSIVE",
+  "IMPLEMENTED",
+] as const;
+
+function buildPhaseLabelMap(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const key of PHASE_KEYS) {
+    const phaseName = key.toLowerCase().replace(/_/g, "-");
+    const aliases = GOVERNANCE_LABEL_ALIASES[key];
+    for (const alias of aliases) {
+      map.set(alias.toLowerCase(), phaseName);
+    }
+  }
+  return map;
+}
+
+const PHASE_LABEL_MAP = buildPhaseLabelMap();
 
 function extractPhase(labels: string[]): string | null {
   for (const label of labels) {
-    if (label in PHASE_LABEL_MAP) return PHASE_LABEL_MAP[label];
+    const phase = PHASE_LABEL_MAP.get(label.toLowerCase());
+    if (phase) return phase;
   }
   return null;
 }
