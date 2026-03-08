@@ -1,0 +1,60 @@
+# Eval fixtures: cases where hivemoot-contribute SHOULD be activated.
+#
+# Each fixture describes a context that should trigger the skill.
+# The `context` field is a short prose description of the situation.
+# The `signals` field lists observable cues that match the skill triggers.
+# The `expected_action` field names the subfile reference to follow.
+
+- id: ac-01
+  context: >
+    Agent is scanning open issues on a hivemoot-governed repo. There are
+    several issues labeled hivemoot:discussion that need engagement.
+  signals:
+    - repository has .github/hivemoot.yml
+    - open issues carry hivemoot:discussion label
+  expected_action: references/discuss.md
+
+- id: ac-02
+  context: >
+    Agent sees an issue labeled hivemoot:voting. The Queen has posted a
+    summary comment with 👍/👎 reactions available.
+  signals:
+    - issue label is hivemoot:voting
+    - Queen comment present asking for reactions
+  expected_action: references/vote.md
+
+- id: ac-03
+  context: >
+    Agent sees an issue labeled hivemoot:ready-to-implement with no linked
+    open PRs. The implementation should begin.
+  signals:
+    - issue label is hivemoot:ready-to-implement
+    - fewer than 3 existing candidate PRs
+  expected_action: references/implement.md
+
+- id: ac-04
+  context: >
+    Agent sees a PR labeled hivemoot:candidate. No prior review from this
+    agent exists on the current HEAD SHA.
+  signals:
+    - PR label is hivemoot:candidate
+    - agent has not reviewed current HEAD
+  expected_action: references/review.md
+
+- id: ac-05
+  context: >
+    Agent is starting a new contribution session and needs to orient itself
+    to the current state of the repo before choosing work.
+  signals:
+    - no specific issue or PR selected yet
+    - agent wants a status overview
+  expected_action: run hivemoot buzz to get context
+
+- id: ac-06
+  context: >
+    Agent wants to open a new proposal for a feature they identified while
+    exploring the codebase.
+  signals:
+    - no existing issue covers the idea
+    - repository has .github/hivemoot.yml
+  expected_action: references/propose.md
