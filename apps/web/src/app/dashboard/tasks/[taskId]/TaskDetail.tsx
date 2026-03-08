@@ -4,7 +4,13 @@ import Link from "next/link";
 import Markdown, { type ExtraProps } from "react-markdown";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { draftStorageKey, filterDuplicatePrompt, isSubmitShortcut } from "../task-helpers";
+import {
+  draftStorageKey,
+  filterConversationMessages,
+  isSubmitShortcut,
+  taskComposerGuidance,
+  taskComposerPlaceholder,
+} from "../task-helpers";
 import { type TaskMessage, type TaskRecord } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -151,23 +157,6 @@ function MessageSquareIcon({ className }: { className?: string }) {
   );
 }
 
-function ChevronDownIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-4 w-4"}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="4 6 8 10 12 6" />
-    </svg>
-  );
-}
-
 function ClockIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -307,17 +296,6 @@ function isTerminal(status: string): boolean {
   return status === "completed" || status === "failed" || status === "timed_out";
 }
 
-const TERMINAL_SYSTEM_MESSAGES = new Set([
-  "Task completed.",
-  "Task timed out.",
-]);
-
-function isTerminalSystemMessage(msg: TaskMessage): boolean {
-  return msg.role === "system" && (
-    TERMINAL_SYSTEM_MESSAGES.has(msg.content) || msg.content.startsWith("Task failed:")
-  );
-}
-
 function isRetryable(status: string): boolean {
   return status === "failed" || status === "timed_out";
 }
@@ -333,58 +311,6 @@ function canSendMessage(status: string): boolean {
 function messageEndpoint(status: string): "messages" | "follow-up" {
   return status === "needs_follow_up" ? "follow-up" : "messages";
 }
-
-function messageBannerText(status: string): string | null {
-  switch (status) {
-    case "needs_follow_up":
-      return "The agent is waiting for your input to continue working on this task.";
-    case "pending":
-      return "This task is queued. Add a message to provide more context before the agent picks it up.";
-    case "completed":
-      return "This task is complete. Send a message to reopen it with new instructions.";
-    case "failed":
-    case "timed_out":
-      return "This task did not succeed. Send a message to retry with additional context.";
-    default:
-      return null;
-  }
-}
-
-function messageBannerColor(status: string): string {
-  switch (status) {
-    case "needs_follow_up":
-      return "border-amber-500/20 bg-amber-500/5";
-    case "pending":
-      return "border-zinc-500/20 bg-zinc-500/5";
-    case "completed":
-      return "border-green-500/20 bg-green-500/5";
-    case "failed":
-    case "timed_out":
-      return "border-red-500/20 bg-red-500/5";
-    default:
-      return "border-white/[0.06] bg-white/[0.02]";
-  }
-}
-
-function messageBannerTextColor(status: string): string {
-  switch (status) {
-    case "needs_follow_up":
-      return "text-amber-400";
-    case "pending":
-      return "text-zinc-400";
-    case "completed":
-      return "text-green-400";
-    case "failed":
-    case "timed_out":
-      return "text-red-400";
-    default:
-      return "text-zinc-400";
-  }
-}
-
-// Threshold for collapsing long agent messages
-const COLLAPSE_CHARS = 800;
-
 
 // ---------------------------------------------------------------------------
 // Markdown renderer
@@ -454,7 +380,6 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
   const [followUpError, setFollowUpError] = useState("");
   const [actionBusy, setActionBusy] = useState<"retry" | "delete" | null>(null);
   const [actionError, setActionError] = useState("");
-  const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sseRef = useRef<{ close: () => void } | null>(null);
@@ -573,19 +498,10 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
     return () => { closed = true; sseRef.current?.close(); };
   }, [task?.status, taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---- Filter first message if it duplicates the prompt ----
-  const filteredMessages = task
-    ? filterDuplicatePrompt(messages, task.prompt)
-    : messages;
-
-  // ---- Toggle expanded state for long agent messages ----
-  function toggleExpanded(key: string) {
-    setExpandedMessages((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }
+  const conversationMessages = task
+    ? filterConversationMessages(messages, task.prompt)
+    : messages.filter((msg) => msg.role !== "system");
+  const composerGuidance = task ? taskComposerGuidance(task.status) : null;
 
   // ---- Submit message ----
   async function submitMessage() {
@@ -773,10 +689,11 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
               <span className="font-mono">{repo}</span>
             </span>
           ))}
-          <span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2.5 py-1 text-xs text-zinc-400">
-            <ClockIcon className="h-3 w-3 text-zinc-500" />
-            {formatDuration(task.timeout_secs)}
-          </span>
+        </div>
+
+        <div className="mt-3 flex items-center gap-1.5 text-xs text-zinc-600">
+          <ClockIcon className="h-3 w-3 text-zinc-600" />
+          <span>Timeout {formatDuration(task.timeout_secs)}</span>
         </div>
 
         {/* Progress (running tasks) */}
@@ -793,46 +710,23 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
       </div>
 
       {/* ── Messages ─────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        {filteredMessages.length === 0 ? (
+      <div className="space-y-3 pb-24 sm:pb-28">
+        {conversationMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.03]">
               <MessageSquareIcon className="h-4 w-4 text-zinc-700" />
             </div>
-            <p className="text-sm text-zinc-500">No messages yet</p>
-            <p className="mt-1 text-xs text-zinc-700">Messages will appear here once the task starts.</p>
+            <p className="text-sm text-zinc-500">No conversation yet</p>
+            <p className="mt-1 text-xs text-zinc-700">Only user and agent messages appear here.</p>
           </div>
         ) : (
-          filteredMessages.map((msg, i) => {
-            const isTermSys = isTerminalSystemMessage(msg);
-            const isSuccess = isTermSys && msg.content === "Task completed.";
-            const isFailure = isTermSys && !isSuccess;
-
-            // System messages: centered status divider
-            if (msg.role === "system") {
-              return (
-                <div key={`${msg.created_at}-${i}`} className="animate-message-in flex items-center gap-3 py-2" style={{ animationDelay: `${i * 40}ms` }}>
-                  <div className="h-px flex-1 bg-white/[0.04]" />
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className={`h-1.5 w-1.5 rounded-full ${isSuccess ? "bg-green-400" : isFailure ? "bg-red-400" : "bg-zinc-600"}`} />
-                    <span className={`text-xs ${isSuccess ? "text-green-400" : isFailure ? "text-red-400" : "text-zinc-500"}`}>{msg.content}</span>
-                  </div>
-                  <div className="h-px flex-1 bg-white/[0.04]" />
-                </div>
-              );
-            }
-
-            // User / Agent messages
+          conversationMessages.map((msg, i) => {
             const isUser = msg.role === "user";
-            const key = `${i}-${msg.role}`;
-            const isLong = msg.role === "agent" && msg.content.length > COLLAPSE_CHARS;
-            const isExpanded = expandedMessages.has(key);
 
             return (
               <div key={`${msg.created_at}-${i}`} className="animate-message-in" style={{ animationDelay: `${i * 40}ms` }}>
-                {/* Header: avatar + name + time on one row */}
-                <div className="mb-1.5 flex items-center gap-2">
-                  <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isUser ? "bg-honey-500/10 ring-1 ring-honey-500/20" : "bg-blue-500/10 ring-1 ring-blue-500/20"}`}>
+                <div className="mb-1 flex items-center gap-2">
+                  <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${isUser ? "bg-honey-500/10 ring-1 ring-honey-500/20" : "bg-blue-500/10 ring-1 ring-blue-500/20"}`}>
                     {isUser ? <UserIcon className="h-3 w-3 text-honey-500" /> : <BotIcon className="h-3 w-3 text-blue-400" />}
                   </div>
                   <span className={`text-xs font-semibold ${isUser ? "text-honey-500" : "text-blue-400"}`}>
@@ -841,26 +735,9 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                   <span className="text-[11px] text-zinc-600" suppressHydrationWarning>{relativeTime(msg.created_at)}</span>
                 </div>
 
-                {/* Bubble — indented to align under the name */}
-                <div className={`rounded-xl px-3 py-2.5 sm:ml-8 sm:px-4 sm:py-3 ${isUser ? "border border-honey-500/[0.08] bg-honey-500/[0.04]" : "border border-white/[0.04] bg-white/[0.02]"}`}>
+                <div className={`rounded-xl px-3 py-2 sm:ml-7 sm:px-4 sm:py-2.5 ${isUser ? "border border-honey-500/[0.08] bg-honey-500/[0.04]" : "border border-white/[0.04] bg-white/[0.02]"}`}>
                   {msg.role === "agent" ? (
-                    <div className="relative">
-                      {/* max-h-[2000px] when expanded gives CSS a concrete target to transition toward;
-                         CSS cannot interpolate from a value to `auto`. */}
-                      <div className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${isLong && !isExpanded ? "mask-fade-bottom max-h-52" : isLong ? "max-h-[2000px]" : ""}`}>
-                        <MarkdownContent>{msg.content}</MarkdownContent>
-                      </div>
-                      {isLong && (
-                        <button
-                          type="button"
-                          onClick={() => toggleExpanded(key)}
-                          className="mt-2 flex items-center gap-1 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
-                        >
-                          <ChevronDownIcon className={`h-3 w-3 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} />
-                          {isExpanded ? "Show less" : "Show full response"}
-                        </button>
-                      )}
-                    </div>
+                    <MarkdownContent>{msg.content}</MarkdownContent>
                   ) : (
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">{msg.content}</p>
                   )}
@@ -874,10 +751,10 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
       {/* ── Follow-up input (sticky) ─────────────────────────────────── */}
       {canSendMessage(task.status) && (
-        <div className="sticky bottom-0 z-10 -mx-4 mt-4 bg-gradient-to-t from-[var(--bg-primary)] from-80% to-transparent px-4 pb-3 pt-4 sm:-mx-6 sm:px-6">
-          {messageBannerText(task.status) && (
-            <div className={`mb-3 rounded-xl border px-3 py-2.5 sm:px-4 ${messageBannerColor(task.status)}`}>
-              <p className={`text-sm ${messageBannerTextColor(task.status)}`}>{messageBannerText(task.status)}</p>
+        <div className="sticky bottom-0 z-10 -mx-4 bg-gradient-to-t from-[var(--bg-primary)] via-[var(--bg-primary)]/94 to-transparent px-4 pb-4 pt-5 sm:-mx-6 sm:px-6">
+          {composerGuidance && (
+            <div className="mb-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 sm:px-4">
+              <p className="text-sm text-amber-400">{composerGuidance}</p>
             </div>
           )}
 
@@ -888,7 +765,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           )}
 
           <form onSubmit={handleSendMessage}>
-            <div className="relative rounded-2xl border border-white/[0.08] bg-[#141414] transition-all focus-within:border-honey-500/30 focus-within:ring-2 focus-within:ring-honey-500/10">
+            <div className="relative rounded-2xl border border-white/[0.06] bg-[#111111]/92 backdrop-blur-sm transition-all focus-within:border-honey-500/30 focus-within:ring-2 focus-within:ring-honey-500/10">
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -900,7 +777,7 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
                     submitMessage();
                   }
                 }}
-                placeholder={task.status === "needs_follow_up" ? "Type your follow-up\u2026" : "Type a message\u2026"}
+                placeholder={taskComposerPlaceholder(task.status)}
                 className="w-full resize-none bg-transparent px-4 pb-12 pt-3.5 text-sm leading-relaxed text-[#fafafa] placeholder-zinc-600 focus:outline-none"
               />
               <div className="absolute bottom-3 right-3 flex items-center gap-2.5">
