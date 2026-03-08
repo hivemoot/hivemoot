@@ -63,6 +63,11 @@ function parseFrontmatter(content) {
   return { keys, scalars };
 }
 
+function hasListEntries(filePath) {
+  const content = readFileSync(filePath, "utf8");
+  return content.split("\n").some((line) => line.trimStart().startsWith("- "));
+}
+
 function validateSkill(skillDir) {
   const skillMd = join(skillDir, "SKILL.md");
   if (!existsSync(skillMd)) {
@@ -95,11 +100,15 @@ function validateSkill(skillDir) {
   const activateFixture = join(evalsDir, "activate.yml");
   if (!existsSync(activateFixture)) {
     error(skillDir, "missing evals/activate.yml — add at least one activation example");
+  } else if (!hasListEntries(activateFixture)) {
+    error(skillDir, "evals/activate.yml has no entries — add at least one activation example");
   }
 
   const skipFixture = join(evalsDir, "skip.yml");
   if (!existsSync(skipFixture)) {
     error(skillDir, "missing evals/skip.yml — add at least one negative example");
+  } else if (!hasListEntries(skipFixture)) {
+    error(skillDir, "evals/skip.yml has no entries — add at least one negative example");
   }
 }
 
