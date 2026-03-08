@@ -138,4 +138,34 @@ describe("preflightTaskRepos", () => {
 
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it("fails closed when GitHub App JWT generation throws", async () => {
+    vi.mocked(generateAppJwt).mockImplementation(() => {
+      throw new Error("bad private key");
+    });
+
+    await expect(preflightTaskRepos(["hivemoot/hivemoot"], "123")).resolves.toEqual({
+      ok: false,
+      reason: "server_error",
+      message: TASK_REPO_PREFLIGHT_UNAVAILABLE_MESSAGE,
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when GitHub returns malformed installation JSON", async () => {
+    vi.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("invalid JSON");
+      },
+    } as unknown as Response);
+
+    await expect(preflightTaskRepos(["hivemoot/hivemoot"], "123")).resolves.toEqual({
+      ok: false,
+      reason: "server_error",
+      message: TASK_REPO_PREFLIGHT_UNAVAILABLE_MESSAGE,
+    });
+  });
 });

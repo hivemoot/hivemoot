@@ -29,7 +29,20 @@ export async function preflightTaskRepos(
     };
   }
 
-  const appJwt = generateAppJwt(env.config.githubAppId, env.config.githubAppPrivateKey);
+  let appJwt: string;
+  try {
+    appJwt = generateAppJwt(env.config.githubAppId, env.config.githubAppPrivateKey);
+  } catch (error) {
+    console.error("[task-repo-preflight] GitHub App JWT generation failed", {
+      installationId,
+      error,
+    });
+    return {
+      ok: false,
+      reason: "server_error",
+      message: TASK_REPO_PREFLIGHT_UNAVAILABLE_MESSAGE,
+    };
+  }
 
   for (const repo of repos) {
     const [owner, name] = repo.split("/");
@@ -77,7 +90,22 @@ export async function preflightTaskRepos(
       };
     }
 
-    const data = await response.json() as { id?: number };
+    let data: { id?: number };
+    try {
+      data = await response.json() as { id?: number };
+    } catch (error) {
+      console.error("[task-repo-preflight] GitHub installation lookup returned invalid JSON", {
+        installationId,
+        repo,
+        error,
+      });
+      return {
+        ok: false,
+        reason: "server_error",
+        message: TASK_REPO_PREFLIGHT_UNAVAILABLE_MESSAGE,
+      };
+    }
+
     if (String(data.id) !== installationId) {
       return {
         ok: false,
