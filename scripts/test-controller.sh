@@ -71,6 +71,39 @@ assert_no_codex_auth_residue() {
   fi
 }
 
+assert_no_gemini_auth_residue() {
+  local homes_root="$1"
+  local auth_file=""
+  local -a auth_files=()
+  local -a gemini_auth_files=(
+    "oauth_creds.json"
+    "google_accounts.json"
+    "mcp-oauth-tokens.json"
+    "mcp-oauth-tokens-v2.json"
+    ".env"
+  )
+
+  shopt -s nullglob
+  for auth_file in "${gemini_auth_files[@]}"; do
+    auth_files+=("${homes_root}"/*/.gemini/"${auth_file}")
+  done
+  shopt -u nullglob
+
+  if [ "${#auth_files[@]}" -ne 0 ]; then
+    echo "Unexpected Gemini auth file residue:" >&2
+    printf '  %s\n' "${auth_files[@]}" >&2
+    fail "leftover Gemini auth file in job home"
+  fi
+}
+
+seed_gemini_auth_dir() {
+  local gemini_auth_dir="$1"
+
+  mkdir -p "$gemini_auth_dir"
+  printf '{"refresh_token":"gemini-test-token"}\n' > "${gemini_auth_dir}/oauth_creds.json"
+  printf '[{"email":"gemini@example.com"}]\n' > "${gemini_auth_dir}/google_accounts.json"
+}
+
 setup_mock_docker() {
   local mock_bin="$1"
   mkdir -p "$mock_bin"
@@ -418,10 +451,12 @@ run_success_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   env -i \
@@ -440,6 +475,7 @@ run_success_case() {
     AGENT_GITHUB_TOKEN_02="token-2" \
     AGENT_TIMEOUT_SECONDS="120" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     GIT_CLONE_DEPTH="1" \
     SHARED_CLONE_CACHE="0" \
     PERIODIC_INTERVAL_SECS="60" \
@@ -489,6 +525,7 @@ run_success_case() {
     assert_file_contains "$spec_file" '"timeout_seconds": 120'
   done
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: success case writes expected spawn flags and job artifacts"
 }
@@ -640,10 +677,12 @@ run_failure_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   if env -i \
@@ -660,6 +699,7 @@ run_failure_case() {
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="90" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"; then
@@ -678,6 +718,7 @@ run_failure_case() {
   assert_file_contains "${summary_files[0]}" "status=failed"
   assert_file_contains "${summary_files[0]}" "exit_code=17"
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
   echo "PASS: failure case records failed sentinel with exit code"
 }
@@ -686,10 +727,12 @@ run_spawn_failure_cleanup_case() {
   local repo_root="$1"
   local case_dir="$2"
   local codex_auth_source="${case_dir}/secrets/codex-auth.json"
+  local gemini_auth_dir="${case_dir}/secrets/gemini-auth"
 
   mkdir -p "$case_dir"
   mkdir -p "${case_dir}/secrets"
   printf '{"access_token":"test-token"}\n' > "$codex_auth_source"
+  seed_gemini_auth_dir "$gemini_auth_dir"
   setup_mock_docker "${case_dir}/mock-bin"
 
   if env -i \
@@ -706,6 +749,7 @@ run_spawn_failure_cleanup_case() {
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="90" \
     CODEX_AUTH_FILE="${codex_auth_source}" \
+    GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh"; then
@@ -713,8 +757,9 @@ run_spawn_failure_cleanup_case() {
   fi
 
   assert_no_codex_auth_residue "${case_dir}/workspace/homes"
+  assert_no_gemini_auth_residue "${case_dir}/workspace/homes"
 
-  echo "PASS: spawn failure cleanup removes copied Codex auth files"
+  echo "PASS: spawn failure cleanup removes copied provider auth files"
 }
 
 run_mentions_case() {

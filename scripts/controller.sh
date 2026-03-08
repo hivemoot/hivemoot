@@ -229,9 +229,23 @@ append_secret_env() {
 
 cleanup_job_home_credentials() {
   local job_home="$1"
+  local gemini_auth_dir="${job_home}/.gemini"
+  local auth_file=""
+  local -a gemini_auth_files=(
+    "oauth_creds.json"
+    "google_accounts.json"
+    "mcp-oauth-tokens.json"
+    "mcp-oauth-tokens-v2.json"
+    ".env"
+  )
 
   rm -f "${job_home}/.codex/auth.json" 2>/dev/null || true
   rmdir "${job_home}/.codex" 2>/dev/null || true
+
+  for auth_file in "${gemini_auth_files[@]}"; do
+    rm -f "${gemini_auth_dir}/${auth_file}" 2>/dev/null || true
+  done
+  rmdir "${gemini_auth_dir}" 2>/dev/null || true
 }
 
 # POST action=fail to the task execute endpoint from the controller.
@@ -318,6 +332,21 @@ spawn_worker() {
     chmod 600 "${job_home}/.codex/auth.json"
     if [[ "$(uname -s)" == "Linux" ]]; then
       chown -R 1000:1000 "${job_home}/.codex" 2>/dev/null || true
+    fi
+  fi
+
+  # Copy gemini subscription auth (OAuth creds) into the worker's home.
+  local gemini_auth_dir="${GEMINI_AUTH_DIR:-}"
+  if [ -n "$gemini_auth_dir" ] && [ -d "$gemini_auth_dir" ]; then
+    mkdir -p "${job_home}/.gemini"
+    for f in oauth_creds.json google_accounts.json; do
+      if [ -f "${gemini_auth_dir}/${f}" ]; then
+        cp "${gemini_auth_dir}/${f}" "${job_home}/.gemini/${f}"
+        chmod 600 "${job_home}/.gemini/${f}"
+      fi
+    done
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      chown -R 1000:1000 "${job_home}/.gemini" 2>/dev/null || true
     fi
   fi
 
