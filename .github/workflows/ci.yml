@@ -9,6 +9,30 @@ permissions:
   contents: read
 
 jobs:
+  filter:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.changes.outputs.docker }}
+      dockerfile: ${{ steps.changes.outputs.dockerfile }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36  # v3
+        id: changes
+        with:
+          filters: |
+            docker:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'scripts/**'
+              - 'prompts/**'
+              - 'skills/**'
+              - '.trivyignore'
+              - '.github/workflows/ci.yml'
+            dockerfile:
+              - 'Dockerfile'
+              - '.github/workflows/ci.yml'
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
@@ -96,6 +120,8 @@ jobs:
 
   docker-build:
     name: Docker Build & Security Scan
+    needs: [filter]
+    if: needs.filter.outputs.docker == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,6 +160,8 @@ jobs:
 
   docker-provider-stages:
     name: Provider Stage Build (${{ matrix.provider }})
+    needs: [filter]
+    if: needs.filter.outputs.dockerfile == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
