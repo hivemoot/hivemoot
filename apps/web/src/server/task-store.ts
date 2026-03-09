@@ -1500,6 +1500,7 @@ export async function addUserMessage(
         .persist(taskKey(installationId, taskId))
         .persist(taskProgressKey(installationId, taskId))
         .persist(taskMessagesKey(installationId, taskId))
+        .persist(taskArtifactsKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })

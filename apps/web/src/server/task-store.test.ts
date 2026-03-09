@@ -1899,6 +1899,29 @@ describe("addUserMessage", () => {
     expect(redis._ttl.has(taskTtlKey)).toBe(false);
   });
 
+  it("persists the artifacts key when reviving a terminal task (regression: artifacts must not expire mid-run)", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    // finalizeTask expires the artifacts key alongside messages.
+    const artifactsTtlKey = `task:inst-1:${created.task.task_id}:artifacts`;
+    expect(redis._ttl.has(artifactsTtlKey)).toBe(true);
+
+    await addUserMessage("inst-1", created.task.task_id, "Reopen", redis);
+
+    // persist() must clear the artifacts TTL so artifacts are not lost mid-run.
+    expect(redis._ttl.has(artifactsTtlKey)).toBe(false);
+  });
+
   it("does not return success when terminal TTL removal fails", async () => {
     const created = await createTask(
       "inst-1",
