@@ -312,6 +312,14 @@ try_run_agent() {
       unset PERIODIC_INTERVAL_SECS
     fi
 
+    # Map internal run trigger to the health report trigger type enum.
+    # run_trigger values: periodic, mention (internal); health report enum: scheduled, mention, manual.
+    case "$run_trigger" in
+      periodic) export RUN_TRIGGER_TYPE="scheduled" ;;
+      mention)  export RUN_TRIGGER_TYPE="mention" ;;
+      *)        export RUN_TRIGGER_TYPE="manual" ;;
+    esac
+
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
 
     agent_exit=0

@@ -105,6 +105,8 @@ load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
+# shellcheck source=scripts/token-extractor.sh
+. "${SCRIPT_DIR}/token-extractor.sh"
 
 is_valid_uuid() {
   local value="$1"
@@ -258,6 +260,8 @@ should_resume_session() {
 
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
+# Default to "manual" for standalone invocations; controller injects the real value.
+RUN_TRIGGER_TYPE="${RUN_TRIGGER_TYPE:-manual}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
@@ -1213,10 +1217,21 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
       || true)"
   fi
 
+  # Extract token usage from the per-attempt log (best-effort; empty string if unavailable).
+  _token_usage_json=""
+  if [ -n "${last_command_log:-}" ] && [ -f "${last_command_log}" ]; then
+    case "$provider" in
+      claude) _token_usage_json="$(extract_claude_token_usage_from_log "$last_command_log")" || true ;;
+      codex)  _token_usage_json="$(extract_codex_token_usage_from_log "$last_command_log")" || true ;;
+      *)      _token_usage_json="" ;;
+    esac
+  fi
+
   report_health_to_backend \
     "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
-    "$exit_code" "${_run_error:-}" "$_next_run_at" || true
+    "$exit_code" "${_run_error:-}" "$_next_run_at" \
+    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

@@ -363,6 +363,11 @@ spawn_worker() {
     -e HIVEMOOT_CLI_UPDATE=skip
   )
 
+  # Map internal trigger_type to the health report enum value.
+  local rtt="$trigger_type"
+  [ "$rtt" = "periodic" ] && rtt="scheduled"
+  docker_run_args+=( -e "RUN_TRIGGER_TYPE=${rtt}" )
+
   if [ -n "$extra_prompt" ]; then
     docker_run_args+=( -e "AGENT_EXTRA_PROMPT=${extra_prompt}" )
   fi

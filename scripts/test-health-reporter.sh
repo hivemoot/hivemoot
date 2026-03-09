@@ -404,16 +404,16 @@ test_response_200() {
 
   # Override curl with mock
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
   # Rename mock to curl
   cp "$mock_curl" "$(dirname "$mock_curl")/curl"
   chmod +x "$(dirname "$mock_curl")/curl"
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "200 should succeed"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
   pass "200 response succeeds"
 }
 
@@ -471,13 +471,13 @@ test_response_400() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "400 should fail without retry"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
   pass "400 response fails without retry"
 }
 
@@ -491,11 +491,11 @@ test_response_401() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
 
   local stderr_output
   stderr_output="$(_send_health_report "http://localhost/api/agent-health" "$payload" "" 2>&1 || true)"
-  restore_path "$original_path"
+  PATH="$original_path"
 
   echo "$stderr_output" | grep -q "authentication failed" || fail "401 should log auth error"
   pass "401 response logs auth error"
@@ -511,13 +511,13 @@ test_response_413() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "413 should fail"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
   pass "413 response fails without retry"
 }
 
@@ -531,11 +531,11 @@ test_response_429() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
 
   local stderr_output
   stderr_output="$(_send_health_report "http://localhost/api/agent-health" "$payload" "" 2>&1 || true)"
-  restore_path "$original_path"
+  PATH="$original_path"
 
   echo "$stderr_output" | grep -q "rate limited" || fail "429 should log rate limit"
   pass "429 response skips retries"
@@ -566,7 +566,7 @@ MOCK
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$mock_dir"
+  PATH="${mock_dir}:$PATH"
 
   # Override sleep to avoid delays in tests
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -576,10 +576,10 @@ MOCK
   HEALTH_REPORT_MAX_RETRIES=2
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "5xx should eventually succeed after retries"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
 
   local call_count
   call_count="$(cat "$counter_file")"
@@ -597,7 +597,7 @@ test_response_5xx_gives_up() {
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$(dirname "$mock_curl")"
+  PATH="$(dirname "$mock_curl"):$PATH"
 
   # Override sleep to avoid delays
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -607,10 +607,10 @@ test_response_5xx_gives_up() {
   HEALTH_REPORT_MAX_RETRIES=1
 
   if _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "persistent 5xx should fail after max retries"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
   pass "5xx gives up after max retries"
 }
 
@@ -641,7 +641,7 @@ MOCK
   local payload
   payload="$(build_test_payload)"
   local original_path="$PATH"
-  set_mock_path "$mock_dir"
+  PATH="${mock_dir}:$PATH"
 
   # Override sleep to avoid delays
   # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
@@ -651,10 +651,10 @@ MOCK
   HEALTH_REPORT_MAX_RETRIES=2
 
   if ! _send_health_report "http://localhost/api/agent-health" "$payload" "" 2>/dev/null; then
-    restore_path "$original_path"
+    PATH="$original_path"
     fail "000 network error should retry and eventually succeed"
   fi
-  restore_path "$original_path"
+  PATH="$original_path"
 
   local call_count
   call_count="$(cat "$counter_file")"
@@ -695,13 +695,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  set_mock_path "$mock_dir"
+  PATH="${mock_dir}:$PATH"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   report_health_to_backend "forager" "hivemoot/sandbox" "" "20260226-run-1" "success" "120" "0" "0" 2>/dev/null || true
 
-  restore_path "$original_path"
+  PATH="$original_path"
 
   if [ -f "$captured_file" ]; then
     local agent_val repo_val run_id_val outcome_val
@@ -738,13 +738,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  set_mock_path "$mock_dir"
+  PATH="${mock_dir}:$PATH"
   # shellcheck disable=SC2034  # read by sourced report_health_to_backend
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   report_health_to_backend "guard" "hivemoot/bot" "" "20260226-run-2" "failure" "60" "3" "1" "provider timeout" 2>/dev/null || true
 
-  restore_path "$original_path"
+  PATH="$original_path"
 
   if [ -f "$captured_file" ]; then
     local exit_val error_val
@@ -830,6 +830,113 @@ MOCK
     fail "payload was not captured"
   fi
   pass "omits next_run_at from payload when empty"
+}
+
+# ── trigger field tests ───────────────────────────────────────────
+
+test_payload_includes_trigger() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "scheduled")"
+  local trigger_val
+  trigger_val="$(printf '%s' "$payload" | jq -r '.trigger')"
+  [ "$trigger_val" = "scheduled" ] || fail "expected trigger=scheduled, got ${trigger_val}"
+  pass "payload includes trigger when provided"
+}
+
+test_payload_omits_trigger_when_empty() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  local has_trigger
+  has_trigger="$(printf '%s' "$payload" | jq 'has("trigger")')"
+  [ "$has_trigger" = "false" ] || fail "expected trigger absent when not provided"
+  pass "payload omits trigger when empty"
+}
+
+test_validates_valid_trigger_values() {
+  source_reporter
+  local payload_base
+  payload_base="$(build_test_payload)"
+  local trigger
+  for trigger in scheduled mention manual task; do
+    local payload
+    payload="$(printf '%s' "$payload_base" | jq --arg t "$trigger" '. + {trigger: $t}')"
+    if ! _validate_health_payload "$payload" 2>/dev/null; then
+      fail "validation should accept trigger=${trigger}"
+    fi
+  done
+  pass "accepts all valid trigger values"
+}
+
+test_validates_invalid_trigger_rejected() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {trigger: "cron"}')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject unknown trigger value"
+  fi
+  pass "rejects unknown trigger value"
+}
+
+# ── token_usage field tests ───────────────────────────────────────
+
+test_payload_includes_token_usage() {
+  source_reporter
+  local token_json='{"input_tokens":100,"output_tokens":50}'
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "" "$token_json")"
+  local has_tu
+  has_tu="$(printf '%s' "$payload" | jq 'has("token_usage")')"
+  [ "$has_tu" = "true" ] || fail "expected token_usage to be present"
+  local in_tokens
+  in_tokens="$(printf '%s' "$payload" | jq '.token_usage.input_tokens')"
+  [ "$in_tokens" = "100" ] || fail "expected input_tokens=100, got ${in_tokens}"
+  pass "payload includes token_usage when provided"
+}
+
+test_payload_omits_token_usage_when_empty() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  local has_tu
+  has_tu="$(printf '%s' "$payload" | jq 'has("token_usage")')"
+  [ "$has_tu" = "false" ] || fail "expected token_usage absent when not provided"
+  pass "payload omits token_usage when empty"
+}
+
+test_validates_token_usage_object_passes() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: {input_tokens: 10, output_tokens: 5}}')"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid token_usage object should pass validation"
+  fi
+  pass "token_usage object passes validation"
+}
+
+test_validates_token_usage_string_rejected() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: "not-an-object"}')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject token_usage as string"
+  fi
+  pass "rejects token_usage as string"
+}
+
+test_validates_token_usage_null_passes() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: null}')"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "null token_usage should pass validation"
+  fi
+  pass "null token_usage passes validation"
 }
 
 # ── send_heartbeat tests ─────────────────────────────────────────
@@ -1000,14 +1107,12 @@ MOCK
   [ "$max_time_used" = "3" ] || fail "expected --max-time 3, got ${max_time_used} (heartbeat timeout not bounded)"
   pass "heartbeat uses bounded timeout (max-time=3) and no retries against a failing backend"
 }
-
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
 echo ""
 
 setup
-trap teardown EXIT
 
 echo "  update_agent_stats:"
 run_test test_stats_creates_new_file
@@ -1024,6 +1129,10 @@ run_test test_payload_optional_error
 run_test test_payload_omits_empty_optionals
 run_test test_payload_optional_next_run_at
 run_test test_payload_omits_empty_next_run_at
+run_test test_payload_includes_trigger
+run_test test_payload_omits_trigger_when_empty
+run_test test_payload_includes_token_usage
+run_test test_payload_omits_token_usage_when_empty
 echo ""
 
 echo "  Validation — required fields:"
@@ -1040,6 +1149,14 @@ echo "  Validation — enums:"
 run_test test_validates_invalid_outcome_enum
 run_test test_validates_valid_outcome_values
 run_test test_validates_skipped_not_valid_outcome
+run_test test_validates_valid_trigger_values
+run_test test_validates_invalid_trigger_rejected
+echo ""
+
+echo "  Validation — token_usage:"
+run_test test_validates_token_usage_object_passes
+run_test test_validates_token_usage_string_rejected
+run_test test_validates_token_usage_null_passes
 echo ""
 
 echo "  Validation — numerics:"
@@ -1078,5 +1195,7 @@ run_test test_heartbeat_includes_next_run_at
 run_test test_heartbeat_omits_next_run_at_when_absent
 run_test test_heartbeat_bounded_on_slow_backend
 echo ""
+
+teardown
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"
