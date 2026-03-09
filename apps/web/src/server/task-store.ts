@@ -640,12 +640,15 @@ async function finalizeTask(
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();
 
-      // Best-effort: expire the messages list alongside the task data.
+      // Best-effort: expire the messages and artifacts lists alongside the task data.
       // The task has already been finalized so a failure here must not propagate.
       try {
-        await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+        await Promise.all([
+          redis.expire(taskMessagesKey(installationId, taskId), ttl),
+          redis.expire(taskArtifactsKey(installationId, taskId), ttl),
+        ]);
       } catch (error) {
-        console.error("[tasks] Failed to expire messages key (task finalized)", {
+        console.error("[tasks] Failed to expire messages/artifacts keys (task finalized)", {
           installationId,
           taskId,
           error,
@@ -1246,17 +1249,19 @@ export async function appendTaskArtifacts(
   incoming: unknown[],
   redis: Redis,
 ): Promise<AppendArtifactsResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
-
-  const parsed: TaskArtifact[] = [];
-  for (const raw of incoming) {
-    const artifact = parseArtifact(raw, stored.repos);
-    if (!artifact) return { ok: false, reason: "validation_failed" };
-    parsed.push(artifact);
-  }
-
   return withTaskInstallationLock(installationId, redis, async () => {
+    // Load inside the lock so a concurrent deleteTask cannot leave an orphaned
+    // artifacts key between the existence check and the write.
+    const stored = await loadStoredTask(installationId, taskId, redis);
+    if (!stored) return { ok: false, reason: "not_found" };
+
+    const parsed: TaskArtifact[] = [];
+    for (const raw of incoming) {
+      const artifact = parseArtifact(raw, stored.repos);
+      if (!artifact) return { ok: false, reason: "validation_failed" };
+      parsed.push(artifact);
+    }
+
     const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
     const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
 

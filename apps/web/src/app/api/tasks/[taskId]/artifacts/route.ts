@@ -5,6 +5,7 @@ import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import {
   appendTaskArtifacts,
+  getTask,
   TASK_ID_PATTERN,
   verifyTaskClaimToken,
 } from "@/server/task-store";
@@ -65,6 +66,14 @@ export async function POST(request: NextRequest) {
       `artifacts array must not exceed ${MAX_ARTIFACTS_PER_REQUEST} entries per request`,
       400,
     );
+  }
+
+  // Check task existence before claim-token verification: verifyTaskClaimToken
+  // returns false when the hash is absent, which would produce a misleading 403
+  // instead of a 404 for a missing task.
+  const task = await getTask(auth.installationId, taskId, auth.redis);
+  if (!task) {
+    return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
   }
 
   const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";

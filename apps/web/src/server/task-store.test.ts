@@ -1142,6 +1142,36 @@ describe("post-transition append failure resilience", () => {
     expect(result.task.status).toBe("completed");
   });
 
+  it("finalizeTask expires artifacts key alongside messages key", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task with artifacts", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const taskId = created.task.task_id;
+    await markTaskRunning("inst-1", taskId, redis);
+
+    // Append an artifact so the artifacts key exists before finalization.
+    await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "pull_request", url: "https://github.com/hivemoot/hivemoot/pull/1", number: 1 }],
+      redis,
+    );
+
+    await completeTask("inst-1", taskId, "Done", redis);
+
+    const artifactsKey = `task:inst-1:${taskId}:artifacts`;
+    const messagesKey = `task:inst-1:${taskId}:messages`;
+    expect(redis._ttl.has(artifactsKey)).toBe(true);
+    expect(redis._ttl.has(messagesKey)).toBe(true);
+    expect(redis._ttl.get(artifactsKey)).toBe(redis._ttl.get(messagesKey));
+  });
+
   it("invalidates claim token after follow-up and terminal transitions", async () => {
     const created = await createTask(
       "inst-1",
