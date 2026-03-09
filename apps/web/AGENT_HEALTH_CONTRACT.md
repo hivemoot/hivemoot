@@ -49,7 +49,31 @@ Each POST represents one run for one `agent_id` + `repo`.
 | `exit_code` | integer | Any integer |
 | `next_run_at` | string | ISO-8601, max 64 chars, between `now-5m` and `now+48h` |
 | `trigger` | string | `scheduled` \| `mention` \| `manual` |
-| `token_usage` | object or `null` | Non-negative integer/number fields; optional `model_breakdown` map keyed by model id regex `[a-zA-Z0-9._:/-]+` |
+| `token_usage` | object or `null` | Exact nested schema below; when present as an object, required scalar fields must be present even if their value is `null` |
+
+#### `token_usage` object shape
+
+When `token_usage` is an object, these top-level fields are accepted:
+
+| Field | Type | Constraints |
+|---|---|---|
+| `input_tokens` | integer | Required, non-negative |
+| `output_tokens` | integer | Required, non-negative |
+| `cache_read_input_tokens` | integer or `null` | Required, non-negative when not `null` |
+| `cache_creation_input_tokens` | integer or `null` | Required, non-negative when not `null` |
+| `cost_usd` | number or `null` | Required, non-negative when not `null` |
+| `num_turns` | integer | Required, non-negative |
+| `model_breakdown` | object or `null` | Optional; keys must match `[a-zA-Z0-9._:/-]+` |
+
+`model_breakdown`, when present as an object, must map model ids to objects with this shape:
+
+| Field | Type | Constraints |
+|---|---|---|
+| `input_tokens` | integer | Required, non-negative |
+| `output_tokens` | integer | Required, non-negative |
+| `cache_read_input_tokens` | integer or `null` | Required, non-negative when not `null` |
+| `cache_creation_input_tokens` | integer or `null` | Required, non-negative when not `null` |
+| `cost_usd` | number or `null` | Required, non-negative when not `null` |
 
 Validation behavior:
 - Maximum payload size: 10KB (checked via `Content-Length` and actual body bytes).
