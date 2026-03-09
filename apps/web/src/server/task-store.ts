@@ -33,6 +33,15 @@ export interface TaskMessage {
 const MAX_MESSAGE_CONTENT_CHARS = 128_000;
 const MAX_MESSAGES_PER_TASK = 200;
 
+export type TaskArtifactType = "pull_request" | "issue" | "issue_comment" | "commit";
+
+export interface TaskArtifact {
+  type: TaskArtifactType;
+  url: string;
+  number?: number;
+  title?: string;
+}
+
 export interface TaskRecord {
   task_id: string;
   status: TaskStatus;
@@ -46,6 +55,7 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
+  artifacts?: TaskArtifact[];
 }
 
 export interface ClaimedTask {
@@ -119,6 +129,10 @@ function taskMessagesKey(installationId: string, taskId: string): string {
 
 function taskClaimTokenHashKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}:claim-token-hash`;
+}
+
+function taskArtifactsKey(installationId: string, taskId: string): string {
+  return `task:${installationId}:${taskId}:artifacts`;
 }
 
 function pendingKey(installationId: string): string {
@@ -303,6 +317,7 @@ async function cleanupMissingTask(
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
     .del(taskClaimTokenHashKey(installationId, taskId))
+    .del(taskArtifactsKey(installationId, taskId))
     .exec();
 }
 
@@ -329,13 +344,17 @@ async function buildTaskRecord(
   stored: StoredTaskRecord,
   redis: Redis,
 ): Promise<TaskRecord> {
-  const progressRaw = await redis.get(taskProgressKey(installationId, stored.task_id));
+  const [progressRaw, artifactsRaw] = await Promise.all([
+    redis.get(taskProgressKey(installationId, stored.task_id)),
+    redis.get(taskArtifactsKey(installationId, stored.task_id)),
+  ]);
 
   const task: TaskRecord = {
     ...stored,
   };
 
   if (typeof progressRaw === "string") task.progress = progressRaw;
+  if (Array.isArray(artifactsRaw) && artifactsRaw.length > 0) task.artifacts = artifactsRaw as TaskArtifact[];
 
   return task;
 }
@@ -1017,6 +1036,7 @@ export async function deleteTask(
       .del(taskKey(installationId, taskId))
       .del(taskProgressKey(installationId, taskId))
       .del(taskMessagesKey(installationId, taskId))
+      .del(taskArtifactsKey(installationId, taskId))
       .zrem(pendingKey(installationId), taskId)
       .zrem(runningKey(installationId), taskId)
       .zrem(recentKey(installationId), taskId)
@@ -1062,6 +1082,7 @@ export async function retryTask(
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .del(taskClaimTokenHashKey(installationId, taskId))
+        .del(taskArtifactsKey(installationId, taskId))
         .exec();
 
       try {
@@ -1164,6 +1185,99 @@ export async function getTaskMessages(
   }
 
   return messages;
+}
+
+// ---------------------------------------------------------------------------
+// Artifact tracking
+// ---------------------------------------------------------------------------
+
+const MAX_ARTIFACTS_PER_TASK = 20;
+const MAX_ARTIFACT_TITLE_CHARS = 200;
+
+const VALID_ARTIFACT_TYPES = new Set<TaskArtifactType>([
+  "pull_request",
+  "issue",
+  "issue_comment",
+  "commit",
+]);
+
+// URL must be scoped to github.com/{owner}/{repo}/... where owner/repo is one
+// of the repos the task was created against.
+function validateArtifactUrl(url: string, repos: string[]): boolean {
+  if (typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.hostname !== "github.com") return false;
+    const pathParts = parsed.pathname.replace(/^\//, "").split("/");
+    if (pathParts.length < 2) return false;
+    const repoSlug = `${pathParts[0]}/${pathParts[1]}`;
+    return repos.some((r) => r.toLowerCase() === repoSlug.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function parseArtifact(raw: unknown, repos: string[]): TaskArtifact | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  if (!VALID_ARTIFACT_TYPES.has(obj.type as TaskArtifactType)) return null;
+  if (!validateArtifactUrl(obj.url as string, repos)) return null;
+  const artifact: TaskArtifact = {
+    type: obj.type as TaskArtifactType,
+    url: obj.url as string,
+  };
+  if (typeof obj.number === "number" && Number.isInteger(obj.number) && obj.number > 0) {
+    artifact.number = obj.number;
+  }
+  if (typeof obj.title === "string" && obj.title.trim().length > 0) {
+    artifact.title = obj.title.trim().slice(0, MAX_ARTIFACT_TITLE_CHARS);
+  }
+  return artifact;
+}
+
+export type AppendArtifactsResult =
+  | { ok: true; artifacts: TaskArtifact[] }
+  | { ok: false; reason: "not_found" | "cap_exceeded" | "validation_failed" };
+
+export async function appendTaskArtifacts(
+  installationId: string,
+  taskId: string,
+  incoming: unknown[],
+  redis: Redis,
+): Promise<AppendArtifactsResult> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return { ok: false, reason: "not_found" };
+
+  const parsed: TaskArtifact[] = [];
+  for (const raw of incoming) {
+    const artifact = parseArtifact(raw, stored.repos);
+    if (!artifact) return { ok: false, reason: "validation_failed" };
+    parsed.push(artifact);
+  }
+
+  const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
+  const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
+
+  if (existing.length + parsed.length > MAX_ARTIFACTS_PER_TASK) {
+    return { ok: false, reason: "cap_exceeded" };
+  }
+
+  const updated = [...existing, ...parsed];
+  await redis.set(taskArtifactsKey(installationId, taskId), updated);
+
+  return { ok: true, artifacts: updated };
+}
+
+export async function getTaskArtifacts(
+  installationId: string,
+  taskId: string,
+  redis: Redis,
+): Promise<TaskArtifact[] | null> {
+  const stored = await loadStoredTask(installationId, taskId, redis);
+  if (!stored) return null;
+  const raw = await redis.get(taskArtifactsKey(installationId, taskId));
+  return Array.isArray(raw) ? (raw as TaskArtifact[]) : [];
 }
 
 // ---------------------------------------------------------------------------
