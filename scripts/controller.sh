@@ -1542,6 +1542,10 @@ claim_next_task() {
     log "Claimed task missing required fields (task_id/prompt/repo/claim_token)"
     return 2
   fi
+  if ! task_id_is_valid "$claimed_task_id"; then
+    log "Claimed task_id has invalid format: ${claimed_task_id}"
+    return 2
+  fi
   if ! repo_name_is_valid "$claimed_task_repo"; then
     log "Claimed task repo has invalid format: ${claimed_task_repo}"
     return 2

@@ -288,9 +288,10 @@ if build_execute_url >/dev/null && [ -z "$task_claim_token" ]; then
   exit 1
 fi
 
-result_path="${workspace_root}/task-output/${task_id}/result.md"
-
+validate_task_id "$task_id"
 validate_target_repo "$task_repo"
+
+result_path="${workspace_root}/task-output/${task_id}/result.md"
 
 # Task mode always starts fresh context to avoid cross-task bleed.
 export SESSION_RESUME=0

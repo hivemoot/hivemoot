@@ -320,6 +320,27 @@ validate_agent_id() {
   esac
 }
 
+# Returns 0 if task_id is safe for use in paths and URLs, 1 otherwise.
+# Allowed: alphanumeric, hyphens, underscores, dots (no slashes, no whitespace).
+# Explicitly rejected: empty string, bare "." and "..".
+task_id_is_valid() {
+  local task_id="$1"
+  case "$task_id" in
+    ''|.|..|*[!A-Za-z0-9._-]*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+validate_task_id() {
+  local task_id="$1"
+  if ! task_id_is_valid "$task_id"; then
+    echo "Invalid task_id: ${task_id}" >&2
+    exit 1
+  fi
+}
+
 # Deterministic offset within an interval for staggered scheduling.
 # md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
 # they never cluster at the same wake-up time.

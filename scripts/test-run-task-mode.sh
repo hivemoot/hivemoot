@@ -77,8 +77,6 @@ mock provider output line 1
 mock provider output line 2
 LOG
 fi
-# If CODEX_ANSWER_FILE is set, write MOCK_CODEX_ANSWER_CONTENT to it so tests
-# can exercise the sidecar preference path without running a real codex CLI.
 if [ -n "${CODEX_ANSWER_FILE:-}" ] && [ -n "${MOCK_CODEX_ANSWER_CONTENT:-}" ]; then
   mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
   printf '%s' "$MOCK_CODEX_ANSWER_CONTENT" > "$CODEX_ANSWER_FILE"
@@ -789,12 +787,101 @@ LOG
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
+run_case_rejects_traversal_task_id() {
+  local case_dir="${tmp_root}/case-traversal-task-id"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_ID="../../pwned" \
+    AGENT_TASK_PROMPT="Traversal attempt" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when AGENT_TASK_ID contains path separators"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
+  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
+    fail "run-once should not execute on invalid task_id"
+  fi
+  # Confirm no artifact was written outside task-output
+  if find "${case_dir}/workspace" -name "result.md" | grep -qv "task-output"; then
+    fail "result.md written outside task-output subtree"
+  fi
+}
+
+run_case_rejects_dotdot_task_id() {
+  local case_dir="${tmp_root}/case-dotdot-task-id"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_ID=".." \
+    AGENT_TASK_PROMPT="Dotdot attempt" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when AGENT_TASK_ID is '..'"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
+  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
+    fail "run-once should not execute on invalid task_id"
+  fi
+}
+
+run_case_rejects_slash_in_claimed_task_id() {
+  local case_dir="${tmp_root}/case-claim-slash-task-id"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_CLAIM_MODE="task"
+  export MOCK_CLAIM_BODY='{"task":{"task_id":"bad/id","prompt":"Slash in id","repos":["owner/repo"]},"claim_token":"claim-token-bad-id"}'
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    TARGET_REPO= \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when claimed task_id contains a slash"
+  fi
+
+  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
+  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
+    fail "run-once should not execute when claimed task_id is invalid"
+  fi
+}
+
 run_case_codex_sidecar_result() {
   local case_dir="${tmp_root}/case-codex-sidecar"
   local result_path="${case_dir}/workspace/task-output/task-codex-sidecar/result.md"
   local codex_log="${case_dir}/codex-jsonl-bg.jsonl"
   mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # JSONL log has an older answer — sidecar should take priority.
   cat > "$codex_log" <<'LOG'
 {"type":"item.completed","item":{"type":"agent_message","text":"## JSONL Answer\n\n- old"}}
 LOG
@@ -843,8 +930,6 @@ LOG
   export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
   export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
   export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  # MOCK_CODEX_ANSWER_CONTENT not set — sidecar file is written but empty
-  # by run-task.sh mkdir, so [ -s sidecar ] is false and JSONL path is taken.
   : > "$MOCK_CURL_CALLS"
   : > "$MOCK_RUN_ONCE_CALLS"
 
@@ -951,6 +1036,9 @@ run_case_default_log_dir_when_unset
 run_case_codex_result_extraction
 run_case_codex_result_extraction_fallback
 run_case_codex_result_extraction_with_malformed_lines
+run_case_rejects_traversal_task_id
+run_case_rejects_dotdot_task_id
+run_case_rejects_slash_in_claimed_task_id
 run_case_codex_sidecar_result
 run_case_codex_sidecar_fallback_to_jsonl
 run_case_gemini_text_result
