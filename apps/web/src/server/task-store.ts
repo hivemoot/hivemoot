@@ -1256,17 +1256,19 @@ export async function appendTaskArtifacts(
     parsed.push(artifact);
   }
 
-  const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
-  const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
+  return withTaskInstallationLock(installationId, redis, async () => {
+    const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
+    const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
 
-  if (existing.length + parsed.length > MAX_ARTIFACTS_PER_TASK) {
-    return { ok: false, reason: "cap_exceeded" };
-  }
+    if (existing.length + parsed.length > MAX_ARTIFACTS_PER_TASK) {
+      return { ok: false, reason: "cap_exceeded" } as AppendArtifactsResult;
+    }
 
-  const updated = [...existing, ...parsed];
-  await redis.set(taskArtifactsKey(installationId, taskId), updated);
+    const updated = [...existing, ...parsed];
+    await redis.set(taskArtifactsKey(installationId, taskId), updated);
 
-  return { ok: true, artifacts: updated };
+    return { ok: true, artifacts: updated };
+  });
 }
 
 export async function getTaskArtifacts(

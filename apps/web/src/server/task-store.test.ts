@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
   addUserMessage,
+  appendTaskArtifacts,
   appendTaskMessage,
   checkTaskCreateRateLimit,
   claimNextPendingTask,
@@ -1953,5 +1954,140 @@ describe("addUserMessage", () => {
     const userMsg = messages[messages.length - 2];
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Do more");
+  });
+});
+
+describe("artifact tracking", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  async function createRunningTask() {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Do a thing", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("create failed");
+    const claimed = await claimNextPendingTask("inst-1", redis);
+    expect(claimed).not.toBeNull();
+    return created.task.task_id;
+  }
+
+  it("appends a PR artifact and returns it in the task record", async () => {
+    const taskId = await createRunningTask();
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "pull_request", url: "https://github.com/hivemoot/hivemoot/pull/1", number: 1 }],
+      redis,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts).toHaveLength(1);
+    expect(result.artifacts[0].type).toBe("pull_request");
+    expect(result.artifacts[0].number).toBe(1);
+
+    const task = await getTask("inst-1", taskId, redis);
+    expect(task?.artifacts).toHaveLength(1);
+  });
+
+  it("rejects an artifact whose URL is not scoped to the task repos", async () => {
+    const taskId = await createRunningTask();
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "pull_request", url: "https://github.com/other-org/other-repo/pull/1" }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("validation_failed");
+  });
+
+  it("returns not_found for a nonexistent task", async () => {
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      "nonexistent-task-id",
+      [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/1" }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not_found");
+  });
+
+  it("concurrent appends preserve both entries (lock regression)", async () => {
+    // Without withTaskInstallationLock, the second write wins and the first
+    // artifact is silently dropped. This test proves the lock serializes writes.
+    const taskId = await createRunningTask();
+
+    const [r1, r2] = await Promise.all([
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ type: "pull_request", url: "https://github.com/hivemoot/hivemoot/pull/10", number: 10 }],
+        redis,
+      ),
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/20", number: 20 }],
+        redis,
+      ),
+    ]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+
+    const task = await getTask("inst-1", taskId, redis);
+    expect(task?.artifacts).toHaveLength(2);
+    const urls = task!.artifacts!.map((a) => a.url);
+    expect(urls).toContain("https://github.com/hivemoot/hivemoot/pull/10");
+    expect(urls).toContain("https://github.com/hivemoot/hivemoot/issues/20");
+  });
+
+  it("enforces the 20-artifact cap across concurrent requests", async () => {
+    const taskId = await createRunningTask();
+
+    // Append 19 artifacts sequentially.
+    for (let i = 1; i <= 19; i++) {
+      const r = await appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ type: "issue", url: `https://github.com/hivemoot/hivemoot/issues/${i}`, number: i }],
+        redis,
+      );
+      expect(r.ok).toBe(true);
+    }
+
+    // Two concurrent requests each trying to add the 20th artifact:
+    // only one of them can succeed before the cap is reached.
+    const [r1, r2] = await Promise.all([
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/20", number: 20 }],
+        redis,
+      ),
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/21", number: 21 }],
+        redis,
+      ),
+    ]);
+
+    // Exactly one should succeed and one should be capped.
+    const succeeded = [r1, r2].filter((r) => r.ok);
+    const capped = [r1, r2].filter((r) => !r.ok);
+    expect(succeeded).toHaveLength(1);
+    expect(capped).toHaveLength(1);
+    if (!capped[0].ok) expect(capped[0].reason).toBe("cap_exceeded");
+
+    const task = await getTask("inst-1", taskId, redis);
+    expect(task?.artifacts).toHaveLength(20);
   });
 });
