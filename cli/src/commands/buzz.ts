@@ -1,7 +1,9 @@
 import {
   CliError,
   type BuzzOptions,
+  type FocusFilters,
   type GitHubIssue,
+  type GitHubPR,
   type NotificationRef,
   type RecentClosedItem,
   type RepoRef,
@@ -76,6 +78,32 @@ function buildUnackedMentions(
   return mentions;
 }
 
+function itemLabels(item: GitHubIssue | GitHubPR): string[] {
+  return item.labels.map((l) => l.name);
+}
+
+function passesLabelFilter(
+  labels: string[],
+  filters: FocusFilters,
+): boolean {
+  const { include, exclude } = filters.labels ?? {};
+  if (include && include.length > 0) {
+    if (!include.some((l) => labels.includes(l))) return false;
+  }
+  if (exclude && exclude.length > 0) {
+    if (exclude.some((l) => labels.includes(l))) return false;
+  }
+  return true;
+}
+
+function applyFocusFilters<T extends GitHubIssue | GitHubPR>(
+  items: T[],
+  filters: FocusFilters,
+): T[] {
+  if (!filters.labels?.include?.length && !filters.labels?.exclude?.length) return items;
+  return items.filter((item) => passesLabelFilter(itemLabels(item), filters));
+}
+
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const fetchLimit = options.fetchLimit ?? 200;
@@ -142,10 +170,16 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     throw best ?? issuesResult.reason;
   }
 
-  const issues = issuesResult.status === "fulfilled" ? issuesResult.value : [];
-  const prs = prsResult.status === "fulfilled" ? prsResult.value : [];
+  let issues = issuesResult.status === "fulfilled" ? issuesResult.value : [];
+  let prs = prsResult.status === "fulfilled" ? prsResult.value : [];
   const currentUser = userResult.status === "fulfilled" ? userResult.value : "";
   const notifications: NotificationMap = notificationsResult.status === "fulfilled" ? notificationsResult.value : new Map();
+
+  const focusFilters = teamConfig?.resolvedFocus?.filters;
+  if (focusFilters) {
+    issues = applyFocusFilters(issues, focusFilters);
+    prs = applyFocusFilters(prs, focusFilters);
+  }
 
   // Fetch vote reactions for voting-phase issues
   const votingIssueNumbers = issues
@@ -184,6 +218,12 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     notifications,
     teamConfig?.focus,
   );
+
+  const actionBans = teamConfig?.resolvedFocus?.filters?.actions?.exclude;
+  if (actionBans && actionBans.length > 0) {
+    summary.actionBans = actionBans;
+  }
+
   const processedThreadIds = await processedThreadIdsPromise;
   summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
   summary.recentlyClosedByYou = recentlyClosedByYou;

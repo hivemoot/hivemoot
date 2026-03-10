@@ -1106,4 +1106,136 @@ describe("buzzCommand", () => {
       code: "CONFIG_NOT_FOUND",
     });
   });
+
+  // ── Focus label filtering ──────────────────────────────────────────
+
+  it("filters issues by label include rules from focus config", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Fix bugs.",
+      resolvedFocus: {
+        objective: "Fix bugs.",
+        filters: { labels: { include: ["bug"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Bug A", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Feature B", labels: [{ name: "enhancement" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+      { number: 3, title: "Bug C", labels: [{ name: "bug" }, { name: "critical" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/3" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    expect(issuesArg.map((i) => i.number)).toEqual([1, 3]);
+  });
+
+  it("filters issues by label exclude rules from focus config", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Skip wontfix.",
+      resolvedFocus: {
+        objective: "Skip wontfix.",
+        filters: { labels: { exclude: ["wontfix"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Active issue", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Won't fix", labels: [{ name: "wontfix" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    expect(issuesArg.map((i) => i.number)).toEqual([1]);
+  });
+
+  it("filters PRs by label include rules from focus config", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Blocker PRs only.",
+      resolvedFocus: {
+        objective: "Blocker PRs only.",
+        filters: { labels: { include: ["priority"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([
+      { number: 10, title: "PR A", labels: [{ name: "priority" }], state: "OPEN", author: null, assignees: [], comments: [], reviews: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/pull/10", isDraft: false, reviewDecision: "APPROVED", mergeable: "MERGEABLE", statusCheckRollup: null, closingIssuesReferences: [], commits: [] },
+      { number: 11, title: "PR B", labels: [{ name: "docs" }], state: "OPEN", author: null, assignees: [], comments: [], reviews: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/pull/11", isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", statusCheckRollup: null, closingIssuesReferences: [], commits: [] },
+    ]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const prsArg = mockedBuildSummary.mock.calls[0][2] as Array<{ number: number }>;
+    expect(prsArg.map((p) => p.number)).toEqual([10]);
+  });
+
+  it("passes action bans from focus config to summary", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Review only.",
+      resolvedFocus: {
+        objective: "Review only.",
+        filters: { actions: { exclude: ["create-pr", "create-proposal"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.actionBans).toEqual(["create-pr", "create-proposal"]);
+  });
+
+  it("does not set actionBans when focus has no action filters", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Plain focus.",
+      resolvedFocus: { objective: "Plain focus." },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.actionBans).toBeUndefined();
+  });
+
+  it("applies no filter when focus config has no label filters", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Review only.",
+      resolvedFocus: {
+        objective: "Review only.",
+        filters: { actions: { exclude: ["create-pr"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Issue A", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Issue B", labels: [], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    expect(issuesArg.map((i) => i.number)).toEqual([1, 2]);
+  });
 });

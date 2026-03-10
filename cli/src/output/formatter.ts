@@ -21,6 +21,10 @@ function formatFocusLine(focus: string): string {
   return `Team focus: ${focus}`;
 }
 
+function formatActionBansLine(bans: string[]): string {
+  return `Restricted actions: ${bans.join(", ")}`;
+}
+
 function kv(key: string, value: string | number): string {
   return `${key}: ${chalk.dim(String(value))}`;
 }
@@ -284,6 +288,7 @@ export function formatBuzz(
       ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     ...(summary.focus ? [formatFocusLine(summary.focus)] : []),
+    ...(summary.actionBans?.length ? [formatActionBansLine(summary.actionBans)] : []),
     "",
     formatSummaryBody(summary, limit),
   );
@@ -297,6 +302,7 @@ export function formatStatus(summary: RepoSummary, limit?: number): string {
       ? `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}, logged in as ${chalk.green(summary.currentUser)}`
       : `You are working on ${chalk.bold(`${summary.repo.owner}/${summary.repo.repo}`)}`,
     ...(summary.focus ? [formatFocusLine(summary.focus)] : []),
+    ...(summary.actionBans?.length ? [formatActionBansLine(summary.actionBans)] : []),
     "",
     formatSummaryBody(summary, limit),
   ];

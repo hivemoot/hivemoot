@@ -1,7 +1,10 @@
 import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
+  FocusFilters,
+  FocusLabelFilters,
   HivemootConfig,
+  ResolvedFocus,
   TeamConfig,
   RepoRef,
   RoleConfig,
@@ -64,12 +67,60 @@ function parseLegacyFocus(rawFocus: unknown): string | undefined {
 
 const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_FOCUS_NAME_LENGTH = 64;
+const MAX_FILTER_STRINGS = 50;
+const MAX_FILTER_STRING_LENGTH = 200;
+
+// Validates and extracts a string array from a raw YAML value.
+// Returns an empty array (ignored) if the value is not a valid string array.
+function parseStringArray(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const result: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") return undefined;
+    if (item.length > MAX_FILTER_STRING_LENGTH) return undefined;
+    result.push(item);
+  }
+  if (result.length > MAX_FILTER_STRINGS) return undefined;
+  return result;
+}
+
+function parseLabelFilters(raw: unknown): FocusLabelFilters | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const include = parseStringArray(r.include);
+  const exclude = parseStringArray(r.exclude);
+  if (include === undefined && exclude === undefined) return undefined;
+  const result: FocusLabelFilters = {};
+  if (include !== undefined && include.length > 0) result.include = include;
+  if (exclude !== undefined && exclude.length > 0) result.exclude = exclude;
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseFocusFilters(raw: unknown): FocusFilters | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+
+  const labels = parseLabelFilters(r.labels);
+
+  let actionExclude: string[] | undefined;
+  if (r.actions && typeof r.actions === "object" && !Array.isArray(r.actions)) {
+    const actions = r.actions as Record<string, unknown>;
+    actionExclude = parseStringArray(actions.exclude);
+  }
+
+  if (!labels && (!actionExclude || actionExclude.length === 0)) return undefined;
+
+  const result: FocusFilters = {};
+  if (labels) result.labels = labels;
+  if (actionExclude && actionExclude.length > 0) result.actions = { exclude: actionExclude };
+  return result;
+}
 
 // Resolves focus from the team config. Handles two formats:
 // 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
 // 2. Legacy: team.focus.default (plain string)
 // The new format takes precedence when team.focuses is present.
-function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
+function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocus | undefined {
   const rawFocuses = rawTeam.focuses;
 
   if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
@@ -101,14 +152,16 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
       // and the next candidate (or undefined) is returned.
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
-      return objective;
+      const filters = parseFocusFilters(b.filters);
+      return filters ? { objective, filters } : { objective };
     }
 
     return undefined;
   }
 
   // Fall back to the legacy focus.default format.
-  return parseLegacyFocus(rawTeam.focus);
+  const legacyObjective = parseLegacyFocus(rawTeam.focus);
+  return legacyObjective ? { objective: legacyObjective } : undefined;
 }
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
@@ -207,13 +260,14 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
-  const focus = resolveFocus(team as unknown as Record<string, unknown>);
+  const resolvedFocus = resolveFocus(team as unknown as Record<string, unknown>);
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
-    focus,
+    focus: resolvedFocus?.objective,
+    resolvedFocus,
   };
 }
 
