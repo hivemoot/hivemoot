@@ -1386,4 +1386,36 @@ describe("buildSummary()", () => {
     expect(gapA?.prsOlderThan3Days).toEqual(gapB?.prsOlderThan3Days);
     expect(gapA?.issuesStaleOver24h).toEqual(gapB?.issuesStaleOver24h);
   });
+
+  it("derives issuePipeline counts from healthContext.issues, not the filtered subset", () => {
+    // Focused subset: only the bug (no phase labels) → pipeline counts would be 0
+    const freshTime = "2025-06-15T11:00:00Z";
+    const bugIssue = makeIssue({ number: 1, labels: [{ name: "bug" }], updatedAt: freshTime });
+
+    // Full repo: includes discuss, vote, and ready-to-implement issues
+    const discussIssue = makeIssue({ number: 10, labels: [{ name: "hivemoot:discussion" }], updatedAt: freshTime });
+    const voteIssue = makeIssue({ number: 11, labels: [{ name: "hivemoot:vote" }], updatedAt: freshTime });
+    const readyIssue = makeIssue({ number: 12, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime });
+    const readyIssue2 = makeIssue({ number: 13, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime });
+
+    const allIssues = [bugIssue, discussIssue, voteIssue, readyIssue, readyIssue2];
+
+    const summary = buildSummary(
+      repo,
+      [bugIssue], // filtered: only bug issue visible in actionable sections
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { issues: allIssues, prs: [] }, // healthContext: full unfiltered set
+    );
+
+    // Pipeline counts must reflect the full repo, not the filtered 1-issue subset
+    expect(summary.repositoryHealth?.issuePipeline).toBeDefined();
+    expect(summary.repositoryHealth?.issuePipeline?.discussion).toBe(1);
+    expect(summary.repositoryHealth?.issuePipeline?.voting).toBe(1);
+    expect(summary.repositoryHealth?.issuePipeline?.readyToImplement).toBe(2);
+  });
 });

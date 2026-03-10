@@ -493,11 +493,30 @@ export function buildSummary(
   const hasDefaultPhaseLabels = healthIssues.some((issue) =>
     issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
   );
+
+  // When healthContext is present, the actionable buckets (discuss/voteOn/implement)
+  // were built from the filtered issues array, not the full repo. Compute pipeline
+  // counts from healthIssues so REPOSITORY HEALTH reflects real repo state.
+  let pipelineDiscussion = discuss.length;
+  let pipelineVoting = voteOn.length;
+  let pipelineReadyToImplement = implement.length;
+  if (healthContext) {
+    pipelineDiscussion = 0;
+    pipelineVoting = 0;
+    pipelineReadyToImplement = 0;
+    for (const issue of healthIssues) {
+      const { bucket } = classifyIssue(issue, currentUser, now);
+      if (bucket === "discuss") pipelineDiscussion++;
+      else if (bucket === "voteOn") pipelineVoting++;
+      else if (bucket === "implement") pipelineReadyToImplement++;
+    }
+  }
+
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
     ? {
-        discussion: discuss.length,
-        voting: voteOn.length,
-        readyToImplement: implement.length,
+        discussion: pipelineDiscussion,
+        voting: pipelineVoting,
+        readyToImplement: pipelineReadyToImplement,
       }
     : undefined;
   const repositoryHealth = buildRepositoryHealth(healthIssues, healthPrs, currentUser, now, issuePipeline);
