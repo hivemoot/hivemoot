@@ -47,6 +47,7 @@ interface AgentOverviewEntry {
   online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
   next_run_at?: string;
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
 }
@@ -61,6 +62,7 @@ interface HealthHistoryEntry {
   error?: string;
   exit_code?: number;
   received_at: string;
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
 }

@@ -48,6 +48,7 @@ Each POST represents one run for one `agent_id` + `repo`.
 | `error` | string | 1-256 chars |
 | `exit_code` | integer | Any integer |
 | `next_run_at` | string | ISO-8601, max 64 chars, between `now-5m` and `now+48h` |
+| `run_summary` | string | Markdown, ANSI-stripped, truncated to 4096 chars; empty after stripping rejected |
 | `trigger` | string | `scheduled` \| `mention` \| `manual` |
 | `token_usage` | object or `null` | Exact nested schema below; when present as an object, required scalar fields must be present even if their value is `null` |
 
@@ -78,6 +79,7 @@ When `token_usage` is an object, these top-level fields are accepted:
 Validation behavior:
 - Maximum payload size: 10KB (checked via `Content-Length` and actual body bytes).
 - Unknown top-level fields are rejected.
+- `run_summary` is sanitized by stripping ANSI escape sequences before storage.
 - Invalid JSON returns 400.
 - Server assigns `received_at`; client value is not accepted.
 
@@ -85,7 +87,7 @@ Validation behavior:
 
 Success:
 - `200` + `{"received": true, "received_at": "<iso>"}` for new accepted reports.
-- `200` + `{"received": true, "received_at": "<iso>", "duplicate": true}` for an idempotent retry with the same dedupe identity (`agent_id`, `repo`, `run_id`, `outcome`, `duration_secs`, `consecutive_failures`, `error`, `exit_code`, `next_run_at`); metadata-only differences (`model`, `trigger`, `token_usage`) are still treated as duplicates.
+- `200` + `{"received": true, "received_at": "<iso>", "duplicate": true}` for an idempotent retry with the same dedupe identity (`agent_id`, `repo`, `run_id`, `outcome`, `duration_secs`, `consecutive_failures`, `error`, `exit_code`, `next_run_at`); metadata-only differences (`model`, `run_summary`, `trigger`, `token_usage`) are still treated as duplicates.
 
 Error:
 - `401` `agent_health_not_authenticated` for missing/invalid agent token.
