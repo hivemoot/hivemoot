@@ -1185,6 +1185,82 @@ describe("buzzCommand", () => {
     expect(prsArg.map((p) => p.number)).toEqual([10]);
   });
 
+  it("filters issues by author exclude rules from focus config", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Skip bots.",
+      resolvedFocus: {
+        objective: "Skip bots.",
+        filters: { authors: { exclude: ["dependabot[bot]"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Human issue", labels: [], assignees: [], author: { login: "alice" }, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Dependabot issue", labels: [], assignees: [], author: { login: "dependabot[bot]" }, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+      { number: 3, title: "No author", labels: [], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/3" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    // dependabot[bot] excluded; null author passes through
+    expect(issuesArg.map((i) => i.number)).toEqual([1, 3]);
+  });
+
+  it("filters PRs by author exclude rules from focus config", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Skip bots.",
+      resolvedFocus: {
+        objective: "Skip bots.",
+        filters: { authors: { exclude: ["renovate[bot]"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([
+      { number: 10, title: "Human PR", labels: [], state: "OPEN", author: { login: "bob" }, assignees: [], comments: [], reviews: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/pull/10", isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", statusCheckRollup: null, closingIssuesReferences: [], commits: [] },
+      { number: 11, title: "Renovate PR", labels: [], state: "OPEN", author: { login: "renovate[bot]" }, assignees: [], comments: [], reviews: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/pull/11", isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", statusCheckRollup: null, closingIssuesReferences: [], commits: [] },
+    ]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const prsArg = mockedBuildSummary.mock.calls[0][2] as Array<{ number: number }>;
+    expect(prsArg.map((p) => p.number)).toEqual([10]);
+  });
+
+  it("combines label and author filters (both must pass)", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Bug hunt, skip bots.",
+      resolvedFocus: {
+        objective: "Bug hunt, skip bots.",
+        filters: {
+          labels: { include: ["bug"] },
+          authors: { exclude: ["dependabot[bot]"] },
+        },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Bug from human", labels: [{ name: "bug" }], assignees: [], author: { login: "alice" }, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Bug from bot", labels: [{ name: "bug" }], assignees: [], author: { login: "dependabot[bot]" }, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+      { number: 3, title: "Enhancement from human", labels: [{ name: "enhancement" }], assignees: [], author: { login: "alice" }, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/3" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    // Only issue 1 passes: has bug label AND is not from a bot
+    expect(issuesArg.map((i) => i.number)).toEqual([1]);
+  });
+
   it("passes action bans from focus config to summary", async () => {
     mockedLoadTeamConfig.mockResolvedValue({
       ...testTeamConfig,

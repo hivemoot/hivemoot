@@ -97,12 +97,28 @@ function passesLabelFilter(
   return true;
 }
 
+function passesAuthorFilter(
+  authorLogin: string | null | undefined,
+  filters: FocusFilters,
+): boolean {
+  const { exclude } = filters.authors ?? {};
+  if (exclude && exclude.length > 0 && authorLogin) {
+    if (exclude.includes(authorLogin)) return false;
+  }
+  return true;
+}
+
 function applyFocusFilters<T extends GitHubIssue | GitHubPR>(
   items: T[],
   filters: FocusFilters,
 ): T[] {
-  if (!filters.labels?.include?.length && !filters.labels?.exclude?.length) return items;
-  return items.filter((item) => passesLabelFilter(itemLabels(item), filters));
+  const hasLabelFilter = !!(filters.labels?.include?.length || filters.labels?.exclude?.length);
+  const hasAuthorFilter = !!filters.authors?.exclude?.length;
+  if (!hasLabelFilter && !hasAuthorFilter) return items;
+  return items.filter((item) =>
+    passesLabelFilter(itemLabels(item), filters) &&
+    passesAuthorFilter(item.author?.login, filters),
+  );
 }
 
 // Maps action ban names to the summary sections they suppress.

@@ -949,6 +949,83 @@ team:
     expect(config.resolvedFocus?.filters?.labels?.include).toBeUndefined();
   });
 
+  it("exposes resolvedFocus with author exclude filter", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work on any issue.",
+            filters: {
+              authors: { exclude: ["dependabot[bot]"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.authors?.exclude).toEqual(["dependabot[bot]"]);
+  });
+
+  it("exposes resolvedFocus with labels and author filters combined", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work on bugs, skip bots.",
+            filters: {
+              labels: { include: ["bug"] },
+              authors: { exclude: ["dependabot[bot]", "renovate[bot]"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.labels?.include).toEqual(["bug"]);
+    expect(config.resolvedFocus?.filters?.authors?.exclude).toEqual([
+      "dependabot[bot]",
+      "renovate[bot]",
+    ]);
+  });
+
+  it("ignores malformed authors filter (non-string entries)", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work.",
+            filters: {
+              authors: { exclude: ["bot", 42] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.authors).toBeUndefined();
+  });
+
   it("sets resolvedFocus.filters undefined for legacy focus.default format", async () => {
     const focusYaml = yaml.dump({
       team: {

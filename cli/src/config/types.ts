@@ -14,8 +14,13 @@ export interface FocusLabelFilters {
   exclude?: string[];
 }
 
+export interface FocusAuthorFilters {
+  exclude?: string[];
+}
+
 export interface FocusFilters {
   labels?: FocusLabelFilters;
+  authors?: FocusAuthorFilters;
   actions?: { exclude?: string[] };
 }
 

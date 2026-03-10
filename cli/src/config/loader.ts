@@ -1,6 +1,7 @@
 import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
+  FocusAuthorFilters,
   FocusFilters,
   FocusLabelFilters,
   HivemootConfig,
@@ -96,11 +97,20 @@ function parseLabelFilters(raw: unknown): FocusLabelFilters | undefined {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function parseAuthorFilters(raw: unknown): FocusAuthorFilters | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const exclude = parseStringArray(r.exclude);
+  if (!exclude || exclude.length === 0) return undefined;
+  return { exclude };
+}
+
 function parseFocusFilters(raw: unknown): FocusFilters | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
 
   const labels = parseLabelFilters(r.labels);
+  const authors = parseAuthorFilters(r.authors);
 
   let actionExclude: string[] | undefined;
   if (r.actions && typeof r.actions === "object" && !Array.isArray(r.actions)) {
@@ -108,10 +118,11 @@ function parseFocusFilters(raw: unknown): FocusFilters | undefined {
     actionExclude = parseStringArray(actions.exclude);
   }
 
-  if (!labels && (!actionExclude || actionExclude.length === 0)) return undefined;
+  if (!labels && !authors && (!actionExclude || actionExclude.length === 0)) return undefined;
 
   const result: FocusFilters = {};
   if (labels) result.labels = labels;
+  if (authors) result.authors = authors;
   if (actionExclude && actionExclude.length > 0) result.actions = { exclude: actionExclude };
   return result;
 }
