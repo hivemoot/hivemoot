@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
+import type { TaskArtifact } from "@/server/task-store";
 
 vi.mock("@/server/task-executor-auth", () => ({
   authenticateTaskExecutorRequest: vi.fn(),
@@ -32,7 +33,7 @@ const VALID_ARTIFACT = {
   url: "https://github.com/hivemoot/hivemoot/pull/1",
 };
 
-const STORED_ARTIFACTS = [{ type: "pull_request", url: "https://github.com/hivemoot/hivemoot/pull/1" }];
+const STORED_ARTIFACTS: TaskArtifact[] = [{ type: "pull_request", url: "https://github.com/hivemoot/hivemoot/pull/1" }];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -189,8 +190,8 @@ describe("POST /api/tasks/[taskId]/artifacts", () => {
     expect(body.code).toBe("task_not_found");
   });
 
-  it("returns 400 when appendTaskArtifacts reports invalid_artifact", async () => {
-    vi.mocked(appendTaskArtifacts).mockResolvedValue({ ok: false, reason: "invalid_artifact" });
+  it("returns 400 when appendTaskArtifacts reports validation_failed", async () => {
+    vi.mocked(appendTaskArtifacts).mockResolvedValue({ ok: false, reason: "validation_failed" });
     const res = await POST(makeRequest({ artifacts: [{ type: "pull_request", url: "https://evil.com/x" }] }));
     expect(res.status).toBe(400);
     const body = await res.json();
