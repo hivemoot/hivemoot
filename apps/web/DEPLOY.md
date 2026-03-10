@@ -14,6 +14,11 @@ Custom domain connection is pending.
 2. Configure production runtime env vars in Vercel (see `.env.example`).
 3. Merge or push changes that touch `apps/web/**` into `main`.
 
+## Contracts
+
+- BYOK storage/runtime contract: `apps/web/BYOK_CONTRACT.md`
+- Agent health + agent token API contract: `apps/web/AGENT_HEALTH_CONTRACT.md`
+
 ## Flow
 
 - `Web` workflow runs typecheck/lint/test/build.
