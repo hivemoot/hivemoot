@@ -77,10 +77,14 @@ process.stdout.write(parts.join("\n\n"));
 }
 
 _cleanup_files=()
+_cleanup_dirs=()
 # shellcheck disable=SC2317,SC2329  # invoked via trap
 cleanup_once() {
   for f in "${_cleanup_files[@]-}"; do
     rm -f "$f" 2>/dev/null || true
+  done
+  for d in "${_cleanup_dirs[@]-}"; do
+    rm -rf "$d" 2>/dev/null || true
   done
 }
 trap cleanup_once EXIT
@@ -268,6 +272,7 @@ workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
 agent_skills="${AGENT_SKILLS:-}"
+agent_available_skills="${AGENT_AVAILABLE_SKILLS:-}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -884,6 +889,26 @@ You are resuming a prior session for this mention thread. Some data in your cont
       "Read(/proc/*/environ)"
     )
 
+    # Available skills: Claude-only on-demand plugin dispatch.
+    # AGENT_SKILLS are always injected via --append-system-prompt (V1 path above).
+    # AGENT_AVAILABLE_SKILLS loads additional skills as native plugins via --plugin-dir
+    # so the agent can discover and invoke them on demand.
+    # Requires Claude CLI with --plugin-dir support. No fallback — if the flag is
+    # unsupported, the run fails immediately rather than silently dropping skills.
+    claude_plugin_dir=""
+    if [ -n "$agent_available_skills" ]; then
+      if ! claude --help 2>&1 | grep -q -- '--plugin-dir'; then
+        echo "AGENT_AVAILABLE_SKILLS is set but the installed Claude CLI does not support --plugin-dir." >&2
+        echo "Update CLAUDE_CODE_VERSION to a release that supports --plugin-dir, or unset AGENT_AVAILABLE_SKILLS." >&2
+        exit 1
+      fi
+      if ! claude_plugin_dir="$(generate_claude_plugin_dir "$agent_available_skills" "/opt/hivemoot-agent/skills")"; then
+        exit 1
+      fi
+      _cleanup_dirs+=("$claude_plugin_dir")
+      log "Claude available skills: plugin-dir (${claude_plugin_dir})"
+    fi
+
     # In task mode, use text output format so the log IS the answer text.
     # Remove --verbose to keep stdout clean (verbose lines would pollute the
     # extracted result). Keep stream-json + verbose for non-task runs where
@@ -897,6 +922,9 @@ You are resuming a prior session for this mention thread. Some data in your cont
     claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       claude_fresh_cmd+=(--model "$agent_model")
+    fi
+    if [ -n "$claude_plugin_dir" ]; then
+      claude_fresh_cmd+=(--plugin-dir "$claude_plugin_dir")
     fi
     claude_fresh_cmd+=("$user_message")
 
@@ -951,6 +979,9 @@ You are resuming a prior session for this mention thread. Some data in your cont
       cmd+=(--append-system-prompt "$system_prompt")
       if [ -n "$agent_model" ]; then
         cmd+=(--model "$agent_model")
+      fi
+      if [ -n "$claude_plugin_dir" ]; then
+        cmd+=(--plugin-dir "$claude_plugin_dir")
       fi
       cmd+=("$claude_resume_user_message")
     else

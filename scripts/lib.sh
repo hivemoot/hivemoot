@@ -254,6 +254,76 @@ ${body}
   printf '%s' "$result"
 }
 
+# Generate an ephemeral Claude --plugin-dir layout from a skill list.
+# Writes the following structure to a new temp directory:
+#
+#   <tmpdir>/.claude-plugin/plugin.json
+#   <tmpdir>/skills/<name>/SKILL.md     (copied from skills_dir)
+#
+# Returns the temp directory path on stdout on success.
+# On error, removes the temp directory and returns non-zero.
+# Callers must register the returned path for cleanup (e.g. _cleanup_dirs+=).
+#
+# Pass "all" as skills_list to auto-discover every skill in skills_dir.
+generate_claude_plugin_dir() {
+  local skills_list="$1"
+  local skills_dir="${2:-/opt/hivemoot-agent/skills}"
+
+  [ -z "$skills_list" ] && return 0
+
+  # Resolve "all" to every subdirectory containing SKILL.md.
+  if [ "$skills_list" = "all" ]; then
+    local discovered="" sep=""
+    local entry
+    for entry in "${skills_dir}"/*/SKILL.md; do
+      [ -f "$entry" ] || continue
+      local dirname
+      dirname="$(basename "$(dirname "$entry")")"
+      discovered="${discovered}${sep}${dirname}"
+      sep=","
+    done
+    if [ -z "$discovered" ]; then
+      echo "generate_claude_plugin_dir: no skills found in ${skills_dir}" >&2
+      return 1
+    fi
+    skills_list="$discovered"
+  fi
+
+  local plugin_dir
+  plugin_dir="$(mktemp -d)" || { echo "generate_claude_plugin_dir: mktemp -d failed" >&2; return 1; }
+
+  mkdir -p "${plugin_dir}/.claude-plugin" || { rm -rf "$plugin_dir"; return 1; }
+  printf '{"name":"hivemoot-skills","version":"1.0.0","description":"Composable skill modules for hivemoot-agent"}\n' \
+    > "${plugin_dir}/.claude-plugin/plugin.json" || { rm -rf "$plugin_dir"; return 1; }
+
+  local skills_plugin_dir
+  skills_plugin_dir="${plugin_dir}/skills"
+  mkdir -p "$skills_plugin_dir" || { rm -rf "$plugin_dir"; return 1; }
+
+  local skill skill_file
+  while IFS= read -r skill; do
+    skill="$(trim "$skill")"
+    [ -z "$skill" ] && continue
+    case "$skill" in
+      *[!a-zA-Z0-9_-]*)
+        echo "Invalid skill name: '${skill}' (AGENT_AVAILABLE_SKILLS=${skills_list})" >&2
+        rm -rf "$plugin_dir"
+        return 1
+        ;;
+    esac
+    skill_file="${skills_dir}/${skill}/SKILL.md"
+    if [ ! -f "$skill_file" ]; then
+      echo "Skill file not found: ${skill_file} (AGENT_AVAILABLE_SKILLS=${skills_list})" >&2
+      rm -rf "$plugin_dir"
+      return 1
+    fi
+    mkdir -p "${skills_plugin_dir}/${skill}" || { rm -rf "$plugin_dir"; return 1; }
+    cp "$skill_file" "${skills_plugin_dir}/${skill}/SKILL.md" || { rm -rf "$plugin_dir"; return 1; }
+  done < <(tr ',' '\n' <<< "$skills_list")
+
+  printf '%s' "$plugin_dir"
+}
+
 validate_target_repo() {
   local target_repo="$1"
 

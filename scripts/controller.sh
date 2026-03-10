@@ -395,6 +395,7 @@ spawn_worker() {
   if [ -n "$job_agent_skills" ]; then
     docker_run_args+=( -e "AGENT_SKILLS=${job_agent_skills}" )
   fi
+  append_env_if_set AGENT_AVAILABLE_SKILLS
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
   append_env_if_set GIT_CLONE_DEPTH
