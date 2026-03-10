@@ -1238,4 +1238,125 @@ describe("buzzCommand", () => {
     const issuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
     expect(issuesArg.map((i) => i.number)).toEqual([1, 2]);
   });
+
+  // ── Section suppression (structural action bans) ───────────────────
+
+  const implementItem = { number: 99, title: "Implement me", tags: [], author: "user", comments: 0, age: "now" };
+  const driveItem = { number: 88, title: "Drive discussion", tags: [], author: "user", comments: 0, age: "now" };
+  const discussItem = { number: 77, title: "Discuss this", tags: [], author: "user", comments: 0, age: "now" };
+
+  it("clears implement section when create-pr is banned", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Review only.",
+      resolvedFocus: {
+        objective: "Review only.",
+        filters: { actions: { exclude: ["create-pr"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, implement: [implementItem], notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.implement).toEqual([]);
+  });
+
+  it("clears driveDiscussion section when create-proposal is banned", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Implementation sprint.",
+      resolvedFocus: {
+        objective: "Implementation sprint.",
+        filters: { actions: { exclude: ["create-proposal"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, driveDiscussion: [driveItem], notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.driveDiscussion).toEqual([]);
+  });
+
+  it("clears discuss section when comment-on-issue is banned", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "No comments.",
+      resolvedFocus: {
+        objective: "No comments.",
+        filters: { actions: { exclude: ["comment-on-issue"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, discuss: [discussItem], notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.discuss).toEqual([]);
+  });
+
+  it("suppresses multiple sections and sets actionBans for combined ban list", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Review queue only.",
+      resolvedFocus: {
+        objective: "Review queue only.",
+        filters: { actions: { exclude: ["create-pr", "create-proposal", "comment-on-issue"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({
+      ...testSummary,
+      implement: [implementItem],
+      driveDiscussion: [driveItem],
+      discuss: [discussItem],
+      notes: [],
+    });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.implement).toEqual([]);
+    expect(summaryArg.driveDiscussion).toEqual([]);
+    expect(summaryArg.discuss).toEqual([]);
+    expect(summaryArg.actionBans).toEqual(["create-pr", "create-proposal", "comment-on-issue"]);
+  });
+
+  it("does not suppress unlisted sections when partial bans are active", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Bug sprint.",
+      resolvedFocus: {
+        objective: "Bug sprint.",
+        filters: { actions: { exclude: ["create-proposal"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({
+      ...testSummary,
+      implement: [implementItem],
+      driveDiscussion: [driveItem],
+      notes: [],
+    });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.implement).toEqual([implementItem]);   // not suppressed
+    expect(summaryArg.driveDiscussion).toEqual([]);          // suppressed
+  });
 });

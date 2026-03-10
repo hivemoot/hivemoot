@@ -7,6 +7,7 @@ import {
   type NotificationRef,
   type RecentClosedItem,
   type RepoRef,
+  type RepoSummary,
   type TeamConfig,
 } from "../config/types.js";
 import { loadTeamConfig } from "../config/loader.js";
@@ -102,6 +103,27 @@ function applyFocusFilters<T extends GitHubIssue | GitHubPR>(
 ): T[] {
   if (!filters.labels?.include?.length && !filters.labels?.exclude?.length) return items;
   return items.filter((item) => passesLabelFilter(itemLabels(item), filters));
+}
+
+// Maps action ban names to the summary sections they suppress.
+// Suppression is structural: the agent never sees items it cannot act on.
+// create-pr     → READY TO IMPLEMENT ISSUES (items that would produce a new PR)
+// create-proposal → DRIVE THE DISCUSSION (items that would produce a proposal/comment)
+// comment-on-issue → DISCUSS ISSUES (items that invite open-ended comments)
+function suppressBannedSections(summary: RepoSummary, bans: string[]): void {
+  for (const ban of bans) {
+    switch (ban) {
+      case "create-pr":
+        summary.implement = [];
+        break;
+      case "create-proposal":
+        summary.driveDiscussion = [];
+        break;
+      case "comment-on-issue":
+        summary.discuss = [];
+        break;
+    }
+  }
 }
 
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
@@ -221,6 +243,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   const actionBans = teamConfig?.resolvedFocus?.filters?.actions?.exclude;
   if (actionBans && actionBans.length > 0) {
+    suppressBannedSections(summary, actionBans);
     summary.actionBans = actionBans;
   }
 
