@@ -20,6 +20,7 @@ function summaryPayload(summary: RepoSummary): Record<string, unknown> {
     repositoryHealth: summary.repositoryHealth,
     prioritySignals: summary.prioritySignals ?? [],
     ...(summary.focus ? { focus: summary.focus } : {}),
+    ...(summary.actionBans?.length ? { actionBans: summary.actionBans } : {}),
     notes: summary.notes,
   };
 }

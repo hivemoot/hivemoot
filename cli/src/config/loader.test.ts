@@ -796,6 +796,177 @@ team:
     await expect(loadTeamConfig(repo)).rejects.toBe(otherError);
   });
 
+  // ── focus filters and action bans ────────────────────────────────
+
+  it("exposes resolvedFocus with label include filter", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "bug-hunt",
+        focuses: {
+          "bug-hunt": {
+            objective: "Fix bugs.",
+            filters: {
+              labels: { include: ["bug", "critical"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Fix bugs.");
+    expect(config.resolvedFocus?.objective).toBe("Fix bugs.");
+    expect(config.resolvedFocus?.filters?.labels?.include).toEqual(["bug", "critical"]);
+    expect(config.resolvedFocus?.filters?.labels?.exclude).toBeUndefined();
+  });
+
+  it("exposes resolvedFocus with label exclude filter", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Regular work.",
+            filters: {
+              labels: { exclude: ["wontfix", "duplicate"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.labels?.exclude).toEqual(["wontfix", "duplicate"]);
+    expect(config.resolvedFocus?.filters?.labels?.include).toBeUndefined();
+  });
+
+  it("exposes resolvedFocus with action bans", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "review-only",
+        focuses: {
+          "review-only": {
+            objective: "Clear the review queue. No new code.",
+            filters: {
+              actions: { exclude: ["create-pr", "comment-on-issue", "create-proposal"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.actions?.exclude).toEqual([
+      "create-pr",
+      "comment-on-issue",
+      "create-proposal",
+    ]);
+  });
+
+  it("exposes resolvedFocus with both label and action filters", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "v2-bugs",
+        focuses: {
+          "v2-bugs": {
+            objective: "Fix v2 blockers.",
+            filters: {
+              labels: { include: ["bug", "v2-blocker"] },
+              actions: { exclude: ["create-proposal"] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.filters?.labels?.include).toEqual(["bug", "v2-blocker"]);
+    expect(config.resolvedFocus?.filters?.actions?.exclude).toEqual(["create-proposal"]);
+  });
+
+  it("returns undefined filters when focus block has no filters key", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "Plain objective." },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.objective).toBe("Plain objective.");
+    expect(config.resolvedFocus?.filters).toBeUndefined();
+  });
+
+  it("ignores malformed filter arrays with non-string entries", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work.",
+            filters: {
+              labels: { include: ["bug", 42] },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    // Malformed include array is ignored; filters fall through to undefined
+    expect(config.resolvedFocus?.filters?.labels?.include).toBeUndefined();
+  });
+
+  it("sets resolvedFocus.filters undefined for legacy focus.default format", async () => {
+    const focusYaml = yaml.dump({
+      team: {
+        focus: { default: "Focus on PR reviews first." },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Focus on PR reviews first.");
+    expect(config.resolvedFocus?.objective).toBe("Focus on PR reviews first.");
+    expect(config.resolvedFocus?.filters).toBeUndefined();
+  });
+
   it("accepts description and instructions at exact max length", async () => {
     const exactLimitYaml = yaml.dump({
       team: {

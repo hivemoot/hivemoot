@@ -9,11 +9,27 @@ export interface FocusBlock {
   objective: string;
 }
 
+export interface FocusLabelFilters {
+  include?: string[];
+  exclude?: string[];
+}
+
+export interface FocusFilters {
+  labels?: FocusLabelFilters;
+  actions?: { exclude?: string[] };
+}
+
+export interface ResolvedFocus {
+  objective: string;
+  filters?: FocusFilters;
+}
+
 export interface TeamConfig {
   name?: string;
   onboarding?: string;
   roles: Record<string, RoleConfig>;
   focus?: string;
+  resolvedFocus?: ResolvedFocus;
 }
 
 export interface HivemootConfig {
@@ -196,6 +212,7 @@ export interface RepoSummary {
   prioritySignals?: PrioritySignal[];
   publishReadiness?: PublishReadiness;
   focus?: string;
+  actionBans?: string[];
   notes: string[];
 }
 
