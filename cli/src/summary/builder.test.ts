@@ -1292,4 +1292,98 @@ describe("buildSummary()", () => {
       "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
     );
   });
+
+  // ── healthContext: unfiltered data for health/pipeline metrics ──────
+
+  it("uses healthContext prs for stale-risk metric when provided", () => {
+    // Fresh issue: updatedAt < 1 day ago → does not trigger stale risk by itself
+    const freshIssue = makeIssue({
+      number: 1,
+      labels: [{ name: "hivemoot:ready-to-implement" }],
+      updatedAt: "2025-06-15T11:00:00Z",  // 1 hour before now
+    });
+    // Stale PR that would appear in health metrics but not in the focused subset
+    const stalePR = makePR({
+      number: 20,
+      author: { login: "other" },
+      updatedAt: "2025-06-10T00:00:00Z",  // >3 days before now
+      createdAt: "2025-06-10T00:00:00Z",
+    });
+
+    // No PRs in focused view → PR stale count should be 0
+    const summaryWithoutContext = buildSummary(repo, [freshIssue], [], "testuser", now);
+    // healthContext includes the stale PR → stale count reflects real repo state
+    const summaryWithContext = buildSummary(
+      repo,
+      [freshIssue],
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { issues: [freshIssue], prs: [stalePR] },
+    );
+
+    const healthA = summaryWithoutContext.repositoryHealth?.staleRisk;
+    const healthB = summaryWithContext.repositoryHealth?.staleRisk;
+    expect(healthA?.prsOlderThan3Days).toBe(0);
+    expect(healthB?.prsOlderThan3Days).toBe(1);  // healthContext stale PR counted
+  });
+
+  it("uses healthContext prs for active candidate count in implementation-gap signal", () => {
+    // Focused subset: two ready-to-implement issues, no PRs
+    // Must use hivemoot: prefix to trigger DEFAULT_HIVEMOOT_PHASE_LABELS detection
+    const freshTime = "2025-06-15T11:00:00Z";
+    const issues = [
+      makeIssue({ number: 1, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime }),
+      makeIssue({ number: 2, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime }),
+    ];
+    // Unfiltered PRs include one that closes issue #1 (active candidate)
+    const candidatePR = makePR({
+      number: 10,
+      author: { login: "other" },
+      closingIssuesReferences: [{ number: 1 }],
+    });
+
+    const summaryNoContext = buildSummary(repo, issues, [], "testuser", now);
+    const summaryWithContext = buildSummary(
+      repo,
+      issues,
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { issues, prs: [candidatePR] },
+    );
+
+    // Without context: 2 ready, 0 candidates → gap of 2
+    const gapNoContext = summaryNoContext.prioritySignals?.find((s) => s.kind === "implementation-gap");
+    expect(gapNoContext?.summary).toContain("0 active candidate");
+
+    // With context providing the candidate PR: 2 ready, 1 active candidate → gap of 1
+    const gapWithContext = summaryWithContext.prioritySignals?.find((s) => s.kind === "implementation-gap");
+    expect(gapWithContext).toBeDefined();
+    expect(gapWithContext?.summary).toContain("1 active candidate");
+  });
+
+  it("falls back to input arrays for health when healthContext is undefined", () => {
+    const freshTime = "2025-06-15T11:00:00Z";
+    const issue = makeIssue({ number: 1, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime });
+    const pr = makePR({ number: 10, author: { login: "other" }, closingIssuesReferences: [{ number: 1 }] });
+
+    const summaryNoContext = buildSummary(repo, [issue], [pr], "testuser", now);
+    const summaryUndefinedContext = buildSummary(
+      repo, [issue], [pr], "testuser", now,
+      new Map(), new Map(), undefined, undefined,
+    );
+
+    // Both should produce the same health data (PR is active candidate in both)
+    const gapA = summaryNoContext.repositoryHealth?.staleRisk;
+    const gapB = summaryUndefinedContext.repositoryHealth?.staleRisk;
+    expect(gapA?.prsOlderThan3Days).toEqual(gapB?.prsOlderThan3Days);
+    expect(gapA?.issuesStaleOver24h).toEqual(gapB?.issuesStaleOver24h);
+  });
 });

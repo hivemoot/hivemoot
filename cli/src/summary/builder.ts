@@ -319,6 +319,10 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  // When focus filters are active, pass the full unfiltered datasets here so
+  // that health metrics and pipeline counts reflect actual repo state rather
+  // than the focused subset. Actionable sections still use the focused arrays.
+  healthContext?: { issues: GitHubIssue[]; prs: GitHubPR[] },
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -480,7 +484,13 @@ export function buildSummary(
     return a.timestamp > b.timestamp ? -1 : 1;
   });
 
-  const hasDefaultPhaseLabels = issues.some((issue) =>
+  // Health and pipeline metrics operate on the full repo state, not the focused
+  // subset. If the caller supplied healthContext (unfiltered data), use it here;
+  // otherwise fall back to the input arrays (no-filter path is unchanged).
+  const healthIssues = healthContext?.issues ?? issues;
+  const healthPrs = healthContext?.prs ?? prs;
+
+  const hasDefaultPhaseLabels = healthIssues.some((issue) =>
     issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
@@ -490,8 +500,8 @@ export function buildSummary(
         readyToImplement: implement.length,
       }
     : undefined;
-  const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);
-  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(prs));
+  const repositoryHealth = buildRepositoryHealth(healthIssues, healthPrs, currentUser, now, issuePipeline);
+  const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(healthPrs));
   if (!issuePipeline) notes.push(OMITTED_PIPELINE_NOTE);
 
   return {
