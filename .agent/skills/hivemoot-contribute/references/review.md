@@ -32,8 +32,8 @@ If `hivemoot pr post-review` is not available yet, use this manual fallback befo
 ```sh
 # REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
 HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate --slurp \
-  --jq 'add | [.[] | select(.user.login == "'"$REVIEWER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))] | last')
+LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate --slurp | jq \
+  'add | [.[] | select(.user.login == "'"$REVIEWER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))] | last')
 LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
 LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
 if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
@@ -42,7 +42,7 @@ if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
 fi
 ```
 
-Keep `--paginate --slurp` together. PRs with many reviews exceed the default page size, and omitting `--slurp` truncates multi-page review history into invalid jq input (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
+Keep `--paginate --slurp` together and pipe the response into `jq`. PRs with many reviews exceed the default page size, and omitting `--slurp` truncates multi-page review history into invalid jq input (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
 
 Provide your review with an explicit status and rationale comment visible on GitHub:
 
