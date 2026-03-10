@@ -1637,6 +1637,109 @@ run_shutdown_signal_case() {
   echo "PASS: shutdown blocks queued launches after signal (controller_exit=${controller_status})"
 }
 
+run_exit_trap_reaps_job_subshells_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=0
+  local controller_status=0
+  local run_log=""
+  local deadline=0
+  local -a subshell_pids=()
+  local subshell_pid=""
+  local orphan_count=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  run_log="${case_dir}/mock-state/docker-run.log"
+
+  # Long docker wait ensures the job subshell is still alive when we
+  # trigger EXIT.  MOCK_DOCKER_WAIT_SLEEP_SECS=3 gives a clear window
+  # to send SIGHUP while the subshell is blocked in `docker wait`.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="3" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"${case_dir}/controller.log" 2>&1 &
+  controller_pid=$!
+
+  # Wait for the first docker run to be issued, confirming the job
+  # subshell is alive and tracked in running_pids.
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "controller exited before first launch in exit-trap reap case"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "timed out waiting for first worker launch in exit-trap reap case"
+    fi
+    sleep 0.1
+  done
+
+  # Capture direct bash child PIDs before triggering exit.  Job subshells
+  # spawned via `( run_job ... ) &` are bash processes.  Transient children
+  # like `sleep` or `docker` are excluded to avoid false-positive orphan
+  # checks for processes not tracked in running_pids.
+  local candidate_pid=""
+  local candidate_comm=""
+  while IFS= read -r candidate_pid; do
+    [ -n "$candidate_pid" ] || continue
+    candidate_comm="$(ps -p "$candidate_pid" -o comm= 2>/dev/null || true)"
+    [ "$candidate_comm" = "bash" ] && subshell_pids+=("$candidate_pid")
+  done < <(pgrep -P "$controller_pid" 2>/dev/null || true)
+
+  [ "${#subshell_pids[@]}" -gt 0 ] || fail "no bash job subshell PIDs found after first launch"
+
+  # Send SIGHUP — bash runs EXIT traps for untrapped SIGHUP, exercising
+  # cleanup() directly without going through handle_shutdown().
+  kill -HUP "$controller_pid"
+
+  # Controller must exit within a generous timeout.
+  deadline=$((SECONDS + 15))
+  while kill -0 "$controller_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -KILL "$controller_pid" 2>/dev/null || true
+      fail "controller did not exit after SIGHUP in exit-trap reap case"
+    fi
+    sleep 0.1
+  done
+
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  # All tracked job subshell PIDs must be reaped — none should still be alive.
+  orphan_count=0
+  for subshell_pid in "${subshell_pids[@]}"; do
+    if kill -0 "$subshell_pid" 2>/dev/null; then
+      orphan_count=$((orphan_count + 1))
+      echo "  orphan PID still alive: ${subshell_pid}" >&2
+      kill -KILL "$subshell_pid" 2>/dev/null || true
+    fi
+  done
+
+  assert_eq "0" "$orphan_count" "tracked job subshell(s) must be reaped by EXIT trap cleanup"
+
+  echo "PASS: EXIT trap cleanup reaps tracked job subshells (controller_exit=${controller_status})"
+}
+
 run_same_agent_concurrent_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1874,6 +1977,7 @@ run_workspace_prune_case "$repo_root" "${tmpdir}/workspace-prune"
 run_workspace_ttl_disabled_case "$repo_root" "${tmpdir}/workspace-ttl-disabled"
 run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-prune-failure-reporting"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
+run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"

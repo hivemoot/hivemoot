@@ -1103,10 +1103,29 @@ handle_shutdown() {
   stop_controller_workers
 }
 
+stop_job_subshells() {
+  local pid=""
+
+  if [ "${#running_pids[@]}" -gt 0 ]; then
+    log "Stopping ${#running_pids[@]} tracked job subshell(s)"
+  fi
+
+  for pid in "${running_pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  for pid in "${running_pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  running_pids=()
+}
+
 cleanup() {
   stop_schedulers
   stop_watchers
   stop_controller_workers
+  stop_job_subshells
   cleanup_temp_tokens
 }
 
