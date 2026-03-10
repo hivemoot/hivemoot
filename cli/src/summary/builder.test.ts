@@ -1369,6 +1369,42 @@ describe("buildSummary()", () => {
     expect(gapWithContext?.summary).toContain("1 active candidate");
   });
 
+  it("uses healthContext issues for issue pipeline counts when focus filters hide all phase items", () => {
+    const discussionIssue = makeIssue({
+      number: 1,
+      labels: [{ name: "hivemoot:discussion" }],
+      updatedAt: "2025-06-15T11:00:00Z",
+    });
+    const votingIssue = makeIssue({
+      number: 2,
+      labels: [{ name: "hivemoot:voting" }],
+      updatedAt: "2025-06-15T11:00:00Z",
+    });
+    const readyIssue = makeIssue({
+      number: 3,
+      labels: [{ name: "hivemoot:ready-to-implement" }],
+      updatedAt: "2025-06-15T11:00:00Z",
+    });
+
+    const summary = buildSummary(
+      repo,
+      [],
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { issues: [discussionIssue, votingIssue, readyIssue], prs: [] },
+    );
+
+    expect(summary.repositoryHealth?.issuePipeline).toEqual({
+      discussion: 1,
+      voting: 1,
+      readyToImplement: 1,
+    });
+  });
+
   it("falls back to input arrays for health when healthContext is undefined", () => {
     const freshTime = "2025-06-15T11:00:00Z";
     const issue = makeIssue({ number: 1, labels: [{ name: "hivemoot:ready-to-implement" }], updatedAt: freshTime });

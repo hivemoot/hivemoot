@@ -310,6 +310,25 @@ function buildPrioritySignals(
     });
 }
 
+function countIssuePipeline(
+  issues: GitHubIssue[],
+  currentUser: string,
+  now: Date,
+): IssuePipelineCounts {
+  let discussion = 0;
+  let voting = 0;
+  let readyToImplement = 0;
+
+  for (const issue of issues) {
+    const { bucket } = classifyIssue(issue, currentUser, now);
+    if (bucket === "discuss") discussion += 1;
+    else if (bucket === "voteOn") voting += 1;
+    else if (bucket === "implement") readyToImplement += 1;
+  }
+
+  return { discussion, voting, readyToImplement };
+}
+
 export function buildSummary(
   repo: RepoRef,
   issues: GitHubIssue[],
@@ -494,11 +513,7 @@ export function buildSummary(
     issue.labels.some((label) => DEFAULT_HIVEMOOT_PHASE_LABELS.has(label.name.toLowerCase()))
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasDefaultPhaseLabels
-    ? {
-        discussion: discuss.length,
-        voting: voteOn.length,
-        readyToImplement: implement.length,
-      }
+    ? countIssuePipeline(healthIssues, currentUser, now)
     : undefined;
   const repositoryHealth = buildRepositoryHealth(healthIssues, healthPrs, currentUser, now, issuePipeline);
   const prioritySignals = buildPrioritySignals(repositoryHealth, countActiveCandidateIssues(healthPrs));
