@@ -198,10 +198,32 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const notifications: NotificationMap = notificationsResult.status === "fulfilled" ? notificationsResult.value : new Map();
 
   const focusFilters = teamConfig?.resolvedFocus?.filters;
+  const unfilteredIssues = issues;
+  const unfilteredPrs = prs;
   if (focusFilters) {
     issues = applyFocusFilters(issues, focusFilters);
     prs = applyFocusFilters(prs, focusFilters);
   }
+
+  // Suppress notifications whose item was excluded by focus filters.
+  // Items that were never in the fetched set (closed issues, items beyond
+  // fetch limit) are unaffected — we have no label data for them.
+  const focusedNotifications: NotificationMap = (() => {
+    if (!focusFilters) return notifications;
+    const focusedSet = new Set([
+      ...issues.map((i) => i.number),
+      ...prs.map((p) => p.number),
+    ]);
+    const fetchedSet = new Set([
+      ...unfilteredIssues.map((i) => i.number),
+      ...unfilteredPrs.map((p) => p.number),
+    ]);
+    const filteredOutNumbers = new Set(
+      [...fetchedSet].filter((n) => !focusedSet.has(n)),
+    );
+    if (filteredOutNumbers.size === 0) return notifications;
+    return new Map([...notifications.entries()].filter(([n]) => !filteredOutNumbers.has(n)));
+  })();
 
   // Fetch vote reactions for voting-phase issues
   const votingIssueNumbers = issues
@@ -237,8 +259,9 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     currentUser,
     new Date(),
     votes,
-    notifications,
+    focusedNotifications,
     teamConfig?.focus,
+    focusFilters ? { issues: unfilteredIssues, prs: unfilteredPrs } : undefined,
   );
 
   const actionBans = teamConfig?.resolvedFocus?.filters?.actions?.exclude;
@@ -248,7 +271,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
   }
 
   const processedThreadIds = await processedThreadIdsPromise;
-  summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
+  summary.unackedMentions = buildUnackedMentions(focusedNotifications, processedThreadIds, new Date());
   summary.recentlyClosedByYou = recentlyClosedByYou;
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {

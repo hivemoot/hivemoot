@@ -385,6 +385,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
@@ -408,6 +409,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
@@ -430,6 +432,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -473,6 +476,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -571,6 +575,7 @@ describe("buzzCommand", () => {
       voteMap,
       expect.any(Map),
       undefined,
+      undefined,
     );
   });
 
@@ -665,6 +670,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       notificationMap,
+      undefined,
       undefined,
     );
   });
@@ -1358,5 +1364,107 @@ describe("buzzCommand", () => {
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.implement).toEqual([implementItem]);   // not suppressed
     expect(summaryArg.driveDiscussion).toEqual([]);          // suppressed
+  });
+
+  // ── Notification leakage suppression ───────────────────────────────
+
+  it("excludes notifications for label-filtered-out issues from buildSummary", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Bugs only.",
+      resolvedFocus: {
+        objective: "Bugs only.",
+        filters: { labels: { include: ["bug"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Bug A", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Feature B", labels: [{ name: "enhancement" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    // Notifications for both issues — #2 should be suppressed after filtering
+    mockedFetchNotifications.mockResolvedValue(new Map([
+      [1, { threadId: "T1", reason: "mention", updatedAt: "2025-01-01T00:00:00Z", title: "Bug A", url: "https://github.com/h/r/issues/1", itemType: "Issue" as const }],
+      [2, { threadId: "T2", reason: "mention", updatedAt: "2025-01-02T00:00:00Z", title: "Feature B", url: "https://github.com/h/r/issues/2", itemType: "Issue" as const }],
+    ]));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const notificationsArg = mockedBuildSummary.mock.calls[0][6] as Map<number, unknown>;
+    expect(notificationsArg.has(1)).toBe(true);   // in focus — kept
+    expect(notificationsArg.has(2)).toBe(false);  // filtered out — suppressed
+  });
+
+  it("suppresses mention notifications for label-filtered-out issues in unackedMentions", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Bugs only.",
+      resolvedFocus: {
+        objective: "Bugs only.",
+        filters: { labels: { include: ["bug"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([
+      { number: 1, title: "Bug A", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" },
+      { number: 2, title: "Feature B", labels: [{ name: "enhancement" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" },
+    ]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedFetchNotifications.mockResolvedValue(new Map([
+      [1, { threadId: "T1", reason: "mention", updatedAt: "2025-01-01T00:00:00Z", title: "Bug A", url: "https://github.com/h/r/issues/1", itemType: "Issue" as const }],
+      [2, { threadId: "T2", reason: "mention", updatedAt: "2025-01-02T00:00:00Z", title: "Feature B", url: "https://github.com/h/r/issues/2", itemType: "Issue" as const }],
+    ]));
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    // Issue #1 (bug — in focus) should appear; issue #2 (enhancement — filtered) should not
+    const mentionNumbers = summaryArg.unackedMentions.map((m: { number: number }) => m.number);
+    expect(mentionNumbers).toContain(1);
+    expect(mentionNumbers).not.toContain(2);
+  });
+
+  it("passes unfiltered datasets as healthContext to buildSummary when focus filters are active", async () => {
+    const bugIssue = { number: 1, title: "Bug A", labels: [{ name: "bug" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/1" };
+    const featureIssue = { number: 2, title: "Feature B", labels: [{ name: "enhancement" }], assignees: [], author: null, comments: [], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z", url: "https://github.com/h/r/issues/2" };
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Bugs only.",
+      resolvedFocus: {
+        objective: "Bugs only.",
+        filters: { labels: { include: ["bug"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([bugIssue, featureIssue]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    // Arg [1] (focused issues): only bug issue passes the filter
+    const focusedIssuesArg = mockedBuildSummary.mock.calls[0][1] as Array<{ number: number }>;
+    expect(focusedIssuesArg.map((i) => i.number)).toEqual([1]);
+
+    // Arg [8] (healthContext): both issues present for accurate repo health reporting
+    const healthContextArg = mockedBuildSummary.mock.calls[0][8] as { issues: Array<{ number: number }>; prs: unknown[] };
+    expect(healthContextArg).toBeDefined();
+    expect(healthContextArg.issues.map((i) => i.number)).toEqual([1, 2]);
+    expect(healthContextArg.prs).toEqual([]);
+  });
+
+  it("passes undefined healthContext to buildSummary when no focus filters are active", async () => {
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const healthContextArg = mockedBuildSummary.mock.calls[0][8];
+    expect(healthContextArg).toBeUndefined();
   });
 });
