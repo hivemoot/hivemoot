@@ -13,6 +13,7 @@ export const TASK_ERROR = {
   TASK_NOT_FOUND: "task_not_found",
   RATE_LIMITED: "task_rate_limited",
   CONCURRENCY_LIMITED: "task_concurrency_limited",
+  LOCK_TIMEOUT: "task_lock_timeout",
   FOLLOW_UP_NOT_ALLOWED: "task_follow_up_not_allowed",
   SERVER_ERROR: "task_server_error",
 } as const;

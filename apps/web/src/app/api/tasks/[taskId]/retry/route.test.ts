@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.mocked(retryTask).mockResolvedValue({
     ok: true,
     task: {
-      task_id: "fff123abc123abc123abc123",
+      task_id: "abc123abc123abc123abc123",
       status: "pending",
       prompt: "Deep analysis",
       repos: ["hivemoot/hivemoot"],
@@ -58,7 +58,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/tasks/[taskId]/retry", () => {
-  it("retries a task and returns the replacement task payload", async () => {
+  it("retries a task and returns the task payload", async () => {
     const res = await POST(makeRequest());
 
     expect(res.status).toBe(202);
@@ -74,8 +74,8 @@ describe("POST /api/tasks/[taskId]/retry", () => {
     );
 
     const body = await res.json();
-    expect(body.task_id).toBe("fff123abc123abc123abc123");
-    expect(body.stream_url).toBe("/api/tasks/fff123abc123abc123abc123/stream");
+    expect(body.task_id).toBe("abc123abc123abc123abc123");
+    expect(body.stream_url).toBe("/api/tasks/abc123abc123abc123abc123/stream");
   });
 
   it("returns auth failure response from auth helper", async () => {
