@@ -164,7 +164,11 @@ function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocus | undefin
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
       const filters = parseFocusFilters(b.filters);
-      return filters ? { objective, filters } : { objective };
+      const suppressSections = parseStringArray(b.suppressSections);
+      const resolved: ResolvedFocus = { objective };
+      if (filters) resolved.filters = filters;
+      if (suppressSections && suppressSections.length > 0) resolved.suppressSections = suppressSections;
+      return resolved;
     }
 
     return undefined;

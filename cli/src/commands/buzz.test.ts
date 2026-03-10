@@ -1543,4 +1543,104 @@ describe("buzzCommand", () => {
     const healthContextArg = mockedBuildSummary.mock.calls[0][8];
     expect(healthContextArg).toBeUndefined();
   });
+
+  // ── suppressSections (canonical #178 Phase 2 schema) ─────────────
+
+  it("clears implement section when suppressSections includes ready-to-implement", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Review only.",
+      resolvedFocus: {
+        objective: "Review only.",
+        suppressSections: ["ready-to-implement"],
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, implement: [implementItem], notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.implement).toEqual([]);
+    expect(summaryArg.actionBans).toContain("ready-to-implement");
+  });
+
+  it("clears discussion and voting sections when suppressSections specifies them", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Implementation sprint.",
+      resolvedFocus: {
+        objective: "Implementation sprint.",
+        suppressSections: ["discussion", "voting"],
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({
+      ...testSummary,
+      discuss: [discussItem],
+      voteOn: [{ number: 55, title: "Vote on this", tags: [], author: "user", comments: 0, age: "now" }],
+      implement: [implementItem],
+      notes: [],
+    });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.discuss).toEqual([]);
+    expect(summaryArg.voteOn).toEqual([]);
+    expect(summaryArg.implement).toEqual([implementItem]); // not suppressed
+    expect(summaryArg.actionBans).toEqual(["discussion", "voting"]);
+  });
+
+  it("adds unknown-section warning to notes when suppressSections has unrecognized value", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Typo focus.",
+      resolvedFocus: {
+        objective: "Typo focus.",
+        suppressSections: ["ready-to-implment"], // deliberate typo
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.notes.some((n: string) => n.includes("ready-to-implment"))).toBe(true);
+  });
+
+  it("combines suppressSections and actions.exclude bans in actionBans output", async () => {
+    mockedLoadTeamConfig.mockResolvedValue({
+      ...testTeamConfig,
+      focus: "Strict review only.",
+      resolvedFocus: {
+        objective: "Strict review only.",
+        suppressSections: ["ready-to-implement"],
+        filters: { actions: { exclude: ["create-proposal"] } },
+      },
+    });
+    mockedFetchIssues.mockResolvedValue([]);
+    mockedFetchPulls.mockResolvedValue([]);
+    mockedBuildSummary.mockReturnValue({
+      ...testSummary,
+      implement: [implementItem],
+      driveDiscussion: [driveItem],
+      notes: [],
+    });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.implement).toEqual([]);        // cleared by suppressSections
+    expect(summaryArg.driveDiscussion).toEqual([]);  // cleared by actions.exclude
+    expect(summaryArg.actionBans).toEqual(["ready-to-implement", "create-proposal"]);
+  });
 });

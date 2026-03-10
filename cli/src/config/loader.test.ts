@@ -1026,6 +1026,70 @@ team:
     expect(config.resolvedFocus?.filters?.authors).toBeUndefined();
   });
 
+  it("exposes resolvedFocus with suppressSections list", async () => {
+    const configYaml = yaml.dump({
+      team: {
+        roles: { engineer: { description: "Eng.", instructions: "Code." } },
+        activeFocus: "review-blitz",
+        focuses: {
+          "review-blitz": {
+            objective: "Clear the review queue.",
+            suppressSections: ["ready-to-implement", "discussion"],
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(configYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.suppressSections).toEqual(["ready-to-implement", "discussion"]);
+    expect(config.resolvedFocus?.filters).toBeUndefined();
+  });
+
+  it("exposes resolvedFocus with suppressSections and filters together", async () => {
+    const configYaml = yaml.dump({
+      team: {
+        roles: { engineer: { description: "Eng.", instructions: "Code." } },
+        activeFocus: "bugs-only",
+        focuses: {
+          "bugs-only": {
+            objective: "Squash bugs.",
+            suppressSections: ["ready-to-implement"],
+            filters: { labels: { include: ["bug"] } },
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(configYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.resolvedFocus?.suppressSections).toEqual(["ready-to-implement"]);
+    expect(config.resolvedFocus?.filters?.labels?.include).toEqual(["bug"]);
+  });
+
+  it("ignores malformed suppressSections (non-string entries)", async () => {
+    const configYaml = yaml.dump({
+      team: {
+        roles: { engineer: { description: "Eng.", instructions: "Code." } },
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Default objective.",
+            suppressSections: ["ready-to-implement", 42],
+          },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(configYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    // parseStringArray rejects mixed-type arrays; suppressSections is silently dropped
+    expect(config.resolvedFocus?.suppressSections).toBeUndefined();
+  });
+
   it("sets resolvedFocus.filters undefined for legacy focus.default format", async () => {
     const focusYaml = yaml.dump({
       team: {

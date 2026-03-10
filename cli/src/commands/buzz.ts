@@ -142,6 +142,54 @@ function suppressBannedSections(summary: RepoSummary, bans: string[]): void {
   }
 }
 
+// Canonical section-name suppression from the #178 Phase 2 schema.
+// suppressSections entries use lowercase-kebab section identifiers.
+// Unknown section names are warned about in summary.notes.
+// Valid names: "ready-to-implement", "discussion", "drive-discussion",
+//   "voting", "review-prs", "drive-implementation", "needs-human".
+function applySuppressSections(summary: RepoSummary, sections: string[]): void {
+  const valid = new Set([
+    "ready-to-implement",
+    "discussion",
+    "drive-discussion",
+    "voting",
+    "review-prs",
+    "drive-implementation",
+    "needs-human",
+  ]);
+  for (const section of sections) {
+    switch (section) {
+      case "ready-to-implement":
+        summary.implement = [];
+        break;
+      case "discussion":
+        summary.discuss = [];
+        break;
+      case "drive-discussion":
+        summary.driveDiscussion = [];
+        break;
+      case "voting":
+        summary.voteOn = [];
+        break;
+      case "review-prs":
+        summary.reviewPRs = [];
+        break;
+      case "drive-implementation":
+        summary.driveImplementation = [];
+        break;
+      case "needs-human":
+        summary.needsHuman = [];
+        break;
+      default:
+        if (!valid.has(section)) {
+          summary.notes.push(
+            `Unknown suppressSections value: "${section}". Valid values: ${[...valid].join(", ")}.`,
+          );
+        }
+    }
+  }
+}
+
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
   const repo = await resolveRepo(options.repo);
   const fetchLimit = options.fetchLimit ?? 200;
@@ -280,10 +328,25 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     focusFilters ? { issues: unfilteredIssues, prs: unfilteredPrs } : undefined,
   );
 
+  // Apply suppressSections (canonical #178 Phase 2 schema: section-name keys).
+  const suppressSections = teamConfig?.resolvedFocus?.suppressSections;
+  if (suppressSections && suppressSections.length > 0) {
+    applySuppressSections(summary, suppressSections);
+  }
+
+  // Apply actions.exclude (action-name keys; maps to the same structural suppression).
   const actionBans = teamConfig?.resolvedFocus?.filters?.actions?.exclude;
   if (actionBans && actionBans.length > 0) {
     suppressBannedSections(summary, actionBans);
-    summary.actionBans = actionBans;
+  }
+
+  // Collect all active bans for display transparency.
+  const allBans: string[] = [
+    ...(suppressSections ?? []),
+    ...(actionBans ?? []),
+  ];
+  if (allBans.length > 0) {
+    summary.actionBans = allBans;
   }
 
   const processedThreadIds = await processedThreadIdsPromise;

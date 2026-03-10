@@ -27,6 +27,11 @@ export interface FocusFilters {
 export interface ResolvedFocus {
   objective: string;
   filters?: FocusFilters;
+  // Canonical section-suppression key from the #178 Phase 2 design.
+  // Valid values: "ready-to-implement", "discussion", "drive-discussion",
+  // "voting", "review-prs", "drive-implementation", "needs-human".
+  // Unknown values produce a warning in summary.notes.
+  suppressSections?: string[];
 }
 
 export interface TeamConfig {
