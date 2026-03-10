@@ -1026,7 +1026,7 @@ team:
     expect(config.resolvedFocus?.filters?.authors).toBeUndefined();
   });
 
-  it("exposes resolvedFocus with suppressSections list", async () => {
+  it("exposes resolvedFocus with suppressSections list (under filters)", async () => {
     const configYaml = yaml.dump({
       team: {
         roles: { engineer: { description: "Eng.", instructions: "Code." } },
@@ -1034,7 +1034,7 @@ team:
         focuses: {
           "review-blitz": {
             objective: "Clear the review queue.",
-            suppressSections: ["ready-to-implement", "discussion"],
+            filters: { suppressSections: ["ready-to-implement", "discussion"] },
           },
         },
       },
@@ -1043,11 +1043,11 @@ team:
 
     const config = await loadTeamConfig(repo);
 
-    expect(config.resolvedFocus?.suppressSections).toEqual(["ready-to-implement", "discussion"]);
-    expect(config.resolvedFocus?.filters).toBeUndefined();
+    expect(config.resolvedFocus?.filters?.suppressSections).toEqual(["ready-to-implement", "discussion"]);
+    expect(config.resolvedFocus?.filters?.labels).toBeUndefined();
   });
 
-  it("exposes resolvedFocus with suppressSections and filters together", async () => {
+  it("exposes resolvedFocus with suppressSections and label filters together (both under filters)", async () => {
     const configYaml = yaml.dump({
       team: {
         roles: { engineer: { description: "Eng.", instructions: "Code." } },
@@ -1055,8 +1055,10 @@ team:
         focuses: {
           "bugs-only": {
             objective: "Squash bugs.",
-            suppressSections: ["ready-to-implement"],
-            filters: { labels: { include: ["bug"] } },
+            filters: {
+              suppressSections: ["ready-to-implement"],
+              labels: { include: ["bug"] },
+            },
           },
         },
       },
@@ -1065,7 +1067,7 @@ team:
 
     const config = await loadTeamConfig(repo);
 
-    expect(config.resolvedFocus?.suppressSections).toEqual(["ready-to-implement"]);
+    expect(config.resolvedFocus?.filters?.suppressSections).toEqual(["ready-to-implement"]);
     expect(config.resolvedFocus?.filters?.labels?.include).toEqual(["bug"]);
   });
 
@@ -1077,7 +1079,7 @@ team:
         focuses: {
           default: {
             objective: "Default objective.",
-            suppressSections: ["ready-to-implement", 42],
+            filters: { suppressSections: ["ready-to-implement", 42] },
           },
         },
       },
@@ -1087,7 +1089,7 @@ team:
     const config = await loadTeamConfig(repo);
 
     // parseStringArray rejects mixed-type arrays; suppressSections is silently dropped
-    expect(config.resolvedFocus?.suppressSections).toBeUndefined();
+    expect(config.resolvedFocus?.filters?.suppressSections).toBeUndefined();
   });
 
   it("sets resolvedFocus.filters undefined for legacy focus.default format", async () => {

@@ -118,12 +118,15 @@ function parseFocusFilters(raw: unknown): FocusFilters | undefined {
     actionExclude = parseStringArray(actions.exclude);
   }
 
-  if (!labels && !authors && (!actionExclude || actionExclude.length === 0)) return undefined;
+  const suppressSections = parseStringArray(r.suppressSections);
+
+  if (!labels && !authors && (!actionExclude || actionExclude.length === 0) && (!suppressSections || suppressSections.length === 0)) return undefined;
 
   const result: FocusFilters = {};
   if (labels) result.labels = labels;
   if (authors) result.authors = authors;
   if (actionExclude && actionExclude.length > 0) result.actions = { exclude: actionExclude };
+  if (suppressSections && suppressSections.length > 0) result.suppressSections = suppressSections;
   return result;
 }
 
@@ -164,10 +167,8 @@ function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocus | undefin
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
       const filters = parseFocusFilters(b.filters);
-      const suppressSections = parseStringArray(b.suppressSections);
       const resolved: ResolvedFocus = { objective };
       if (filters) resolved.filters = filters;
-      if (suppressSections && suppressSections.length > 0) resolved.suppressSections = suppressSections;
       return resolved;
     }
 

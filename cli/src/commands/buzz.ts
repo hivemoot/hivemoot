@@ -328,8 +328,8 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     focusFilters ? { issues: unfilteredIssues, prs: unfilteredPrs } : undefined,
   );
 
-  // Apply suppressSections (canonical #178 Phase 2 schema: section-name keys).
-  const suppressSections = teamConfig?.resolvedFocus?.suppressSections;
+  // Apply suppressSections (canonical #178 Phase 2 schema: section-name keys under filters).
+  const suppressSections = teamConfig?.resolvedFocus?.filters?.suppressSections;
   if (suppressSections && suppressSections.length > 0) {
     applySuppressSections(summary, suppressSections);
   }

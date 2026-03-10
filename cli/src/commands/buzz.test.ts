@@ -1546,13 +1546,13 @@ describe("buzzCommand", () => {
 
   // ── suppressSections (canonical #178 Phase 2 schema) ─────────────
 
-  it("clears implement section when suppressSections includes ready-to-implement", async () => {
+  it("clears implement section when filters.suppressSections includes ready-to-implement", async () => {
     mockedLoadTeamConfig.mockResolvedValue({
       ...testTeamConfig,
       focus: "Review only.",
       resolvedFocus: {
         objective: "Review only.",
-        suppressSections: ["ready-to-implement"],
+        filters: { suppressSections: ["ready-to-implement"] },
       },
     });
     mockedFetchIssues.mockResolvedValue([]);
@@ -1567,13 +1567,13 @@ describe("buzzCommand", () => {
     expect(summaryArg.actionBans).toContain("ready-to-implement");
   });
 
-  it("clears discussion and voting sections when suppressSections specifies them", async () => {
+  it("clears discussion and voting sections when filters.suppressSections specifies them", async () => {
     mockedLoadTeamConfig.mockResolvedValue({
       ...testTeamConfig,
       focus: "Implementation sprint.",
       resolvedFocus: {
         objective: "Implementation sprint.",
-        suppressSections: ["discussion", "voting"],
+        filters: { suppressSections: ["discussion", "voting"] },
       },
     });
     mockedFetchIssues.mockResolvedValue([]);
@@ -1596,13 +1596,13 @@ describe("buzzCommand", () => {
     expect(summaryArg.actionBans).toEqual(["discussion", "voting"]);
   });
 
-  it("adds unknown-section warning to notes when suppressSections has unrecognized value", async () => {
+  it("adds unknown-section warning to notes when filters.suppressSections has unrecognized value", async () => {
     mockedLoadTeamConfig.mockResolvedValue({
       ...testTeamConfig,
       focus: "Typo focus.",
       resolvedFocus: {
         objective: "Typo focus.",
-        suppressSections: ["ready-to-implment"], // deliberate typo
+        filters: { suppressSections: ["ready-to-implment"] }, // deliberate typo
       },
     });
     mockedFetchIssues.mockResolvedValue([]);
@@ -1616,14 +1616,16 @@ describe("buzzCommand", () => {
     expect(summaryArg.notes.some((n: string) => n.includes("ready-to-implment"))).toBe(true);
   });
 
-  it("combines suppressSections and actions.exclude bans in actionBans output", async () => {
+  it("combines filters.suppressSections and actions.exclude bans in actionBans output", async () => {
     mockedLoadTeamConfig.mockResolvedValue({
       ...testTeamConfig,
       focus: "Strict review only.",
       resolvedFocus: {
         objective: "Strict review only.",
-        suppressSections: ["ready-to-implement"],
-        filters: { actions: { exclude: ["create-proposal"] } },
+        filters: {
+          suppressSections: ["ready-to-implement"],
+          actions: { exclude: ["create-proposal"] },
+        },
       },
     });
     mockedFetchIssues.mockResolvedValue([]);
