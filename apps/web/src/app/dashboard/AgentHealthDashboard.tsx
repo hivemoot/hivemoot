@@ -9,6 +9,7 @@ import {
   type GroupMode,
   type GroupStatus,
 } from "./agent-health-grouping";
+import { MarkdownContent } from "./MarkdownContent";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -495,9 +496,9 @@ export default function AgentHealthDashboard() {
                             run summary
                           </span>
                         </summary>
-                        <p className="mt-1.5 whitespace-pre-wrap text-xs text-zinc-400">
-                          {entry.run_summary}
-                        </p>
+                        <div className="mt-1.5">
+                          <MarkdownContent className="text-xs">{entry.run_summary}</MarkdownContent>
+                        </div>
                       </details>
                     )}
                     {entry.token_usage && <TokenSummary tu={entry.token_usage} />}
