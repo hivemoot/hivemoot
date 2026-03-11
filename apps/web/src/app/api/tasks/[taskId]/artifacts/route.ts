@@ -68,53 +68,63 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Check task existence before claim-token verification: verifyTaskClaimToken
-  // returns false when the hash is absent, which would produce a misleading 403
-  // instead of a 404 for a missing task.
-  const task = await getTask(auth.installationId, taskId, auth.redis);
-  if (!task) {
-    return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
-  }
-
-  const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
-  if (!claimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
-  }
-
-  const validClaimToken = await verifyTaskClaimToken(
-    auth.installationId,
-    taskId,
-    claimToken,
-    auth.redis,
-  );
-  if (!validClaimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
-  }
-
-  const result = await appendTaskArtifacts(
-    auth.installationId,
-    taskId,
-    obj.artifacts,
-    auth.redis,
-  );
-
-  if (!result.ok) {
-    if (result.reason === "not_found") {
+  try {
+    // Check task existence before claim-token verification: verifyTaskClaimToken
+    // returns false when the hash is absent, which would produce a misleading 403
+    // instead of a 404 for a missing task.
+    const task = await getTask(auth.installationId, taskId, auth.redis);
+    if (!task) {
       return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
     }
-    if (result.reason === "cap_exceeded") {
+
+    const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
+    if (!claimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
+    }
+
+    const validClaimToken = await verifyTaskClaimToken(
+      auth.installationId,
+      taskId,
+      claimToken,
+      auth.redis,
+    );
+    if (!validClaimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
+    }
+
+    const result = await appendTaskArtifacts(
+      auth.installationId,
+      taskId,
+      obj.artifacts,
+      auth.redis,
+    );
+
+    if (!result.ok) {
+      if (result.reason === "not_found") {
+        return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
+      }
+      if (result.reason === "cap_exceeded") {
+        return taskError(
+          TASK_ERROR.VALIDATION_FAILED,
+          "Artifact cap reached (max 20 per task)",
+          409,
+        );
+      }
       return taskError(
         TASK_ERROR.VALIDATION_FAILED,
-        "Artifact cap reached (max 20 per task)",
-        409,
+        "One or more artifacts are invalid. Each artifact must have a valid type and a github.com URL scoped to the task's repos.",
+        400,
       );
     }
-    return taskError(
-      TASK_ERROR.VALIDATION_FAILED,
-      "One or more artifacts are invalid. Each artifact must have a valid type and a github.com URL scoped to the task's repos.",
-      400,
-    );
-  }
 
-  return NextResponse.json({ artifacts: result.artifacts });
+    return NextResponse.json({ artifacts: result.artifacts });
+  } catch (error) {
+    console.error("[tasks] Failed to append artifacts", {
+      installationId: auth.installationId,
+      taskId,
+      error,
+    });
+
+    return taskError(TASK_ERROR.SERVER_ERROR, "Failed to append artifacts", 500);
+  }
 }
