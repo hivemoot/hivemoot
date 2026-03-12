@@ -4,7 +4,16 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
-import { loadState, saveState, addProcessedId, mergeAckJournal, appendAck, type WatchState } from "./state.js";
+import {
+  loadState,
+  saveState,
+  addProcessedId,
+  addReviewRequestId,
+  buildLatestReviewRequestByThread,
+  mergeAckJournal,
+  appendAck,
+  type WatchState,
+} from "./state.js";
 
 let tmpDir: string;
 let stateFile: string;
@@ -33,12 +42,14 @@ describe("loadState()", () => {
     const saved: WatchState = {
       lastChecked: "2026-01-15T10:00:00Z",
       processedThreadIds: ["100", "200", "300"],
+      reviewRequestIds: ["500:9001"],
     };
     writeFileSync(stateFile, JSON.stringify(saved));
 
     const state = await loadState(stateFile);
     expect(state.lastChecked).toBe("2026-01-15T10:00:00Z");
     expect(state.processedThreadIds).toEqual(["100", "200", "300"]);
+    expect(state.reviewRequestIds).toEqual(["500:9001"]);
   });
 
   it("returns default state on corrupted JSON", async () => {
@@ -60,10 +71,12 @@ describe("loadState()", () => {
     writeFileSync(stateFile, JSON.stringify({
       lastChecked: "2026-01-15T10:00:00Z",
       processedThreadIds: ["100", 42, null, "200"],
+      reviewRequestIds: ["500:9001", 123, null],
     }));
 
     const state = await loadState(stateFile);
     expect(state.processedThreadIds).toEqual(["100", "200"]);
+    expect(state.reviewRequestIds).toEqual(["500:9001"]);
   });
 
   it("rejects state paths that traverse symlink directories", async () => {
@@ -83,6 +96,7 @@ describe("saveState()", () => {
     const state: WatchState = {
       lastChecked: "2026-01-15T12:00:00Z",
       processedThreadIds: ["abc", "def"],
+      reviewRequestIds: ["500:9001"],
     };
 
     await saveState(stateFile, state);
@@ -91,6 +105,7 @@ describe("saveState()", () => {
     const loaded = JSON.parse(raw);
     expect(loaded.lastChecked).toBe("2026-01-15T12:00:00Z");
     expect(loaded.processedThreadIds).toEqual(["abc", "def"]);
+    expect(loaded.reviewRequestIds).toEqual(["500:9001"]);
   });
 
   it("trims processedThreadIds to 200 entries (keeping most recent)", async () => {
@@ -98,6 +113,7 @@ describe("saveState()", () => {
     const state: WatchState = {
       lastChecked: "2026-01-15T12:00:00Z",
       processedThreadIds: ids,
+      reviewRequestIds: Array.from({ length: 300 }, (_, i) => `thread-${i}:request-${i}`),
     };
 
     await saveState(stateFile, state);
@@ -105,9 +121,12 @@ describe("saveState()", () => {
     const raw = await readFile(stateFile, "utf-8");
     const loaded = JSON.parse(raw) as WatchState;
     expect(loaded.processedThreadIds.length).toBe(200);
+    expect(loaded.reviewRequestIds?.length).toBe(200);
     // Should keep the last 200 (thread-100 through thread-299)
     expect(loaded.processedThreadIds[0]).toBe("thread-100");
     expect(loaded.processedThreadIds[199]).toBe("thread-299");
+    expect(loaded.reviewRequestIds?.[0]).toBe("thread-100:request-100");
+    expect(loaded.reviewRequestIds?.[199]).toBe("thread-299:request-299");
   });
 
   it("overwrites existing state file atomically", async () => {
@@ -211,6 +230,53 @@ describe("addProcessedId()", () => {
     const updated = addProcessedId(state, "b");
     expect(state.processedThreadIds).toEqual(["a"]);
     expect(updated.processedThreadIds).toEqual(["a", "b"]);
+  });
+});
+
+describe("addReviewRequestId()", () => {
+  it("records the latest request id for a thread", () => {
+    const state: WatchState = {
+      lastChecked: "2026-01-15T10:00:00Z",
+      processedThreadIds: [],
+    };
+
+    const updated = addReviewRequestId(state, "1001", "7001");
+    expect(updated.reviewRequestIds).toEqual(["1001:7001"]);
+  });
+
+  it("replaces the prior request id for the same thread", () => {
+    const state: WatchState = {
+      lastChecked: "2026-01-15T10:00:00Z",
+      processedThreadIds: [],
+      reviewRequestIds: ["1001:7001", "2002:8002"],
+    };
+
+    const updated = addReviewRequestId(state, "1001", "7003");
+    expect(updated.reviewRequestIds).toEqual(["2002:8002", "1001:7003"]);
+  });
+
+  it("does not duplicate an existing thread/request pair", () => {
+    const state: WatchState = {
+      lastChecked: "2026-01-15T10:00:00Z",
+      processedThreadIds: [],
+      reviewRequestIds: ["1001:7001"],
+    };
+
+    const updated = addReviewRequestId(state, "1001", "7001");
+    expect(updated.reviewRequestIds).toEqual(["1001:7001"]);
+  });
+});
+
+describe("buildLatestReviewRequestByThread()", () => {
+  it("returns the latest request id for each thread", () => {
+    const result = buildLatestReviewRequestByThread([
+      "1001:7001",
+      "2002:8002",
+      "1001:7003",
+    ]);
+
+    expect(result.get("1001")).toBe("7003");
+    expect(result.get("2002")).toBe("8002");
   });
 });
 

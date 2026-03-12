@@ -8,6 +8,13 @@ const MAX_PROCESSED_IDS = 200;
 export interface WatchState {
   lastChecked: string;           // ISO 8601 timestamp
   processedThreadIds: string[];  // rolling window of thread IDs already handled
+  /**
+   * Latest emitted review-request identity per notification thread, stored as
+   * `${threadId}:${requestId}`. The request ID comes from GitHub's GraphQL
+   * ReviewRequest object, so watch can suppress plain PR activity while still
+   * re-emitting later real re-requests on the same thread.
+   */
+  reviewRequestIds?: string[];
 }
 
 export interface LoadStateResult {
@@ -106,10 +113,16 @@ export async function loadStateWithStatus(filePath: string): Promise<LoadStateRe
     }
 
     const processedThreadIds = parsed.processedThreadIds.filter((id): id is string => typeof id === "string");
+    const reviewRequestIds = Array.isArray(parsed.reviewRequestIds)
+      ? parsed.reviewRequestIds.filter((id): id is string => typeof id === "string")
+      : undefined;
     return {
       state: {
         lastChecked: parsed.lastChecked,
         processedThreadIds,
+        ...(reviewRequestIds && reviewRequestIds.length > 0
+          ? { reviewRequestIds }
+          : {}),
       },
       degraded: false,
     };
@@ -133,6 +146,9 @@ export async function saveState(filePath: string, state: WatchState): Promise<vo
   const trimmed: WatchState = {
     lastChecked: state.lastChecked,
     processedThreadIds: state.processedThreadIds.slice(-MAX_PROCESSED_IDS),
+    ...(state.reviewRequestIds && state.reviewRequestIds.length > 0
+      ? { reviewRequestIds: state.reviewRequestIds.slice(-MAX_PROCESSED_IDS) }
+      : {}),
   };
 
   try {
@@ -155,6 +171,27 @@ export function addProcessedId(state: WatchState, threadId: string): WatchState 
     : [...state.processedThreadIds, threadId].slice(-MAX_PROCESSED_IDS);
 
   return { ...state, processedThreadIds: ids };
+}
+
+/** Record the latest emitted review-request identity for a thread. */
+export function addReviewRequestId(
+  state: WatchState,
+  threadId: string,
+  requestId: string,
+): WatchState {
+  const key = `${threadId}:${requestId}`;
+  const existing = state.reviewRequestIds ?? [];
+  if (existing.includes(key)) return state;
+
+  const next = [
+    ...existing.filter((entry) => !entry.startsWith(`${threadId}:`)),
+    key,
+  ].slice(-MAX_PROCESSED_IDS);
+
+  return {
+    ...state,
+    reviewRequestIds: next,
+  };
 }
 
 function defaultState(): WatchState {
@@ -191,6 +228,25 @@ export function buildLatestProcessedByThread(processedKeys: string[]): Map<strin
     if (!existing || updatedAt > existing) {
       byThread.set(threadId, updatedAt);
     }
+  }
+
+  return byThread;
+}
+
+/**
+ * Build a map of threadId → latest emitted review-request ID.
+ * Keys in reviewRequestIds have the composite format `threadId:requestId`.
+ */
+export function buildLatestReviewRequestByThread(reviewRequestIds: string[]): Map<string, string> {
+  const byThread = new Map<string, string>();
+
+  for (const key of reviewRequestIds) {
+    const separatorIndex = key.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === key.length - 1) continue;
+
+    const threadId = key.slice(0, separatorIndex);
+    const requestId = key.slice(separatorIndex + 1);
+    byThread.set(threadId, requestId);
   }
 
   return byThread;

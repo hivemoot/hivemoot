@@ -6,11 +6,21 @@ import {
   fetchMentionNotifications,
   fetchCommentBody,
   fetchRecentSubjectComments,
+  fetchReviewRequestState,
   fetchSubjectBodyResult,
   buildMentionEvent,
   isAgentMentioned,
+  parseSubjectNumber,
 } from "../github/notifications.js";
-import { loadState, saveState, mergeAckJournal, addProcessedId, buildLatestProcessedByThread } from "../watch/state.js";
+import {
+  loadState,
+  saveState,
+  mergeAckJournal,
+  addProcessedId,
+  addReviewRequestId,
+  buildLatestProcessedByThread,
+  buildLatestReviewRequestByThread,
+} from "../watch/state.js";
 
 function log(message: string): void {
   process.stderr.write(`[watch ${new Date().toISOString()}] ${message}\n`);
@@ -156,6 +166,7 @@ async function runPollLoop(
     // Merge keys acked since last poll into processedThreadIds
     state = await mergeAckJournal(stateFile, state);
     const latestProcessedByThread = buildLatestProcessedByThread(state.processedThreadIds);
+    const latestReviewRequestByThread = buildLatestReviewRequestByThread(state.reviewRequestIds ?? []);
 
     try {
       // Capture time before fetch (informational — no longer used as fetch cursor)
@@ -169,6 +180,57 @@ async function runPollLoop(
         // is recognized as a distinct event (thread IDs are reused by GitHub)
         const processedKey = `${notification.id}:${notification.updated_at}`;
         const previousProcessedAt = latestProcessedByThread.get(notification.id);
+        if (notification.reason === "review_requested") {
+          if (notification.subject.type !== "PullRequest") {
+            log(`Skipping ${notification.id}: review_requested on non-PR subject, marking processed`);
+            state = addProcessedId(state, processedKey);
+            latestProcessedByThread.set(notification.id, notification.updated_at);
+            continue;
+          }
+
+          const pullNumber = parseSubjectNumber(notification.subject.url);
+          if (pullNumber === undefined) {
+            log(`Skipping ${notification.id}: cannot parse PR number from subject URL, marking processed`);
+            state = addProcessedId(state, processedKey);
+            latestProcessedByThread.set(notification.id, notification.updated_at);
+            continue;
+          }
+
+          const [repoOwner, repoName] = repo.split("/");
+          const reviewState = await fetchReviewRequestState(repoOwner, repoName, pullNumber, agent);
+          if (reviewState.transientFailure) {
+            log(`Skipping ${notification.id}: review request check failed transiently, will retry`);
+            continue;
+          }
+          if (!reviewState.pending || !reviewState.requestId) {
+            if (reviewState.permanentFailure) {
+              log(`Skipping ${notification.id}: review request check failed permanently, marking processed`);
+            } else {
+              log(`Skipping ${notification.id}: agent is not an active requested reviewer, marking processed`);
+            }
+            state = addProcessedId(state, processedKey);
+            latestProcessedByThread.set(notification.id, notification.updated_at);
+            continue;
+          }
+
+          if (latestReviewRequestByThread.get(notification.id) === reviewState.requestId) {
+            log(`Skipping ${notification.id}: review request ${reviewState.requestId} already emitted`);
+            continue;
+          }
+
+          const reviewEvent = buildMentionEvent(notification, null, agent, { trigger: "review_requested" });
+          if (!reviewEvent) {
+            state = addProcessedId(state, processedKey);
+            latestProcessedByThread.set(notification.id, notification.updated_at);
+            continue;
+          }
+
+          process.stdout.write(JSON.stringify(reviewEvent) + "\n");
+          state = addReviewRequestId(state, notification.id, reviewState.requestId);
+          latestReviewRequestByThread.set(notification.id, reviewState.requestId);
+          continue;
+        }
+
         if (state.processedThreadIds.includes(processedKey)) continue;
 
         // Fetch the comment that triggered this notification

@@ -11,6 +11,7 @@ import {
   markNotificationRead,
   fetchCommentBody,
   fetchRecentSubjectComments,
+  fetchReviewRequestState,
   fetchSubjectBody,
   fetchSubjectBodyResult,
   buildMentionEvent,
@@ -552,6 +553,174 @@ describe("fetchRecentSubjectComments()", () => {
   });
 });
 
+describe("fetchReviewRequestState()", () => {
+  it("returns pending with a stable request id for the matching reviewer", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "hivemoot-worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: true,
+      requestId: "9001",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "graphql",
+      "-F", "owner=hivemoot",
+      "-F", "repo=colony",
+      "-F", "pullNumber=42",
+      "-f", expect.stringContaining("reviewRequests(first: 100)"),
+    ]);
+  });
+
+  it("matches reviewer login case-insensitively", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "Hivemoot-Worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+    expect(result.pending).toBe(true);
+    expect(result.requestId).toBe("9001");
+  });
+
+  it("falls back to the GraphQL node id when databaseId is absent", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: null,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "hivemoot-worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+    expect(result.requestId).toBe("RR_node_1");
+  });
+
+  it("returns not pending when the reviewer is not currently requested", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "someone-else",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("returns permanent failure when the pull request cannot be resolved", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: null,
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies 404 as permanent failure", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Not Found (HTTP 404)", "GH_ERROR", 1));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies other fetch failures as transient", async () => {
+    mockedGh.mockRejectedValue(new Error("network timeout"));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: false,
+      transientFailure: true,
+    });
+  });
+});
+
 describe("buildMentionEvent()", () => {
   const baseNotification: RawNotification = {
     id: "5001",
@@ -626,6 +795,14 @@ describe("buildMentionEvent()", () => {
     const event = buildMentionEvent(prNotification, baseComment, "hivemoot-worker");
     expect(event!.type).toBe("PullRequest");
     expect(event!.number).toBe(99);
+  });
+
+  it("includes trigger metadata when provided", () => {
+    const event = buildMentionEvent(baseNotification, null, "hivemoot-worker", {
+      trigger: "review_requested",
+    });
+
+    expect(event?.trigger).toBe("review_requested");
   });
 });
 
