@@ -11,6 +11,7 @@ import {
   markNotificationRead,
   fetchCommentBody,
   fetchRecentSubjectComments,
+  fetchLatestReviewRequestEvent,
   fetchReviewRequestState,
   fetchSubjectBody,
   fetchSubjectBodyResult,
@@ -721,6 +722,113 @@ describe("fetchReviewRequestState()", () => {
   });
 });
 
+describe("fetchLatestReviewRequestEvent()", () => {
+  it("returns the newest matching review_requested event with requester metadata", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_requested",
+        created_at: "2026-03-10T12:00:00Z",
+        review_requester: { login: "maintainer-a" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+      {
+        id: 7002,
+        event: "review_requested",
+        created_at: "2026-03-10T12:05:00Z",
+        review_requester: { login: "maintainer-b" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+      {
+        id: 7003,
+        event: "review_requested",
+        created_at: "2026-03-10T12:06:00Z",
+        review_requester: { login: "maintainer-c" },
+        requested_reviewer: { login: "someone-else" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      eventId: "7002",
+      requester: "maintainer-b",
+      reviewer: "hivemoot-worker",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "--paginate",
+      "--slurp",
+      "/repos/hivemoot/colony/issues/42/events?per_page=100",
+    ]);
+  });
+
+  it("matches reviewer login case-insensitively and falls back to actor when review_requester is absent", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_requested",
+        created_at: "2026-03-10T12:05:00Z",
+        actor: { login: "maintainer-a" },
+        requested_reviewer: { login: "Hivemoot-Worker" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      eventId: "7001",
+      requester: "maintainer-a",
+      reviewer: "Hivemoot-Worker",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("returns empty metadata when no matching review_requested event is present", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_request_removed",
+        created_at: "2026-03-10T12:05:00Z",
+        review_requester: { login: "maintainer-a" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies 404 as permanent failure", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Not Found (HTTP 404)", "GH_ERROR", 1));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies other fetch failures as transient", async () => {
+    mockedGh.mockRejectedValue(new Error("network timeout"));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: false,
+      transientFailure: true,
+    });
+  });
+});
+
 describe("buildMentionEvent()", () => {
   const baseNotification: RawNotification = {
     id: "5001",
@@ -800,9 +908,13 @@ describe("buildMentionEvent()", () => {
   it("includes trigger metadata when provided", () => {
     const event = buildMentionEvent(baseNotification, null, "hivemoot-worker", {
       trigger: "review_requested",
+      requester: "maintainer",
+      reviewer: "hivemoot-worker",
     });
 
     expect(event?.trigger).toBe("review_requested");
+    expect(event?.requester).toBe("maintainer");
+    expect(event?.reviewer).toBe("hivemoot-worker");
   });
 });
 

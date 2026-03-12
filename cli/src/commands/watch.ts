@@ -6,6 +6,7 @@ import {
   fetchMentionNotifications,
   fetchCommentBody,
   fetchRecentSubjectComments,
+  fetchLatestReviewRequestEvent,
   fetchReviewRequestState,
   fetchSubjectBodyResult,
   buildMentionEvent,
@@ -218,7 +219,22 @@ async function runPollLoop(
             continue;
           }
 
-          const reviewEvent = buildMentionEvent(notification, null, agent, { trigger: "review_requested" });
+          const latestReviewEvent = await fetchLatestReviewRequestEvent(repoOwner, repoName, pullNumber, agent);
+          if (latestReviewEvent.transientFailure) {
+            log(`Skipping ${notification.id}: review request event lookup failed transiently, will retry`);
+            continue;
+          }
+          if (latestReviewEvent.permanentFailure) {
+            log(`Continuing ${notification.id}: review request event lookup failed permanently, emitting without requester metadata`);
+          } else if (!latestReviewEvent.eventId) {
+            log(`Continuing ${notification.id}: no matching review_requested event found, emitting without requester metadata`);
+          }
+
+          const reviewEvent = buildMentionEvent(notification, null, agent, {
+            trigger: "review_requested",
+            reviewer: latestReviewEvent.reviewer ?? agent,
+            ...(latestReviewEvent.requester ? { requester: latestReviewEvent.requester } : {}),
+          });
           if (!reviewEvent) {
             state = addProcessedId(state, processedKey);
             latestProcessedByThread.set(notification.id, notification.updated_at);

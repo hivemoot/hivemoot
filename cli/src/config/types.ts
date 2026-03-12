@@ -249,6 +249,8 @@ export interface MentionEvent {
   threadId: string;   // notification thread ID
   timestamp: string;  // ISO 8601
   trigger?: "review_requested";
+  requester?: string; // for review_requested: login that requested the review
+  reviewer?: string;  // for review_requested: login the review was requested from
 }
 
 // ── Error Types ────────────────────────────────────────────────────
