@@ -2143,4 +2143,61 @@ describe("artifact tracking", () => {
     const task = await getTask("inst-1", taskId, redis);
     expect(task?.artifacts).toHaveLength(20);
   });
+
+  it("derives type and number from URL — caller-supplied values are overridden", async () => {
+    const taskId = await createRunningTask();
+    // Caller supplies type=issue and number=999, but the URL is a pull request
+    // for PR #5. The store must derive type=pull_request and number=5.
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/pull/5", number: 999 }],
+      redis,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts[0].type).toBe("pull_request");
+    expect(result.artifacts[0].number).toBe(5);
+  });
+
+  it("accepts an issue_comment URL and derives the comment id as number", async () => {
+    const taskId = await createRunningTask();
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/issues/10#issuecomment-99999" }],
+      redis,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts[0].type).toBe("issue_comment");
+    expect(result.artifacts[0].number).toBe(99999);
+  });
+
+  it("accepts a commit URL and sets no number field", async () => {
+    const taskId = await createRunningTask();
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/commit/abc1234" }],
+      redis,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts[0].type).toBe("commit");
+    expect(result.artifacts[0].number).toBeUndefined();
+  });
+
+  it("rejects same-repo URL with unrecognised path (no type can be derived)", async () => {
+    const taskId = await createRunningTask();
+    // /releases/tag/v1.0 is same-repo but not a known GitHub object kind
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/releases/tag/v1.0" }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("validation_failed");
+  });
 });

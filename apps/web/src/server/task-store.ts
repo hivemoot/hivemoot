@@ -1197,21 +1197,62 @@ export async function getTaskMessages(
 const MAX_ARTIFACTS_PER_TASK = 20;
 const MAX_ARTIFACT_TITLE_CHARS = 200;
 
-const VALID_ARTIFACT_TYPES = new Set<TaskArtifactType>([
-  "pull_request",
-  "issue",
-  "issue_comment",
-  "commit",
-]);
+// Derive artifact type (and optional number) from the GitHub URL path.
+// The URL is the canonical source of truth; caller-supplied type/number fields
+// are ignored. Returns null if the URL does not match a known GitHub object pattern.
+function parseArtifactMetadata(
+  url: string,
+): { type: TaskArtifactType; number?: number } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return null;
+
+  // pathname: /{owner}/{repo}/{kind}/...
+  const parts = parsed.pathname.replace(/^\//, "").split("/");
+  if (parts.length < 4) return null;
+
+  const kind = parts[2]; // "pull", "issues", "commit"
+  const segment = parts[3]; // N or sha
+
+  if (kind === "pull") {
+    const n = parseInt(segment, 10);
+    if (!Number.isFinite(n) || n <= 0 || String(n) !== segment) return null;
+    return { type: "pull_request", number: n };
+  }
+
+  if (kind === "issues") {
+    const n = parseInt(segment, 10);
+    if (!Number.isFinite(n) || n <= 0 || String(n) !== segment) return null;
+    // Distinguish issue from issue_comment via fragment: #issuecomment-{M}
+    const fragment = parsed.hash; // e.g. "#issuecomment-12345"
+    const commentMatch = fragment.match(/^#issuecomment-(\d+)$/);
+    if (commentMatch) {
+      const commentId = parseInt(commentMatch[1], 10);
+      if (!Number.isFinite(commentId) || commentId <= 0) return null;
+      return { type: "issue_comment", number: commentId };
+    }
+    return { type: "issue", number: n };
+  }
+
+  if (kind === "commit") {
+    // sha is 40 hex chars (full) or 7-40 chars (abbreviated); no number field
+    if (!/^[0-9a-f]{7,40}$/i.test(segment)) return null;
+    return { type: "commit" };
+  }
+
+  return null;
+}
 
 // URL must be scoped to github.com/{owner}/{repo}/... where owner/repo is one
 // of the repos the task was created against.
-function validateArtifactUrl(url: string, repos: string[]): boolean {
-  if (typeof url !== "string") return false;
+function validateArtifactRepoScope(url: string, repos: string[]): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    if (parsed.hostname !== "github.com") return false;
+    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return false;
     const pathParts = parsed.pathname.replace(/^\//, "").split("/");
     if (pathParts.length < 2) return false;
     const repoSlug = `${pathParts[0]}/${pathParts[1]}`;
@@ -1224,14 +1265,21 @@ function validateArtifactUrl(url: string, repos: string[]): boolean {
 function parseArtifact(raw: unknown, repos: string[]): TaskArtifact | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
-  if (!VALID_ARTIFACT_TYPES.has(obj.type as TaskArtifactType)) return null;
-  if (!validateArtifactUrl(obj.url as string, repos)) return null;
+  if (typeof obj.url !== "string") return null;
+
+  // Scope check first — reject URLs outside the task's repos
+  if (!validateArtifactRepoScope(obj.url, repos)) return null;
+
+  // Derive type and number from the URL path; reject unrecognized patterns
+  const meta = parseArtifactMetadata(obj.url);
+  if (!meta) return null;
+
   const artifact: TaskArtifact = {
-    type: obj.type as TaskArtifactType,
-    url: obj.url as string,
+    type: meta.type,
+    url: obj.url,
   };
-  if (typeof obj.number === "number" && Number.isInteger(obj.number) && obj.number > 0) {
-    artifact.number = obj.number;
+  if (meta.number !== undefined) {
+    artifact.number = meta.number;
   }
   if (typeof obj.title === "string" && obj.title.trim().length > 0) {
     artifact.title = obj.title.trim().slice(0, MAX_ARTIFACT_TITLE_CHARS);
