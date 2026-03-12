@@ -865,6 +865,26 @@ describe("watchCommand (review_requested)", () => {
     expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(event) + "\n");
   });
 
+  it("logs and marks processed when the review_requested event cannot be built", async () => {
+    const notification = makePrNotification();
+
+    mockedFetchMentions.mockResolvedValue([notification]);
+    mockedBuildEvent.mockReturnValue(null);
+
+    await watchCommand({ repo: "owner/repo", once: true, reasons: "review_requested" });
+
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("\"trigger\":\"review_requested\""));
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining(
+      "Skipping 1001: could not build review_requested event, marking processed",
+    ));
+    expect(mockedSaveState).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        processedThreadIds: ["1001:2026-02-01T11:30:00.000Z"],
+      }),
+    );
+  });
+
   it("marks processed when the review-request fetch fails permanently", async () => {
     const notification = makePrNotification();
 

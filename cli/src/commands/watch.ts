@@ -236,6 +236,7 @@ async function runPollLoop(
             ...(latestReviewEvent.requester ? { requester: latestReviewEvent.requester } : {}),
           });
           if (!reviewEvent) {
+            log(`Skipping ${notification.id}: could not build review_requested event, marking processed`);
             state = addProcessedId(state, processedKey);
             latestProcessedByThread.set(notification.id, notification.updated_at);
             continue;
