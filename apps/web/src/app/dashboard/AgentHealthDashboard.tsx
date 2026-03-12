@@ -51,7 +51,6 @@ interface AgentOverviewEntry {
   run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
-  run_summary?: string;
 }
 
 interface HealthHistoryEntry {
@@ -67,7 +66,6 @@ interface HealthHistoryEntry {
   run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
-  run_summary?: string;
 }
 
 
