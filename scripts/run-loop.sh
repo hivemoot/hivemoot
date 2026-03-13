@@ -56,14 +56,15 @@ if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode"
   exit 1
 fi
 
-# Validate numeric settings
-for var_name in periodic_interval periodic_jitter max_failures \
-  agent_failure_backoff_base agent_failure_backoff_max agent_failure_backoff_jitter_pct; do
-  val="${!var_name}"
-  case "$val" in
-    ''|*[!0-9]*) echo "${var_name} must be a non-negative integer" >&2; exit 1 ;;
-  esac
-done
+# Validate numeric settings (error messages use the env var names users see in .env)
+_require_nonneg_int() { case "$2" in ''|*[!0-9]*) echo "$1 must be a non-negative integer" >&2; exit 1 ;; esac; }
+_require_nonneg_int PERIODIC_INTERVAL_SECS              "$periodic_interval"
+_require_nonneg_int PERIODIC_JITTER_SECS                "$periodic_jitter"
+_require_nonneg_int MAX_CONSECUTIVE_FAILURES            "$max_failures"
+_require_nonneg_int PERIODIC_AGENT_FAILURE_BACKOFF_BASE_SECS "$agent_failure_backoff_base"
+_require_nonneg_int PERIODIC_AGENT_FAILURE_BACKOFF_MAX_SECS  "$agent_failure_backoff_max"
+_require_nonneg_int PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT "$agent_failure_backoff_jitter_pct"
+unset -f _require_nonneg_int
 
 if [ "$periodic_interval" -le 0 ]; then
   echo "PERIODIC_INTERVAL_SECS must be > 0" >&2; exit 1
