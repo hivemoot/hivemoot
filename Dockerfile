@@ -6,7 +6,7 @@ ARG PROVIDER=all
 FROM node:24-slim AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG NPM_VERSION=11.10.1
+ARG NPM_VERSION=11.11.1
 ARG HIVEMOOT_CLI_VERSION=latest
 
 # Install system dependencies. gh is installed from GitHub's official apt repo
