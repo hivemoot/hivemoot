@@ -72,10 +72,13 @@ function subjectHtmlUrl(
 export async function fetchNotifications(repo: RepoRef): Promise<NotificationMap> {
   const raw = await gh([
     "api",
+    "--paginate",
+    "--slurp",
     `/repos/${repo.owner}/${repo.repo}/notifications`,
   ]);
 
-  const notifications: RawNotification[] = JSON.parse(raw);
+  const pages: RawNotification[][] = JSON.parse(raw);
+  const notifications: RawNotification[] = pages.flat();
   const map: NotificationMap = new Map();
 
   for (const n of notifications) {
@@ -122,12 +125,14 @@ export async function fetchMentionNotifications(
   const args = [
     "api",
     "--paginate",
+    "--slurp",
     `/repos/${repo}/notifications?${params}`,
   ];
 
   const raw = await gh(args);
 
-  const notifications: RawNotification[] = JSON.parse(raw);
+  const pages: RawNotification[][] = JSON.parse(raw);
+  const notifications: RawNotification[] = pages.flat();
 
   return notifications.filter((n) => {
     if (!n.unread) return false;

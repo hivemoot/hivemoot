@@ -47,6 +47,7 @@ interface AgentOverviewEntry {
   online?: boolean;
   status?: "ok" | "failed" | "late" | "unknown";
   next_run_at?: string;
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
 }
@@ -61,6 +62,7 @@ interface HealthHistoryEntry {
   error?: string;
   exit_code?: number;
   received_at: string;
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
 }
@@ -244,6 +246,7 @@ function relativeTimeUntil(iso: string | undefined): string | null {
   const diff = new Date(iso).getTime() - Date.now();
   if (diff <= 0) return "now";
   const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "<1m";
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
@@ -626,7 +629,7 @@ export default function AgentHealthDashboard() {
                     <div className="mt-3 flex items-center text-xs">
                       <div className="flex items-center gap-3 text-zinc-600">
                         <span>{relativeTime(agent.received_at)}</span>
-                        {nextRunIn && <span>next: {nextRunIn}</span>}
+                        {nextRunIn && resolvedStatus !== "late" && <span>next: {nextRunIn}</span>}
                         {agent.token_usage?.cost_usd != null && (
                           <span className="text-zinc-500">
                             ${agent.token_usage.cost_usd.toFixed(2)}

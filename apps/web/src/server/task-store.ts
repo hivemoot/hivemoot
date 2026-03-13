@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type Redis } from "@upstash/redis";
+import { withRedisLock, LockTimeoutError } from "@/server/redis-lock";
 
 export const MAX_CONCURRENT_TASKS = 3;
 export const DEFAULT_TASK_TIMEOUT_SECONDS = 5 * 60;
@@ -10,19 +11,8 @@ export const TASK_CREATE_RATE_LIMIT_PER_MINUTE = 10;
 const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
-const MAX_RESULT_CHARS = 128_000;
 const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
-const TASK_LOCK_TTL_SECONDS = 5;
-const TASK_LOCK_MAX_WAIT_MS = 1000;
-const TASK_LOCK_RETRY_MIN_MS = 8;
-const TASK_LOCK_RETRY_MAX_MS = 20;
-const RELEASE_TASK_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("del", KEYS[1])
-end
-return 0
-`;
 
 const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
@@ -40,7 +30,7 @@ export interface TaskMessage {
   created_at: string;
 }
 
-const MAX_MESSAGE_CONTENT_CHARS = 8000;
+const MAX_MESSAGE_CONTENT_CHARS = 128_000;
 const MAX_MESSAGES_PER_TASK = 200;
 
 export interface TaskRecord {
@@ -56,7 +46,6 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
-  result?: string;
 }
 
 export interface ClaimedTask {
@@ -92,36 +81,32 @@ export type CreateTaskResult =
   | { ok: true; task: TaskRecord }
   | { ok: false; reason: "concurrency_limited" };
 
-export type TaskTransitionResult =
+type TaskMutationFailureReason =
+  | "not_found"
+  | "invalid_transition"
+  | "concurrency_limited"
+  | "lock_timeout";
+type TaskMutationResult =
   | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+  | { ok: false; reason: TaskMutationFailureReason };
+
+export type TaskTransitionResult = TaskMutationResult;
+export type AddUserMessageResult = TaskMutationResult;
 
 export type TaskDeleteResult =
   | { ok: true }
   | { ok: false; reason: "not_found" | "invalid_transition" };
 
-export type TaskRetryResult =
-  | { ok: true; task: TaskRecord }
-  | { ok: false; reason: "not_found" | "invalid_transition" | "concurrency_limited" };
+export type TaskRetryResult = TaskMutationResult;
 
 export interface RateLimitResult {
   allowed: boolean;
   retryAfterSeconds: number;
 }
 
-class TaskLockTimeoutError extends Error {
-  constructor(installationId: string) {
-    super(`Timed out acquiring task lock for installation ${installationId}`);
-    this.name = "TaskLockTimeoutError";
-  }
-}
 
 function taskKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}`;
-}
-
-function taskResultKey(installationId: string, taskId: string): string {
-  return `task:${installationId}:${taskId}:result`;
 }
 
 function taskProgressKey(installationId: string, taskId: string): string {
@@ -164,58 +149,18 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomTaskLockRetryDelayMs(): number {
-  return TASK_LOCK_RETRY_MIN_MS
-    + Math.floor(Math.random() * (TASK_LOCK_RETRY_MAX_MS - TASK_LOCK_RETRY_MIN_MS + 1));
-}
-
-async function releaseTaskLock(
-  lockKey: string,
-  lockOwnerToken: string,
-  redis: Redis,
-): Promise<void> {
-  await redis.eval(RELEASE_TASK_LOCK_SCRIPT, [lockKey], [lockOwnerToken]);
-}
-
-async function withTaskInstallationLock<T>(
+function withTaskInstallationLock<T>(
   installationId: string,
   redis: Redis,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const lockKey = taskLockKey(installationId);
-  const lockOwnerToken = randomBytes(16).toString("hex");
-  const deadline = Date.now() + TASK_LOCK_MAX_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    const acquired = await redis.set(lockKey, lockOwnerToken, {
-      nx: true,
-      ex: TASK_LOCK_TTL_SECONDS,
-    });
-
-    if (acquired === "OK") {
-      try {
-        return await fn();
-      } finally {
-        try {
-          await releaseTaskLock(lockKey, lockOwnerToken, redis);
-        } catch (error) {
-          // Lock cleanup is best-effort so operation results are preserved.
-          console.error("[tasks] Failed to release task lock", {
-            installationId,
-            error,
-          });
-        }
-      }
-    }
-
-    await sleep(randomTaskLockRetryDelayMs());
-  }
-
-  throw new TaskLockTimeoutError(installationId);
+  return withRedisLock(taskLockKey(installationId), redis, fn, {
+    onReleaseError: (error) =>
+      console.error("[tasks] Failed to release task lock", {
+        installationId,
+        error,
+      }),
+  });
 }
 
 function isTerminal(status: TaskStatus): boolean {
@@ -311,6 +256,19 @@ function transitionDeadlineMs(task: StoredTaskRecord): number {
   return Date.now() + task.timeout_secs * 1000;
 }
 
+function requeueTaskToPending(stored: StoredTaskRecord, timestamp: string): StoredTaskRecord {
+  return {
+    ...stored,
+    status: "pending",
+    // Reset lifecycle timestamps so timeout checks use the new attempt window.
+    created_at: timestamp,
+    updated_at: timestamp,
+    started_at: undefined,
+    finished_at: undefined,
+    error: undefined,
+  };
+}
+
 async function withTaskTransitionLock(
   installationId: string,
   taskId: string,
@@ -321,12 +279,12 @@ async function withTaskTransitionLock(
   try {
     return await withTaskInstallationLock(installationId, redis, fn);
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn(operation, {
         installationId,
         taskId,
       });
-      return { ok: false, reason: "concurrency_limited" };
+      return { ok: false, reason: "lock_timeout" };
     }
     throw error;
   }
@@ -342,7 +300,6 @@ async function cleanupMissingTask(
     .zrem(pendingKey(installationId), taskId)
     .zrem(runningKey(installationId), taskId)
     .zrem(recentKey(installationId), taskId)
-    .del(taskResultKey(installationId, taskId))
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
     .del(taskClaimTokenHashKey(installationId, taskId))
@@ -372,16 +329,12 @@ async function buildTaskRecord(
   stored: StoredTaskRecord,
   redis: Redis,
 ): Promise<TaskRecord> {
-  const [resultRaw, progressRaw] = await Promise.all([
-    redis.get(taskResultKey(installationId, stored.task_id)),
-    redis.get(taskProgressKey(installationId, stored.task_id)),
-  ]);
+  const progressRaw = await redis.get(taskProgressKey(installationId, stored.task_id));
 
   const task: TaskRecord = {
     ...stored,
   };
 
-  if (typeof resultRaw === "string") task.result = resultRaw;
   if (typeof progressRaw === "string") task.progress = progressRaw;
 
   return task;
@@ -406,14 +359,18 @@ async function maybeTimeoutTask(
   const deadlineMs = transitionDeadlineMs(stored);
   if (Date.now() <= deadlineMs) return stored;
 
-  const timeoutMessage = `Timed out after ${stored.timeout_secs} seconds`;
+  const errorDetail = `Timed out after ${stored.timeout_secs} seconds`;
+  const timestamp = nowIso();
   const timedOut = await finalizeTask(
     installationId,
     stored.task_id,
     "timed_out",
     {
-      error: timeoutMessage,
-      progress: timeoutMessage,
+      error: errorDetail,
+      progress: errorDetail,
+      messages: [
+        { role: "system", content: "Task timed out.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -593,7 +550,7 @@ export async function createTask(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task create lock timeout", {
         installationId,
       });
@@ -609,8 +566,8 @@ async function finalizeTask(
   status: Extract<TaskStatus, "completed" | "failed" | "timed_out">,
   options: {
     error?: string;
-    result?: string;
     progress?: string;
+    messages?: TaskMessage[];
   },
   redis: Redis,
   allowedFrom: Set<TaskStatus>,
@@ -626,6 +583,14 @@ async function finalizeTask(
 
       if (!allowedFrom.has(stored.status)) {
         return { ok: false, reason: "invalid_transition" };
+      }
+
+      // Append timeline messages before the status change so they are
+      // visible when consumers see the terminal status.
+      if (options.messages && options.messages.length > 0) {
+        for (const msg of options.messages) {
+          await appendTaskMessageRaw(installationId, taskId, msg, redis);
+        }
       }
 
       const timestamp = nowIso();
@@ -646,24 +611,15 @@ async function finalizeTask(
             ? "Timed out"
             : "Failed";
 
-      const multi = redis
+      await redis
         .multi()
         .set(taskKey(installationId, taskId), nextStored, { ex: ttl })
         .set(taskProgressKey(installationId, taskId), progress, { ex: ttl })
         .zrem(pendingKey(installationId), taskId)
         .zrem(runningKey(installationId), taskId)
         .del(taskClaimTokenHashKey(installationId, taskId))
-        .zadd(recentKey(installationId), { score: Date.now(), member: taskId });
-
-      if (typeof options.result === "string") {
-        multi.set(
-          taskResultKey(installationId, taskId),
-          sanitizeText(options.result, MAX_RESULT_CHARS),
-          { ex: ttl },
-        );
-      }
-
-      await multi.exec();
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
 
       // Best-effort: expire the messages list alongside the task data.
       // The task has already been finalized so a failure here must not propagate.
@@ -682,9 +638,6 @@ async function finalizeTask(
         task: {
           ...nextStored,
           progress,
-          result: typeof options.result === "string"
-            ? sanitizeText(options.result, MAX_RESULT_CHARS)
-            : undefined,
         },
       };
     },
@@ -754,7 +707,7 @@ export async function markTaskRunning(
       () => markTaskRunningUnlocked(installationId, taskId, redis),
     );
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task start lock timeout", {
         installationId,
         taskId,
@@ -853,13 +806,19 @@ export async function completeTask(
   result: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+  const sanitizedResult = sanitizeText(result, MAX_MESSAGE_CONTENT_CHARS);
+
   return finalizeTask(
     installationId,
     taskId,
     "completed",
     {
-      result,
       progress: "Completed",
+      messages: [
+        { role: "agent", content: sanitizedResult, created_at: timestamp },
+        { role: "system", content: "Task completed.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -872,6 +831,8 @@ export async function failTask(
   error: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+
   return finalizeTask(
     installationId,
     taskId,
@@ -879,6 +840,9 @@ export async function failTask(
     {
       error,
       progress: error,
+      messages: [
+        { role: "system", content: `Task failed: ${sanitizeText(error, MAX_MESSAGE_CONTENT_CHARS)}`, created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -890,6 +854,8 @@ export async function timeoutTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskTransitionResult> {
+  const timestamp = nowIso();
+
   return finalizeTask(
     installationId,
     taskId,
@@ -897,6 +863,9 @@ export async function timeoutTask(
     {
       error: "Timed out",
       progress: "Timed out",
+      messages: [
+        { role: "system", content: "Task timed out.", created_at: timestamp },
+      ],
     },
     redis,
     new Set(["pending", "running"]),
@@ -985,7 +954,7 @@ export async function claimNextPendingTask(
       return null;
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task claim lock timeout", {
         installationId,
       });
@@ -1023,6 +992,13 @@ const DELETABLE_STATUSES = new Set<TaskStatus>([
   "timed_out",
 ]);
 
+const MESSAGE_ALLOWED_STATUSES = new Set<TaskStatus>([
+  "pending",
+  "completed",
+  "failed",
+  "timed_out",
+]);
+
 export async function deleteTask(
   installationId: string,
   taskId: string,
@@ -1039,7 +1015,6 @@ export async function deleteTask(
     await redis
       .multi()
       .del(taskKey(installationId, taskId))
-      .del(taskResultKey(installationId, taskId))
       .del(taskProgressKey(installationId, taskId))
       .del(taskMessagesKey(installationId, taskId))
       .zrem(pendingKey(installationId), taskId)
@@ -1058,30 +1033,71 @@ export async function retryTask(
   taskId: string,
   redis: Redis,
 ): Promise<TaskRetryResult> {
-  const stored = await loadStoredTask(installationId, taskId, redis);
-  if (!stored) return { ok: false, reason: "not_found" };
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-  if (!RETRYABLE_STATUSES.has(stored.status)) {
-    return { ok: false, reason: "invalid_transition" };
+      if (!RETRYABLE_STATUSES.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const timestamp = nowIso();
+      const nextStored = requeueTaskToPending(stored, timestamp);
+      const progress = "Re-queued via retry";
+
+      await redis
+        .multi()
+        .persist(taskKey(installationId, taskId))
+        .persist(taskProgressKey(installationId, taskId))
+        .persist(taskMessagesKey(installationId, taskId))
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), progress)
+        .zrem(runningKey(installationId), taskId)
+        .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .exec();
+
+      try {
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "system",
+          "Task retried - re-queued.",
+          redis,
+        );
+      } catch (error) {
+        console.error("[tasks] Failed to append retry system message", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress,
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      console.warn("[tasks] Task retry lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
   }
-
-  // Create a new task reusing the original's prompt, repos, and timeout.
-  const result = await createTask(
-    installationId,
-    stored.created_by,
-    {
-      prompt: stored.prompt,
-      repos: stored.repos,
-      timeout_secs: stored.timeout_secs,
-    },
-    redis,
-  );
-
-  if (!result.ok) {
-    return { ok: false, reason: result.reason };
-  }
-
-  return { ok: true, task: result.task };
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,8 +1154,12 @@ export async function getTaskMessages(
           created_at: parsed.created_at,
         });
       }
-    } catch {
-      // Skip malformed message entries.
+    } catch (error) {
+      console.warn("[tasks] Dropped malformed task message entry", {
+        installationId,
+        taskId,
+        error,
+      });
     }
   }
 
@@ -1241,13 +1261,7 @@ export async function resumeTaskWithFollowUp(
       }
 
       const timestamp = nowIso();
-      const nextStored: StoredTaskRecord = {
-        ...stored,
-        status: "pending",
-        updated_at: timestamp,
-        // Clear started_at so the timeout clock resets on the next claim.
-        started_at: undefined,
-      };
+      const nextStored = requeueTaskToPending(stored, timestamp);
 
       await redis
         .multi()
@@ -1292,8 +1306,113 @@ export async function resumeTaskWithFollowUp(
       };
     });
   } catch (error) {
-    if (error instanceof TaskLockTimeoutError) {
+    if (error instanceof LockTimeoutError) {
       console.warn("[tasks] Task follow-up lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// User messages (chat-like interface)
+// ---------------------------------------------------------------------------
+
+export async function addUserMessage(
+  installationId: string,
+  taskId: string,
+  message: string,
+  redis: Redis,
+): Promise<AddUserMessageResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      if (!MESSAGE_ALLOWED_STATUSES.has(stored.status)) {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const timestamp = nowIso();
+      const sanitizedMessage = sanitizeText(message, MAX_MESSAGE_CONTENT_CHARS);
+
+      // --- Pending: just append the message, no state change ---
+      if (stored.status === "pending") {
+        const nextStored: StoredTaskRecord = {
+          ...stored,
+          updated_at: timestamp,
+        };
+
+        await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
+        await redis
+          .multi()
+          .set(taskKey(installationId, taskId), nextStored)
+          .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+          .exec();
+
+        return {
+          ok: true,
+          task: await buildTaskRecord(installationId, nextStored, redis),
+        };
+      }
+
+      // --- Terminal (completed/failed/timed_out): revive to pending ---
+      const activeTaskCount = await countActiveTasks(installationId, redis);
+      if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
+        return { ok: false, reason: "concurrency_limited" };
+      }
+
+      const nextStored: StoredTaskRecord = {
+        ...requeueTaskToPending(stored, timestamp),
+      };
+
+      await appendTaskMessage(installationId, taskId, "user", sanitizedMessage, redis);
+
+      // Clear terminal TTLs in the same transaction as the state transition so
+      // success guarantees the revived task will not expire mid-run.
+      await redis
+        .multi()
+        .persist(taskKey(installationId, taskId))
+        .persist(taskProgressKey(installationId, taskId))
+        .persist(taskMessagesKey(installationId, taskId))
+        .set(taskKey(installationId, taskId), nextStored)
+        .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
+        .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .del(taskClaimTokenHashKey(installationId, taskId))
+        .exec();
+
+      try {
+        await appendTaskMessage(
+          installationId,
+          taskId,
+          "system",
+          "New message received \u2014 task re-queued.",
+          redis,
+        );
+      } catch (error) {
+        console.error("[tasks] Failed to append revival system message", {
+          installationId,
+          taskId,
+          error,
+        });
+      }
+
+      return {
+        ok: true,
+        task: {
+          ...nextStored,
+          progress: "Re-queued with new message",
+        },
+      };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      console.warn("[tasks] Add user message lock timeout", {
         installationId,
         taskId,
       });
