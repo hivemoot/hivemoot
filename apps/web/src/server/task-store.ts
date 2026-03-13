@@ -1289,7 +1289,7 @@ function parseArtifact(raw: unknown, repos: string[]): TaskArtifact | null {
 
 export type AppendArtifactsResult =
   | { ok: true; artifacts: TaskArtifact[] }
-  | { ok: false; reason: "not_found" | "cap_exceeded" | "validation_failed" };
+  | { ok: false; reason: "not_found" | "cap_exceeded" | "validation_failed" | "lock_timeout" };
 
 export async function appendTaskArtifacts(
   installationId: string,
@@ -1297,31 +1297,38 @@ export async function appendTaskArtifacts(
   incoming: unknown[],
   redis: Redis,
 ): Promise<AppendArtifactsResult> {
-  return withTaskInstallationLock(installationId, redis, async () => {
-    // Load inside the lock so a concurrent deleteTask cannot leave an orphaned
-    // artifacts key between the existence check and the write.
-    const stored = await loadStoredTask(installationId, taskId, redis);
-    if (!stored) return { ok: false, reason: "not_found" };
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      // Load inside the lock so a concurrent deleteTask cannot leave an orphaned
+      // artifacts key between the existence check and the write.
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
 
-    const parsed: TaskArtifact[] = [];
-    for (const raw of incoming) {
-      const artifact = parseArtifact(raw, stored.repos);
-      if (!artifact) return { ok: false, reason: "validation_failed" };
-      parsed.push(artifact);
+      const parsed: TaskArtifact[] = [];
+      for (const raw of incoming) {
+        const artifact = parseArtifact(raw, stored.repos);
+        if (!artifact) return { ok: false, reason: "validation_failed" };
+        parsed.push(artifact);
+      }
+
+      const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
+      const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
+
+      if (existing.length + parsed.length > MAX_ARTIFACTS_PER_TASK) {
+        return { ok: false, reason: "cap_exceeded" } as AppendArtifactsResult;
+      }
+
+      const updated = [...existing, ...parsed];
+      await redis.set(taskArtifactsKey(installationId, taskId), updated);
+
+      return { ok: true, artifacts: updated };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      return { ok: false, reason: "lock_timeout" };
     }
-
-    const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
-    const existing: TaskArtifact[] = Array.isArray(existingRaw) ? (existingRaw as TaskArtifact[]) : [];
-
-    if (existing.length + parsed.length > MAX_ARTIFACTS_PER_TASK) {
-      return { ok: false, reason: "cap_exceeded" } as AppendArtifactsResult;
-    }
-
-    const updated = [...existing, ...parsed];
-    await redis.set(taskArtifactsKey(installationId, taskId), updated);
-
-    return { ok: true, artifacts: updated };
-  });
+    throw error;
+  }
 }
 
 export async function getTaskArtifacts(

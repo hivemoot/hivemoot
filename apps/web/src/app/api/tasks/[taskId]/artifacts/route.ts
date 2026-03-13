@@ -110,6 +110,9 @@ export async function POST(request: NextRequest) {
           409,
         );
       }
+      if (result.reason === "lock_timeout") {
+        return taskError(TASK_ERROR.SERVER_ERROR, "Lock contention — retry the request", 429);
+      }
       return taskError(
         TASK_ERROR.VALIDATION_FAILED,
         "One or more artifacts are invalid. Each artifact must have a valid type and a github.com URL scoped to the task's repos.",

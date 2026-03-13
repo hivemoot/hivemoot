@@ -198,6 +198,14 @@ describe("POST /api/tasks/[taskId]/artifacts", () => {
     expect(body.code).toBe("task_validation_failed");
   });
 
+  it("returns 429 when appendTaskArtifacts reports lock_timeout", async () => {
+    vi.mocked(appendTaskArtifacts).mockResolvedValue({ ok: false, reason: "lock_timeout" });
+    const res = await POST(makeRequest({ artifacts: [VALID_ARTIFACT] }));
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe("task_server_error");
+  });
+
   it("returns 500 when appendTaskArtifacts throws unexpectedly", async () => {
     vi.mocked(appendTaskArtifacts).mockRejectedValue(new Error("redis down"));
     const res = await POST(makeRequest({ artifacts: [VALID_ARTIFACT] }));
