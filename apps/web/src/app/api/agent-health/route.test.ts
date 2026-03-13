@@ -373,6 +373,7 @@ describe("GET /api/agent-health", () => {
         outcome: "success",
         duration_secs: 42,
         consecutive_failures: 0,
+        run_summary: "### Done\nCommented on #325.",
         received_at: "2026-02-24T10:00:00Z",
         status: "ok",
       },
@@ -384,6 +385,7 @@ describe("GET /api/agent-health", () => {
     const body = await res.json();
     expect(body.agents).toHaveLength(1);
     expect(body.agents[0].agent_id).toBe("bee-1");
+    expect(body.agents[0].run_summary).toBe("### Done\nCommented on #325.");
   });
 
   it("returns history when agent_id and repo are provided", async () => {
@@ -395,6 +397,7 @@ describe("GET /api/agent-health", () => {
         outcome: "success",
         duration_secs: 42,
         consecutive_failures: 0,
+        run_summary: "### Done\nCommented on #325.",
         received_at: "2026-02-24T10:00:00Z",
       },
     ]);
@@ -410,6 +413,7 @@ describe("GET /api/agent-health", () => {
     expect(body.repo).toBe("hivemoot/sandbox");
     expect(body.history).toHaveLength(1);
     expect(body.runs).toHaveLength(1);
+    expect(body.history[0].run_summary).toBe("### Done\nCommented on #325.");
   });
 
   it("returns history when history=true is provided", async () => {

@@ -34,8 +34,10 @@ const RATE_LIMIT_SECONDS = 60;
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_HISTORY_ENTRIES = 1440; // read-side cap; ~24h at 1 report/min
 const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
+const MAX_RUN_SUMMARY_CHARS = 4096;
 export const AGENT_ID_PATTERN = /^[a-z0-9_-]+$/;
 const MODEL_PATTERN = /^[a-zA-Z0-9._:/-]{1,128}$/;
+const ANSI_ESCAPE_PATTERN = /[\u001B\u009B](?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,6 +74,7 @@ export interface HealthReport {
   error?: string;
   exit_code?: number;
   next_run_at?: string; // ISO 8601, optional — when the next scheduled run is expected
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
   received_at: string; // ISO 8601, server-assigned
@@ -92,8 +95,15 @@ export interface HealthOverviewEntry {
   received_at: string;
   status: AgentStatus;
   next_run_at?: string;
+  run_summary?: string;
   trigger?: TriggerType;
   token_usage?: TokenUsage | null;
+}
+
+function sanitizeRunSummary(input: string): string {
+  const stripped = input.replace(ANSI_ESCAPE_PATTERN, "").trim();
+  if (stripped.length <= MAX_RUN_SUMMARY_CHARS) return stripped;
+  return stripped.slice(0, MAX_RUN_SUMMARY_CHARS);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +231,7 @@ const ALLOWED_FIELDS = new Set([
   "error",
   "exit_code",
   "next_run_at",
+  "run_summary",
   "trigger",
   "token_usage",
 ]);
@@ -343,6 +354,23 @@ export function validateReport(body: unknown): ValidationResult {
     }
   }
 
+  if (obj.run_summary !== undefined) {
+    if (typeof obj.run_summary !== "string") {
+      return {
+        ok: false,
+        message: "run_summary must be a non-empty string after ANSI stripping if provided",
+      };
+    }
+
+    const sanitizedRunSummary = sanitizeRunSummary(obj.run_summary);
+    if (sanitizedRunSummary.length < 1) {
+      return {
+        ok: false,
+        message: "run_summary must be a non-empty string after ANSI stripping if provided",
+      };
+    }
+  }
+
   if (
     obj.trigger !== undefined
     && (typeof obj.trigger !== "string" || !VALID_TRIGGERS.has(obj.trigger as TriggerType))
@@ -439,6 +467,7 @@ export function validateReport(body: unknown): ValidationResult {
   if (typeof obj.model === "string") report.model = obj.model;
   if (typeof obj.exit_code === "number") report.exit_code = obj.exit_code;
   if (typeof obj.next_run_at === "string") report.next_run_at = obj.next_run_at;
+  if (typeof obj.run_summary === "string") report.run_summary = sanitizeRunSummary(obj.run_summary);
   if (typeof obj.trigger === "string") report.trigger = obj.trigger as TriggerType;
   if (obj.token_usage !== undefined) report.token_usage = obj.token_usage as TokenUsage | null;
 
@@ -713,6 +742,7 @@ export async function getOverview(
           received_at: report.received_at,
           status: deriveStatus(report),
           next_run_at: typeof report.next_run_at === "string" ? report.next_run_at : undefined,
+          run_summary: typeof report.run_summary === "string" ? report.run_summary : undefined,
           trigger: typeof report.trigger === "string" && VALID_TRIGGERS.has(report.trigger as TriggerType) ? report.trigger : undefined,
           token_usage: "token_usage" in report ? report.token_usage : undefined,
         });
