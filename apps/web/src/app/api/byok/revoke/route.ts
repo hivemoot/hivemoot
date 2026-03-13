@@ -16,28 +16,40 @@ export async function POST(request: NextRequest) {
 
   const installationId = auth.session.installationId;
 
-  const existing = await getByokEnvelope(installationId, auth.redis);
-  if (!existing) {
-    return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
+  try {
+    const existing = await getByokEnvelope(installationId, auth.redis);
+    if (!existing) {
+      return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
+    }
+
+    const revoked = {
+      ...existing,
+      status: "revoked" as const,
+      ciphertext: "",
+      iv: "",
+      tag: "",
+      updatedAt: new Date().toISOString(),
+      updatedBy: auth.session.userLogin,
+    };
+
+    await setByokEnvelope(installationId, revoked, auth.redis);
+
+    return NextResponse.json({
+      status: "revoked",
+      provider: revoked.provider,
+      model: revoked.model,
+      updatedAt: revoked.updatedAt,
+    });
+  } catch (error) {
+    console.error("[byok-revoke] Failed to process request", {
+      installationId,
+      error,
+    });
+
+    return byokError(
+      BYOK_ERROR.SERVER_MISCONFIGURATION,
+      "Internal server error",
+      500,
+    );
   }
-
-  // Clear ciphertext fields, keep metadata for audit
-  const revoked = {
-    ...existing,
-    status: "revoked" as const,
-    ciphertext: "",
-    iv: "",
-    tag: "",
-    updatedAt: new Date().toISOString(),
-    updatedBy: auth.session.userLogin,
-  };
-
-  await setByokEnvelope(installationId, revoked, auth.redis);
-
-  return NextResponse.json({
-    status: "revoked",
-    provider: revoked.provider,
-    model: revoked.model,
-    updatedAt: revoked.updatedAt,
-  });
 }

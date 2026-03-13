@@ -16,33 +16,46 @@ export async function GET(request: NextRequest) {
 
   const installationId = auth.session.installationId;
 
-  const envelope = await getByokEnvelope(installationId, auth.redis);
-  if (!envelope) {
+  try {
+    const envelope = await getByokEnvelope(installationId, auth.redis);
+    if (!envelope) {
+      return byokError(
+        BYOK_ERROR.NOT_CONFIGURED,
+        "BYOK is not configured",
+        404,
+      );
+    }
+
+    if (envelope.status === "revoked") {
+      return byokError(
+        BYOK_ERROR.REVOKED,
+        "BYOK configuration has been revoked",
+        409,
+        {
+          status: envelope.status,
+          provider: envelope.provider,
+          model: envelope.model,
+          updatedAt: envelope.updatedAt,
+        },
+      );
+    }
+
+    return NextResponse.json({
+      status: envelope.status,
+      provider: envelope.provider,
+      model: envelope.model,
+      updatedAt: envelope.updatedAt,
+    });
+  } catch (error) {
+    console.error("[byok-status] Failed to process request", {
+      installationId,
+      error,
+    });
+
     return byokError(
-      BYOK_ERROR.NOT_CONFIGURED,
-      "BYOK is not configured",
-      404,
+      BYOK_ERROR.SERVER_MISCONFIGURATION,
+      "Internal server error",
+      500,
     );
   }
-
-  if (envelope.status === "revoked") {
-    return byokError(
-      BYOK_ERROR.REVOKED,
-      "BYOK configuration has been revoked",
-      409,
-      {
-        status: envelope.status,
-        provider: envelope.provider,
-        model: envelope.model,
-        updatedAt: envelope.updatedAt,
-      },
-    );
-  }
-
-  return NextResponse.json({
-    status: envelope.status,
-    provider: envelope.provider,
-    model: envelope.model,
-    updatedAt: envelope.updatedAt,
-  });
 }

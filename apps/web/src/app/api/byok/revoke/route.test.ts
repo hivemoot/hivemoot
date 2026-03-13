@@ -102,4 +102,28 @@ describe("POST /api/byok/revoke", () => {
     expect(body.code).toBe(BYOK_ERROR.NOT_CONFIGURED);
     expect(body.message).toBe("BYOK is not configured");
   });
+
+  it("returns a structured 500 when storage fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest({});
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[byok-revoke] Failed to process request",
+      expect.objectContaining({
+        installationId: MOCK_SESSION.installationId,
+        error: expect.any(Error),
+      }),
+    );
+
+    consoleError.mockRestore();
+  });
 });

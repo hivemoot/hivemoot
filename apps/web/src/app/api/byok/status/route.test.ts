@@ -121,4 +121,28 @@ describe("GET /api/byok/status", () => {
       expect.anything(),
     );
   });
+
+  it("returns a structured 500 when storage fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[byok-status] Failed to process request",
+      expect.objectContaining({
+        installationId: MOCK_SESSION.installationId,
+        error: expect.any(Error),
+      }),
+    );
+
+    consoleError.mockRestore();
+  });
 });
