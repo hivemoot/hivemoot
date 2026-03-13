@@ -21,6 +21,17 @@ export function filterDuplicatePrompt(
   });
 }
 
+/**
+ * Keeps only user/agent chat rows after removing the duplicated prompt.
+ * System lifecycle rows belong in task state/progress, not the conversation.
+ */
+export function filterConversationMessages(
+  messages: TaskMessage[],
+  prompt: string,
+): TaskMessage[] {
+  return filterDuplicatePrompt(messages, prompt).filter((msg) => msg.role !== "system");
+}
+
 // ---------------------------------------------------------------------------
 // Keyboard shortcut detection
 // ---------------------------------------------------------------------------
@@ -41,6 +52,34 @@ export function isSubmitShortcut(e: {
 /** Per-task draft key for the follow-up textarea in TaskDetail. */
 export function draftStorageKey(taskId: string): string {
   return `task-draft-${taskId}`;
+}
+
+/**
+ * Status-aware placeholder text keeps the sticky composer useful without
+ * duplicating the task state as a second status banner.
+ */
+export function taskComposerPlaceholder(status: string): string {
+  switch (status) {
+    case "needs_follow_up":
+      return "Answer the agent to continue this task…";
+    case "pending":
+      return "Add more context while this task is queued…";
+    case "completed":
+      return "Send a message to reopen this completed task…";
+    case "failed":
+      return "Send a message to retry this failed task…";
+    case "timed_out":
+      return "Send a message to retry this timed-out task…";
+    default:
+      return "Type a message…";
+  }
+}
+
+/** Inline composer guidance is only needed when the agent is actively waiting. */
+export function taskComposerGuidance(status: string): string | null {
+  return status === "needs_follow_up"
+    ? "The agent is waiting for your input to continue working on this task."
+    : null;
 }
 
 /** SessionStorage key for the create-task prompt draft. */

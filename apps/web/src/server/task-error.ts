@@ -4,6 +4,7 @@ export const TASK_ERROR = {
   INVALID_JSON: "task_invalid_json",
   PAYLOAD_TOO_LARGE: "task_payload_too_large",
   VALIDATION_FAILED: "task_validation_failed",
+  REPO_UNAVAILABLE: "task_repo_unavailable",
   MISSING_FIELDS: "task_missing_fields",
   INVALID_ACTION: "task_invalid_action",
   INVALID_TRANSITION: "task_invalid_transition",

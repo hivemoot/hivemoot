@@ -596,6 +596,52 @@ describe("validateReport", () => {
     if (result.ok) expect(result.report.token_usage).toBeNull();
   });
 
+  it("accepts run_summary, strips ANSI escapes, and trims surrounding whitespace", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 60,
+      consecutive_failures: 0,
+      run_summary: "\n\u001b[32m### Done\u001b[39m\nMerged docs and posted review.\n",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.run_summary).toBe("### Done\nMerged docs and posted review.");
+    }
+  });
+
+  it("rejects run_summary that is empty after ANSI stripping", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 60,
+      consecutive_failures: 0,
+      run_summary: "\u001b[31m\u001b[0m   ",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("run_summary");
+  });
+
+  it("caps run_summary at 4096 chars after sanitization", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 60,
+      consecutive_failures: 0,
+      run_summary: `${"\u001b[32m"}${"x".repeat(5000)}\u001b[0m`,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.run_summary).toHaveLength(4096);
+    }
+  });
+
   it("omits token_usage from report when not provided", () => {
     const result = validateReport({
       agent_id: "bee-1",
@@ -733,6 +779,23 @@ describe("reserveHealthReportIdempotency", () => {
     };
 
     const reservation = await reserveHealthReportIdempotency("inst-1", retryWithModel, redis);
+    expect(reservation).toStrictEqual({
+      kind: "duplicate",
+      receivedAt: "2026-02-24T10:00:00Z",
+    });
+  });
+
+  it("treats run_summary as non-identity metadata for idempotency", async () => {
+    await reserveHealthReportIdempotency("inst-1", baseReport, redis);
+    await commitHealthReportIdempotency("inst-1", baseReport, redis);
+
+    const retryWithSummary: HealthReport = {
+      ...baseReport,
+      run_summary: "### Done\nCommented on #325.",
+      received_at: "2026-02-24T10:01:00Z",
+    };
+
+    const reservation = await reserveHealthReportIdempotency("inst-1", retryWithSummary, redis);
     expect(reservation).toStrictEqual({
       kind: "duplicate",
       receivedAt: "2026-02-24T10:00:00Z",
@@ -969,6 +1032,7 @@ describe("getOverview", () => {
       consecutive_failures: 2,
       model: "openai/gpt-4o",
       error: "timeout",
+      run_summary: "### Done\nOpened a PR and replied to review.",
       received_at: "2026-02-24T10:00:00Z",
     };
 
@@ -983,6 +1047,7 @@ describe("getOverview", () => {
     expect(result[0].outcome).toBe("failure");
     expect(result[0].consecutive_failures).toBe(2);
     expect(result[0].model).toBe("openai/gpt-4o");
+    expect(result[0].run_summary).toBe("### Done\nOpened a PR and replied to review.");
     expect(result[0].status).toBe("failed");
   });
 
@@ -1160,6 +1225,7 @@ describe("getHistory", () => {
       outcome: "success",
       duration_secs: 9,
       consecutive_failures: 0,
+      run_summary: "### Done\nMerged #281.",
       received_at: recentTimestamp,
     };
 
@@ -1173,6 +1239,7 @@ describe("getHistory", () => {
     expect(result).toHaveLength(1);
     expect(result[0].agent_id).toBe("bee-1");
     expect(result[0].outcome).toBe("success");
+    expect(result[0].run_summary).toBe("### Done\nMerged #281.");
   });
 
   it("trims stale entries before returning", async () => {
