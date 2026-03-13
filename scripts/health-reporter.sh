@@ -30,7 +30,7 @@ _VALID_OUTCOMES="success failure timeout"
 _VALID_TRIGGERS="scheduled mention manual task"
 
 # Allowed payload fields (sorted). Must match backend HealthReport.
-_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code next_run_at outcome repo run_id token_usage trigger"
+_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code next_run_at outcome repo run_id run_summary token_usage trigger"
 
 # Build the JSON payload for the health report.
 # Requires jq.
@@ -46,6 +46,7 @@ _build_health_payload() {
   local next_run_at="${9:-}"
   local trigger="${10:-}"
   local token_usage_json="${11:-}"
+  local run_summary="${12:-}"
 
   local jq_args=(
     -n
@@ -87,6 +88,10 @@ _build_health_payload() {
   if [ -n "$token_usage_json" ]; then
     jq_args+=(--argjson token_usage "$token_usage_json")
     jq_filter="${jq_filter} + {token_usage: \$token_usage}"
+  fi
+  if [ -n "$run_summary" ]; then
+    jq_args+=(--arg run_summary "$run_summary")
+    jq_filter="${jq_filter} + {run_summary: \$run_summary}"
   fi
 
   jq "${jq_args[@]}" "$jq_filter"
@@ -315,6 +320,7 @@ _sleep_with_jitter() {
 #   next_run_at          — ISO 8601 timestamp of next scheduled run (optional)
 #   trigger              — "scheduled" | "mention" | "manual" | "task" (optional)
 #   token_usage_json     — JSON object with token usage data (optional)
+#   run_summary          — plain-text summary of what the agent did (optional, max ~1500 bytes)
 report_health_to_backend() {
   local agent_id="$1"
   local repo="$2"
@@ -328,6 +334,7 @@ report_health_to_backend() {
   local next_run_at="${10:-}"
   local trigger="${11:-}"
   local token_usage_json="${12:-}"
+  local run_summary="${13:-}"
 
   if [ -z "$HEALTH_REPORT_URL" ]; then
     return 0
@@ -355,7 +362,8 @@ report_health_to_backend() {
     "$error_msg" \
     "$next_run_at" \
     "$trigger" \
-    "$token_usage_json"
+    "$token_usage_json" \
+    "$run_summary"
   )"
 
   if ! _validate_health_payload "$payload"; then

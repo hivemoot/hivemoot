@@ -208,6 +208,101 @@ test_codex_missing_file_returns_empty() {
   pass "codex: returns empty for missing log file"
 }
 
+# ── Run summary extraction tests ──────────────────────────────────
+
+test_run_summary_claude_extracts_result_field() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"system","subtype":"init","session_id":"abc-123"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working on it..."}]}}
+{"type":"result","subtype":"success","result":"Opened PR #42 to fix auth timeout.\n\n- Updated retry logic\n- Added test coverage","num_turns":3,"total_cost_usd":0.5,"modelUsage":{}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+  printf '%s' "$result" | grep -q "PR #42" || fail "expected result field content, got: ${result}"
+  pass "claude: extracts .result field from final result event"
+}
+
+test_run_summary_claude_no_result_event_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"system","subtype":"init","session_id":"abc-123"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no result event, got: ${result}"
+  pass "claude: returns empty when no result event"
+}
+
+test_run_summary_claude_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "claude: returns empty for missing log file"
+}
+
+test_run_summary_codex_extracts_last_agent_message() {
+  source_extractor
+  # Two agent_message events — expect the last one (plain-text .text fields).
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"First response"}}\n' > "${TEST_TMP}/run.ndjson"
+  printf '{"type":"item.completed","item":{"type":"agent_message","text":"Final answer here"}}\n' >> "${TEST_TMP}/run.ndjson"
+  local result
+  result="$(extract_run_summary_from_log "codex" "${TEST_TMP}/run.ndjson")"
+  [ "$result" = "Final answer here" ] || fail "expected last agent_message content, got: ${result}"
+  pass "codex: extracts last agent_message from item.completed events"
+}
+
+test_run_summary_codex_no_agent_message_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"turn.started","turn_id":"t1"}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "codex" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no agent_message events, got: ${result}"
+  pass "codex: returns empty when no agent_message events present"
+}
+
+test_run_summary_codex_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_run_summary_from_log "codex" "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "codex: returns empty for missing log file"
+}
+
+test_run_summary_unknown_provider_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","result":"some output"}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "gemini" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty for unsupported provider, got: ${result}"
+  pass "unsupported provider: returns empty"
+}
+
+test_run_summary_truncates_to_max_bytes() {
+  source_extractor
+  # Build a result string longer than max_bytes (use 20 as cap for test).
+  local long_text
+  long_text="$(printf '%0.s#' {1..50})"  # 50 '#' chars
+  cat > "${TEST_TMP}/run.ndjson" <<EOF
+{"type":"result","subtype":"success","result":"${long_text}","num_turns":1,"total_cost_usd":0.1,"modelUsage":{}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson" "20")"
+  local result_len
+  result_len="${#result}"
+  [ "$result_len" -le 20 ] || fail "expected truncation to 20 bytes, got ${result_len} bytes"
+  [ "$result_len" -gt 0 ] || fail "expected non-empty truncated result"
+  pass "run summary is truncated to max_bytes when result is too long"
+}
+
 # ── run all tests ─────────────────────────────────────────────────
 
 echo "Running token extractor tests"
@@ -227,6 +322,17 @@ run_test test_codex_sums_across_all_turn_completed_events
 run_test test_codex_single_turn_returns_correct_counts
 run_test test_codex_no_turn_completed_returns_empty
 run_test test_codex_missing_file_returns_empty
+echo ""
+
+echo "  Run summary — extraction:"
+run_test test_run_summary_claude_extracts_result_field
+run_test test_run_summary_claude_no_result_event_returns_empty
+run_test test_run_summary_claude_missing_file_returns_empty
+run_test test_run_summary_codex_extracts_last_agent_message
+run_test test_run_summary_codex_no_agent_message_returns_empty
+run_test test_run_summary_codex_missing_file_returns_empty
+run_test test_run_summary_unknown_provider_returns_empty
+run_test test_run_summary_truncates_to_max_bytes
 echo ""
 
 echo "Passed ${TESTS_PASSED}/${TESTS_RUN} tests"

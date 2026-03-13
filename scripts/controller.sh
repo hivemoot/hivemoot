@@ -410,6 +410,7 @@ spawn_worker() {
   append_env_if_set HEALTH_REPORT_URL
   append_env_if_set HEALTH_REPORT_TIMEOUT_SECS
   append_env_if_set HEALTH_REPORT_MAX_RETRIES
+  append_env_if_set HEALTH_REPORT_RUN_SUMMARY
 
   append_secret_env HIVEMOOT_AGENT_TOKEN
   append_secret_env OPENAI_API_KEY

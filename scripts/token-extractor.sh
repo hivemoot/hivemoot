@@ -80,3 +80,52 @@ extract_codex_token_usage_from_log() {
       end
   ' "$path" 2>/dev/null || true
 }
+
+# Extract a run summary string from the provider's NDJSON log.
+# Best-effort: returns empty string on failure, missing file, or unsupported provider.
+# Output is capped at max_bytes (default 1500) to stay within health payload budget.
+#
+# Claude:  reads .result from the final type=="result" stream-JSON event.
+# Codex:   reads .text from the last item.completed agent_message event.
+# Others:  returns empty (skip).
+extract_run_summary_from_log() {
+  local provider="$1"
+  local path="$2"
+  local max_bytes="${3:-1500}"
+
+  if [ ! -f "$path" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local raw=""
+  case "$provider" in
+    claude)
+      raw="$(jq -Rrs '
+        [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
+        | map(select(.type == "result")) | last
+        | if . == null then empty else (.result // empty) end
+      ' "$path" 2>/dev/null)" || true
+      ;;
+    codex)
+      local encoded
+      encoded="$(jq -Rr '
+        fromjson?
+        | select(.type=="item.completed")
+        | .item
+        | select(.type=="agent_message")
+        | .text // empty
+        | @base64
+      ' "$path" 2>/dev/null | tail -n 1)" || true
+      if [ -n "$encoded" ]; then
+        raw="$(printf '%s\n' "$encoded" | jq -Rr '@base64d' 2>/dev/null)" || true
+      fi
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [ -n "$raw" ]; then
+    printf '%s' "$raw" | head -c "$max_bytes"
+  fi
+}

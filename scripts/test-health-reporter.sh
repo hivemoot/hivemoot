@@ -238,6 +238,29 @@ test_payload_omits_empty_next_run_at() {
   pass "payload omits empty next_run_at"
 }
 
+test_payload_optional_run_summary() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "" "" "Opened PR #5 fixing auth bug.")"
+  local has_summary
+  has_summary="$(printf '%s' "$payload" | jq 'has("run_summary")')"
+  [ "$has_summary" = "true" ] || fail "expected run_summary field when provided"
+  local summary_val
+  summary_val="$(printf '%s' "$payload" | jq -r '.run_summary')"
+  [ "$summary_val" = "Opened PR #5 fixing auth bug." ] || fail "expected correct run_summary value, got '${summary_val}'"
+  pass "payload includes optional run_summary"
+}
+
+test_payload_omits_empty_run_summary() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "" "" "")"
+  local has_summary
+  has_summary="$(printf '%s' "$payload" | jq 'has("run_summary")')"
+  [ "$has_summary" = "false" ] || fail "expected run_summary to be omitted when empty"
+  pass "payload omits empty run_summary"
+}
+
 # ── validation tests ─────────────────────────────────────────────
 
 test_validates_missing_agent_id() {
@@ -1133,6 +1156,8 @@ run_test test_payload_includes_trigger
 run_test test_payload_omits_trigger_when_empty
 run_test test_payload_includes_token_usage
 run_test test_payload_omits_token_usage_when_empty
+run_test test_payload_optional_run_summary
+run_test test_payload_omits_empty_run_summary
 echo ""
 
 echo "  Validation — required fields:"
