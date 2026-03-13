@@ -85,12 +85,7 @@ if [ "$agent_failure_backoff_jitter_pct" -gt 100 ]; then
 fi
 
 if [ "$watch_mentions" = "1" ]; then
-  case "$watch_poll_interval" in
-    ''|*[!0-9]*) echo "WATCH_POLL_INTERVAL must be a non-negative integer" >&2; exit 1 ;;
-  esac
-  if [ "$watch_poll_interval" -eq 0 ]; then
-    echo "WATCH_POLL_INTERVAL must be > 0" >&2; exit 1
-  fi
+  require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
   if [ -z "$target_repo" ]; then
     echo "TARGET_REPO is required when WATCH_MENTIONS=1." >&2
     exit 1

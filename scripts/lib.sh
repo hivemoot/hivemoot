@@ -411,6 +411,29 @@ validate_task_id() {
   fi
 }
 
+require_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+
+  case "$value" in
+    ''|*[!0-9]*)
+      echo "${name} must be a non-negative integer" >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+
+  require_non_negative_integer "$name" "$value"
+  if [ "$value" -le 0 ]; then
+    echo "${name} must be > 0" >&2
+    exit 1
+  fi
+}
+
 # Deterministic offset within an interval for staggered scheduling.
 # md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
 # they never cluster at the same wake-up time.

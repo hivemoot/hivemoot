@@ -38,12 +38,8 @@ if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode"
   exit 1
 fi
 
-case "$launch_jitter_min" in
-  ''|*[!0-9]*) echo "LAUNCH_JITTER_MIN_SECS must be a non-negative integer" >&2; exit 1 ;;
-esac
-case "$launch_jitter_max" in
-  ''|*[!0-9]*) echo "LAUNCH_JITTER_MAX_SECS must be a non-negative integer" >&2; exit 1 ;;
-esac
+require_non_negative_integer LAUNCH_JITTER_MIN_SECS "$launch_jitter_min"
+require_non_negative_integer LAUNCH_JITTER_MAX_SECS "$launch_jitter_max"
 if [ "$launch_jitter_max" -lt "$launch_jitter_min" ]; then
   echo "LAUNCH_JITTER_MAX_SECS (${launch_jitter_max}) must be >= LAUNCH_JITTER_MIN_SECS (${launch_jitter_min})" >&2
   exit 1
