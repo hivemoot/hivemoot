@@ -8,6 +8,7 @@ import { watchCommand } from "./commands/watch.js";
 import { ackCommand } from "./commands/ack.js";
 import { prSnapshotCommand } from "./commands/pr-snapshot.js";
 import { prPreflightCommand } from "./commands/pr-preflight.js";
+import { prPostReviewCommand } from "./commands/pr-post-review.js";
 import { issueVoteCommand } from "./commands/issue-vote.js";
 import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
 import { notificationsPullCommand } from "./commands/notifications-pull.js";
@@ -229,6 +230,37 @@ Examples:
     Evaluate blockers/warnings with deterministic codes`,
   )
   .action(prPreflightCommand);
+
+prProgram
+  .command("post-review")
+  .description("Post an idempotent review on a pull request")
+  .argument("<pr>", "Pull request number")
+  .requiredOption("--event <event>", "Review event: approve, request-changes, or comment")
+  .option("--body <text>", "Review body text (mutually exclusive with --body-file)")
+  .option("--body-file <path>", "Read review body from file (mutually exclusive with --body)")
+  .option("--repo <owner/repo>", "Target repository (default: detect from git)")
+  .option("--json", "Output as JSON")
+  .option("--dry-run", "Resolve state without posting the review")
+  .addHelpText(
+    "after",
+    `
+
+Exit semantics:
+  0  review posted (or dry-run)
+  2  already reviewed at current HEAD SHA (idempotency gate)
+  >=3 execution error
+
+Examples:
+  $ hivemoot pr post-review 54 --event approve --body "LGTM" --repo hivemoot/hivemoot
+    Approve PR #54 (skips if already approved at current HEAD)
+
+  $ hivemoot pr post-review 54 --event request-changes --body-file ./feedback.md
+    Request changes using body from file
+
+  $ hivemoot pr post-review 54 --event approve --dry-run --json
+    Check idempotency state without posting`,
+  )
+  .action(prPostReviewCommand);
 
 const notificationsProgram = program
   .command("notifications")
