@@ -209,6 +209,7 @@ RUN_MODE=loop WATCH_MENTIONS=1 docker compose up hivemoot-agent
 
 Requires `TARGET_REPO` and user tokens (not installation tokens). Additional settings:
 - `WATCH_POLL_INTERVAL` — seconds between mention polls (default: 300)
+- `WATCH_TRIGGER_FAILURE_BACKOFF_SECS` — cooldown before a failed mention/review-request event is eligible for retry again (default: 300, set `0` to disable)
 - `WATCH_REVIEW_REQUESTS` — set `1` to also watch for PR review requests and dispatch review jobs (requires `WATCH_MENTIONS=1`)
 - `SESSION_RESUME` — set `0` to disable session resume and always start fresh runs (default: `1`)
 - `SESSION_RESUME_MAX_IDLE_HOURS` — reset stale sessions after this idle window (default: `12`)

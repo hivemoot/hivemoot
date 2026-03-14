@@ -1015,14 +1015,18 @@ run_mentions_retry_after_failure_case() {
   local case_dir="$2"
   local run1_log=""
   local run2_log=""
+  local run3_log=""
   local watch_output=""
+  local retry_backoff_secs="300"
   local mention_failed_count=0
   local mention_completed_count=0
   local ack_log=""
   local ack_count=""
   local expected_ack_key="thread-retry:2026-02-20T04:21:00Z"
   local expected_state_file="${case_dir}/workspace/watch-state/worker.json"
+  local failed_file=""
   local summary_file=""
+  local -a failed_files=()
   local -a summary_files=()
 
   mkdir -p "$case_dir"
@@ -1047,6 +1051,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -1055,6 +1060,12 @@ run_mentions_retry_after_failure_case() {
     bash "${repo_root}/scripts/controller.sh" >"$run1_log" 2>&1; then
     fail "first controller run unexpectedly succeeded in mention retry case"
   fi
+
+  shopt -s nullglob
+  failed_files=("${case_dir}/workspace"/queue/*.failed)
+  shopt -u nullglob
+  assert_eq "1" "${#failed_files[@]}" "expected one failed queue artifact after initial failure"
+  failed_file="${failed_files[0]}"
 
   run2_log="${case_dir}/controller-run2.log"
   env -i \
@@ -1072,6 +1083,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -1079,8 +1091,37 @@ run_mentions_retry_after_failure_case() {
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh" >"$run2_log" 2>&1
 
-  assert_file_contains "$run2_log" "worker: queued mention trigger for #88"
-  assert_file_not_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_not_contains "$run2_log" "worker: queued mention trigger for #88"
+
+  touch -t 202001010000 "$failed_file"
+
+  run3_log="${case_dir}/controller-run3.log"
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_DOCKER_WAIT_EXIT="0" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    MOCK_HIVEMOOT_WATCH_OUTPUT="${watch_output}" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$run3_log" 2>&1
+
+  assert_file_contains "$run3_log" "worker: queued mention trigger for #88"
+  assert_file_not_contains "$run3_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
 
   shopt -s nullglob
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
@@ -1107,7 +1148,7 @@ run_mentions_retry_after_failure_case() {
   assert_eq "1" "$ack_count" "expected exactly one ack after retry success"
   assert_file_contains "$ack_log" "${expected_ack_key}|${expected_state_file}"
 
-  echo "PASS: failed mention jobs are retried on re-emitted events"
+  echo "PASS: failed mention jobs back off before retrying re-emitted events"
 }
 
 run_task_watch_case() {

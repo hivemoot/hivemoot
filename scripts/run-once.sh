@@ -926,7 +926,10 @@ You are resuming a prior session for this mention thread. Some data in your cont
     if [ -n "$claude_plugin_dir" ]; then
       claude_fresh_cmd+=(--plugin-dir "$claude_plugin_dir")
     fi
-    claude_fresh_cmd+=("$user_message")
+    # Explicit end-of-flags separator: --plugin-dir (and --disallowedTools)
+    # are variadic in some CLI versions, so without "--" they consume the
+    # prompt as an extra directory/tool argument.
+    claude_fresh_cmd+=("--" "$user_message")
 
     if [ "$session_resume" = "1" ] && [ -n "$session_resume_key" ]; then
       if claude -p --resume --help >/dev/null 2>&1 \
@@ -983,7 +986,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
       if [ -n "$claude_plugin_dir" ]; then
         cmd+=(--plugin-dir "$claude_plugin_dir")
       fi
-      cmd+=("$claude_resume_user_message")
+      cmd+=("--" "$claude_resume_user_message")
     else
       if [ -n "$session_resume_key" ] && [ "$claude_resume_supported" -eq 1 ]; then
         log "Claude session resume: no saved session for key=${agent_session_key}; starting fresh"

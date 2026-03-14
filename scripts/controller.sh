@@ -494,6 +494,9 @@ queue_has_ack_key() {
   local ack_key_marker=""
   local existing_file=""
   local existing_ack_key=""
+  local now=0
+  local mtime=0
+  local age_secs=0
   local -a existing_files=()
 
   if [ -z "$ack_key" ]; then
@@ -503,10 +506,21 @@ queue_has_ack_key() {
 
   shopt -s nullglob
   existing_files=("${queue_root}"/*.trigger.json "${queue_root}"/*.processing "${queue_root}"/*.done)
+  if [ "$watch_trigger_failure_backoff_secs" -gt 0 ]; then
+    existing_files+=("${queue_root}"/*.failed)
+    now="$(date +%s)"
+  fi
   shopt -u nullglob
 
   for existing_file in "${existing_files[@]}"; do
     [ -f "$existing_file" ] || continue
+    if [[ "$existing_file" == *.failed ]]; then
+      mtime="$(file_mtime_epoch "$existing_file" "$now")"
+      age_secs=$((now - mtime))
+      if [ "$age_secs" -gt "$watch_trigger_failure_backoff_secs" ]; then
+        continue
+      fi
+    fi
     # Fast-path: skip jq parse for files that cannot contain this ack key.
     if ! grep -Fq "$ack_key_marker" "$existing_file"; then
       continue
@@ -1959,6 +1973,7 @@ watch_mentions="${WATCH_MENTIONS:-0}"
 watch_review_requests="${WATCH_REVIEW_REQUESTS:-0}"
 watch_tasks="${WATCH_TASKS:-0}"
 watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
+watch_trigger_failure_backoff_secs="${WATCH_TRIGGER_FAILURE_BACKOFF_SECS:-300}"
 task_poll_interval_secs="${TASK_POLL_INTERVAL_SECS:-120}"
 task_dispatch_agent_ids="${TASK_DISPATCH_AGENT_IDS:-}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
@@ -2062,6 +2077,7 @@ require_non_negative_integer QUEUE_ARTIFACT_TTL_SECS "$queue_artifact_ttl_secs"
 require_non_negative_integer WORKSPACE_TTL_SECS "$workspace_ttl_secs"
 require_non_negative_integer QUEUE_MAINTENANCE_INTERVAL_SECS "$queue_maintenance_interval_secs"
 require_non_negative_integer HEARTBEAT_INTERVAL_SECS "$heartbeat_interval_secs"
+require_non_negative_integer WATCH_TRIGGER_FAILURE_BACKOFF_SECS "$watch_trigger_failure_backoff_secs"
 if [ "$watch_mentions" = "1" ]; then
   require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
 fi
