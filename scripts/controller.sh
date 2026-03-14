@@ -293,7 +293,7 @@ spawn_worker() {
     --read-only
     --tmpfs "/tmp:size=2g,mode=1777"
     --memory "${AGENT_MEMORY_LIMIT:-16g}"
-    --cpus "${AGENT_CPU_LIMIT:-4.0}"
+    --cpus "${AGENT_CPU_LIMIT:-2.0}"
     --pids-limit "${AGENT_PIDS_LIMIT:-512}"
     -v "${job_workspace}:/workspace"
     -v "${job_home}:/home/node"
