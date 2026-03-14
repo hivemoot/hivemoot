@@ -93,86 +93,97 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const auth = await authenticateAgentRequest(request);
-  if (!auth.ok) return auth.response;
+  try {
+    const auth = await authenticateAgentRequest(request);
+    if (!auth.ok) return auth.response;
 
-  const { report } = validation;
-  const idempotency = await reserveHealthReportIdempotency(
-    auth.installationId,
-    report,
-    auth.redis,
-  );
-
-  if (idempotency.kind === "duplicate") {
-    return NextResponse.json({
-      received: true,
-      received_at: idempotency.receivedAt,
-      duplicate: true,
-    });
-  }
-
-  if (idempotency.kind === "conflict") {
-    return agentHealthError(
-      AGENT_HEALTH_ERROR.IDEMPOTENCY_CONFLICT,
-      "run_id already exists with a different payload",
-      409,
+    const { report } = validation;
+    const idempotency = await reserveHealthReportIdempotency(
+      auth.installationId,
+      report,
+      auth.redis,
     );
-  }
 
-  if (idempotency.kind === "pending") {
-    return agentHealthError(
-      AGENT_HEALTH_ERROR.IDEMPOTENCY_PENDING,
-      "run_id is currently being processed; retry shortly",
-      409,
-    );
-  }
-
-  const allowed = await checkRateLimit(
-    auth.installationId,
-    report.agent_id,
-    report.repo,
-    auth.redis,
-  );
-
-  if (!allowed) {
-    try {
-      await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
-    } catch (cleanupErr) {
-      console.warn("[agent-health] Best-effort idempotency cleanup failed after rate-limit", {
-        installationId: auth.installationId,
-        agentId: report.agent_id,
-        runId: report.run_id,
-        error: cleanupErr,
+    if (idempotency.kind === "duplicate") {
+      return NextResponse.json({
+        received: true,
+        received_at: idempotency.receivedAt,
+        duplicate: true,
       });
     }
-    return agentHealthError(
-      AGENT_HEALTH_ERROR.RATE_LIMITED,
-      "Rate limited — one report per agent per repo per 60 seconds",
-      429,
-    );
-  }
 
-  let persisted = false;
-  try {
-    await recordHealthReport(auth.installationId, report, auth.redis);
-    persisted = true;
-    await commitHealthReportIdempotency(auth.installationId, report, auth.redis);
-  } catch (error) {
-    if (!persisted) {
+    if (idempotency.kind === "conflict") {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.IDEMPOTENCY_CONFLICT,
+        "run_id already exists with a different payload",
+        409,
+      );
+    }
+
+    if (idempotency.kind === "pending") {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.IDEMPOTENCY_PENDING,
+        "run_id is currently being processed; retry shortly",
+        409,
+      );
+    }
+
+    const allowed = await checkRateLimit(
+      auth.installationId,
+      report.agent_id,
+      report.repo,
+      auth.redis,
+    );
+
+    if (!allowed) {
       try {
         await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
       } catch (cleanupErr) {
-        console.error("[agent-health] Idempotency cleanup failed during write error recovery", {
+        console.warn("[agent-health] Best-effort idempotency cleanup failed after rate-limit", {
           installationId: auth.installationId,
+          agentId: report.agent_id,
           runId: report.run_id,
-          cleanupError: cleanupErr,
+          error: cleanupErr,
         });
       }
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.RATE_LIMITED,
+        "Rate limited — one report per agent per repo per 60 seconds",
+        429,
+      );
     }
-    throw error;
-  }
 
-  return NextResponse.json({ received: true, received_at: report.received_at });
+    let persisted = false;
+    try {
+      await recordHealthReport(auth.installationId, report, auth.redis);
+      persisted = true;
+      await commitHealthReportIdempotency(auth.installationId, report, auth.redis);
+    } catch (error) {
+      if (!persisted) {
+        try {
+          await releaseHealthReportIdempotency(auth.installationId, report, auth.redis);
+        } catch (cleanupErr) {
+          console.error("[agent-health] Idempotency cleanup failed during write error recovery", {
+            installationId: auth.installationId,
+            runId: report.run_id,
+            cleanupError: cleanupErr,
+          });
+        }
+      }
+      throw error;
+    }
+
+    return NextResponse.json({ received: true, received_at: report.received_at });
+  } catch (error) {
+    console.error("[agent-health] POST failed", {
+      error,
+    });
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to process health report",
+      503,
+    );
+  }
 }
 
 async function handleHeartbeat(body: unknown, request: NextRequest) {
@@ -185,29 +196,40 @@ async function handleHeartbeat(body: unknown, request: NextRequest) {
     );
   }
 
-  const auth = await authenticateAgentRequest(request);
-  if (!auth.ok) return auth.response;
+  try {
+    const auth = await authenticateAgentRequest(request);
+    if (!auth.ok) return auth.response;
 
-  const { heartbeat } = validation;
+    const { heartbeat } = validation;
 
-  const allowed = await checkRateLimit(
-    auth.installationId,
-    heartbeat.agent_id,
-    heartbeat.repo,
-    auth.redis,
-  );
+    const allowed = await checkRateLimit(
+      auth.installationId,
+      heartbeat.agent_id,
+      heartbeat.repo,
+      auth.redis,
+    );
 
-  if (!allowed) {
+    if (!allowed) {
+      return agentHealthError(
+        AGENT_HEALTH_ERROR.RATE_LIMITED,
+        "Rate limited — one report per agent per repo per 60 seconds",
+        429,
+      );
+    }
+
+    await recordHeartbeat(auth.installationId, heartbeat, auth.redis);
+
+    return NextResponse.json({ received: true, received_at: heartbeat.received_at });
+  } catch (error) {
+    console.error("[agent-health] heartbeat POST failed", {
+      error,
+    });
     return agentHealthError(
-      AGENT_HEALTH_ERROR.RATE_LIMITED,
-      "Rate limited — one report per agent per repo per 60 seconds",
-      429,
+      AGENT_HEALTH_ERROR.SERVER_MISCONFIGURATION,
+      "Failed to process heartbeat",
+      503,
     );
   }
-
-  await recordHeartbeat(auth.installationId, heartbeat, auth.redis);
-
-  return NextResponse.json({ received: true, received_at: heartbeat.received_at });
 }
 
 export async function GET(request: NextRequest) {

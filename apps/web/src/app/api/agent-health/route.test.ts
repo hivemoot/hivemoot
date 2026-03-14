@@ -348,12 +348,13 @@ describe("POST /api/agent-health", () => {
     );
   });
 
-  it("releases idempotency reservation when write fails", async () => {
+  it("releases idempotency reservation when write fails and returns 503", async () => {
     vi.mocked(recordHealthReport).mockRejectedValue(new Error("redis write failed"));
 
-    await expect(POST(makePostRequest(VALID_REQUEST_BODY))).rejects.toThrow(
-      "redis write failed",
-    );
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
     expect(releaseHealthReportIdempotency).toHaveBeenCalledWith(
       "inst-1",
       VALID_REPORT,
@@ -361,15 +362,43 @@ describe("POST /api/agent-health", () => {
     );
   });
 
-  it("does not release reservation when write succeeded but commit update fails", async () => {
+  it("does not release reservation when write succeeded but commit update fails, returns 503", async () => {
     vi.mocked(commitHealthReportIdempotency).mockRejectedValue(
       new Error("idempotency commit failed"),
     );
 
-    await expect(POST(makePostRequest(VALID_REQUEST_BODY))).rejects.toThrow(
-      "idempotency commit failed",
-    );
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
     expect(releaseHealthReportIdempotency).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 when authenticateAgentRequest throws", async () => {
+    vi.mocked(authenticateAgentRequest).mockRejectedValue(new Error("redis connection refused"));
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("returns 503 when reserveHealthReportIdempotency throws", async () => {
+    vi.mocked(reserveHealthReportIdempotency).mockRejectedValue(new Error("redis down"));
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("returns 503 when checkRateLimit throws", async () => {
+    vi.mocked(checkRateLimit).mockRejectedValue(new Error("redis timeout"));
+
+    const res = await POST(makePostRequest(VALID_REQUEST_BODY));
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
   });
 });
 
@@ -468,6 +497,48 @@ describe("POST /api/agent-health (heartbeat)", () => {
 
     expect(res.status).toBe(429);
     expect(recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 when authenticateAgentRequest throws during heartbeat", async () => {
+    vi.mocked(authenticateAgentRequest).mockRejectedValue(new Error("redis connection refused"));
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("returns 503 when checkRateLimit throws during heartbeat", async () => {
+    vi.mocked(checkRateLimit).mockRejectedValue(new Error("redis timeout"));
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
+  });
+
+  it("returns 503 when recordHeartbeat throws", async () => {
+    vi.mocked(recordHeartbeat).mockRejectedValue(new Error("redis write failed"));
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_server_misconfiguration");
   });
 
   it("accepts heartbeat with next_run_at", async () => {
