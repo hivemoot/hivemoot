@@ -56,6 +56,7 @@ function makeRequest() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(console, "error").mockImplementation(() => {});
   mockAuthSuccess();
   vi.mocked(getByokEnvelope).mockResolvedValue({ ...MOCK_ENVELOPE });
 });
@@ -123,7 +124,8 @@ describe("GET /api/byok/status", () => {
   });
 
   it("returns structured 500 when the BYOK store fails", async () => {
-    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis down"));
+    const error = new Error("redis down");
+    vi.mocked(getByokEnvelope).mockRejectedValue(error);
 
     const req = makeRequest();
     const res = await GET(req);
@@ -132,5 +134,12 @@ describe("GET /api/byok/status", () => {
     const body = await res.json();
     expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
     expect(body.message).toBe("Internal server error");
+    expect(console.error).toHaveBeenCalledWith(
+      "[byok-status] Failed to process request",
+      expect.objectContaining({
+        installationId: MOCK_SESSION.installationId,
+        error,
+      }),
+    );
   });
 });

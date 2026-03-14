@@ -61,6 +61,7 @@ function makeRequest(body: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(console, "error").mockImplementation(() => {});
   mockAuthSuccess();
   vi.mocked(getByokEnvelope).mockResolvedValue({ ...MOCK_ENVELOPE });
   vi.mocked(setByokEnvelope).mockResolvedValue(undefined);
@@ -104,7 +105,8 @@ describe("POST /api/byok/revoke", () => {
   });
 
   it("returns structured 500 when the BYOK store fails", async () => {
-    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis down"));
+    const error = new Error("redis down");
+    vi.mocked(getByokEnvelope).mockRejectedValue(error);
 
     const req = makeRequest({});
     const res = await POST(req);
@@ -113,5 +115,12 @@ describe("POST /api/byok/revoke", () => {
     const body = await res.json();
     expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
     expect(body.message).toBe("Internal server error");
+    expect(console.error).toHaveBeenCalledWith(
+      "[byok-revoke] Failed to process request",
+      expect.objectContaining({
+        installationId: MOCK_SESSION.installationId,
+        error,
+      }),
+    );
   });
 });
