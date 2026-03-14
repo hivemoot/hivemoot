@@ -2,14 +2,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
   validateReport,
+  validateHeartbeat,
   reserveHealthReportIdempotency,
   commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
   checkRateLimit,
   recordHealthReport,
+  recordHeartbeat,
   getOverview,
   getHistory,
   type HealthReport,
+  type HeartbeatPayload,
 } from "./agent-health-store";
 
 // ---------------------------------------------------------------------------
@@ -1245,5 +1248,263 @@ describe("getHistory", () => {
   it("trims stale entries before returning", async () => {
     await getHistory("inst-1", "bee-1", "repo", redis);
     expect(redis.zremrangebyscore).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — validateHeartbeat
+// ---------------------------------------------------------------------------
+
+describe("validateHeartbeat", () => {
+  it("accepts a minimal heartbeat", () => {
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.heartbeat.agent_id).toBe("bee-1");
+      expect(result.heartbeat.repo).toBe("hivemoot/sandbox");
+      expect(result.heartbeat.outcome).toBe("heartbeat");
+      expect(result.heartbeat.received_at).toBeDefined();
+    }
+  });
+
+  it("accepts heartbeat with next_run_at", () => {
+    const futureIso = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      next_run_at: futureIso,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.heartbeat.next_run_at).toBe(futureIso);
+    }
+  });
+
+  it("rejects unknown fields", () => {
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      run_id: "should-not-be-here",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("Unknown field");
+  });
+
+  it("rejects non-heartbeat outcome", () => {
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "success",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("heartbeat");
+  });
+
+  it("rejects invalid agent_id", () => {
+    const result = validateHeartbeat({
+      agent_id: "BEE#1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("agent_id");
+  });
+
+  it("rejects invalid repo format", () => {
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "no-slash",
+      outcome: "heartbeat",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("repo");
+  });
+
+  it("rejects non-object body", () => {
+    expect(validateHeartbeat("string").ok).toBe(false);
+    expect(validateHeartbeat(null).ok).toBe(false);
+    expect(validateHeartbeat([]).ok).toBe(false);
+  });
+
+  it("rejects next_run_at in the far past", () => {
+    const pastIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      next_run_at: pastIso,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("past");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — recordHeartbeat
+// ---------------------------------------------------------------------------
+
+describe("recordHeartbeat", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  const baseHeartbeat: HeartbeatPayload = {
+    agent_id: "bee-1",
+    repo: "hivemoot/sandbox",
+    outcome: "heartbeat",
+    received_at: "2026-03-14T12:00:00Z",
+  };
+
+  it("stores a minimal heartbeat entry when no prior report exists", async () => {
+    await recordHeartbeat("inst-1", baseHeartbeat, redis);
+
+    expect(redis.multi).toHaveBeenCalledTimes(1);
+    expect(redis.set).toHaveBeenCalledWith(
+      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      expect.objectContaining({ outcome: "heartbeat" }),
+      expect.objectContaining({ ex: expect.any(Number) }),
+    );
+    expect(redis.sadd).toHaveBeenCalledWith(
+      "agent-health:index:inst-1",
+      "bee-1:hivemoot/sandbox",
+    );
+  });
+
+  it("does not add to the runs sorted set", async () => {
+    await recordHeartbeat("inst-1", baseHeartbeat, redis);
+
+    expect(redis.zadd).not.toHaveBeenCalled();
+  });
+
+  it("patches existing report preserving run data", async () => {
+    const existingReport: HealthReport = {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-42",
+      outcome: "success",
+      duration_secs: 300,
+      consecutive_failures: 0,
+      received_at: "2026-03-14T10:00:00Z",
+    };
+
+    redis._store.set(
+      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      existingReport,
+    );
+
+    await recordHeartbeat("inst-1", baseHeartbeat, redis);
+
+    const stored = redis._store.get(
+      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+    ) as Record<string, unknown>;
+
+    // Run data preserved
+    expect(stored.run_id).toBe("run-42");
+    expect(stored.outcome).toBe("success");
+    expect(stored.duration_secs).toBe(300);
+    // Timestamps refreshed
+    expect(stored.received_at).toBe("2026-03-14T12:00:00Z");
+  });
+
+  it("updates next_run_at on existing report when provided", async () => {
+    const futureIso = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    const existingReport: HealthReport = {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-42",
+      outcome: "success",
+      duration_secs: 300,
+      consecutive_failures: 0,
+      received_at: "2026-03-14T10:00:00Z",
+    };
+
+    redis._store.set(
+      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      existingReport,
+    );
+
+    await recordHeartbeat("inst-1", { ...baseHeartbeat, next_run_at: futureIso }, redis);
+
+    const stored = redis._store.get(
+      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+    ) as Record<string, unknown>;
+
+    expect(stored.next_run_at).toBe(futureIso);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — deriveStatus with heartbeat
+// ---------------------------------------------------------------------------
+
+describe("getOverview (heartbeat status)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  it("derives ok status for a heartbeat-only entry", async () => {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result).toHaveLength(1);
+    expect(result[0].status).toBe("ok");
+    expect(result[0].outcome).toBe("heartbeat");
+  });
+
+  it("preserves failed status from patched report (heartbeat does not mask failure)", async () => {
+    // Simulate: a failed run was stored, then a heartbeat patched received_at
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-42",
+      outcome: "failure",
+      duration_secs: 300,
+      consecutive_failures: 3,
+      error: "timeout",
+      received_at: new Date().toISOString(),
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result[0].status).toBe("failed");
+    expect(result[0].outcome).toBe("failure");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — validateReport trigger: "task"
+// ---------------------------------------------------------------------------
+
+describe("validateReport trigger extensions", () => {
+  it("accepts trigger: 'task'", () => {
+    const result = validateReport({
+      agent_id: "attendant",
+      repo: "hivemoot/sandbox",
+      run_id: "task-run-1",
+      outcome: "success",
+      duration_secs: 60,
+      consecutive_failures: 0,
+      trigger: "task",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.report.trigger).toBe("task");
   });
 });
