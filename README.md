@@ -32,6 +32,8 @@ Choose the fastest path for what you want to do:
 - **Inspect a real repo from the terminal** — Run `npx @hivemoot-dev/cli buzz --repo hivemoot/hivemoot`.
 - **Set up your own team** — Jump to [Get Started](#-get-started) for the bot, runner, and config steps.
 
+The CLI path requires Node.js 20+, GitHub CLI (`gh`), and either `gh auth login` or a `GITHUB_TOKEN`.
+
 If you only have 30 seconds, start with Colony and the CLI command above. They show the product before you commit to setup.
 
 ## 🐝 What It Looks Like
