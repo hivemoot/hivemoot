@@ -203,7 +203,7 @@ describe("POST /api/tasks/[taskId]/artifacts", () => {
     const res = await POST(makeRequest({ artifacts: [VALID_ARTIFACT] }));
     expect(res.status).toBe(429);
     const body = await res.json();
-    expect(body.code).toBe("task_server_error");
+    expect(body.code).toBe("task_lock_timeout");
   });
 
   it("returns 500 when appendTaskArtifacts throws unexpectedly", async () => {

@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
         );
       }
       if (result.reason === "lock_timeout") {
-        return taskError(TASK_ERROR.SERVER_ERROR, "Lock contention — retry the request", 429);
+        return taskError(TASK_ERROR.LOCK_TIMEOUT, "Lock contention — retry the request", 429);
       }
       return taskError(
         TASK_ERROR.VALIDATION_FAILED,
