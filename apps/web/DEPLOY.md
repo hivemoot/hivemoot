@@ -18,6 +18,7 @@ Custom domain connection is pending.
 
 - BYOK storage/runtime contract: `apps/web/BYOK_CONTRACT.md`
 - Agent health + agent token API contract: `apps/web/AGENT_HEALTH_CONTRACT.md`
+- Task API contract: `apps/web/TASK_CONTRACT.md`
 
 ## Flow
 
