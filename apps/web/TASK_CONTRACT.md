@@ -185,7 +185,51 @@ Task must be in `failed` or `timed_out` status. `completed` tasks cannot be retr
 
 ---
 
-## 10. Redis Key Layout
+## 10. Messages Contract
+
+**Auth:** Setup session cookie.
+
+**GET /api/tasks/{taskId}/messages**
+
+Returns the full message history for a task.
+
+**Response:** `200` + `{ "messages": TaskMessage[] }`
+
+`TaskMessage` fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `role` | `"user"` \| `"assistant"` | Source of the message |
+| `content` | `string` | Message text |
+| `created_at` | `string` | ISO 8601 timestamp |
+
+History is ordered oldest-first (insertion order). Max 200 entries stored (`task:{installationId}:{taskId}:messages` list, `rpush`).
+
+---
+
+**POST /api/tasks/{taskId}/messages**
+
+Appends a user message to task message history. The task must be in a state that accepts messages — currently only `needs_follow_up`.
+
+**Payload limit:** 64 KB (both `Content-Length` check and body byte check).
+
+**Request body:** `{ "message": string }` — required, must be non-empty after trim.
+
+**Responses:**
+- `200` + `{ "task": TaskRecord }` — message appended
+- `400` `task_invalid_json` — malformed JSON
+- `400` `task_missing_fields` — `message` absent or empty
+- `404` `task_not_found` — task not found or TTL expired
+- `409` `task_follow_up_not_allowed` — task is not in `needs_follow_up` status
+- `413` `task_payload_too_large` — body exceeds 64 KB
+- `429` `task_concurrency_limited` — max concurrent tasks reached (returned when `addUserMessage` returns `concurrency` reason; rare from this path)
+- `500` `task_server_error` — unexpected server error
+
+**Distinction from follow-up:** `POST /api/tasks/{taskId}/follow-up` (section 8) triggers a status transition (`needs_follow_up → running`). `POST /api/tasks/{taskId}/messages` appends to history without a forced transition — it calls `addUserMessage`, which internally validates the state but does not change `status` directly.
+
+---
+
+## 11. Redis Key Layout
 
 | Key | Type | Content | Notes |
 |---|---|---|---|
@@ -200,7 +244,7 @@ Task must be in `failed` or `timed_out` status. `completed` tasks cannot be retr
 
 ---
 
-## 11. Error Code Namespace
+## 12. Error Code Namespace
 
 All error responses follow `{ "code": string, "message": string }`. Task routes use the `task_*` namespace:
 
@@ -225,7 +269,7 @@ All error responses follow `{ "code": string, "message": string }`. Task routes 
 
 ---
 
-## 12. Environment Requirements
+## 13. Environment Requirements
 
 All task routes require:
 - `HIVEMOOT_REDIS_REST_URL`
@@ -241,7 +285,7 @@ Executor-auth routes require:
 
 ---
 
-## 13. Acceptance Coverage
+## 14. Acceptance Coverage
 
 | File | Covers |
 |---|---|
@@ -257,7 +301,7 @@ Executor-auth routes require:
 
 ---
 
-## 14. Proposed Extensions
+## 15. Proposed Extensions
 
 The following issues are in progress and will modify this contract when merged:
 
