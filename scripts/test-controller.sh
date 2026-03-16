@@ -351,6 +351,7 @@ write_format=""
 auth_header=""
 url=""
 data=""
+read_header_from_stdin=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -365,6 +366,8 @@ while [ "$#" -gt 0 ]; do
     -H)
       if [ "${2:-}" != "" ] && [[ "${2:-}" == Authorization:* ]]; then
         auth_header="${2:-}"
+      elif [ "${2:-}" = "@-" ]; then
+        read_header_from_stdin=1
       fi
       shift 2
       ;;
@@ -390,6 +393,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$read_header_from_stdin" -eq 1 ]; then
+  auth_header="$(tr -d '\r\n' <&0)"
+fi
 
 printf 'URL=%s AUTH=%s DATA=%s\n' "$url" "$auth_header" "$data" >> "${state_dir}/curl.log"
 
@@ -1321,6 +1328,106 @@ run_task_watch_token_file_case() {
   echo "PASS: task-watch mode supports HIVEMOOT_AGENT_TOKEN_FILE without conflicts"
 }
 
+run_heartbeat_auth_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local expected_auth="$3"
+  shift 3
+  local -a auth_env=("$@")
+  local controller_pid=0
+  local controller_log=""
+  local curl_log=""
+  local deadline=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  controller_log="${case_dir}/controller.log"
+  curl_log="${case_dir}/curl-state/curl.log"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="0" \
+    HEALTH_REPORT_URL="https://api.example.com/api/agent-health" \
+    HEARTBEAT_INTERVAL_SECS="1" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    "${auth_env[@]}" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if [ -f "$curl_log" ] && grep -Fq "AUTH=${expected_auth}" "$curl_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before heartbeat auth was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for heartbeat auth"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  wait "$controller_pid" 2>/dev/null || true
+
+  [ -f "$curl_log" ] || fail "missing curl log in heartbeat auth case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/agent-health"
+  assert_file_contains "$curl_log" "AUTH=${expected_auth}"
+  assert_file_contains "$curl_log" '"outcome": "heartbeat"'
+}
+
+run_heartbeat_inline_token_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token" \
+    "HIVEMOOT_AGENT_TOKEN=shared-token"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN"
+}
+
+run_heartbeat_token_file_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local token_file=""
+
+  token_file="${case_dir}/secrets/hivemoot-agent-token"
+  mkdir -p "$(dirname "$token_file")"
+  printf '%s' 'shared-token-from-file' > "$token_file"
+  chmod 600 "$token_file"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token-from-file" \
+    "HIVEMOOT_AGENT_TOKEN_FILE=${token_file}"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN_FILE"
+}
+
 run_task_watch_no_task_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2072,6 +2179,8 @@ run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
 run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
 run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
+run_heartbeat_inline_token_case "$repo_root" "${tmpdir}/heartbeat-inline-token"
+run_heartbeat_token_file_case "$repo_root" "${tmpdir}/heartbeat-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
 run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
 run_task_watch_scope_validation_case "$repo_root" "${tmpdir}/task-watch-scope-validation"

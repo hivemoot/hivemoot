@@ -1953,13 +1953,15 @@ start_agent_scheduler() {
 # next_run_at is approximated as now + periodic_interval; the controller loop
 # does not track exact per-agent wake times from scheduler subshells.
 fire_heartbeats() {
-  local next_run_at agent_id token_file
+  local next_run_at agent_id health_token_input
   next_run_at="$(date -u -d "+${periodic_interval} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || date -u -v "+${periodic_interval}S" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || true)"
+  # Use the shared health report auth input, not per-agent GitHub PATs.
+  # Prefer the file path when present, otherwise fall back to the inline token.
+  health_token_input="${HIVEMOOT_AGENT_TOKEN_FILE:-${HIVEMOOT_AGENT_TOKEN:-}}"
   for agent_id in "${agent_ids[@]}"; do
-    token_file="${agent_token_files[$agent_id]:-}"
-    send_heartbeat "$agent_id" "$target_repo" "$token_file" "$next_run_at" || true
+    send_heartbeat "$agent_id" "$target_repo" "$health_token_input" "$next_run_at" || true
     log "Heartbeat attempted: agent=${agent_id}"
   done
 }
