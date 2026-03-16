@@ -541,4 +541,57 @@ assert_gt "$claude_case3_created_after" "$claude_case3_created" "claude case3: c
 assert_ge "$claude_case3_last_used_after" "$claude_case3_created_after" "claude case3: last_used should be >= created"
 echo "PASS: claude case3 resume-fail + fresh-success stores new session metadata"
 
+task_codex_session_key="$(build_scoped_session_key "task:task-followup" "owner/repo" "codex" "" "{}")"
+task_claude_session_key="$(build_scoped_session_key "task:task-followup" "owner/repo" "claude" "" "{}")"
+
+# Task-key Codex case: the normal resume lifecycle should work with task-scoped keys.
+task_codex_dir="${tmpdir}/task-codex-case"
+mkdir -p "${task_codex_dir}/home" "${task_codex_dir}/workspace/sessions/codex" "${task_codex_dir}/logs"
+setup_mocks "${task_codex_dir}/mock-bin"
+setup_case_repo "${task_codex_dir}/repo"
+task_codex_map_file="${task_codex_dir}/workspace/sessions/codex/tool-session-map.tsv"
+task_codex_now="$(date +%s)"
+task_codex_created="$((task_codex_now - 600))"
+task_codex_last_used="$((task_codex_now - 60))"
+printf '%s\t%s\t%s\t%s\n' "$task_codex_session_key" "$old_session_id" "$task_codex_created" "$task_codex_last_used" > "$task_codex_map_file"
+
+run_run_once "$task_codex_dir" "$repo_root" \
+  AGENT_TASK_ID="task-followup" \
+  AGENT_SESSION_KEY="task:task-followup" \
+  CODEX_TEST_SCENARIO="resume_success_same_id" \
+  CODEX_RESUME_THREAD_ID="$old_session_id" >/dev/null
+
+task_codex_record="$(read_session_record "$task_codex_map_file" "$task_codex_session_key")"
+[ -n "$task_codex_record" ] || fail "task codex: missing session record after successful resume"
+IFS=$'\t' read -r task_codex_sid task_codex_created_after task_codex_last_used_after <<< "$task_codex_record"
+assert_eq "$old_session_id" "$task_codex_sid" "task codex: session id changed unexpectedly"
+assert_eq "$task_codex_created" "$task_codex_created_after" "task codex: created epoch was not preserved"
+assert_gt "$task_codex_last_used_after" "$task_codex_last_used" "task codex: last_used was not advanced"
+echo "PASS: task-key codex resume preserves session metadata"
+
+# Task-key Claude case: task mode now keeps stream-json so Claude sessions are saved/resumed too.
+task_claude_dir="${tmpdir}/task-claude-case"
+mkdir -p "${task_claude_dir}/home" "${task_claude_dir}/workspace/sessions/claude" "${task_claude_dir}/logs"
+setup_mocks "${task_claude_dir}/mock-bin"
+setup_case_repo "${task_claude_dir}/repo"
+task_claude_map_file="${task_claude_dir}/workspace/sessions/claude/tool-session-map.tsv"
+task_claude_now="$(date +%s)"
+task_claude_created="$((task_claude_now - 600))"
+task_claude_last_used="$((task_claude_now - 60))"
+printf '%s\t%s\t%s\t%s\n' "$task_claude_session_key" "$claude_old_session_id" "$task_claude_created" "$task_claude_last_used" > "$task_claude_map_file"
+
+run_run_once_claude "$task_claude_dir" "$repo_root" \
+  AGENT_TASK_ID="task-followup" \
+  AGENT_SESSION_KEY="task:task-followup" \
+  CLAUDE_TEST_SCENARIO="resume_success_same_id" \
+  CLAUDE_RESUME_SESSION_ID="$claude_old_session_id" >/dev/null
+
+task_claude_record="$(read_session_record "$task_claude_map_file" "$task_claude_session_key")"
+[ -n "$task_claude_record" ] || fail "task claude: missing session record after successful resume"
+IFS=$'\t' read -r task_claude_sid task_claude_created_after task_claude_last_used_after <<< "$task_claude_record"
+assert_eq "$claude_old_session_id" "$task_claude_sid" "task claude: session id changed unexpectedly"
+assert_eq "$task_claude_created" "$task_claude_created_after" "task claude: created epoch was not preserved"
+assert_gt "$task_claude_last_used_after" "$task_claude_last_used" "task claude: last_used was not advanced"
+echo "PASS: task-key claude resume preserves session metadata"
+
 echo "PASS: all session resume lifecycle checks"

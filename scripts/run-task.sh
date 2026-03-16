@@ -293,9 +293,10 @@ validate_target_repo "$task_repo"
 
 result_path="${workspace_root}/task-output/${task_id}/result.md"
 
-# Task mode always starts fresh context to avoid cross-task bleed.
-export SESSION_RESUME=0
-unset AGENT_SESSION_KEY || true
+# Task follow-ups reuse the normal session lifecycle unless explicitly disabled.
+# Always switch to a task-scoped key so inherited mention-thread keys cannot
+# leak into task mode and resume the wrong provider session.
+export AGENT_SESSION_KEY="task:${task_id}"
 
 # Task mode uses the task prompt (AGENT_EXTRA_PROMPT) as its full instruction
 # set — role resolution via `hivemoot role <name>` is not needed and would fail
@@ -445,18 +446,37 @@ extract_codex_result_markdown() {
   fi
 }
 
-# For Gemini and Claude in task mode, --output-format text makes the log the
-# raw answer. Read it directly without any JSON parsing.
-# Assumption: run-once.sh captures provider output via `2>&1 | tee -a "$log_file"`,
-# so log_path contains both stdout and stderr. For text mode without --verbose,
-# stderr is expected empty in practice for both CLIs, making the whole log safe
-# to use as the result. If a future CLI change produces non-empty stderr in text
-# mode, the prefix lines would appear in the posted result — revisit then.
+# Gemini task mode still logs plain text, so the log is the raw answer.
 extract_text_result_from_log() {
   local log_path="$1"
   if [ -f "$log_path" ] && [ -s "$log_path" ]; then
     cat "$log_path"
   fi
+}
+
+extract_claude_result_markdown() {
+  local log_path="$1"
+  local encoded_result=""
+
+  if [ ! -f "$log_path" ]; then
+    return 0
+  fi
+
+  encoded_result="$(
+    jq -Rr '
+      fromjson?
+      | select(.type=="result")
+      | .result // empty
+      | @base64
+    ' "$log_path" | tail -n 1
+  )"
+
+  if [ -n "$encoded_result" ]; then
+    printf '%s\n' "$encoded_result" | jq -Rr '@base64d'
+    return 0
+  fi
+
+  extract_text_result_from_log "$log_path"
 }
 
 extract_task_result_markdown() {
@@ -467,8 +487,11 @@ extract_task_result_markdown() {
     codex)
       extract_codex_result_markdown "$log_path"
       ;;
-    gemini|claude)
+    gemini)
       extract_text_result_from_log "$log_path"
+      ;;
+    claude)
+      extract_claude_result_markdown "$log_path"
       ;;
     *)
       return 0

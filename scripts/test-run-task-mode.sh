@@ -60,6 +60,7 @@ printf '%s\n' "TARGET_REPO=${TARGET_REPO:-}" > "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "LOG_DIR=${LOG_DIR:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "SESSION_RESUME=${SESSION_RESUME:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf '%s\n' "AGENT_SESSION_KEY=${AGENT_SESSION_KEY:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_GITHUB_TOKEN=${AGENT_GITHUB_TOKEN:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_GITHUB_TOKEN_FILE=${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
 printf '%s\n' "AGENT_PROMPT_FILE=${AGENT_PROMPT_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
@@ -206,13 +207,45 @@ run_case_direct_env() {
   assert_file_contains "$result_path" "# Task Result"
   assert_file_contains "$result_path" "Execution finished successfully."
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/repo"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=0"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=1"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=task:task-abc"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "system/task.md"
   assert_file_contains "$MOCK_ENV_SNAPSHOT" "Find auth regressions"
   assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-abc/execute"
   assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-direct"
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "progress"'
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+}
+
+run_case_overrides_inherited_session_key() {
+  local case_dir="${tmp_root}/case-inherited-session-key"
+  local result_path="${case_dir}/workspace/task-output/task-session-key/result.md"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-inherited-key" \
+    AGENT_TASK_ID="task-session-key" \
+    AGENT_TASK_PROMPT="Keep the task session scoped correctly" \
+    TARGET_REPO="owner/repo" \
+    SESSION_RESUME=1 \
+    AGENT_SESSION_KEY="mention-thread:12345" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$result_path" "# Task Result"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=1"
+  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=task:task-session-key"
+  assert_file_not_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=mention-thread:12345"
 }
 
 run_case_preserves_explicit_prompt_override() {
@@ -1214,6 +1247,44 @@ Some text response."
   unset MOCK_RUN_ONCE_LOG_TEXT
 }
 
+run_case_claude_stream_json_result() {
+  local case_dir="${tmp_root}/case-claude-stream-json"
+  local result_path="${case_dir}/workspace/task-output/task-claude-stream/result.md"
+  local log_jsonl="${case_dir}/claude-stream.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  cat > "$log_jsonl" <<'JSONL'
+{"type":"system","subtype":"init","session_id":"55555555-5555-5555-5555-555555555555"}
+{"type":"result","subtype":"success","result":"## Claude Stream Answer\n\nLine one.\nLine two."}
+JSONL
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$log_jsonl"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-claude-stream" \
+    AGENT_TASK_ID="task-claude-stream" \
+    AGENT_TASK_PROMPT="Return structured answer" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="claude" \
+    bash scripts/run-task.sh
+
+  assert_file_starts_with "$result_path" "## Claude Stream Answer"
+  assert_file_contains "$result_path" "Line two."
+  assert_file_contains "$MOCK_CURL_CALLS" "## Claude Stream Answer"
+  assert_file_not_contains "$MOCK_CURL_CALLS" '"type":"system"'
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
 run_case_direct_env
 run_case_preserves_explicit_prompt_override
 run_case_direct_env_messages_file
@@ -1241,6 +1312,8 @@ run_case_codex_sidecar_result
 run_case_codex_sidecar_fallback_to_jsonl
 run_case_gemini_text_result
 run_case_claude_text_result
+run_case_claude_stream_json_result
+run_case_overrides_inherited_session_key
 run_case_codex_auth_error_detected
 run_case_codex_auth_error_with_nested_code
 run_case_codex_auth_error_suppressed_when_result_exists

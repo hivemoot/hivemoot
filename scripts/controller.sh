@@ -1721,6 +1721,7 @@ claim_next_task() {
 queue_claimed_task_job() {
   local agent_id=""
   local job_id=""
+  local task_session_key=""
 
   if [ -z "$claimed_task_id" ] || [ -z "$claimed_task_prompt" ] || [ -z "$claimed_task_repo" ] || [ -z "$claimed_task_claim_token" ]; then
     return 1
@@ -1728,8 +1729,9 @@ queue_claimed_task_job() {
 
   agent_id="$(pick_next_task_agent)"
   job_id="$(generate_job_id)"
+  task_session_key="task:${claimed_task_id}"
 
-  if launch_job "$job_id" "$claimed_task_repo" "$agent_id" "task" "$global_extra_prompt" "" "" "" "" "$claimed_task_id" "$claimed_task_prompt" "$claimed_task_claim_token" "$claimed_task_messages_json"; then
+  if launch_job "$job_id" "$claimed_task_repo" "$agent_id" "task" "$global_extra_prompt" "" "" "$task_session_key" "" "$claimed_task_id" "$claimed_task_prompt" "$claimed_task_claim_token" "$claimed_task_messages_json"; then
     log "Queued claimed task: task_id=${claimed_task_id} repo=${claimed_task_repo} agent=${agent_id} job=${job_id}"
     return 0
   fi

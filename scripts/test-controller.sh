@@ -1190,6 +1190,7 @@ run_task_watch_case() {
   assert_file_contains "$run_log" "-e RUN_MODE=task"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
+  assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=task:task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
   assert_file_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE=/workspace/task-input/task-claim-1/messages.json"
   assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"

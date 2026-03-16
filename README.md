@@ -216,7 +216,7 @@ Requires `TARGET_REPO` and user tokens (not installation tokens). Additional set
 - `SESSION_RESUME_MAX_AGE_HOURS` — reset sessions older than this total age window (default: `24`)
 - `GIT_CLONE_DEPTH` — shallow clone depth (default `50`, `0` for full clone). Existing checkouts are reused automatically via fetch + reset
 
-Both `codex` and `claude` providers support mention-triggered session resume. Each provider keeps one session per GitHub notification thread and resumes follow-up mentions with the saved session UUID. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
+Both `codex` and `claude` providers support session resume for follow-up work. Mention watching stores one session per GitHub notification thread, and task mode / `WATCH_TASKS=1` workers default to `task:<task_id>` keys so delegated follow-ups can reuse the same provider session. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`; task mode still writes a clean markdown result by extracting Claude's final `result` event before posting it back. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Periodic runs (no session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
 **Task mode** — claim one delegated task, execute it through the same `run-once`
 runtime path, report progress/result, then exit:
@@ -240,6 +240,12 @@ Task mode supports two task sources:
 
 Task and health auth share one runtime token variable (`HIVEMOOT_AGENT_TOKEN`),
 with optional file-based input via `HIVEMOOT_AGENT_TOKEN_FILE`.
+
+Task runs reuse the normal session-resume policy by default: direct `RUN_MODE=task`
+invocations and controller-dispatched task workers both use `task:<task_id>` as the
+base session key, so quick follow-ups can keep provider context when
+`SESSION_RESUME=1`. If your backend can reuse the same `task_id` for unrelated
+work, disable that behavior with `SESSION_RESUME=0`.
 
 For backend updates:
 - `AGENT_TASK_EXECUTE_BASE_URL` posts to `${base}/${taskId}/execute`

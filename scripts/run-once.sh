@@ -283,6 +283,7 @@ session_resume_max_age_hours="${SESSION_RESUME_MAX_AGE_HOURS:-24}"
 agent_git_name="${AGENT_GIT_NAME:-}"
 agent_git_email="${AGENT_GIT_EMAIL:-}"
 agent_session_key="${AGENT_SESSION_KEY:-}"
+resume_staleness_note="You are resuming a prior session for this work item. Some data in your context may be stale; refresh the relevant information before acting."
 effective_auth_mode=""
 
 case "$session_resume" in
@@ -776,7 +777,7 @@ case "$provider" in
       log "Codex session resume: key=${agent_session_key} session=${codex_active_session_id}"
       prompt="${prompt}
 
-You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
+${resume_staleness_note}"
       cmd=(codex exec resume "${codex_cmd_common[@]}" "$codex_active_session_id" "$prompt")
     else
       if [ -n "$session_resume_key" ] && [ "$codex_resume_supported" -eq 1 ]; then
@@ -909,12 +910,11 @@ You are resuming a prior session for this mention thread. Some data in your cont
       log "Claude available skills: plugin-dir (${claude_plugin_dir})"
     fi
 
-    # In task mode, use text output format so the log IS the answer text.
-    # Remove --verbose to keep stdout clean (verbose lines would pollute the
-    # extracted result). Keep stream-json + verbose for non-task runs where
-    # structured events enable session resume and telemetry.
+    # Keep stream-json in task mode so Claude session ids are still captured.
+    # run-task.sh extracts the final result event back into markdown for task
+    # consumers, while non-task runs keep verbose stream-json for telemetry.
     if [ -n "${AGENT_TASK_ID:-}" ]; then
-      claude_fresh_cmd=(claude -p --output-format text --dangerously-skip-permissions)
+      claude_fresh_cmd=(claude -p --output-format stream-json --dangerously-skip-permissions)
     else
       claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
     fi
@@ -972,9 +972,9 @@ You are resuming a prior session for this mention thread. Some data in your cont
       log "Claude session resume: key=${agent_session_key} session=${claude_active_session_id}"
       claude_resume_user_message="${user_message}
 
-You are resuming a prior session for this mention thread. Some data in your context may be stale — refresh the relevant information before acting."
+${resume_staleness_note}"
       if [ -n "${AGENT_TASK_ID:-}" ]; then
-        cmd=(claude --resume "$claude_active_session_id" -p --output-format text --dangerously-skip-permissions)
+        cmd=(claude --resume "$claude_active_session_id" -p --output-format stream-json --dangerously-skip-permissions)
       else
         cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
       fi
