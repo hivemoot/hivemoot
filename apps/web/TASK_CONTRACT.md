@@ -199,7 +199,7 @@ Returns the full message history for a task.
 
 | Field | Type | Notes |
 |---|---|---|
-| `role` | `"user"` \| `"assistant"` | Source of the message |
+| `role` | `"user"` \| `"agent"` \| `"system"` | Source of the message |
 | `content` | `string` | Message text |
 | `created_at` | `string` | ISO 8601 timestamp |
 
@@ -209,23 +209,26 @@ History is ordered oldest-first (insertion order). Max 200 entries stored (`task
 
 **POST /api/tasks/{taskId}/messages**
 
-Appends a user message to task message history. The task must be in a state that accepts messages — currently only `needs_follow_up`.
+Appends a user message to task message history. Accepted states (`MESSAGE_ALLOWED_STATUSES`): `pending`, `completed`, `failed`, `timed_out`. Rejected states: `running`, `needs_follow_up`.
+
+- When the task is `pending`: message is appended; status stays `pending`.
+- When the task is terminal (`completed`, `failed`, `timed_out`): message is appended and the task is **revived to `pending`** (TTL removed, task re-queued, a system message `"New message received — task re-queued."` is appended).
 
 **Payload limit:** 64 KB (both `Content-Length` check and body byte check).
 
 **Request body:** `{ "message": string }` — required, must be non-empty after trim.
 
 **Responses:**
-- `200` + `{ "task": TaskRecord }` — message appended
+- `200` + `{ "task": TaskRecord }` — message appended (task may have transitioned to `pending` if it was terminal)
 - `400` `task_invalid_json` — malformed JSON
 - `400` `task_missing_fields` — `message` absent or empty
 - `404` `task_not_found` — task not found or TTL expired
-- `409` `task_follow_up_not_allowed` — task is not in `needs_follow_up` status
+- `409` `task_follow_up_not_allowed` — task is in `running` or `needs_follow_up` state (not a message-accepting state)
 - `413` `task_payload_too_large` — body exceeds 64 KB
-- `429` `task_concurrency_limited` — max concurrent tasks reached (returned when `addUserMessage` returns `concurrency` reason; rare from this path)
+- `429` `task_concurrency_limited` — max concurrent tasks reached (only possible on terminal-task revival path)
 - `500` `task_server_error` — unexpected server error
 
-**Distinction from follow-up:** `POST /api/tasks/{taskId}/follow-up` (section 8) triggers a status transition (`needs_follow_up → running`). `POST /api/tasks/{taskId}/messages` appends to history without a forced transition — it calls `addUserMessage`, which internally validates the state but does not change `status` directly.
+**Distinction from follow-up:** `POST /api/tasks/{taskId}/follow-up` (section 8) transitions a `needs_follow_up` task to `running`. `POST /api/tasks/{taskId}/messages` appends a user message and, for terminal tasks, revives them to `pending` — it does **not** accept `needs_follow_up` tasks.
 
 ---
 
