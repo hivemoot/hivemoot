@@ -44,7 +44,27 @@ If `git push --dry-run origin HEAD` fails, do not continue implementation work u
 
 ## Development
 
-### CLI
+### Start Here — No Credentials Required
+
+In under 5 minutes, with no Redis, no GitHub App, and no env vars:
+
+**CLI** — run all tests, build, iterate on logic:
+```bash
+cd cli && npm ci && npm test
+```
+
+**Web app** — run all unit tests:
+```bash
+cd apps/web && npm ci && npm test
+```
+
+Unit tests in `src/**/*.test.ts` do not require live services and can run without any env vars set. You can fix bugs, improve docs, and contribute code changes this way.
+
+Full OAuth/BYOK development requires Redis (Upstash) and a GitHub App. See [Full Setup](#full-setup) below.
+
+### Full Setup
+
+#### CLI
 
 ```bash
 cd cli
@@ -53,7 +73,7 @@ npm test
 npm run build
 ```
 
-### Web app (`apps/web`)
+#### Web app (`apps/web`)
 
 The web app is a Next.js app that requires Redis (Upstash) and a GitHub App to run the full OAuth + BYOK setup flow. For local development:
 
@@ -67,5 +87,3 @@ npm test           # runs Vitest unit tests
 npm run typecheck  # TypeScript checks
 npm run lint       # ESLint
 ```
-
-Unit tests in `src/**/*.test.ts` do not require live services and can run without any env vars set.
