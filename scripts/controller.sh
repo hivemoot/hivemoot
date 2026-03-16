@@ -11,6 +11,8 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-slots.sh
+. "${SCRIPT_DIR}/lib-slots.sh"
 # shellcheck source=scripts/health-reporter.sh
 . "${SCRIPT_DIR}/health-reporter.sh"
 

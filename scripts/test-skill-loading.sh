@@ -8,10 +8,13 @@ fail() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_PATH="${SCRIPT_DIR}/lib.sh"
+LIB_SLOTS_PATH="${SCRIPT_DIR}/lib-slots.sh"
 
 source_lib() {
   # shellcheck source=scripts/lib.sh
   HIVEMOOT_LIB_LOADED='' source "$LIB_PATH"
+  # shellcheck source=scripts/lib-slots.sh
+  HIVEMOOT_LIB_SLOTS_LOADED='' source "$LIB_SLOTS_PATH"
 }
 
 setup_test_skills() {
