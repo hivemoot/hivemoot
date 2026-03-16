@@ -23,11 +23,12 @@ This is the canonical contract for the shipped implementation and represents the
 | `GET /api/tasks` | Setup session cookie | List tasks for the installation |
 | `POST /api/tasks/claim` | Bearer executor token | Claim the next pending task |
 | `GET /api/tasks/{taskId}` | Setup session cookie | Read a single task record |
-| `DELETE /api/tasks/{taskId}` | Setup session cookie | Delete a task in a terminal state |
+| `DELETE /api/tasks/{taskId}` | Setup session cookie | Delete a task in a terminal state or `pending` |
 | `POST /api/tasks/{taskId}/execute` | Bearer executor token + claim token | Report progress, complete, fail, timeout, heartbeat, or request follow-up |
 | `POST /api/tasks/{taskId}/follow-up` | Setup session cookie | Submit follow-up message to a paused task |
-| `POST /api/tasks/{taskId}/retry` | Setup session cookie | Retry a task in a terminal state |
+| `POST /api/tasks/{taskId}/retry` | Setup session cookie | Retry a `failed` or `timed_out` task |
 | `GET /api/tasks/{taskId}/messages` | Setup session cookie | Retrieve task message history |
+| `POST /api/tasks/{taskId}/messages` | Setup session cookie | Append a message to task message history |
 | `GET /api/tasks/{taskId}/stream` | Setup session cookie | SSE stream for real-time task events |
 
 **Auth split:**
@@ -78,7 +79,7 @@ needs_follow_up  ──follow-up──►  running
 
 **Terminal states:** `completed`, `failed`, `timed_out`
 
-**Retry:** A task in any terminal state can be retried via `POST /api/tasks/{taskId}/retry`. Retry resets the status to `pending` and clears `started_at`, `finished_at`, and `error`.
+**Retry:** Only `failed` and `timed_out` tasks can be retried via `POST /api/tasks/{taskId}/retry`. `completed` tasks cannot be retried. Retry resets the status to `pending` and clears `started_at`, `finished_at`, and `error`.
 
 **Auto-timeout:** Running tasks that exceed `timeout_secs` without a heartbeat transition to `timed_out` automatically. Tasks in `needs_follow_up` are **exempt** from auto-timeout.
 
@@ -96,7 +97,7 @@ needs_follow_up  ──follow-up──►  running
 
 TTLs apply to the task hash, progress key, messages list, and claim-token hash together — all keys for a task share the same TTL applied at terminal transition.
 
-**Progress key:** `task:{installationId}:{taskId}:progress` has no TTL of its own. It is set on each `progress` action and cleared (deleted) at terminal transition.
+**Progress key:** `task:{installationId}:{taskId}:progress` is set to the final progress text at terminal transition and expires with the task TTL. It is not deleted at terminal transition — it persists until the task TTL expires.
 
 ---
 
@@ -116,6 +117,7 @@ TTLs apply to the task hash, progress key, messages list, and claim-token hash t
 
 **Responses:**
 - `202` + `{ "task_id": string, "status": TaskStatus, "timeout_secs": number, "stream_url": string, "task": TaskRecord }` — task created
+- `403` `task_repo_unavailable` — one or more repos in `repos` could not be accessed via the installation's GitHub App token
 - `429` `task_rate_limited` + `{ "retry_after_secs": N }` — rate limit exceeded
 - `429` `task_concurrency_limited` — concurrency cap reached
 
@@ -149,6 +151,7 @@ The `claim_token` is a 64-char hex secret (32 random bytes) that must be passed 
 | `progress` | `string` | For `progress` | Progress text, max 400 chars after trim |
 | `result` | `string` | For `complete` | Completion summary, max 128,000 chars |
 | `error` | `string` | For `fail` | Error description, max 400 chars after trim |
+| `exit_code` | `number` | Optional with `fail` | Integer exit code from the executor process; included in the error message |
 | `executor_outcome` | `string` | Optional with `complete` | One of: `success`, `auth_failed`, `runtime_failed`, `timeout` — non-success outcomes force the action to `fail` |
 
 **Responses:**
@@ -173,10 +176,12 @@ The `claim_token` is a 64-char hex secret (32 random bytes) that must be passed 
 
 **Request:** `POST /api/tasks/{taskId}/retry` — no body.
 
-Task must be in a terminal state. Retry:
+Task must be in `failed` or `timed_out` status. `completed` tasks cannot be retried. Retry:
 - Resets `status` to `pending`
 - Clears `started_at`, `finished_at`, `error`
 - Removes the task from the running set and re-queues it to pending
+
+**Response:** `202` + `{ "task_id": string, "status": TaskStatus, "timeout_secs": number, "stream_url": string, "task": TaskRecord }` — same envelope as the create response; the task is now `pending` and will be picked up by the next claim.
 
 ---
 
@@ -185,11 +190,11 @@ Task must be in a terminal state. Retry:
 | Key | Type | Content | Notes |
 |---|---|---|---|
 | `task:{installationId}:{taskId}` | Hash (JSON) | `StoredTaskRecord` | Task record, no progress field |
-| `task:{installationId}:{taskId}:progress` | String | Latest progress text | No own TTL; cleared at terminal transition |
+| `task:{installationId}:{taskId}:progress` | String | Latest progress text | Set to final progress at terminal transition; expires with the task TTL |
 | `task:{installationId}:{taskId}:messages` | List | JSON-serialized `TaskMessage[]` | Append via `rpush`; max 200 entries |
 | `task:{installationId}:{taskId}:claim-token-hash` | String | SHA-256 of claim token | Deleted after task claim is verified |
 | `tasks:pending:{installationId}` | Sorted Set | Members = `taskId`, score = creation timestamp ms | Pending queue |
-| `tasks:running:{installationId}` | Set | Members = `taskId` | Running set for concurrency enforcement |
+| `tasks:running:{installationId}` | Sorted Set | Members = `taskId`, score = addition timestamp ms | Running set for concurrency enforcement |
 | `tasks:recent:{installationId}` | Sorted Set | Members = `taskId`, score = `updated_at` ms | Recent completed/failed tasks |
 | `tasks:create-ratelimit:{installationId}:{userId}:{minuteBucket}` | String | Counter | Rate limit, 60s TTL |
 
@@ -210,6 +215,7 @@ All error responses follow `{ "code": string, "message": string }`. Task routes 
 | `task_invalid_task_id` | 400 | `taskId` path param does not match `[a-f0-9]{24}` |
 | `task_not_authenticated` | 401 | Missing or invalid auth |
 | `task_forbidden` | 403 | Valid auth, insufficient permission |
+| `task_repo_unavailable` | 403 | One or more task repos could not be accessed via the GitHub App token |
 | `task_not_found` | 404 | Task not found or TTL expired |
 | `task_rate_limited` | 429 | Create rate limit exceeded; includes `retry_after_secs` |
 | `task_concurrency_limited` | 429 | Installation concurrency cap reached |
@@ -246,8 +252,8 @@ Executor-auth routes require:
 | `src/app/api/tasks/claim/route.test.ts` | Claim endpoint, 204 when queue empty |
 | `src/app/api/tasks/[taskId]/execute/route.test.ts` | All execute actions, executor_outcome guard, lock timeout |
 | `src/app/api/tasks/[taskId]/follow-up/route.test.ts` | Follow-up validation and transition |
-| `src/app/api/tasks/[taskId]/retry/route.test.ts` | Retry from terminal states |
-| `src/app/api/tasks/[taskId]/messages/route.test.ts` | Message history retrieval |
+| `src/app/api/tasks/[taskId]/retry/route.test.ts` | Retry from failed/timed_out states |
+| `src/app/api/tasks/[taskId]/messages/route.test.ts` | Message history retrieval and append |
 
 ---
 
