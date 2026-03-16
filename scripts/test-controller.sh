@@ -231,7 +231,11 @@ case "$cmd" in
   logs)
     container_id="${*: -1}"
     exited_file="$(container_exited_file "$container_id")"
-    echo "mock log stream"
+    if [ -n "${MOCK_DOCKER_LOG_CONTENT:-}" ]; then
+      printf '%s\n' "$MOCK_DOCKER_LOG_CONTENT"
+    else
+      echo "mock log stream"
+    fi
     while [ ! -f "$exited_file" ]; do
       sleep 0.1
     done
@@ -1979,6 +1983,62 @@ run_task_failure_report_case() {
   echo "PASS: task failure is reported to execute endpoint when worker exits non-zero"
 }
 
+run_task_failure_report_classified_error_case() {
+  # When the worker container exits non-zero and the container log contains a
+  # known error pattern from run-once.sh, the controller should include a
+  # classified (safe, pre-defined) error message in the action=fail payload
+  # instead of the generic "Worker exited with code N".
+  local repo_root="$1"
+  local case_dir="$2"
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  # Inject a known run-once.sh error pattern into the mock container log.
+  # The classifier should recognize "Missing GitHub token" and return the
+  # safe classified message. The raw log text must NOT appear in the payload.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="Missing GitHub token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN (or GITHUB_TOKEN/GH_TOKEN)." \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh" || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-failure-report-classified case"
+
+  # The fail payload must contain the classified message, not the generic one.
+  assert_file_contains "$curl_log" "GitHub token is missing"
+
+  # The raw log content must not be forwarded in the payload.
+  if grep -qF "Set AGENT_GITHUB_TOKEN_FILE" "$curl_log" 2>/dev/null; then
+    fail "raw log content must not appear in the task failure payload"
+  fi
+
+  # Generic fallback must NOT appear when classification succeeded.
+  if grep -qF "Worker exited with code" "$curl_log" 2>/dev/null; then
+    fail "generic error message must not appear when log was successfully classified"
+  fi
+
+  echo "PASS: controller classifies worker log and includes structured error in task fail payload"
+}
+
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d "${repo_root}/.tmp-controller-test.XXXXXX")"
@@ -2023,4 +2083,5 @@ run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
+run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
 echo "PASS: controller script checks"

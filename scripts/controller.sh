@@ -228,23 +228,109 @@ cleanup_job_home_credentials() {
   rmdir "${gemini_auth_dir}" 2>/dev/null || true
 }
 
+# Classify a task failure from the worker container log.
+# Scans for known static error patterns emitted by run-once.sh to stderr.
+# Returns a safe one-line error message, or empty string for unknown failures.
+# Never returns raw log content — only pre-defined classified messages.
+classify_worker_log_failure() {
+  local log_file="$1"
+
+  [ -s "$log_file" ] || return 0
+
+  # Kilo patterns checked first: ANTHROPIC/OPENAI/GOOGLE keys are also used by
+  # standalone providers. Checking KILO_PROVIDER= specifics first avoids
+  # misclassifying a Kilo run as a Claude/Codex/Gemini failure.
+  if grep -qF "when KILO_PROVIDER=anthropic" "$log_file" 2>/dev/null; then
+    printf 'Kilo provider API key (ANTHROPIC_API_KEY) is missing for KILO_PROVIDER=anthropic'
+    return 0
+  fi
+  if grep -qF "when KILO_PROVIDER=openai" "$log_file" 2>/dev/null; then
+    printf 'Kilo provider API key (OPENAI_API_KEY) is missing for KILO_PROVIDER=openai'
+    return 0
+  fi
+  if grep -qF "when KILO_PROVIDER=google" "$log_file" 2>/dev/null; then
+    printf 'Kilo provider API key (GOOGLE_API_KEY / GEMINI_API_KEY) is missing for KILO_PROVIDER=google'
+    return 0
+  fi
+  if grep -qF "when KILO_PROVIDER=openrouter" "$log_file" 2>/dev/null; then
+    printf 'Kilo provider API key (OPENROUTER_API_KEY) is missing for KILO_PROVIDER=openrouter'
+    return 0
+  fi
+  if grep -qF "KILO_PROVIDER is required" "$log_file" 2>/dev/null; then
+    printf 'KILO_PROVIDER is required — set KILO_PROVIDER or KILOCODE_TOKEN'
+    return 0
+  fi
+  if grep -qF "Missing GitHub token" "$log_file" 2>/dev/null; then
+    printf 'GitHub token is missing'
+    return 0
+  fi
+  if grep -qF "Failed to validate GitHub token" "$log_file" 2>/dev/null; then
+    printf 'GitHub token validation failed — check token scope or installation access'
+    return 0
+  fi
+  if grep -qF "GitHub token cannot access target repository" "$log_file" 2>/dev/null; then
+    printf 'GitHub token cannot access target repository — check token scope or installation access'
+    return 0
+  fi
+  if grep -qF "Failed to clone" "$log_file" 2>/dev/null; then
+    printf 'Failed to clone repository — check token and repo access'
+    return 0
+  fi
+  if grep -qF "ANTHROPIC_API_KEY is required" "$log_file" 2>/dev/null; then
+    printf 'Claude provider API key (ANTHROPIC_API_KEY) is missing'
+    return 0
+  fi
+  if grep -qF "OPENAI_API_KEY is required" "$log_file" 2>/dev/null; then
+    printf 'Codex provider API key (OPENAI_API_KEY) is missing'
+    return 0
+  fi
+  if grep -qF "GOOGLE_API_KEY (or GEMINI_API_KEY) is required" "$log_file" 2>/dev/null; then
+    printf 'Gemini provider API key (GOOGLE_API_KEY / GEMINI_API_KEY) is missing'
+    return 0
+  fi
+  if grep -qF "subscription credentials not found" "$log_file" 2>/dev/null || \
+     grep -qF "subscription login not found" "$log_file" 2>/dev/null; then
+    printf 'Provider subscription credentials not found — run the matching auth command'
+    return 0
+  fi
+  if grep -qF "Failed to configure git credential helper" "$log_file" 2>/dev/null; then
+    printf 'Failed to configure git credentials'
+    return 0
+  fi
+
+  return 0
+}
+
 # POST action=fail to the task execute endpoint from the controller.
 # Safety net for crashes/OOM where run-task.sh exits before self-reporting.
 # Best-effort: errors are logged but never affect the caller's flow.
+#
+# $1 — task_id
+# $2 — exit_code
+# $3 — optional classified error message (from classify_worker_log_failure);
+#      falls back to generic "Worker exited with code N" when empty.
 #
 # Requires globals: task_execute_base_url, task_executor_token
 report_task_failure_from_controller() {
   local task_id="$1"
   local exit_code="$2"
+  local classified_error="${3:-}"
   local url=""
+  local error_msg=""
   local payload=""
 
   if [ -z "${task_execute_base_url:-}" ] || [ -z "${task_executor_token:-}" ]; then
     return 0
   fi
 
+  if [ -n "$classified_error" ]; then
+    error_msg="${classified_error} (exit code ${exit_code})"
+  else
+    error_msg="Worker exited with code ${exit_code}"
+  fi
+
   url="${task_execute_base_url%/}/${task_id}/execute"
-  payload="$(jq -cn --arg action "fail" --arg error "Worker exited with code ${exit_code}" \
+  payload="$(jq -cn --arg action "fail" --arg error "$error_msg" \
     '{action: $action, error: $error}')"
 
   curl -sf -X POST "$url" \
@@ -1498,7 +1584,9 @@ run_job() {
   # Task failure reporting: safety net for crashes/OOM where run-task.sh
   # could not self-report. Best-effort: errors never affect the run outcome.
   if [ "$exit_code" -ne 0 ] && [ "$trigger_type" = "task" ] && [ -n "$task_id" ]; then
-    if report_task_failure_from_controller "$task_id" "$exit_code"; then
+    local classified_error=""
+    classified_error="$(classify_worker_log_failure "$container_log_file" 2>/dev/null || true)"
+    if report_task_failure_from_controller "$task_id" "$exit_code" "$classified_error"; then
       log "Task failure reported to backend: task_id=${task_id} exit_code=${exit_code}"
     else
       log "Task failure report to backend failed (best-effort): task_id=${task_id} exit_code=${exit_code}"
