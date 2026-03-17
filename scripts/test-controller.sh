@@ -1893,6 +1893,523 @@ run_exit_trap_reaps_job_subshells_case() {
   echo "PASS: EXIT trap cleanup reaps tracked job subshells (controller_exit=${controller_status})"
 }
 
+run_global_slots_cross_controller_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_a_pid=""
+  local controller_b_pid=""
+  local controller_a_status=0
+  local controller_b_status=0
+  local controller_a_log="${case_dir}/controller-a.log"
+  local controller_b_log="${case_dir}/controller-b.log"
+  local run_log="${case_dir}/mock-state/docker-run.log"
+  local overlap_file="${case_dir}/mock-state/overlap.log"
+  local launch_count=""
+  local deadline=0
+
+  mkdir -p "${case_dir}/global-slots"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home-a" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace-a" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_a_log" 2>&1 &
+  controller_a_pid=$!
+
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_a_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_a_log" >&2 || true
+      fail "controller A exited before first worker launch in global-slots case"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "$controller_a_log" >&2 || true
+      fail "timed out waiting for controller A to launch its worker"
+    fi
+    sleep 0.1
+  done
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home-b" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace-b" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="builder" \
+    AGENT_GITHUB_TOKEN_01="token-2" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_b_log" 2>&1 &
+  controller_b_pid=$!
+
+  if wait "$controller_a_pid"; then
+    controller_a_status=0
+  else
+    controller_a_status=$?
+  fi
+  if wait "$controller_b_pid"; then
+    controller_b_status=0
+  else
+    controller_b_status=$?
+  fi
+
+  if [ "$controller_a_status" -ne 0 ]; then
+    sed 's/^/  /' "$controller_a_log" >&2 || true
+    fail "controller A failed in global-slots case"
+  fi
+  if [ "$controller_b_status" -ne 0 ]; then
+    sed 's/^/  /' "$controller_b_log" >&2 || true
+    fail "controller B failed in global-slots case"
+  fi
+
+  [ -f "$run_log" ] || fail "missing docker run log in global-slots case"
+  launch_count="$(wc -l < "$run_log" | tr -d '[:space:]')"
+  assert_eq "2" "$launch_count" "expected each controller to launch exactly one worker"
+  if [ -f "$overlap_file" ] && [ -s "$overlap_file" ]; then
+    sed 's/^/  /' "$overlap_file" >&2 || true
+    fail "global slot semaphore should prevent overlapping worker launches across controllers"
+  fi
+
+  assert_file_contains "$controller_a_log" "Global worker slots enabled: count=1"
+  assert_file_contains "$controller_b_log" "Global worker slots enabled: count=1"
+
+  echo "PASS: global slot semaphore limits combined concurrency across controllers"
+}
+
+run_global_slot_mention_timeout_requeue_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local controller_pid=""
+  local controller_status=0
+  local holder_pid=""
+  local deadline=0
+  local -a requeued=()
+  local -a failed=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  cat > "${case_dir}/workspace/queue/mention-timeout.trigger.json" <<EOF_TRIGGER
+{
+  "trigger_type": "mention",
+  "repo": "owner/repo",
+  "agent_id": "worker",
+  "extra_prompt": "Global slot timeout mention",
+  "ack_key": "thread-timeout:2026-03-16T00:00:00Z",
+  "state_file": "${case_dir}/workspace/watch-state/worker.json",
+  "session_key": "mention-thread:thread-timeout"
+}
+EOF_TRIGGER
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); re-queued mention trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before mention global-slot timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for mention global-slot timeout"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  if [ "$controller_status" -ne 0 ] && [ "$controller_status" -ne 143 ]; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    sed 's/^/  /' "$controller_log" >&2 || true
+    fail "controller failed in global-slot mention timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  shopt -s nullglob
+  requeued=("${case_dir}/workspace/queue/"*.trigger.json)
+  failed=("${case_dir}/workspace/queue/"*.failed)
+  shopt -u nullglob
+
+  if [ "${#requeued[@]}" -ne 1 ]; then
+    fail "expected timed-out mention to be re-queued exactly once (found ${#requeued[@]})"
+  fi
+  assert_eq "0" "${#failed[@]}" "timed-out mention must not be finalized as failed"
+  assert_file_contains "$controller_log" "Global slot timeout (1s); re-queued mention trigger"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "mention timeout case should not launch a worker when the global slot is unavailable"
+  fi
+
+  echo "PASS: mention timeout re-queues trigger when the global slot stays busy (controller_exit=${controller_status})"
+}
+
+run_global_slot_mention_timeout_missing_run_dir_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local controller_pid=""
+  local controller_status=0
+  local holder_pid=""
+  local run_dir_reaper_pid=""
+  local run_dir_reaper_status=0
+  local deadline=0
+  local run_dir=""
+  local -a requeued=()
+  local -a failed=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  cat > "${case_dir}/workspace/queue/mention-timeout.trigger.json" <<EOF_TRIGGER
+{
+  "trigger_type": "mention",
+  "repo": "owner/repo",
+  "agent_id": "worker",
+  "extra_prompt": "Global slot timeout mention missing run dir",
+  "ack_key": "thread-timeout-missing-run-dir:2026-03-16T00:00:00Z",
+  "state_file": "${case_dir}/workspace/watch-state/worker.json",
+  "session_key": "mention-thread:thread-timeout-missing-run-dir"
+}
+EOF_TRIGGER
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  (
+    deadline=$((SECONDS + 20))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      run_dir="$(find "${case_dir}/workspace/runs" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
+      if [ -n "$run_dir" ]; then
+        rm -rf "$run_dir"
+        exit 0
+      fi
+      sleep 0.05
+    done
+    exit 1
+  ) &
+  run_dir_reaper_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); re-queued mention trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      wait "$run_dir_reaper_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before missing-run-dir mention timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      wait "$run_dir_reaper_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for missing-run-dir mention timeout"
+    fi
+    sleep 0.1
+  done
+
+  if wait "$run_dir_reaper_pid"; then
+    run_dir_reaper_status=0
+  else
+    run_dir_reaper_status=$?
+  fi
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  if [ "$controller_status" -ne 0 ] && [ "$controller_status" -ne 143 ]; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    sed 's/^/  /' "$controller_log" >&2 || true
+    fail "controller failed in missing-run-dir mention timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_eq "0" "$run_dir_reaper_status" "expected test helper to remove the job run directory before timeout handling"
+
+  shopt -s nullglob
+  requeued=("${case_dir}/workspace/queue/"*.trigger.json)
+  failed=("${case_dir}/workspace/queue/"*.failed)
+  shopt -u nullglob
+
+  if [ "${#requeued[@]}" -ne 1 ]; then
+    fail "expected timed-out mention to be re-queued exactly once after removing the run directory (found ${#requeued[@]})"
+  fi
+  assert_eq "0" "${#failed[@]}" "timed-out mention must not be finalized as failed when the run directory disappears"
+  assert_file_contains "$controller_log" "Global slot timeout (1s); re-queued mention trigger"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "missing-run-dir timeout case should not launch a worker when the global slot is unavailable"
+  fi
+
+  echo "PASS: mention timeout re-queues trigger even if the job run directory is removed before timeout handling (controller_exit=${controller_status})"
+}
+
+run_global_slot_periodic_timeout_cleanup_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=""
+  local controller_status=0
+  local controller_log="${case_dir}/controller.log"
+  local holder_pid=""
+  local deadline=0
+  local -a processing_files=()
+  local -a done_files=()
+
+  mkdir -p "${case_dir}/workspace/queue" "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_PERIODIC_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="0" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="1" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if grep -Fq "Global slot timeout (1s); skipping periodic trigger" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before periodic global-slot timeout was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      kill "$holder_pid" 2>/dev/null || true
+      wait "$holder_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for periodic global-slot timeout"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  shopt -s nullglob
+  processing_files=("${case_dir}/workspace"/queue/*.processing)
+  done_files=("${case_dir}/workspace"/queue/*.done)
+  shopt -u nullglob
+
+  assert_eq "0" "${#processing_files[@]}" "expected no lingering .processing files after periodic global-slot timeout"
+  if [ "${#done_files[@]}" -lt 1 ]; then
+    fail "expected at least one finalized .done artifact after periodic global-slot timeout"
+  fi
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "periodic timeout case should not launch a worker while the global slot is held"
+  fi
+
+  echo "PASS: periodic timeout finalizes queue artifacts cleanly (controller_exit=${controller_status})"
+}
+
+run_task_global_slot_timeout_report_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local holder_pid=""
+  local curl_log=""
+
+  mkdir -p "${case_dir}/global-slots"
+  : > "${case_dir}/global-slots/slot-1.lock"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  (
+    exec 9>>"${case_dir}/global-slots/slot-1.lock"
+    flock 9
+    sleep 5
+  ) &
+  holder_pid=$!
+
+  if ! env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
+    GLOBAL_SLOT_TIMEOUT_TASK_SECS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh"; then
+    kill "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    fail "controller failed in task global-slot timeout case"
+  fi
+
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task global-slot timeout case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/task-claim-1/execute"
+  assert_file_contains "$curl_log" "Timed out waiting 1s for a global worker slot"
+  assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
+
+  if [ -f "${case_dir}/mock-state/docker-run.log" ] && [ -s "${case_dir}/mock-state/docker-run.log" ]; then
+    fail "task timeout case should not launch a worker when the global slot stays busy"
+  fi
+
+  echo "PASS: task timeout reports capacity failure when the global slot stays busy"
+}
+
 run_same_agent_concurrent_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2189,6 +2706,11 @@ run_workspace_ttl_disabled_case "$repo_root" "${tmpdir}/workspace-ttl-disabled"
 run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-prune-failure-reporting"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
+run_global_slots_cross_controller_case "$repo_root" "${tmpdir}/global-slots-cross-controller"
+run_global_slot_mention_timeout_requeue_case "$repo_root" "${tmpdir}/global-slot-mention-timeout"
+run_global_slot_mention_timeout_missing_run_dir_case "$repo_root" "${tmpdir}/global-slot-mention-timeout-missing-run-dir"
+run_global_slot_periodic_timeout_cleanup_case "$repo_root" "${tmpdir}/global-slot-periodic-timeout"
+run_task_global_slot_timeout_report_case "$repo_root" "${tmpdir}/task-global-slot-timeout"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"

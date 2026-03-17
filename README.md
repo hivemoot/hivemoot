@@ -308,7 +308,8 @@ independent of whether health reporting is enabled.
 What it does:
 - Uses `spawn_worker()` as the container-launch seam for future backend swaps.
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
-- Enforces per-repo mutual exclusion with `flock` plus a global max worker cap (locks default under `/tmp/hivemoot-controller-locks`).
+- Enforces per-repo mutual exclusion with `flock` plus a controller-local worker cap (`CONTROLLER_MAX_WORKERS`, locks default under `/tmp/hivemoot-controller-locks`).
+- Optionally enforces a host-wide worker cap across multiple controller services with a shared flock semaphore (`GLOBAL_MAX_WORKERS` + `GLOBAL_SLOTS_DIR`).
 - Supports mention-triggered jobs (`WATCH_MENTIONS=1`) via a filesystem queue under `queue/` and per-agent watch state under `watch-state/`.
 - Supports delegated task watching (`WATCH_TASKS=1`) by polling `AGENT_TASK_CLAIM_URL` and spawning one-shot `RUN_MODE=task` workers with claimed `task_id/prompt/repo`.
 - Defers mention acknowledgment until the spawned worker job succeeds.
@@ -333,6 +334,15 @@ Run continuously:
 
 ```bash
 CONTROLLER_RUN_MODE=loop bash scripts/controller.sh
+```
+
+Enable a shared fleet cap across multiple controller services on the same host:
+
+```bash
+GLOBAL_MAX_WORKERS=4 \
+GLOBAL_SLOTS_DIR=/var/lock/hivemoot-global-slots \
+CONTROLLER_RUN_MODE=loop \
+bash scripts/controller.sh
 ```
 
 Run continuously with mention watching:
