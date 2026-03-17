@@ -1286,10 +1286,11 @@ function parseRepoConfig(raw: unknown, repoFullName: string): EffectiveConfig {
     const mergeReady = parseMergeReadyConfig(prConfigRaw?.mergeReady, trustedReviewers, repoFullName);
     const automerge = parseAutomergeConfig(prConfigRaw?.automerge, trustedReviewers, repoFullName);
     pr = {
-      // Stale PR cleanup is opt-in per repo: omit staleDays to disable it.
-      staleDays: hasOwnConfigKey(prConfigRaw, "staleDays")
-        ? parseIntValue(prConfigRaw?.staleDays, PR_STALE_DAYS_BOUNDS, "pr.staleDays", repoFullName)
-        : null,
+      // Stale PR cleanup is opt-in per repo: omit staleDays (or set it to null) to disable it.
+      staleDays:
+        hasOwnConfigKey(prConfigRaw, "staleDays") && prConfigRaw?.staleDays !== null
+          ? parseIntValue(prConfigRaw?.staleDays, PR_STALE_DAYS_BOUNDS, "pr.staleDays", repoFullName)
+          : null,
       maxPRsPerIssue: parseIntValue(prConfigRaw?.maxPRsPerIssue, MAX_PRS_PER_ISSUE_BOUNDS, "pr.maxPRsPerIssue", repoFullName),
       trustedReviewers,
       intake,
