@@ -1346,13 +1346,6 @@ stop_controller_workers() {
   "$docker_cmd" stop --time "$shutdown_grace_secs" "${container_ids[@]}" >/dev/null 2>&1 || true
 }
 
-cleanup_temp_tokens() {
-  local path=""
-  for path in "${temp_token_files[@]}"; do
-    rm -f "$path" 2>/dev/null || true
-  done
-}
-
 stop_schedulers() {
   local pid=""
 

@@ -246,10 +246,7 @@ shutdown_requested=0
 
 # shellcheck disable=SC2317,SC2329  # invoked via trap
 cleanup() {
-  local path=""
-  for path in "${temp_token_files[@]-}"; do
-    rm -f "$path" 2>/dev/null || true
-  done
+  cleanup_temp_tokens
 }
 
 # shellcheck disable=SC2317,SC2329  # invoked via trap

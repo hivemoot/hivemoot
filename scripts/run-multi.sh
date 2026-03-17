@@ -53,13 +53,6 @@ validate_target_repo "$target_repo"
 declare -a temp_token_files=()
 shutdown_requested=0
 
-cleanup_temp_tokens() {
-  local path=""
-  for path in "${temp_token_files[@]-}"; do
-    rm -f "$path" 2>/dev/null || true
-  done
-}
-
 handle_shutdown() {
   if [ "$shutdown_requested" -eq 0 ]; then
     shutdown_requested=1

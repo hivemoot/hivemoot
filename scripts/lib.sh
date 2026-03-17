@@ -673,3 +673,14 @@ init_agent_home() {
   printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
     > "$agent_home/.profile"
 }
+
+# Remove all files registered in the caller's temp_token_files array.
+# Callers must declare: declare -a temp_token_files=()
+# Uses the defensive [@]- expansion so an empty array never triggers
+# "unbound variable" under set -u.
+cleanup_temp_tokens() {
+  local path=""
+  for path in "${temp_token_files[@]-}"; do
+    rm -f "$path" 2>/dev/null || true
+  done
+}
