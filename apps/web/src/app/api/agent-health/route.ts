@@ -20,8 +20,10 @@ import { parseContentLength } from "@/server/request-utils";
 import {
   AGENT_ID_PATTERN,
   validateReport,
+  validateHeartbeat,
   checkRateLimit,
   recordHealthReport,
+  recordHeartbeat,
   reserveHealthReportIdempotency,
   commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
@@ -71,6 +73,15 @@ export async function POST(request: NextRequest) {
       "Invalid JSON body",
       400,
     );
+  }
+
+  // Heartbeats have a separate validation + recording path (no run_id,
+  // no idempotency, no run history — just refresh the latest key TTL).
+  if (
+    typeof body === "object" && body !== null && !Array.isArray(body)
+    && (body as Record<string, unknown>).outcome === "heartbeat"
+  ) {
+    return handleHeartbeat(body, request);
   }
 
   const validation = validateReport(body);
@@ -162,6 +173,41 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ received: true, received_at: report.received_at });
+}
+
+async function handleHeartbeat(body: unknown, request: NextRequest) {
+  const validation = validateHeartbeat(body);
+  if (!validation.ok) {
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.VALIDATION_FAILED,
+      validation.message,
+      400,
+    );
+  }
+
+  const auth = await authenticateAgentRequest(request);
+  if (!auth.ok) return auth.response;
+
+  const { heartbeat } = validation;
+
+  const allowed = await checkRateLimit(
+    auth.installationId,
+    heartbeat.agent_id,
+    heartbeat.repo,
+    auth.redis,
+  );
+
+  if (!allowed) {
+    return agentHealthError(
+      AGENT_HEALTH_ERROR.RATE_LIMITED,
+      "Rate limited — one report per agent per repo per 60 seconds",
+      429,
+    );
+  }
+
+  await recordHeartbeat(auth.installationId, heartbeat, auth.redis);
+
+  return NextResponse.json({ received: true, received_at: heartbeat.received_at });
 }
 
 export async function GET(request: NextRequest) {

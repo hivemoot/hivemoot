@@ -43,7 +43,7 @@ const ANSI_ESCAPE_PATTERN = /[\u001B\u009B](?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 // Types
 // ---------------------------------------------------------------------------
 
-export type TriggerType = "scheduled" | "mention" | "manual";
+export type TriggerType = "scheduled" | "mention" | "manual" | "task";
 
 export interface ModelTokenUsage {
   input_tokens: number;
@@ -80,13 +80,21 @@ export interface HealthReport {
   received_at: string; // ISO 8601, server-assigned
 }
 
+export interface HeartbeatPayload {
+  agent_id: string;
+  repo: string;
+  outcome: "heartbeat";
+  next_run_at?: string;
+  received_at: string; // server-assigned
+}
+
 export type AgentStatus = "ok" | "failed" | "late" | "unknown";
 
 export interface HealthOverviewEntry {
   agent_id: string;
   repo: string;
   run_id?: string;
-  outcome?: HealthReport["outcome"];
+  outcome?: HealthReport["outcome"] | "heartbeat";
   duration_secs?: number;
   consecutive_failures?: number;
   model?: string;
@@ -219,7 +227,7 @@ export type IdempotencyReservation =
 // ---------------------------------------------------------------------------
 
 const VALID_OUTCOMES = new Set(["success", "failure", "timeout"]);
-const VALID_TRIGGERS = new Set<TriggerType>(["scheduled", "mention", "manual"]);
+const VALID_TRIGGERS = new Set<TriggerType>(["scheduled", "mention", "manual", "task"]);
 const ALLOWED_FIELDS = new Set([
   "agent_id",
   "repo",
@@ -235,6 +243,14 @@ const ALLOWED_FIELDS = new Set([
   "trigger",
   "token_usage",
 ]);
+const HEARTBEAT_ALLOWED_FIELDS = new Set([
+  "agent_id",
+  "repo",
+  "outcome",
+  "next_run_at",
+]);
+// Superset of VALID_OUTCOMES — includes "heartbeat" for stored latest entries.
+const DISPLAY_OUTCOMES = new Set(["success", "failure", "timeout", "heartbeat"]);
 
 export type ValidationResult = {
   ok: true;
@@ -475,6 +491,93 @@ export function validateReport(body: unknown): ValidationResult {
 }
 
 // ---------------------------------------------------------------------------
+// Heartbeat validation
+// ---------------------------------------------------------------------------
+
+export type HeartbeatValidationResult = {
+  ok: true;
+  heartbeat: HeartbeatPayload;
+} | {
+  ok: false;
+  message: string;
+};
+
+/**
+ * Validates a heartbeat payload — the lightweight liveness signal agents send
+ * between runs. Only agent_id, repo, outcome ("heartbeat"), and optional
+ * next_run_at are accepted.
+ */
+export function validateHeartbeat(body: unknown): HeartbeatValidationResult {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, message: "Body must be a JSON object" };
+  }
+
+  const obj = body as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (!HEARTBEAT_ALLOWED_FIELDS.has(key)) {
+      return { ok: false, message: `Unknown field for heartbeat: ${key}` };
+    }
+  }
+
+  if (
+    typeof obj.agent_id !== "string"
+    || obj.agent_id.length < 1
+    || obj.agent_id.length > 64
+    || !AGENT_ID_PATTERN.test(obj.agent_id)
+  ) {
+    return {
+      ok: false,
+      message: "agent_id must be 1-64 chars and match [a-z0-9_-]",
+    };
+  }
+
+  if (
+    typeof obj.repo !== "string"
+    || obj.repo.length < 1
+    || obj.repo.length > 200
+    || !obj.repo.includes("/")
+  ) {
+    return {
+      ok: false,
+      message: "repo must be 1-200 chars in owner/name format",
+    };
+  }
+
+  if (obj.outcome !== "heartbeat") {
+    return { ok: false, message: "outcome must be 'heartbeat'" };
+  }
+
+  if (obj.next_run_at !== undefined) {
+    if (typeof obj.next_run_at !== "string" || obj.next_run_at.length > 64) {
+      return { ok: false, message: "next_run_at must be a string (max 64 chars) if provided" };
+    }
+    const ts = new Date(obj.next_run_at).getTime();
+    if (Number.isNaN(ts)) {
+      return { ok: false, message: "next_run_at must be a valid ISO 8601 timestamp" };
+    }
+    const now = Date.now();
+    if (ts < now - 5 * 60 * 1000) {
+      return { ok: false, message: "next_run_at must not be more than 5 minutes in the past" };
+    }
+    if (ts > now + 48 * 60 * 60 * 1000) {
+      return { ok: false, message: "next_run_at must not be more than 48 hours in the future" };
+    }
+  }
+
+  const heartbeat: HeartbeatPayload = {
+    agent_id: obj.agent_id,
+    repo: obj.repo,
+    outcome: "heartbeat",
+    received_at: new Date().toISOString(),
+  };
+
+  if (typeof obj.next_run_at === "string") heartbeat.next_run_at = obj.next_run_at;
+
+  return { ok: true, heartbeat };
+}
+
+// ---------------------------------------------------------------------------
 // Idempotency
 // ---------------------------------------------------------------------------
 
@@ -587,7 +690,7 @@ export async function checkRateLimit(
  * dashboard even if they miss a cycle. When next_run_at is provided and
  * 2x the gap exceeds 24h, the TTL extends to cover that instead.
  */
-function computeLatestTtl(report: HealthReport): number {
+function computeLatestTtl(report: { next_run_at?: string }): number {
   if (typeof report.next_run_at === "string") {
     const nextRunMs = new Date(report.next_run_at).getTime();
     if (!Number.isNaN(nextRunMs)) {
@@ -638,6 +741,48 @@ export async function recordHealthReport(
     .exec();
 }
 
+/**
+ * Records a heartbeat — refreshes the latest key TTL and optionally updates
+ * next_run_at without overwriting run history data. If an existing latest
+ * report exists, its run fields are preserved. If no prior report exists,
+ * a minimal heartbeat entry is stored so the agent appears on the dashboard.
+ *
+ * Heartbeats are NOT added to the runs sorted set (they aren't runs).
+ */
+export async function recordHeartbeat(
+  installId: string,
+  heartbeat: HeartbeatPayload,
+  redis: Redis,
+): Promise<void> {
+  const { agent_id, repo } = heartbeat;
+  const key = latestKey(installId, agent_id, repo);
+
+  // Read existing latest report to preserve run data
+  const existing = await redis.get(key);
+
+  let dataToStore: Record<string, unknown>;
+
+  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+    // Patch existing report: refresh timestamps, keep run data intact
+    dataToStore = { ...(existing as Record<string, unknown>) };
+    dataToStore.received_at = heartbeat.received_at;
+    if (heartbeat.next_run_at) {
+      dataToStore.next_run_at = heartbeat.next_run_at;
+    }
+  } else {
+    // No prior report — store minimal heartbeat entry
+    dataToStore = { ...heartbeat };
+  }
+
+  const ttl = computeLatestTtl(dataToStore as { next_run_at?: string });
+
+  await redis
+    .multi()
+    .set(key, dataToStore, { ex: ttl })
+    .sadd(indexKey(installId), `${agent_id}:${repo}`)
+    .exec();
+}
+
 // ---------------------------------------------------------------------------
 // Status derivation
 // ---------------------------------------------------------------------------
@@ -652,9 +797,15 @@ export async function recordHealthReport(
 function deriveStatus(report: Partial<HealthReport> | null): AgentStatus {
   if (!report || typeof report.outcome !== "string") return "unknown";
 
-  if (report.outcome === "failure" || report.outcome === "timeout") return "failed";
+  // Runtime data from Redis may contain "heartbeat" — cast for the check.
+  const outcome = report.outcome as string;
 
-  if (report.outcome === "success") {
+  if (outcome === "failure" || outcome === "timeout") return "failed";
+
+  // Heartbeat: agent is alive and checking in between runs
+  if (outcome === "heartbeat") return "ok";
+
+  if (outcome === "success") {
     const nextRunAt = report.next_run_at;
     if (typeof nextRunAt === "string") {
       const nextRunMs = new Date(nextRunAt).getTime();
@@ -729,8 +880,8 @@ export async function getOverview(
           agent_id: report.agent_id,
           repo: report.repo,
           run_id: typeof report.run_id === "string" ? report.run_id : undefined,
-          outcome: VALID_OUTCOMES.has(report.outcome ?? "")
-            ? (report.outcome as HealthReport["outcome"])
+          outcome: DISPLAY_OUTCOMES.has((report.outcome as string) ?? "")
+            ? (report.outcome as HealthOverviewEntry["outcome"])
             : undefined,
           duration_secs: typeof report.duration_secs === "number" ? report.duration_secs : undefined,
           consecutive_failures: typeof report.consecutive_failures === "number"

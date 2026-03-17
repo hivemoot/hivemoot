@@ -9,6 +9,7 @@ import {
   type GroupMode,
   type GroupStatus,
 } from "./agent-health-grouping";
+import { MarkdownContent } from "./MarkdownContent";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -478,6 +479,26 @@ export default function AgentHealthDashboard() {
                         exit code {entry.exit_code}
                       </p>
                     )}
+                    {entry.run_summary && (
+                      <details className="group mt-1.5">
+                        <summary className="cursor-pointer list-none text-xs text-zinc-600 hover:text-zinc-500">
+                          <span className="inline-flex items-center gap-1">
+                            <svg
+                              className="h-2.5 w-2.5 transition-transform group-open:rotate-90"
+                              viewBox="0 0 8 8"
+                              fill="currentColor"
+                              aria-hidden="true"
+                            >
+                              <path d="M2 1l4 3-4 3V1z" />
+                            </svg>
+                            run summary
+                          </span>
+                        </summary>
+                        <div className="mt-1.5">
+                          <MarkdownContent className="text-xs">{entry.run_summary}</MarkdownContent>
+                        </div>
+                      </details>
+                    )}
                     {entry.token_usage && <TokenSummary tu={entry.token_usage} />}
                   </div>
                   <span className="shrink-0 text-xs text-zinc-600">
@@ -623,6 +644,14 @@ export default function AgentHealthDashboard() {
                     {agent.error && (
                       <p className="mt-2 truncate text-xs text-red-400">
                         {agent.error}
+                      </p>
+                    )}
+
+                    {agent.run_summary && !agent.error && (
+                      <p className="mt-2 line-clamp-2 text-xs text-zinc-500">
+                        {agent.run_summary.length > 120
+                          ? `${agent.run_summary.slice(0, 120)}…`
+                          : agent.run_summary}
                       </p>
                     )}
 

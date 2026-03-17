@@ -14,8 +14,10 @@ vi.mock("@/server/agent-health-auth", () => ({
 vi.mock("@/server/agent-health-store", () => ({
   AGENT_ID_PATTERN: /^[a-z0-9_-]+$/,
   validateReport: vi.fn(),
+  validateHeartbeat: vi.fn(),
   checkRateLimit: vi.fn(),
   recordHealthReport: vi.fn(),
+  recordHeartbeat: vi.fn(),
   reserveHealthReportIdempotency: vi.fn(),
   commitHealthReportIdempotency: vi.fn(),
   releaseHealthReportIdempotency: vi.fn(),
@@ -47,8 +49,10 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import { authenticateAgentRequest } from "@/server/agent-health-auth";
 import {
   validateReport,
+  validateHeartbeat,
   checkRateLimit,
   recordHealthReport,
+  recordHeartbeat,
   reserveHealthReportIdempotency,
   commitHealthReportIdempotency,
   releaseHealthReportIdempotency,
@@ -164,6 +168,16 @@ beforeEach(() => {
   vi.mocked(recordHealthReport).mockResolvedValue(undefined);
   vi.mocked(commitHealthReportIdempotency).mockResolvedValue(undefined);
   vi.mocked(releaseHealthReportIdempotency).mockResolvedValue(undefined);
+  vi.mocked(validateHeartbeat).mockReturnValue({
+    ok: true,
+    heartbeat: {
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      received_at: "2026-03-14T12:00:00Z",
+    },
+  });
+  vi.mocked(recordHeartbeat).mockResolvedValue(undefined);
   vi.mocked(getOverview).mockResolvedValue([]);
   vi.mocked(getHistory).mockResolvedValue([]);
 });
@@ -356,6 +370,132 @@ describe("POST /api/agent-health", () => {
       "idempotency commit failed",
     );
     expect(releaseHealthReportIdempotency).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — POST heartbeat
+// ---------------------------------------------------------------------------
+
+describe("POST /api/agent-health (heartbeat)", () => {
+  it("accepts a valid heartbeat and returns confirmation", async () => {
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(true);
+    expect(body.received_at).toBeDefined();
+  });
+
+  it("routes heartbeat to validateHeartbeat instead of validateReport", async () => {
+    await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(validateHeartbeat).toHaveBeenCalled();
+    expect(validateReport).not.toHaveBeenCalled();
+  });
+
+  it("calls recordHeartbeat instead of recordHealthReport", async () => {
+    await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(recordHeartbeat).toHaveBeenCalledWith(
+      "inst-1",
+      expect.objectContaining({ agent_id: "bee-1", outcome: "heartbeat" }),
+      expect.anything(),
+    );
+    expect(recordHealthReport).not.toHaveBeenCalled();
+  });
+
+  it("skips idempotency for heartbeats", async () => {
+    await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(reserveHealthReportIdempotency).not.toHaveBeenCalled();
+    expect(commitHealthReportIdempotency).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when heartbeat validation fails", async () => {
+    vi.mocked(validateHeartbeat).mockReturnValue({
+      ok: false,
+      message: "agent_id must be 1-64 chars",
+    });
+
+    const res = await POST(makePostRequest({
+      agent_id: "",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+  });
+
+  it("returns 401 when heartbeat is not authenticated", async () => {
+    mockAgentAuthFailure(401, "agent_health_not_authenticated", "Invalid token");
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 429 when heartbeat is rate-limited", async () => {
+    vi.mocked(checkRateLimit).mockResolvedValue(false);
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+    }));
+
+    expect(res.status).toBe(429);
+    expect(recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("accepts heartbeat with next_run_at", async () => {
+    const futureIso = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    vi.mocked(validateHeartbeat).mockReturnValue({
+      ok: true,
+      heartbeat: {
+        agent_id: "bee-1",
+        repo: "hivemoot/sandbox",
+        outcome: "heartbeat",
+        next_run_at: futureIso,
+        received_at: "2026-03-14T12:00:00Z",
+      },
+    });
+
+    const res = await POST(makePostRequest({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      outcome: "heartbeat",
+      next_run_at: futureIso,
+    }));
+
+    expect(res.status).toBe(200);
+    expect(recordHeartbeat).toHaveBeenCalledWith(
+      "inst-1",
+      expect.objectContaining({ next_run_at: futureIso }),
+      expect.anything(),
+    );
   });
 });
 
