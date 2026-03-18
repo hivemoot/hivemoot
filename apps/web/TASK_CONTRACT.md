@@ -74,7 +74,7 @@ pending  ──claim──►  running  ──complete──►   completed  (te
                   │
                   └──timeout (auto-timeout)──►  timed_out  (terminal)
 
-needs_follow_up  ──follow-up──►  running
+needs_follow_up  ──follow-up──►  pending  (re-queued, not directly running)
 ```
 
 **Terminal states:** `completed`, `failed`, `timed_out`
@@ -153,6 +153,7 @@ The `claim_token` is a 64-char hex secret (32 random bytes) that must be passed 
 | `error` | `string` | For `fail` | Error description, max 400 chars after trim |
 | `exit_code` | `number` | Optional with `fail` | Integer exit code from the executor process; included in the error message |
 | `executor_outcome` | `string` | Optional with `complete` | One of: `success`, `auth_failed`, `runtime_failed`, `timeout` — non-success outcomes force the action to `fail` |
+| `message` | `string` | Required with `request_follow_up` | Follow-up prompt for the user; must be non-empty after trim |
 
 **Responses:**
 - `200` + `{ "task": TaskRecord }` — transition applied
@@ -166,7 +167,7 @@ The `claim_token` is a 64-char hex secret (32 random bytes) that must be passed 
 
 **Auth:** Setup session cookie.
 
-**Request body:** `{ "message": string }` — message appended to the conversation. Task must be in `needs_follow_up` status; transitions to `running`.
+**Request body:** `{ "message": string }` — message appended to the conversation. Task must be in `needs_follow_up` status. The task transitions to `pending` (re-queued for the next available executor), not directly to `running`. Progress is set to `"Re-queued after follow-up"`.
 
 ---
 
@@ -239,7 +240,7 @@ Appends a user message to task message history. Accepted states (`MESSAGE_ALLOWE
 | `task:{installationId}:{taskId}` | Hash (JSON) | `StoredTaskRecord` | Task record, no progress field |
 | `task:{installationId}:{taskId}:progress` | String | Latest progress text | Set to final progress at terminal transition; expires with the task TTL |
 | `task:{installationId}:{taskId}:messages` | List | JSON-serialized `TaskMessage[]` | Append via `rpush`; max 200 entries |
-| `task:{installationId}:{taskId}:claim-token-hash` | String | SHA-256 of claim token | Deleted after task claim is verified |
+| `task:{installationId}:{taskId}:claim-token-hash` | String | SHA-256 of claim token | Verification only reads the key; key is deleted on state transitions (execute, finalize, follow-up, retry, delete) |
 | `tasks:pending:{installationId}` | Sorted Set | Members = `taskId`, score = creation timestamp ms | Pending queue |
 | `tasks:running:{installationId}` | Sorted Set | Members = `taskId`, score = addition timestamp ms | Running set for concurrency enforcement |
 | `tasks:recent:{installationId}` | Sorted Set | Members = `taskId`, score = `updated_at` ms | Recent completed/failed tasks |
@@ -268,7 +269,7 @@ All error responses follow `{ "code": string, "message": string }`. Task routes 
 | `task_concurrency_limited` | 429 | Installation concurrency cap reached |
 | `task_lock_timeout` | 429 | Lock contention on state mutation; retry shortly |
 | `task_follow_up_not_allowed` | 409 | Follow-up attempted on non-`needs_follow_up` task |
-| `task_server_error` | 500/429 | Unexpected server error |
+| `task_server_error` | 500 | Unexpected server error (one `create` path uses 503 when repo preflight fails unexpectedly) |
 
 ---
 
