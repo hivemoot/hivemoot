@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   validateEnv: vi.fn(),
   getRedisClient: vi.fn(),
   getSetupSession: vi.fn(),
+  isSessionFresh: vi.fn(),
   parseKeyring: vi.fn(),
 }));
 
@@ -19,6 +20,7 @@ vi.mock("@/server/redis", () => ({
 
 vi.mock("@/server/setup-session", () => ({
   getSetupSession: mocks.getSetupSession,
+  isSessionFresh: mocks.isSessionFresh,
   SETUP_SESSION_COOKIE: "hivemoot_setup_session",
 }));
 
@@ -63,7 +65,10 @@ describe("authenticateByokRequest runtime config cache", () => {
       installationId: "123",
       userId: 1,
       userLogin: "worker",
+      iat: Date.now(),
+      expiresAt: Date.now() + 86400000,
     });
+    mocks.isSessionFresh.mockReturnValue(true);
   });
 
   it("retries runtime config load after an initial misconfiguration", async () => {
@@ -110,5 +115,50 @@ describe("authenticateByokRequest runtime config cache", () => {
     expect(mocks.validateEnv).toHaveBeenCalledTimes(1);
     expect(mocks.parseKeyring).toHaveBeenCalledTimes(1);
     expect(mocks.getSetupSession).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("authenticateByokRequest freshness gate", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    mocks.validateEnv.mockReturnValue({ ok: true, config: VALID_ENV_CONFIG });
+    mocks.parseKeyring.mockReturnValue(new Map([["v1", Buffer.alloc(32)]]));
+    mocks.getRedisClient.mockReturnValue({} as never);
+    mocks.getSetupSession.mockResolvedValue({
+      installationId: "123",
+      userId: 1,
+      userLogin: "worker",
+      iat: Date.now(),
+      expiresAt: Date.now() + 86400000,
+    });
+  });
+
+  it("succeeds without freshness check when requireFresh is not set", async () => {
+    mocks.isSessionFresh.mockReturnValue(false);
+    const { authenticateByokRequest } = await import("./byok-auth");
+    const result = await authenticateByokRequest(makeRequest());
+    expect(result.ok).toBe(true);
+    expect(mocks.isSessionFresh).not.toHaveBeenCalled();
+  });
+
+  it("succeeds when requireFresh is true and session is fresh", async () => {
+    mocks.isSessionFresh.mockReturnValue(true);
+    const { authenticateByokRequest } = await import("./byok-auth");
+    const result = await authenticateByokRequest(makeRequest(), { requireFresh: true });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects with SESSION_STALE when requireFresh is true and session is stale", async () => {
+    mocks.isSessionFresh.mockReturnValue(false);
+    const { authenticateByokRequest } = await import("./byok-auth");
+    const result = await authenticateByokRequest(makeRequest(), { requireFresh: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected failure");
+    expect(result.response.status).toBe(401);
+    await expect(result.response.json()).resolves.toMatchObject({
+      code: "byok_session_stale",
+    });
   });
 });

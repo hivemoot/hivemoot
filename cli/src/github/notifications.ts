@@ -1,6 +1,6 @@
 import type { RepoRef, MentionEvent } from "../config/types.js";
 import { CliError } from "../config/types.js";
-import { gh } from "./client.js";
+import { gh, ghWithHeaders } from "./client.js";
 
 export interface NotificationInfo {
   threadId: string;   // GitHub notification thread ID — needed for ack
@@ -577,6 +577,113 @@ export async function fetchLatestReviewRequestEvent(
 export function isAgentMentioned(body: string, agent: string): boolean {
   const escaped = agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![a-zA-Z0-9._+-])@${escaped}(?![a-zA-Z0-9-])`, "i").test(body);
+}
+
+export interface ConditionalFetchResult {
+  notModified: boolean;
+  notifications: RawNotification[];
+  /** Value of the Last-Modified header from the response, to pass as If-Modified-Since on the next request. */
+  lastModified?: string;
+  /** Value of the X-Poll-Interval header (seconds) from the response. */
+  pollInterval?: number;
+}
+
+/**
+ * Fetch unread mention notifications for a repo using conditional HTTP requests.
+ *
+ * When `lastModified` is provided it is sent as `If-Modified-Since`. If GitHub
+ * responds with HTTP 304 (Nothing changed), this function returns immediately
+ * with `notModified: true` — consuming zero rate-limit quota.
+ *
+ * The `X-Poll-Interval` header value (when present) is returned so callers can
+ * adjust their sleep interval to match GitHub's recommended minimum.
+ *
+ * Uses a two-call design:
+ * 1. Conditional probe with `If-Modified-Since` (no pagination) to get 304/200
+ *    and extract response metadata (Last-Modified, X-Poll-Interval) from headers.
+ *    Using -i here is reliable because we do not need to paginate this probe.
+ * 2. If 200: full paginated fetch with `--paginate --slurp` to retrieve all pages,
+ *    avoiding silent data loss when >100 unread notifications exist.
+ *
+ * This approach avoids the `--paginate -i` conflict where Link headers appear
+ * only on the first page, making it impossible to read conditional headers from
+ * subsequent pages.
+ */
+export async function fetchMentionNotificationsConditional(
+  repo: string,
+  reasons: string[],
+  lastModified?: string,
+): Promise<ConditionalFetchResult> {
+  // Step 1: Conditional probe — get 304/200 and extract response metadata.
+  const probeArgs = ["api", "-i"];
+  if (lastModified) {
+    probeArgs.push("-H", `If-Modified-Since: ${lastModified}`);
+  }
+  probeArgs.push(`/repos/${repo}/notifications?all=false`);
+
+  const probeResult = await ghWithHeaders(probeArgs);
+
+  if (probeResult.notModified) {
+    return { notModified: true, notifications: [] };
+  }
+
+  const { headers } = probeResult;
+
+  const pollIntervalRaw = headers["x-poll-interval"];
+  const pollIntervalSeconds = pollIntervalRaw ? parseInt(pollIntervalRaw, 10) : NaN;
+  const pollInterval = Number.isFinite(pollIntervalSeconds) && pollIntervalSeconds > 0
+    ? pollIntervalSeconds
+    : undefined;
+
+  const newLastModified = headers["last-modified"] ?? undefined;
+
+  // Step 2: Fetch all pages. No If-Modified-Since here — content is known to have
+  // changed. --paginate --slurp fetches all Link pages so >100 unread notifications
+  // are never silently dropped.
+  const raw = await gh([
+    "api",
+    "--paginate",
+    "--slurp",
+    `/repos/${repo}/notifications?all=false`,
+  ]);
+
+  let notifications: RawNotification[];
+  try {
+    const pages: unknown = JSON.parse(raw);
+    if (!Array.isArray(pages)) {
+      throw new CliError(
+        `Unexpected notification response shape (expected array, got ${typeof pages})`,
+        "GH_ERROR",
+        1,
+      );
+    }
+    // --paginate --slurp produces an array of page arrays
+    notifications = (pages as RawNotification[][]).flat();
+  } catch (err) {
+    // Treat parse/shape failures as transient errors — throw so the watch loop
+    // does not advance lastModified or lastChecked, ensuring a retry on the
+    // next cycle fetches a fresh 200 response with the same notifications.
+    if (err instanceof CliError) throw err;
+    throw new CliError(
+      `Failed to parse notification response body: ${err instanceof Error ? err.message : String(err)}`,
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  const filtered = notifications.filter((n) => {
+    if (!n.unread) return false;
+    if (!reasons.includes(n.reason)) return false;
+    if (n.subject.type !== "Issue" && n.subject.type !== "PullRequest") return false;
+    return true;
+  });
+
+  return {
+    notModified: false,
+    notifications: filtered,
+    lastModified: newLastModified,
+    pollInterval,
+  };
 }
 
 /**

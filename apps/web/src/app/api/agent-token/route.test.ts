@@ -84,6 +84,10 @@ function mockAuthFailure(status: number, code: string, message: string) {
   });
 }
 
+function mockAuthStale() {
+  mockAuthFailure(401, "byok_session_stale", "Re-authentication required");
+}
+
 function makeRequest(method: string) {
   return new NextRequest("https://example.com/api/agent-token", { method });
 }
@@ -128,6 +132,14 @@ describe("POST /api/agent-token", () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const res = await POST(makeRequest("POST"));
     expect(res.status).toBe(401);
+  });
+
+  it("returns 401 session-stale when session is not fresh", async () => {
+    mockAuthStale();
+    const res = await POST(makeRequest("POST"));
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe("byok_session_stale");
   });
 
   it("returns 503 with lock-timeout code when token lock cannot be acquired", async () => {
@@ -201,6 +213,14 @@ describe("GET /api/agent-token", () => {
     expect(res.status).toBe(401);
   });
 
+  it("returns 401 session-stale when session is not fresh", async () => {
+    mockAuthStale();
+    const res = await GET(makeRequest("GET"));
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe("byok_session_stale");
+  });
+
   it("returns 500 when getAgentToken throws", async () => {
     vi.mocked(getAgentToken).mockRejectedValue(new Error("decrypt failure"));
 
@@ -240,6 +260,14 @@ describe("DELETE /api/agent-token", () => {
     mockAuthFailure(401, "byok_not_authenticated", "Not authenticated");
     const res = await DELETE(makeRequest("DELETE"));
     expect(res.status).toBe(401);
+  });
+
+  it("returns 401 session-stale when session is not fresh", async () => {
+    mockAuthStale();
+    const res = await DELETE(makeRequest("DELETE"));
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe("byok_session_stale");
   });
 
   it("returns 503 with lock-timeout code when token lock cannot be acquired", async () => {

@@ -89,6 +89,32 @@ describe("loadState()", () => {
 
     await expect(loadState(join(linkDir, "watch-state.json"))).rejects.toThrow(/symbolic links/i);
   });
+
+  it("does not inherit pollInterval or lastModified via __proto__ in notificationsPollState", async () => {
+    // JSON.parse treats "__proto__" as a regular own property, so a hostile state file
+    // could attempt prototype pollution via the notificationsPollState parser.
+    writeFileSync(stateFile, JSON.stringify({
+      lastChecked: "2026-01-15T10:00:00Z",
+      processedThreadIds: [],
+      notificationsPollState: {
+        "__proto__": { pollInterval: 9999, lastModified: "Mon, 01 Jan 2026 00:00:00 GMT" },
+      },
+    }));
+
+    const state = await loadState(stateFile);
+
+    // The result object must not have inherited pollInterval or lastModified
+    const plainObj = {};
+    // @ts-expect-error - intentional prototype-pollution check
+    expect(plainObj.pollInterval).toBeUndefined();
+    // @ts-expect-error - intentional prototype-pollution check
+    expect(plainObj.lastModified).toBeUndefined();
+
+    // notificationsPollState is optional; a single __proto__ entry may produce
+    // an entry or nothing — either is acceptable as long as it is not undefined
+    // due to a mutation of Object.prototype
+    expect(state.lastChecked).toBe("2026-01-15T10:00:00Z");
+  });
 });
 
 describe("saveState()", () => {

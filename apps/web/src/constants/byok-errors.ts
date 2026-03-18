@@ -23,6 +23,7 @@ export const BYOK_ERROR = {
   REVOKED: "byok_revoked",
   SERVER_MISCONFIGURATION: "byok_server_misconfiguration",
   SESSION_INVALID: "byok_session_invalid",
+  SESSION_STALE: "byok_session_stale",
   SESSION_STORAGE_NOT_CONFIGURED: "byok_session_storage_not_configured",
 } as const;
 

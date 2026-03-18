@@ -98,6 +98,44 @@ export async function getAuthenticatedUser(userToken: string): Promise<GitHubUse
 }
 
 // ---------------------------------------------------------------------------
+// Installation access token
+// ---------------------------------------------------------------------------
+
+/**
+ * Exchanges a GitHub App JWT for a short-lived installation access token.
+ *
+ * Installation tokens are valid for 1 hour and authorize API calls scoped
+ * to a specific installation (read/write repos the App is installed on).
+ * Use these — not the App JWT — for GitHub Contents API calls.
+ */
+export async function generateInstallationToken(
+  installationId: string,
+  appJwt: string,
+): Promise<string> {
+  const response = await fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${appJwt}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`GitHub installation token endpoint returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as { token: string };
+  if (!data.token) {
+    throw new Error("No token in GitHub installation token response");
+  }
+  return data.token;
+}
+
+// ---------------------------------------------------------------------------
 // Installation metadata
 // ---------------------------------------------------------------------------
 

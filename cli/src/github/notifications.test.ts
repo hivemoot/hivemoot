@@ -2,12 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("./client.js", () => ({
   gh: vi.fn(),
+  ghWithHeaders: vi.fn(),
 }));
 
-import { gh } from "./client.js";
+import { gh, ghWithHeaders } from "./client.js";
 import {
   fetchNotifications,
   fetchMentionNotifications,
+  fetchMentionNotificationsConditional,
   markNotificationRead,
   fetchCommentBody,
   fetchRecentSubjectComments,
@@ -23,6 +25,7 @@ import type { RawNotification, CommentDetail } from "./notifications.js";
 import { CliError } from "../config/types.js";
 
 const mockedGh = vi.mocked(gh);
+const mockedGhWithHeaders = vi.mocked(ghWithHeaders);
 const repo = { owner: "hivemoot", repo: "colony" };
 
 beforeEach(() => {
@@ -953,5 +956,184 @@ describe("isAgentMentioned()", () => {
 
   it("returns false for empty body", () => {
     expect(isAgentMentioned("", "hivemoot-worker")).toBe(false);
+  });
+});
+
+describe("fetchMentionNotificationsConditional()", () => {
+  function makeRawNotification(overrides: Partial<RawNotification> = {}): RawNotification {
+    return {
+      id: "101",
+      unread: true,
+      reason: "mention",
+      updated_at: "2026-03-10T12:00:00Z",
+      subject: {
+        url: "https://api.github.com/repos/hivemoot/colony/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/99",
+      },
+      repository: { full_name: "hivemoot/colony" },
+      ...overrides,
+    };
+  }
+
+  // Probe response: only headers matter; probe body is ignored.
+  function makeProbeResponse(extraHeaders: Record<string, string> = {}) {
+    return {
+      notModified: false as const,
+      headers: {
+        "content-type": "application/json",
+        ...extraHeaders,
+      },
+      body: "[]",
+    };
+  }
+
+  // Mock both the conditional probe (ghWithHeaders) and the paginated fetch (gh).
+  function mockSuccessfulFetch(
+    notifications: RawNotification[],
+    extraHeaders: Record<string, string> = {},
+  ) {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse(extraHeaders));
+    // --paginate --slurp wraps each page in an outer array
+    mockedGh.mockResolvedValue(JSON.stringify([notifications]));
+  }
+
+  it("returns notModified: false with filtered notifications on success", async () => {
+    const notification = makeRawNotification();
+    mockSuccessfulFetch([notification]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notModified).toBe(false);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("passes If-Modified-Since header to probe when lastModified is provided", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"], "Mon, 10 Mar 2026 10:00:00 GMT");
+
+    expect(mockedGhWithHeaders).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        "-H",
+        "If-Modified-Since: Mon, 10 Mar 2026 10:00:00 GMT",
+      ]),
+    );
+  });
+
+  it("does not pass If-Modified-Since when lastModified is absent", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    const callArgs = mockedGhWithHeaders.mock.calls[0][0] as string[];
+    expect(callArgs).not.toContain("If-Modified-Since:");
+    expect(callArgs).not.toContain("-H");
+  });
+
+  it("returns notModified: true immediately on 304 without making paginated fetch", async () => {
+    mockedGhWithHeaders.mockResolvedValue({ notModified: true });
+
+    const result = await fetchMentionNotificationsConditional(
+      "hivemoot/colony",
+      ["mention"],
+      "Mon, 10 Mar 2026 10:00:00 GMT",
+    );
+
+    expect(result.notModified).toBe(true);
+    expect(result.notifications).toHaveLength(0);
+    expect(mockedGh).not.toHaveBeenCalled();
+  });
+
+  it("extracts Last-Modified from probe response headers", async () => {
+    mockSuccessfulFetch([], { "last-modified": "Mon, 10 Mar 2026 12:00:00 GMT" });
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.lastModified).toBe("Mon, 10 Mar 2026 12:00:00 GMT");
+  });
+
+  it("extracts X-Poll-Interval from probe response headers", async () => {
+    mockSuccessfulFetch([], { "x-poll-interval": "60" });
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.pollInterval).toBe(60);
+  });
+
+  it("leaves pollInterval undefined when X-Poll-Interval header is absent", async () => {
+    mockSuccessfulFetch([]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.pollInterval).toBeUndefined();
+  });
+
+  it("makes paginated fetch with --paginate --slurp after 200 probe", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(mockedGh).toHaveBeenCalledWith(
+      expect.arrayContaining(["--paginate", "--slurp"]),
+    );
+    // Paginated fetch must NOT send If-Modified-Since (it's unconditional)
+    const paginatedArgs = mockedGh.mock.calls[0][0] as string[];
+    expect(paginatedArgs.join(" ")).not.toContain("If-Modified-Since");
+  });
+
+  it("flattens multiple pages from paginated fetch, returning all notifications", async () => {
+    const page1 = [makeRawNotification({ id: "101" })];
+    const page2 = [makeRawNotification({ id: "102" })];
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    // --paginate --slurp produces an array of page-arrays
+    mockedGh.mockResolvedValue(JSON.stringify([page1, page2]));
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(2);
+    expect(result.notifications.map((n) => n.id)).toEqual(["101", "102"]);
+  });
+
+  it("filters out read notifications", async () => {
+    const unread = makeRawNotification({ id: "101", unread: true });
+    const read = makeRawNotification({ id: "102", unread: false });
+    mockSuccessfulFetch([unread, read]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("filters by reason", async () => {
+    const mention = makeRawNotification({ id: "101", reason: "mention" });
+    const comment = makeRawNotification({ id: "102", reason: "comment" });
+    mockSuccessfulFetch([mention, comment]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("throws on paginated body parse failure so caller does not advance lastModified", async () => {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    mockedGh.mockResolvedValue("not valid json");
+
+    await expect(
+      fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]),
+    ).rejects.toMatchObject({ code: "GH_ERROR" });
+  });
+
+  it("throws when paginated response is valid JSON but not an array", async () => {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    mockedGh.mockResolvedValue(JSON.stringify({ error: "oops" }));
+
+    await expect(
+      fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]),
+    ).rejects.toMatchObject({ code: "GH_ERROR" });
   });
 });

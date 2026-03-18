@@ -90,7 +90,7 @@ beforeEach(() => {
   vi.mocked(exchangeOAuthCode).mockResolvedValue("user-token");
   vi.mocked(getAuthenticatedUser).mockResolvedValue({ login: "alice", id: 1 });
   vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
-    stateBinding === "binding-cookie" ? "12345" : null
+    stateBinding === "binding-cookie" ? { installationId: "12345" } : null
   ));
   vi.mocked(createSetupSession).mockResolvedValue("session-token-abc");
   vi.mocked(hasByokEnvelope).mockResolvedValue(false);
@@ -245,7 +245,7 @@ describe("GET /api/auth/github/callback — rejections", () => {
   it("cross-installation write attempt is blocked (installationId from state, not URL)", async () => {
     // Attacker sets state=legit-state but the URL has a different installation_id.
     // The route ignores any installation_id in the URL and uses only the one from Redis state.
-    vi.mocked(validateOAuthState).mockResolvedValue("VICTIM_INSTALL");
+    vi.mocked(validateOAuthState).mockResolvedValue({ installationId: "VICTIM_INSTALL" });
     vi.mocked(getInstallation).mockResolvedValue({
       account: { login: "alice", type: "User" },
     });
@@ -349,7 +349,7 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
   beforeEach(() => {
     // State returns the discover sentinel instead of a numeric installation ID
     vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
-      stateBinding === "binding-cookie" ? "discover" : null
+      stateBinding === "binding-cookie" ? { installationId: "discover" } : null
     ));
   });
 
@@ -425,7 +425,7 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
 
   it("does not set installation_id on denied redirect from discovery flow", async () => {
     vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
-      stateBinding === "binding-cookie" ? "discover" : null
+      stateBinding === "binding-cookie" ? { installationId: "discover" } : null
     ));
 
     const req = makeRequestWithCookie(
@@ -499,5 +499,48 @@ describe("GET /api/auth/github/callback — smart redirect", () => {
     const location = new URL(res.headers.get("location")!);
     expect(location.pathname).toBe("/setup");
     expect(location.searchParams.get("auth")).toBe("ok");
+  });
+});
+
+describe("GET /api/auth/github/callback — credentials re-auth (installation pinning)", () => {
+  it("stays pinned to installation A after re-auth even when user has multiple installations", async () => {
+    // Simulate: user on installation A's Credentials page clicks Re-authenticate.
+    // The credentials page routes through /api/auth/github/start?installation_id=111&next=...
+    // which stores installationId=111 in OAuth state — NOT DISCOVER_SENTINEL.
+    vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+      stateBinding === "binding-cookie"
+        ? { installationId: "111", next: "/dashboard/credentials" }
+        : null
+    ));
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+    vi.mocked(hasByokEnvelope).mockResolvedValue(true);
+
+    // Two installations exist — discovery would pick the wrong one (installations[0])
+    vi.mocked(getUserInstallations).mockResolvedValue([
+      { id: 222, app_id: 99, account: { login: "my-org", type: "Organization" } },
+      { id: 111, app_id: 99, account: { login: "alice", type: "User" } },
+    ]);
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    // Discovery must NOT be called — we already have the installationId from state
+    expect(vi.mocked(getUserInstallations)).not.toHaveBeenCalled();
+
+    // Session must be created with installation A (111), not B (222)
+    expect(vi.mocked(createSetupSession)).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "111" }),
+      expect.anything(),
+    );
+
+    // After re-auth, lands on the credentials page (next param honoured)
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/dashboard/credentials");
   });
 });
