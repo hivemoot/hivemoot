@@ -1,4 +1,5 @@
 import type {
+  FocusFilters,
   GitHubIssue,
   GitHubPR,
   NotificationRef,
@@ -36,6 +37,77 @@ interface IssuePipelineCounts {
 
 const OMITTED_PIPELINE_NOTE =
   "Issue pipeline and implementation-gap metrics are omitted because no governance phase labels were detected.";
+
+// Returns the classification bucket for an issue without building a SummaryItem.
+// Used to compute unfiltered pipeline counts when focus filtering is active.
+function classifyIssueBucket(issue: GitHubIssue): "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified" {
+  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) return "needsHuman";
+  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) return "voteOn";
+  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) return "discuss";
+  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) return "implement";
+  if (hasLabel(issue.labels, "vote")) return "voteOn";
+  if (hasLabel(issue.labels, "discuss")) return "discuss";
+  return "unclassified";
+}
+
+interface NormalizedFocusFilters {
+  labelInclude?: Set<string>;
+  labelExclude?: Set<string>;
+  authorInclude?: Set<string>;
+  authorExclude?: Set<string>;
+}
+
+function normalizeFilterValues(values?: string[]): Set<string> | undefined {
+  if (!values || values.length === 0) return undefined;
+  const normalized = values
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  if (normalized.length === 0) return undefined;
+  return new Set(normalized);
+}
+
+function normalizeFocusFilters(focusFilters?: FocusFilters): NormalizedFocusFilters {
+  return {
+    labelInclude: normalizeFilterValues(focusFilters?.labels?.include),
+    labelExclude: normalizeFilterValues(focusFilters?.labels?.exclude),
+    authorInclude: normalizeFilterValues(focusFilters?.authors?.include),
+    authorExclude: normalizeFilterValues(focusFilters?.authors?.exclude),
+  };
+}
+
+function hasItemFilters(filters: NormalizedFocusFilters): boolean {
+  return Boolean(
+    filters.labelInclude ||
+    filters.labelExclude ||
+    filters.authorInclude ||
+    filters.authorExclude,
+  );
+}
+
+function matchesFocusFilters(
+  labels: Array<{ name: string }>,
+  author: string | undefined,
+  filters: NormalizedFocusFilters,
+): boolean {
+  const normalizedLabels = labels.map((l) => l.name.trim().toLowerCase());
+  const normalizedAuthor = author?.trim().toLowerCase();
+
+  if (filters.labelExclude && normalizedLabels.some((label) => filters.labelExclude?.has(label))) {
+    return false;
+  }
+  if (filters.labelInclude && !normalizedLabels.some((label) => filters.labelInclude?.has(label))) {
+    return false;
+  }
+  if (filters.authorExclude && normalizedAuthor && filters.authorExclude.has(normalizedAuthor)) {
+    return false;
+  }
+  if (filters.authorInclude) {
+    if (!normalizedAuthor || !filters.authorInclude.has(normalizedAuthor)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function isMergeReadyPR(pr: GitHubPR): boolean {
   if (pr.isDraft) return false;
@@ -311,6 +383,7 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  focusFilters?: FocusFilters,
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -322,7 +395,30 @@ export function buildSummary(
   const addressFeedback: SummaryItem[] = [];
   const notes: string[] = [];
 
+  const normalizedFocusFilters = normalizeFocusFilters(focusFilters);
+  const shouldFilterItems = hasItemFilters(normalizedFocusFilters);
+  const visibleIssues = shouldFilterItems
+    ? issues.filter((issue) =>
+      matchesFocusFilters(issue.labels, issue.author?.login ?? undefined, normalizedFocusFilters))
+    : issues;
+  const visiblePRs = shouldFilterItems
+    ? prs.filter((pr) =>
+      matchesFocusFilters(pr.labels, pr.author?.login ?? undefined, normalizedFocusFilters))
+    : prs;
+
+  // Track full pipeline counts from unfiltered issues so repository health
+  // metrics are accurate even when focus filtering is active.
+  let fullDiscussionCount = 0;
+  let fullVotingCount = 0;
+  let fullReadyToImplementCount = 0;
   for (const issue of issues) {
+    const bucket = classifyIssueBucket(issue);
+    if (bucket === "discuss") fullDiscussionCount += 1;
+    else if (bucket === "voteOn") fullVotingCount += 1;
+    else if (bucket === "implement") fullReadyToImplementCount += 1;
+  }
+
+  for (const issue of visibleIssues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
@@ -341,7 +437,7 @@ export function buildSummary(
   }
 
   // Annotate implement items with competing PR counts
-  const competitionMap = currentUser ? buildCompetitionMap(prs, currentUser) : new Map<number, number>();
+  const competitionMap = currentUser ? buildCompetitionMap(visiblePRs, currentUser) : new Map<number, number>();
   for (const item of implement) {
     const count = competitionMap.get(item.number) ?? 0;
     if (count > 0) {
@@ -349,7 +445,7 @@ export function buildSummary(
     }
   }
 
-  for (const pr of prs) {
+  for (const pr of visiblePRs) {
     const { bucket, item } = classifyPR(pr, now);
     const ctx = reviewContext(pr, currentUser, now);
     if (ctx) {
@@ -416,6 +512,9 @@ export function buildSummary(
   // Annotate all items with unread notification status and collect notification refs
   const notificationRefs: NotificationRef[] = [];
   const matchedNumbers = new Set<number>();
+  const fetchedOpenNumbers = new Set<number>();
+  for (const issue of issues) fetchedOpenNumbers.add(issue.number);
+  for (const pr of prs) fetchedOpenNumbers.add(pr.number);
 
   for (const [section, items] of sectionEntries) {
     for (const item of items) {
@@ -448,8 +547,11 @@ export function buildSummary(
 
   // Include unread notification threads that do not map to currently fetched
   // open items (e.g. closed threads or items beyond fetch limit).
+  // Skip items that are open but filtered out by focus — they are intentionally
+  // hidden and should not surface as "other" notifications.
   for (const [number, n] of notifications.entries()) {
     if (matchedNumbers.has(number)) continue;
+    if (fetchedOpenNumbers.has(number)) continue;
 
     const ackKey = `${n.threadId}:${n.updatedAt}`;
     notificationRefs.push({
@@ -478,11 +580,13 @@ export function buildSummary(
     hasGovernanceLabel(issue.labels, "EXTENDED_VOTING") ||
     hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")
   );
+  // Always use unfiltered counts so repository health metrics are accurate
+  // regardless of whether focus filtering is active.
   const issuePipeline: IssuePipelineCounts | undefined = hasPhaseLabels
     ? {
-        discussion: discuss.length,
-        voting: voteOn.length,
-        readyToImplement: implement.length,
+        discussion: fullDiscussionCount,
+        voting: fullVotingCount,
+        readyToImplement: fullReadyToImplementCount,
       }
     : undefined;
   const repositoryHealth = buildRepositoryHealth(issues, prs, currentUser, now, issuePipeline);

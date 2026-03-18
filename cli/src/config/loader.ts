@@ -2,6 +2,8 @@ import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
   HivemootConfig,
+  FocusFilters,
+  FocusMatchFilter,
   TeamConfig,
   RepoRef,
   RoleConfig,
@@ -64,12 +66,75 @@ function parseLegacyFocus(rawFocus: unknown): string | undefined {
 
 const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_FOCUS_NAME_LENGTH = 64;
+const MAX_FILTER_VALUE_LENGTH = 128;
+const MAX_FILTER_VALUES = 100;
+
+interface ResolvedFocusBlock {
+  objective: string;
+  filters?: FocusFilters;
+}
+
+function parseStringList(
+  raw: unknown,
+  maxLength: number,
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const values: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > maxLength) continue;
+
+    const dedupeKey = trimmed.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    values.push(trimmed);
+    if (values.length >= MAX_FILTER_VALUES) break;
+  }
+
+  return values.length > 0 ? values : undefined;
+}
+
+function parseMatchFilter(raw: unknown): FocusMatchFilter | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+
+  const filter = raw as Record<string, unknown>;
+  const include = parseStringList(filter.include, MAX_FILTER_VALUE_LENGTH);
+  const exclude = parseStringList(filter.exclude, MAX_FILTER_VALUE_LENGTH);
+
+  if (!include && !exclude) return undefined;
+
+  return {
+    ...(include ? { include } : {}),
+    ...(exclude ? { exclude } : {}),
+  };
+}
+
+function parseFocusFilters(raw: unknown): FocusFilters | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+
+  const filters = raw as Record<string, unknown>;
+  const labels = parseMatchFilter(filters.labels);
+  const authors = parseMatchFilter(filters.authors);
+
+  if (!labels && !authors) return undefined;
+
+  return {
+    ...(labels ? { labels } : {}),
+    ...(authors ? { authors } : {}),
+  };
+}
 
 // Resolves focus from the team config. Handles two formats:
 // 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
 // 2. Legacy: team.focus.default (plain string)
 // The new format takes precedence when team.focuses is present.
-function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
+function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocusBlock | undefined {
   const rawFocuses = rawTeam.focuses;
 
   if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
@@ -101,14 +166,19 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
       // and the next candidate (or undefined) is returned.
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
-      return objective;
+      return {
+        objective,
+        filters: parseFocusFilters(b.filters),
+      };
     }
 
     return undefined;
   }
 
   // Fall back to the legacy focus.default format.
-  return parseLegacyFocus(rawTeam.focus);
+  const objective = parseLegacyFocus(rawTeam.focus);
+  if (!objective) return undefined;
+  return { objective };
 }
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
@@ -207,13 +277,14 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
-  const focus = resolveFocus(team as unknown as Record<string, unknown>);
+  const resolvedFocus = resolveFocus(team as unknown as Record<string, unknown>);
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
-    focus,
+    focus: resolvedFocus?.objective,
+    focusFilters: resolvedFocus?.filters,
   };
 }
 
