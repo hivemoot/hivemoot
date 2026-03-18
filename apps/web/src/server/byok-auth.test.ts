@@ -111,4 +111,28 @@ describe("authenticateByokRequest runtime config cache", () => {
     expect(mocks.parseKeyring).toHaveBeenCalledTimes(1);
     expect(mocks.getSetupSession).toHaveBeenCalledTimes(2);
   });
+
+  it("returns structured 500 JSON when session lookup throws", async () => {
+    const error = new Error("redis unavailable");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.getSetupSession.mockRejectedValue(error);
+
+    const { authenticateByokRequest } = await import("./byok-auth");
+    const result = await authenticateByokRequest(makeRequest());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected an authentication failure");
+    expect(result.response.status).toBe(500);
+    await expect(result.response.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[byok-auth] Failed to load setup session",
+      expect.objectContaining({
+        code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+        error,
+      }),
+    );
+  });
 });

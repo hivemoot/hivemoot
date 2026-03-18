@@ -166,7 +166,24 @@ export async function authenticateByokRequest(
     };
   }
 
-  const session = await getSetupSession(token, redis);
+  let session: SetupSessionPayload | null;
+  try {
+    session = await getSetupSession(token, redis);
+  } catch (error) {
+    console.error("[byok-auth] Failed to load setup session", {
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      error,
+    });
+    return {
+      ok: false,
+      response: byokError(
+        BYOK_ERROR.SERVER_MISCONFIGURATION,
+        "Internal server error",
+        500,
+      ),
+    };
+  }
+
   if (!session) {
     return {
       ok: false,
