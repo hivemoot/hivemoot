@@ -18,16 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
 import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
-import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions } from "@/server/github-auth";
-
-/**
- * Validates that `next` is a safe same-origin path.
- * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
- * and absolute URLs.
- */
-function isSafeNextPath(next: string): boolean {
-  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
-}
+import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions, isSafeNextPath } from "@/server/github-auth";
 
 function setupErrorRedirect(
   request: NextRequest,

@@ -20,18 +20,9 @@ import {
   getSetupSession,
 } from "@/server/setup-session";
 import { hasByokEnvelope } from "@/server/byok-store";
-import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions } from "@/server/github-auth";
+import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions, isSafeNextPath } from "@/server/github-auth";
 
 const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
-
-/**
- * Validates that `next` is a safe same-origin path.
- * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
- * and absolute URLs.
- */
-function isSafeNextPath(next: string): boolean {
-  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
-}
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();

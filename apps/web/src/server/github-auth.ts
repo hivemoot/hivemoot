@@ -8,6 +8,7 @@
  * - checkOrgAdmin: verifies the user holds an "admin" role in the target org
  * - buildOAuthAuthorizeUrl: constructs the GitHub OAuth authorize URL
  * - getOAuthStateCookieOptions: returns the stable cookie options for the OAuth state binding cookie
+ * - isSafeNextPath: validates that a `next` query param is a safe same-origin path
  */
 
 import { createSign } from "crypto";
@@ -35,6 +36,15 @@ export function buildOAuthAuthorizeUrl(
   url.searchParams.set("state", state);
   url.searchParams.set("scope", GITHUB_OAUTH_SCOPE);
   return url;
+}
+
+/**
+ * Validates that `next` is a safe same-origin path.
+ * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
+ * and absolute URLs.
+ */
+export function isSafeNextPath(next: string): boolean {
+  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
 }
 
 /**
