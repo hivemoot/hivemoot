@@ -6,9 +6,63 @@
  * - getAuthenticatedUser: fetches the authenticated GitHub user's identity
  * - getInstallation: fetches installation metadata using the App JWT
  * - checkOrgAdmin: verifies the user holds an "admin" role in the target org
+ * - buildAuthorizeRedirect: builds the GitHub OAuth authorization redirect response
+ * - isSafeNextPath: validates that a `next` param is a safe same-origin path
  */
 
 import { createSign } from "crypto";
+import { NextResponse } from "next/server";
+import { OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
+
+// ---------------------------------------------------------------------------
+// OAuth start helpers (shared between /start and /start-discover)
+// ---------------------------------------------------------------------------
+
+export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+/** Cookie max-age for the state binding cookie (10 min, aligned with Redis state TTL). */
+export const OAUTH_STATE_COOKIE_MAX_AGE = 600;
+
+/**
+ * Validates that `next` is a safe same-origin path.
+ * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
+ * and absolute URLs.
+ */
+export function isSafeNextPath(next: string): boolean {
+  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
+}
+
+/**
+ * Builds the GitHub OAuth authorization redirect response with the state-binding cookie.
+ *
+ * @param callbackUrl - The OAuth callback URL to pass to GitHub.
+ * @param clientId    - The GitHub OAuth App client ID.
+ * @param state       - The random state nonce (stored in Redis).
+ * @param stateBinding - The HMAC binding stored in the browser cookie.
+ * @param isProduction - Whether to set the Secure flag on the cookie.
+ */
+export function buildAuthorizeRedirect(
+  callbackUrl: string,
+  clientId: string,
+  state: string,
+  stateBinding: string,
+  isProduction: boolean,
+): NextResponse {
+  const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);
+  authorizeUrl.searchParams.set("client_id", clientId);
+  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
+  authorizeUrl.searchParams.set("state", state);
+  authorizeUrl.searchParams.set("scope", "read:org");
+
+  const response = NextResponse.redirect(authorizeUrl.toString());
+  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateBinding, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "lax",
+    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
+    path: "/",
+  });
+  return response;
+}
 
 // ---------------------------------------------------------------------------
 // App JWT

@@ -15,24 +15,13 @@ import { getRedisClient } from "@/server/redis";
 import {
   createOAuthState,
   DISCOVER_SENTINEL,
-  OAUTH_STATE_BINDING_COOKIE,
   SETUP_SESSION_COOKIE,
   getSetupSession,
 } from "@/server/setup-session";
 import { hasByokEnvelope } from "@/server/byok-store";
+import { buildAuthorizeRedirect, isSafeNextPath } from "@/server/github-auth";
 
-const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
-const OAUTH_STATE_COOKIE_MAX_AGE = 600;
-
-/**
- * Validates that `next` is a safe same-origin path.
- * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
- * and absolute URLs.
- */
-function isSafeNextPath(next: string): boolean {
-  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
-}
 
 export async function GET(request: NextRequest) {
   const env = validateEnv();
@@ -102,20 +91,11 @@ export async function GET(request: NextRequest) {
   }
 
   const callbackUrl = `${siteUrl}/api/auth/github/callback`;
-  const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);
-  authorizeUrl.searchParams.set("client_id", githubClientId);
-  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
-  authorizeUrl.searchParams.set("state", stateRecord.state);
-  authorizeUrl.searchParams.set("scope", "read:org");
-
-  const response = NextResponse.redirect(authorizeUrl.toString());
-  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
-    path: "/",
-  });
-
-  return response;
+  return buildAuthorizeRedirect(
+    callbackUrl,
+    githubClientId,
+    stateRecord.state,
+    stateRecord.stateBinding,
+    process.env.NODE_ENV === "production",
+  );
 }
