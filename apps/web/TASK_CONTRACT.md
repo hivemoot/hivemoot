@@ -229,7 +229,7 @@ Appends a user message to task message history. Accepted states (`MESSAGE_ALLOWE
 - `429` `task_concurrency_limited` — max concurrent tasks reached (only possible on terminal-task revival path)
 - `500` `task_server_error` — unexpected server error
 
-**Distinction from follow-up:** `POST /api/tasks/{taskId}/follow-up` (section 8) transitions a `needs_follow_up` task to `running`. `POST /api/tasks/{taskId}/messages` appends a user message and, for terminal tasks, revives them to `pending` — it does **not** accept `needs_follow_up` tasks.
+**Distinction from follow-up:** `POST /api/tasks/{taskId}/follow-up` (section 8) re-queues a `needs_follow_up` task to `pending`. `POST /api/tasks/{taskId}/messages` appends a user message and, for terminal tasks, revives them to `pending` — it does **not** accept `needs_follow_up` tasks.
 
 ---
 
