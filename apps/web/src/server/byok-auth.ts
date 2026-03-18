@@ -13,7 +13,7 @@ import { getRedisClient } from "@/server/redis";
 import { getSetupSession, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 import { parseKeyring } from "@/server/crypto";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
-import type { SetupSessionPayload } from "@/server/setup-session";
+import type { SetupSessionPayload, SetupSessionResult } from "@/server/setup-session";
 
 type AuthSuccess = {
   ok: true;
@@ -166,7 +166,7 @@ export async function authenticateByokRequest(
     };
   }
 
-  let session: SetupSessionPayload | null;
+  let session: SetupSessionResult | null;
   try {
     session = await getSetupSession(token, redis);
   } catch (error) {
