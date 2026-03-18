@@ -106,9 +106,9 @@ export async function GET(request: NextRequest) {
     // Skip if the state held the discover sentinel — there's no specific installation to preserve.
     if (state) {
       try {
-        const deniedInstallationId = await validateOAuthState(state, oauthStateBinding, redis);
-        if (deniedInstallationId && deniedInstallationId !== DISCOVER_SENTINEL) {
-          deniedUrl.searchParams.set("installation_id", deniedInstallationId);
+        const deniedResult = await validateOAuthState(state, oauthStateBinding, redis);
+        if (deniedResult && deniedResult.installationId !== DISCOVER_SENTINEL) {
+          deniedUrl.searchParams.set("installation_id", deniedResult.installationId);
         }
       } catch (err) {
         console.warn("[oauth-callback] Failed to validate state during denied flow", { error: err });
@@ -126,21 +126,24 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Step 1: Validate state (CSRF check) ---
-  let installationId: string | null;
+  let installationId: string;
+  let oauthNext: string | undefined;
   try {
-    installationId = await validateOAuthState(state, oauthStateBinding, redis);
+    const stateResult = await validateOAuthState(state, oauthStateBinding, redis);
+    if (!stateResult) {
+      const expiredUrl = new URL(`${siteUrl}/setup`);
+      expiredUrl.searchParams.set("auth", "expired");
+      const response = NextResponse.redirect(expiredUrl.toString());
+      clearOAuthStateBindingCookie(response);
+      return response;
+    }
+    installationId = stateResult.installationId;
+    oauthNext = stateResult.next;
   } catch (err) {
     console.error("[oauth-callback] Failed to validate OAuth state", { error: err });
     const errResponse = setupErrorRedirect(siteUrl, "oauth_state_read_failed");
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
-  }
-  if (!installationId) {
-    const expiredUrl = new URL(`${siteUrl}/setup`);
-    expiredUrl.searchParams.set("auth", "expired");
-    const response = NextResponse.redirect(expiredUrl.toString());
-    clearOAuthStateBindingCookie(response);
-    return response;
   }
 
   let userToken: string;
@@ -243,7 +246,8 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Step 7: Smart redirect based on setup completion ---
-  // Returning users who already configured BYOK go straight to the dashboard.
+  // Returning users who already configured BYOK go straight to the dashboard
+  // (or the `next` URL from OAuth state if present and safe).
   // New users (or failed checks) go to the setup wizard.
   let setupComplete = false;
   try {
@@ -255,10 +259,12 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const successUrl = setupComplete
-    ? new URL(`${siteUrl}/dashboard`)
-    : new URL(`${siteUrl}/setup`);
-  if (!setupComplete) {
+  let successUrl: URL;
+  if (setupComplete) {
+    const destination = oauthNext ?? "/dashboard";
+    successUrl = new URL(`${siteUrl}${destination}`);
+  } else {
+    successUrl = new URL(`${siteUrl}/setup`);
     successUrl.searchParams.set("installation_id", installationId);
     successUrl.searchParams.set("auth", "ok");
   }

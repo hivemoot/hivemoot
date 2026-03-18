@@ -1272,7 +1272,7 @@ describe("buildSummary()", () => {
     expect(summary.prioritySignals?.[0].summary).toContain("1 waiting");
   });
 
-  it("omits issue pipeline and implementation-gap without default hivemoot phase labels", () => {
+  it("includes issue pipeline when phase:* alias labels are present", () => {
     const issues = [
       makeIssue({ number: 401, labels: [{ name: "phase:ready-to-implement" }] }),
       makeIssue({ number: 402, labels: [{ name: "phase:discussion" }] }),
@@ -1286,10 +1286,30 @@ describe("buildSummary()", () => {
     ];
 
     const summary = buildSummary(repo, issues, prs, "testuser", now);
+    expect(summary.repositoryHealth?.issuePipeline).toBeDefined();
+    expect(summary.repositoryHealth?.issuePipeline?.discussion).toBe(1);
+    expect(summary.repositoryHealth?.issuePipeline?.readyToImplement).toBe(1);
+    expect(summary.notes).not.toContain("omitted");
+  });
+
+  it("omits issue pipeline and implementation-gap when no governance phase labels are present", () => {
+    const issues = [
+      makeIssue({ number: 401, labels: [{ name: "bug" }] }),
+      makeIssue({ number: 402, labels: [{ name: "enhancement" }] }),
+    ];
+    const prs = [
+      makePR({
+        number: 501,
+        author: { login: "other" },
+        closingIssuesReferences: [{ number: 401 }],
+      }),
+    ];
+
+    const summary = buildSummary(repo, issues, prs, "testuser", now);
     expect(summary.repositoryHealth?.issuePipeline).toBeUndefined();
     expect(summary.prioritySignals?.some((signal) => signal.kind === "implementation-gap")).toBe(false);
     expect(summary.notes).toContain(
-      "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.",
+      "Issue pipeline and implementation-gap metrics are omitted because no governance phase labels were detected.",
     );
   });
 });

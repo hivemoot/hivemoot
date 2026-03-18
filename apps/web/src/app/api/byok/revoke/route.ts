@@ -11,7 +11,7 @@ import { getByokEnvelope, setByokEnvelope } from "@/server/byok-store";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
 
 export async function POST(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
   const installationId = auth.session.installationId;

@@ -17,7 +17,7 @@ import { promisify } from "util";
 const execFilePromisified = promisify(execFile) as unknown as ReturnType<typeof vi.fn>;
 
 // Dynamic import so the module picks up our mock
-const { gh, setGhToken } = await import("./client.js");
+const { gh, setGhToken, ghWithHeaders, parseHeadersAndBody } = await import("./client.js");
 
 function mockSuccess(stdout: string) {
   execFilePromisified.mockResolvedValue({ stdout, stderr: "" });
@@ -187,5 +187,94 @@ describe("gh()", () => {
     await expect(gh(["repo", "view"])).rejects.toThrow(
       /GITHUB_TOKEN/,
     );
+  });
+});
+
+describe("parseHeadersAndBody()", () => {
+  it("splits HTTP headers and body on blank line", () => {
+    const raw = "HTTP/1.1 200 OK\nContent-Type: application/json\nX-Poll-Interval: 60\n\n[{\"id\":\"1\"}]";
+    const { headers, body } = parseHeadersAndBody(raw);
+    expect(headers["content-type"]).toBe("application/json");
+    expect(headers["x-poll-interval"]).toBe("60");
+    expect(body).toBe('[{"id":"1"}]');
+  });
+
+  it("lowercases header names", () => {
+    const raw = "HTTP/1.1 200 OK\nLast-Modified: Mon, 10 Mar 2026 12:00:00 GMT\n\n[]";
+    const { headers } = parseHeadersAndBody(raw);
+    expect(headers["last-modified"]).toBe("Mon, 10 Mar 2026 12:00:00 GMT");
+  });
+
+  it("handles CRLF line endings", () => {
+    const raw = "HTTP/1.1 200 OK\r\nX-Poll-Interval: 30\r\n\r\n[]";
+    const { headers, body } = parseHeadersAndBody(raw);
+    expect(headers["x-poll-interval"]).toBe("30");
+    expect(body).toBe("[]");
+  });
+
+  it("returns empty headers when no blank line found", () => {
+    const raw = "notaresponse";
+    const { headers, body } = parseHeadersAndBody(raw);
+    expect(headers).toEqual({});
+    expect(body).toBe("notaresponse");
+  });
+});
+
+describe("ghWithHeaders()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns notModified: false with parsed headers and body on success", async () => {
+    const responseText = "HTTP/1.1 200 OK\nLast-Modified: Mon, 10 Mar 2026 12:00:00 GMT\nX-Poll-Interval: 60\n\n[{\"id\":\"1\"}]";
+    execFilePromisified.mockResolvedValue({ stdout: responseText, stderr: "" });
+
+    const result = await ghWithHeaders(["api", "-i", "/repos/foo/bar/notifications"]);
+
+    expect(result.notModified).toBe(false);
+    if (!result.notModified) {
+      expect(result.headers["last-modified"]).toBe("Mon, 10 Mar 2026 12:00:00 GMT");
+      expect(result.headers["x-poll-interval"]).toBe("60");
+      expect(result.body).toBe('[{"id":"1"}]');
+    }
+  });
+
+  it("returns notModified: true when gh exits with HTTP 304 in stderr", async () => {
+    mockFailure(
+      Object.assign(new Error("failed"), {
+        code: 1 as string | number,
+        stderr: "gh: HTTP 304",
+      }),
+    );
+
+    const result = await ghWithHeaders(["api", "-i", "-H", "If-Modified-Since: Mon, 10 Mar 2026 12:00:00 GMT", "/repos/foo/bar/notifications"]);
+
+    expect(result.notModified).toBe(true);
+  });
+
+  it("throws GH_NOT_AUTHENTICATED on auth error (not 304)", async () => {
+    mockFailure(
+      Object.assign(new Error("failed"), {
+        code: 1 as string | number,
+        stderr: "To authenticate, run: gh auth login",
+      }),
+    );
+
+    await expect(ghWithHeaders(["api", "-i", "/repos/foo/bar/notifications"])).rejects.toMatchObject({
+      code: "GH_NOT_AUTHENTICATED",
+    });
+  });
+
+  it("throws GH_ERROR for generic failures", async () => {
+    mockFailure(
+      Object.assign(new Error("failed"), {
+        code: 1 as string | number,
+        stderr: "some other error",
+      }),
+    );
+
+    await expect(ghWithHeaders(["api", "-i", "/repos/foo/bar/notifications"])).rejects.toMatchObject({
+      code: "GH_ERROR",
+    });
   });
 });

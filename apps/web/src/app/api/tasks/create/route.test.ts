@@ -202,4 +202,13 @@ describe("POST /api/tasks/create", () => {
       "inst-1",
     );
   });
+
+  it("returns 500 when createTask throws", async () => {
+    vi.mocked(createTask).mockRejectedValue(new Error("redis down"));
+
+    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe("task_server_error");
+  });
 });

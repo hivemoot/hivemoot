@@ -15,13 +15,24 @@ vi.mock("@/server/redis", () => ({
 
 vi.mock("@/server/setup-session", () => ({
   createOAuthState: vi.fn(),
+  getSetupSession: vi.fn(),
   DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
+  SETUP_SESSION_COOKIE: "setup_session",
+}));
+
+vi.mock("@/server/byok-store", () => ({
+  hasByokEnvelope: vi.fn(),
 }));
 
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
+import {
+  createOAuthState,
+  getSetupSession,
+  OAUTH_STATE_BINDING_COOKIE,
+} from "@/server/setup-session";
+import { hasByokEnvelope } from "@/server/byok-store";
 import { GET } from "./route";
 
 // ---------------------------------------------------------------------------
@@ -41,9 +52,23 @@ const VALID_CONFIG = {
   byokMasterKeysJson: '{"v1":"' + "a".repeat(64) + '"}',
 };
 
-function makeRequest() {
-  return new NextRequest("https://example.com/api/auth/github/start-discover");
+function makeRequest(search = "") {
+  return new NextRequest(`https://example.com/api/auth/github/start-discover${search}`);
 }
+
+function makeRequestWithCookie(cookie: string, search = "") {
+  return new NextRequest(`https://example.com/api/auth/github/start-discover${search}`, {
+    headers: { cookie },
+  });
+}
+
+const VALID_SESSION = {
+  installationId: "inst-1",
+  userId: 42,
+  userLogin: "alice",
+  expiresAt: Date.now() + 86400 * 1000,
+  iat: Date.now(),
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -53,6 +78,8 @@ beforeEach(() => {
     state: "deadbeef".repeat(8),
     stateBinding: "cafebabe".repeat(8),
   });
+  vi.mocked(getSetupSession).mockResolvedValue(null);
+  vi.mocked(hasByokEnvelope).mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -74,13 +101,6 @@ describe("GET /api/auth/github/start-discover", () => {
     const setCookie = res.headers.get("set-cookie")!;
     expect(setCookie).toContain(`${OAUTH_STATE_BINDING_COOKIE}=`);
     expect(setCookie).toContain("HttpOnly");
-  });
-
-  it("passes the discover sentinel as installationId to createOAuthState", async () => {
-    const req = makeRequest();
-    await GET(req);
-
-    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything());
   });
 
   it("returns 503 when env validation fails", async () => {
@@ -124,5 +144,95 @@ describe("GET /api/auth/github/start-discover", () => {
     const res = await GET(req);
     const location = res.headers.get("location")!;
     expect(location).toContain(encodeURIComponent("https://example.com/api/auth/github/callback"));
+  });
+
+  it("passes the discover sentinel as installationId to createOAuthState", async () => {
+    const req = makeRequest();
+    await GET(req);
+    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+  });
+
+  it("passes safeNext to createOAuthState when next param is provided", async () => {
+    const req = makeRequest("?next=/dashboard/credentials");
+    await GET(req);
+    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), "/dashboard/credentials");
+  });
+
+  it("ignores unsafe next params (protocol-relative URLs)", async () => {
+    const req = makeRequest("?next=//evil.com/steal");
+    await GET(req);
+    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+  });
+
+  it("ignores unsafe next params (backslash-relative URLs)", async () => {
+    const req = makeRequest("?next=/\\evil.com/steal");
+    await GET(req);
+    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+  });
+});
+
+describe("GET /api/auth/github/start-discover — fast-path (valid session)", () => {
+  it("redirects to dashboard when session is valid and BYOK configured", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(VALID_SESSION);
+    vi.mocked(hasByokEnvelope).mockResolvedValue(true);
+
+    const req = makeRequestWithCookie("setup_session=valid-token");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/dashboard");
+    expect(createOAuthState).not.toHaveBeenCalled();
+  });
+
+  it("redirects to setup when session is valid but BYOK not configured", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(VALID_SESSION);
+    vi.mocked(hasByokEnvelope).mockResolvedValue(false);
+
+    const req = makeRequestWithCookie("setup_session=valid-token");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location")!;
+    expect(location).toContain("/setup");
+    expect(createOAuthState).not.toHaveBeenCalled();
+  });
+
+  it("redirects to next param when session is valid and next is safe", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(VALID_SESSION);
+    vi.mocked(hasByokEnvelope).mockResolvedValue(true);
+
+    const req = makeRequestWithCookie("setup_session=valid-token", "?next=/dashboard/credentials");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/dashboard/credentials");
+  });
+
+  it("bypasses fast-path and starts OAuth when force=1", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(VALID_SESSION);
+
+    const req = makeRequestWithCookie("setup_session=valid-token", "?force=1");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("github.com/login/oauth/authorize");
+    expect(createOAuthState).toHaveBeenCalled();
+  });
+
+  it("falls through to OAuth when session cookie is absent", async () => {
+    const req = makeRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("github.com/login/oauth/authorize");
+  });
+
+  it("falls through to OAuth when getSetupSession returns null (expired)", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(null);
+    const req = makeRequestWithCookie("setup_session=expired-token");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("github.com/login/oauth/authorize");
   });
 });

@@ -19,6 +19,7 @@ export { OAUTH_STATE_BINDING_COOKIE, SETUP_SESSION_COOKIE };
 
 const STATE_TTL_SECONDS = 600;
 export const SESSION_TTL_SECONDS = 86400;
+export const SESSION_FRESHNESS_SECONDS = 15 * 60;
 
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
@@ -33,6 +34,7 @@ export const DISCOVER_SENTINEL = "discover";
 interface OAuthStatePayload {
   installationId: string;
   stateBinding: string;
+  next?: string;
 }
 
 export interface OAuthStateRecord {
@@ -40,13 +42,20 @@ export interface OAuthStateRecord {
   stateBinding: string;
 }
 
+export interface OAuthStateValidationResult {
+  installationId: string;
+  next?: string;
+}
+
 export async function createOAuthState(
   installationId: string,
   redis: Redis,
+  next?: string,
 ): Promise<OAuthStateRecord> {
   const state = randomBytes(32).toString("hex");
   const stateBinding = randomBytes(32).toString("hex");
   const payload: OAuthStatePayload = { installationId, stateBinding };
+  if (next) payload.next = next;
   await redis.set(
     `${STATE_KEY_PREFIX}${state}`,
     payload,
@@ -59,7 +68,7 @@ export async function validateOAuthState(
   state: string,
   stateBinding: string | undefined,
   redis: Redis,
-): Promise<string | null> {
+): Promise<OAuthStateValidationResult | null> {
   if (!stateBinding) return null;
 
   // GETDEL is a single atomic command (Redis 6.2+) — guarantees strict one-time
@@ -75,7 +84,9 @@ export async function validateOAuthState(
   }
 
   if (payload.stateBinding !== stateBinding) return null;
-  return payload.installationId;
+  const result: OAuthStateValidationResult = { installationId: payload.installationId };
+  if (payload.next) result.next = payload.next;
+  return result;
 }
 
 export interface SetupSessionPayload {
@@ -86,6 +97,17 @@ export interface SetupSessionPayload {
 
 export interface SetupSessionResult extends SetupSessionPayload {
   expiresAt: number;
+  /** Unix timestamp (ms) when the session was issued. 0 for legacy sessions without iat. */
+  iat: number;
+}
+
+/**
+ * Returns true when the session was issued within SESSION_FRESHNESS_SECONDS.
+ * Legacy sessions without an iat field are treated as stale (fail-closed).
+ */
+export function isSessionFresh(session: SetupSessionResult): boolean {
+  if (!session.iat) return false;
+  return Date.now() - session.iat < SESSION_FRESHNESS_SECONDS * 1000;
 }
 
 export async function createSetupSession(
@@ -93,9 +115,10 @@ export async function createSetupSession(
   redis: Redis,
 ): Promise<string> {
   const token = randomBytes(32).toString("hex");
+  const iat = Date.now();
   await redis.set(
     `${SESSION_KEY_PREFIX}${token}`,
-    { ...payload, exp: Date.now() + SESSION_TTL_SECONDS * 1000 },
+    { ...payload, exp: iat + SESSION_TTL_SECONDS * 1000, iat },
     { ex: SESSION_TTL_SECONDS },
   );
   return token;
@@ -105,7 +128,7 @@ export async function getSetupSession(
   token: string,
   redis: Redis,
 ): Promise<SetupSessionResult | null> {
-  const data = await redis.get<SetupSessionPayload & { exp: number }>(`${SESSION_KEY_PREFIX}${token}`);
+  const data = await redis.get<SetupSessionPayload & { exp: number; iat?: number }>(`${SESSION_KEY_PREFIX}${token}`);
   if (!data) return null;
 
   if (typeof data.exp !== "number" || Date.now() > data.exp) {
@@ -113,5 +136,11 @@ export async function getSetupSession(
     return null;
   }
 
-  return { installationId: data.installationId, userId: data.userId, userLogin: data.userLogin, expiresAt: data.exp };
+  return {
+    installationId: data.installationId,
+    userId: data.userId,
+    userLogin: data.userLogin,
+    expiresAt: data.exp,
+    iat: data.iat ?? 0,
+  };
 }

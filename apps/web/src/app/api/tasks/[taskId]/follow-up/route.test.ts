@@ -161,4 +161,13 @@ describe("POST /api/tasks/[taskId]/follow-up", () => {
     const body = await res.json();
     expect(body.code).toBe("task_validation_failed");
   });
+
+  it("returns 500 when resumeTaskWithFollowUp throws", async () => {
+    vi.mocked(resumeTaskWithFollowUp).mockRejectedValue(new Error("redis down"));
+
+    const res = await POST(makeRequest({ message: "Here is more context" }));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe("task_server_error");
+  });
 });

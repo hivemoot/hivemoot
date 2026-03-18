@@ -141,101 +141,111 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Installation scoping from executor token enforces tenant isolation.
-  const existingTask = await getTask(auth.installationId, taskId, auth.redis);
-  if (!existingTask) {
-    return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
-  }
-
-  const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
-  if (!claimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
-  }
-
-  const validClaimToken = await verifyTaskClaimToken(
-    auth.installationId,
-    taskId,
-    claimToken,
-    auth.redis,
-  );
-  if (!validClaimToken) {
-    return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
-  }
-
-  const obj = body as Record<string, unknown>;
-
-  switch (action) {
-    case "progress": {
-      if (typeof obj.progress !== "string" || obj.progress.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "progress is required for action=progress", 400);
-      }
-      const updated = await setTaskProgress(auth.installationId, taskId, obj.progress, auth.redis);
-      return toTransitionResponse(updated);
+  try {
+    // Installation scoping from executor token enforces tenant isolation.
+    const existingTask = await getTask(auth.installationId, taskId, auth.redis);
+    if (!existingTask) {
+      return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
     }
 
-    case "complete": {
-      if (typeof obj.result !== "string" || obj.result.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
-      }
+    const claimToken = request.headers.get("x-task-claim-token")?.trim() ?? "";
+    if (!claimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Missing task claim token", 403);
+    }
 
-      // Parse executor_outcome once; null means "not provided" after validation.
-      let outcome: ExecutorOutcome | null = null;
-      if (obj.executor_outcome !== undefined) {
-        outcome = parseExecutorOutcome(obj.executor_outcome);
-        if (outcome === null) {
-          return taskError(
-            TASK_ERROR.VALIDATION_FAILED,
-            "executor_outcome must be one of: success, auth_failed, runtime_failed, timeout",
-            400,
-          );
+    const validClaimToken = await verifyTaskClaimToken(
+      auth.installationId,
+      taskId,
+      claimToken,
+      auth.redis,
+    );
+    if (!validClaimToken) {
+      return taskError(TASK_ERROR.FORBIDDEN, "Invalid or expired task claim token", 403);
+    }
+
+    const obj = body as Record<string, unknown>;
+
+    switch (action) {
+      case "progress": {
+        if (typeof obj.progress !== "string" || obj.progress.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "progress is required for action=progress", 400);
         }
+        const updated = await setTaskProgress(auth.installationId, taskId, obj.progress, auth.redis);
+        return toTransitionResponse(updated);
       }
 
-      // Validate exit_code when present: must be an integer.
-      if (obj.exit_code !== undefined && (!Number.isInteger(obj.exit_code) || typeof obj.exit_code !== "number")) {
-        return taskError(TASK_ERROR.VALIDATION_FAILED, "exit_code must be an integer", 400);
+      case "complete": {
+        if (typeof obj.result !== "string" || obj.result.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "result is required for action=complete", 400);
+        }
+
+        // Parse executor_outcome once; null means "not provided" after validation.
+        let outcome: ExecutorOutcome | null = null;
+        if (obj.executor_outcome !== undefined) {
+          outcome = parseExecutorOutcome(obj.executor_outcome);
+          if (outcome === null) {
+            return taskError(
+              TASK_ERROR.VALIDATION_FAILED,
+              "executor_outcome must be one of: success, auth_failed, runtime_failed, timeout",
+              400,
+            );
+          }
+        }
+
+        // Validate exit_code when present: must be an integer.
+        if (obj.exit_code !== undefined && (!Number.isInteger(obj.exit_code) || typeof obj.exit_code !== "number")) {
+          return taskError(TASK_ERROR.VALIDATION_FAILED, "exit_code must be an integer", 400);
+        }
+
+        // Guard: if executor signals a failure outcome, down-convert to fail so the
+        // backend never records a false success when the runtime misbehaves.
+        if (outcome !== null && outcome !== "success") {
+          const exitSuffix = typeof obj.exit_code === "number" ? ` (exit_code=${obj.exit_code})` : "";
+          const failError = `Executor reported ${outcome}${exitSuffix}: ${obj.result}`;
+          const failed = await failTask(auth.installationId, taskId, failError, auth.redis);
+          return toTransitionResponse(failed);
+        }
+
+        const completed = await completeTask(auth.installationId, taskId, obj.result, auth.redis);
+        return toTransitionResponse(completed);
       }
 
-      // Guard: if executor signals a failure outcome, down-convert to fail so the
-      // backend never records a false success when the runtime misbehaves.
-      if (outcome !== null && outcome !== "success") {
-        const exitSuffix = typeof obj.exit_code === "number" ? ` (exit_code=${obj.exit_code})` : "";
-        const failError = `Executor reported ${outcome}${exitSuffix}: ${obj.result}`;
-        const failed = await failTask(auth.installationId, taskId, failError, auth.redis);
+      case "fail": {
+        if (typeof obj.error !== "string" || obj.error.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "error is required for action=fail", 400);
+        }
+        const failed = await failTask(auth.installationId, taskId, obj.error, auth.redis);
         return toTransitionResponse(failed);
       }
 
-      const completed = await completeTask(auth.installationId, taskId, obj.result, auth.redis);
-      return toTransitionResponse(completed);
-    }
-
-    case "fail": {
-      if (typeof obj.error !== "string" || obj.error.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "error is required for action=fail", 400);
+      case "timeout": {
+        const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
+        return toTransitionResponse(timedOut);
       }
-      const failed = await failTask(auth.installationId, taskId, obj.error, auth.redis);
-      return toTransitionResponse(failed);
-    }
 
-    case "timeout": {
-      const timedOut = await timeoutTask(auth.installationId, taskId, auth.redis);
-      return toTransitionResponse(timedOut);
-    }
-
-    case "heartbeat": {
-      const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
-      return toTransitionResponse(heartbeat);
-    }
-
-    case "request_follow_up": {
-      if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
-        return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
+      case "heartbeat": {
+        const heartbeat = await heartbeatTask(auth.installationId, taskId, auth.redis);
+        return toTransitionResponse(heartbeat);
       }
-      const followUp = await requestFollowUp(auth.installationId, taskId, obj.message.trim(), auth.redis);
-      return toTransitionResponse(followUp);
-    }
 
-    default:
-      return taskError(TASK_ERROR.INVALID_ACTION, "Unsupported action", 400);
+      case "request_follow_up": {
+        if (typeof obj.message !== "string" || obj.message.trim().length === 0) {
+          return taskError(TASK_ERROR.MISSING_FIELDS, "message is required for action=request_follow_up", 400);
+        }
+        const followUp = await requestFollowUp(auth.installationId, taskId, obj.message.trim(), auth.redis);
+        return toTransitionResponse(followUp);
+      }
+
+      default:
+        return taskError(TASK_ERROR.INVALID_ACTION, "Unsupported action", 400);
+    }
+  } catch (error) {
+    console.error("[tasks] Failed to execute task action", {
+      installationId: auth.installationId,
+      taskId,
+      error,
+    });
+
+    return taskError(TASK_ERROR.SERVER_ERROR, "Failed to execute task action", 500);
   }
 }

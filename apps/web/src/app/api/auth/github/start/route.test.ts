@@ -146,4 +146,43 @@ describe("GET /api/auth/github/start", () => {
     const location = res.headers.get("location")!;
     expect(location).toContain(encodeURIComponent("https://example.com/api/auth/github/callback"));
   });
+
+  it("threads safe next param through to createOAuthState", async () => {
+    const req = makeRequest(
+      "https://example.com/api/auth/github/start?installation_id=12345&next=/dashboard/credentials",
+    );
+    await GET(req);
+
+    expect(vi.mocked(createOAuthState)).toHaveBeenCalledWith(
+      "12345",
+      expect.anything(),
+      "/dashboard/credentials",
+    );
+  });
+
+  it("drops unsafe next param (protocol-relative URL)", async () => {
+    const req = makeRequest(
+      "https://example.com/api/auth/github/start?installation_id=12345&next=//evil.com",
+    );
+    await GET(req);
+
+    expect(vi.mocked(createOAuthState)).toHaveBeenCalledWith(
+      "12345",
+      expect.anything(),
+      undefined,
+    );
+  });
+
+  it("drops unsafe next param (backslash-relative URL)", async () => {
+    const req = makeRequest(
+      "https://example.com/api/auth/github/start?installation_id=12345&next=/\\evil.com",
+    );
+    await GET(req);
+
+    expect(vi.mocked(createOAuthState)).toHaveBeenCalledWith(
+      "12345",
+      expect.anything(),
+      undefined,
+    );
+  });
 });

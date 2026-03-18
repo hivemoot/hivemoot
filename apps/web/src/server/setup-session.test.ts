@@ -55,7 +55,9 @@ import {
   validateOAuthState,
   createSetupSession,
   getSetupSession,
+  isSessionFresh,
   SESSION_TTL_SECONDS,
+  SESSION_FRESHNESS_SECONDS,
 } from "./setup-session";
 
 describe("createOAuthState", () => {
@@ -83,7 +85,18 @@ describe("validateOAuthState", () => {
     const redis = makeMockRedis();
     const record = await createOAuthState("789", redis);
     const result = await validateOAuthState(record.state, record.stateBinding, redis);
-    expect(result).toBe("789");
+    expect(result).not.toBeNull();
+    expect(result!.installationId).toBe("789");
+    expect(result!.next).toBeUndefined();
+  });
+
+  it("threads next through the state payload", async () => {
+    const redis = makeMockRedis();
+    const record = await createOAuthState("789", redis, "/dashboard/credentials");
+    const result = await validateOAuthState(record.state, record.stateBinding, redis);
+    expect(result).not.toBeNull();
+    expect(result!.installationId).toBe("789");
+    expect(result!.next).toBe("/dashboard/credentials");
   });
 
   it("returns null for an unknown state (CSRF protection)", async () => {
@@ -114,7 +127,7 @@ describe("validateOAuthState", () => {
     // Exactly one should return the installationId; the other must get null
     const successes = [a, b].filter((v) => v !== null);
     expect(successes).toHaveLength(1);
-    expect(successes[0]).toBe("install-concurrent");
+    expect(successes[0]!.installationId).toBe("install-concurrent");
   });
 
   it("rejects when state-binding cookie does not match", async () => {
@@ -158,6 +171,44 @@ describe("createSetupSession", () => {
   });
 });
 
+describe("isSessionFresh", () => {
+  it("returns true for a newly created session", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "fresh-1", userId: 1, userLogin: "alice" },
+      redis,
+    );
+    const session = await getSetupSession(token, redis);
+    expect(isSessionFresh(session!)).toBe(true);
+  });
+
+  it("returns false for a session older than SESSION_FRESHNESS_SECONDS", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: "stale-1", userId: 2, userLogin: "bob" },
+      redis,
+    );
+    // Manually backdate iat to simulate a stale session
+    const key = `setup-session:${token}`;
+    const data = await redis.get<{ iat: number }>(key);
+    await redis.set(key, { ...data, iat: Date.now() - (SESSION_FRESHNESS_SECONDS + 60) * 1000 });
+
+    const session = await getSetupSession(token, redis);
+    expect(isSessionFresh(session!)).toBe(false);
+  });
+
+  it("returns false for a legacy session without iat", () => {
+    const legacySession = {
+      installationId: "legacy",
+      userId: 3,
+      userLogin: "carol",
+      expiresAt: Date.now() + 60_000,
+      iat: 0,
+    };
+    expect(isSessionFresh(legacySession)).toBe(false);
+  });
+});
+
 describe("getSetupSession", () => {
   it("returns the session payload for a valid token", async () => {
     const redis = makeMockRedis();
@@ -172,6 +223,7 @@ describe("getSetupSession", () => {
     expect(session!.userId).toBe(7);
     expect(session!.userLogin).toBe("carol");
     expect(session!.expiresAt).toBeGreaterThanOrEqual(before + SESSION_TTL_SECONDS * 1000);
+    expect(session!.iat).toBeGreaterThanOrEqual(before);
   });
 
   it("returns null for an unknown token", async () => {
