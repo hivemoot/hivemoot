@@ -19,6 +19,8 @@ import { OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
 // ---------------------------------------------------------------------------
 
 export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+/** OAuth scope requested from GitHub — read-only org membership check. */
+export const GITHUB_OAUTH_SCOPE = "read:org";
 /** Cookie max-age for the state binding cookie (10 min, aligned with Redis state TTL). */
 export const OAUTH_STATE_COOKIE_MAX_AGE = 600;
 
@@ -51,7 +53,7 @@ export function buildAuthorizeRedirect(
   authorizeUrl.searchParams.set("client_id", clientId);
   authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
   authorizeUrl.searchParams.set("state", state);
-  authorizeUrl.searchParams.set("scope", "read:org");
+  authorizeUrl.searchParams.set("scope", GITHUB_OAUTH_SCOPE);
 
   const response = NextResponse.redirect(authorizeUrl.toString());
   response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateBinding, {
