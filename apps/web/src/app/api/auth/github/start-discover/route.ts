@@ -20,10 +20,9 @@ import {
   getSetupSession,
 } from "@/server/setup-session";
 import { hasByokEnvelope } from "@/server/byok-store";
+import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions } from "@/server/github-auth";
 
-const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_STATE_STORE_FAILED_CODE = "oauth_state_store_failed";
-const OAUTH_STATE_COOKIE_MAX_AGE = 600;
 
 /**
  * Validates that `next` is a safe same-origin path.
@@ -102,20 +101,10 @@ export async function GET(request: NextRequest) {
   }
 
   const callbackUrl = `${siteUrl}/api/auth/github/callback`;
-  const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);
-  authorizeUrl.searchParams.set("client_id", githubClientId);
-  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
-  authorizeUrl.searchParams.set("state", stateRecord.state);
-  authorizeUrl.searchParams.set("scope", "read:org");
+  const authorizeUrl = buildOAuthAuthorizeUrl(githubClientId, callbackUrl, stateRecord.state);
 
   const response = NextResponse.redirect(authorizeUrl.toString());
-  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
-    path: "/",
-  });
+  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, getOAuthStateCookieOptions());
 
   return response;
 }

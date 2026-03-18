@@ -18,9 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
 import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-session";
-
-const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
-const OAUTH_STATE_COOKIE_MAX_AGE = 600; // 10 minutes, aligned with Redis state TTL
+import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions } from "@/server/github-auth";
 
 /**
  * Validates that `next` is a safe same-origin path.
@@ -78,20 +76,9 @@ export async function GET(request: NextRequest) {
   }
 
   const callbackUrl = `${siteUrl}/api/auth/github/callback`;
-  const authorizeUrl = new URL(GITHUB_AUTHORIZE_URL);
-  authorizeUrl.searchParams.set("client_id", githubClientId);
-  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
-  authorizeUrl.searchParams.set("state", stateRecord.state);
-  // Request minimum scopes: we only need to read org membership
-  authorizeUrl.searchParams.set("scope", "read:org");
+  const authorizeUrl = buildOAuthAuthorizeUrl(githubClientId, callbackUrl, stateRecord.state);
 
   const response = NextResponse.redirect(authorizeUrl.toString());
-  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
-    path: "/",
-  });
+  response.cookies.set(OAUTH_STATE_BINDING_COOKIE, stateRecord.stateBinding, getOAuthStateCookieOptions());
   return response;
 }

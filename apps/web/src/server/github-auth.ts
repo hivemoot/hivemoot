@@ -6,9 +6,56 @@
  * - getAuthenticatedUser: fetches the authenticated GitHub user's identity
  * - getInstallation: fetches installation metadata using the App JWT
  * - checkOrgAdmin: verifies the user holds an "admin" role in the target org
+ * - buildOAuthAuthorizeUrl: constructs the GitHub OAuth authorize URL
+ * - getOAuthStateCookieOptions: returns the stable cookie options for the OAuth state binding cookie
  */
 
 import { createSign } from "crypto";
+
+// ---------------------------------------------------------------------------
+// OAuth initiation helpers (shared by start and start-discover routes)
+// ---------------------------------------------------------------------------
+
+export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
+export const OAUTH_STATE_COOKIE_MAX_AGE = 600; // 10 minutes, aligned with Redis state TTL
+export const GITHUB_OAUTH_SCOPE = "read:org";
+
+/**
+ * Constructs the GitHub OAuth authorization URL with the required parameters.
+ * Returns a URL object; call `.toString()` to get the redirect target.
+ */
+export function buildOAuthAuthorizeUrl(
+  clientId: string,
+  redirectUri: string,
+  state: string,
+): URL {
+  const url = new URL(GITHUB_AUTHORIZE_URL);
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("state", state);
+  url.searchParams.set("scope", GITHUB_OAUTH_SCOPE);
+  return url;
+}
+
+/**
+ * Returns the stable cookie options for the OAuth state binding cookie.
+ * `secure` is true in production, false otherwise.
+ */
+export function getOAuthStateCookieOptions(): {
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "lax";
+  maxAge: number;
+  path: string;
+} {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: OAUTH_STATE_COOKIE_MAX_AGE,
+    path: "/",
+  };
+}
 
 // ---------------------------------------------------------------------------
 // App JWT
