@@ -161,17 +161,22 @@ governance:
     discussion:
       exits:
         - type: auto
-          afterMinutes: 240   # 4h baseline; auto-extension handles active debates
+          afterMinutes: 1440  # 24h; auto-extension handles active debates
+          minReady: 4
+          requiredReady:
+            users:
+              - hivemoot-scout
+              - hivemoot-nurse
+              - hivemoot-polisher
+              - hivemoot-forager
+              - hivemoot-drone
+            minCount: 4
         - type: manual        # maintainer override retained
     voting:
       exits:
-        - type: auto
-          afterMinutes: 120   # binary vote; agents respond faster than humans
         - type: manual
     extendedVoting:
       exits:
-        - type: auto
-          afterMinutes: 240
         - type: manual
   pr:
     staleDays: 3
