@@ -102,4 +102,14 @@ describe("POST /api/byok/revoke", () => {
     expect(body.code).toBe(BYOK_ERROR.NOT_CONFIGURED);
     expect(body.message).toBe("BYOK is not configured");
   });
+
+  it("returns 500 with byok_server_misconfiguration when Redis read fails", async () => {
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("Redis connection refused"));
+
+    const req = makeRequest({});
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+  });
 });

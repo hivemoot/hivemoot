@@ -209,4 +209,18 @@ describe("POST /api/byok/config", () => {
       expect.anything(),
     );
   });
+
+  it("returns 500 with byok_server_misconfiguration when Redis write fails", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("Redis connection refused"));
+
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+  });
 });
