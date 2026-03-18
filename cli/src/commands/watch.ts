@@ -21,8 +21,8 @@ import {
   addReviewRequestId,
   buildLatestProcessedByThread,
   buildLatestReviewRequestByThread,
+  type NotificationsPollState,
 } from "../watch/state.js";
-import type { NotificationsPollState } from "../watch/state.js";
 
 function log(message: string): void {
   process.stderr.write(`[watch ${new Date().toISOString()}] ${message}\n`);

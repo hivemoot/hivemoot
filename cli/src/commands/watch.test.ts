@@ -909,21 +909,20 @@ describe("watchCommand (review_requested)", () => {
 
   it("retries when the review-request fetch fails transiently", async () => {
     const notification = makePrNotification();
+    const priorLastModified = "Mon, 01 Jan 2026 10:00:00 GMT";
+    const newLastModified = "Mon, 10 Mar 2026 12:00:00 GMT";
 
-    mockedFetchMentions.mockResolvedValue(makeConditionalResult([notification], {
-      lastModified: "Mon, 10 Mar 2026 12:00:00 GMT",
+    mockedLoadState.mockResolvedValue(defaultState({
+      notificationsPollState: { "owner/repo": { lastModified: priorLastModified } },
     }));
+    mockedFetchMentions.mockResolvedValue(
+      makeConditionalResult([notification], { lastModified: newLastModified }),
+    );
     mockedFetchReviewRequestState.mockResolvedValue({
       pending: false,
       permanentFailure: false,
       transientFailure: true,
     });
-
-    mockedLoadState.mockResolvedValue(defaultState({
-      notificationsPollState: {
-        "owner/repo": { lastModified: "Mon, 10 Mar 2026 10:00:00 GMT" },
-      },
-    }));
 
     await watchCommand({ repo: "owner/repo", once: true, reasons: "review_requested" });
 
@@ -934,7 +933,7 @@ describe("watchCommand (review_requested)", () => {
         processedThreadIds: [],
         notificationsPollState: expect.objectContaining({
           "owner/repo": expect.objectContaining({
-            lastModified: "Mon, 10 Mar 2026 10:00:00 GMT",
+            lastModified: priorLastModified,
           }),
         }),
       }),
