@@ -151,7 +151,7 @@ The `claim_token` is a 64-char hex secret (32 random bytes) that must be passed 
 | `progress` | `string` | For `progress` | Progress text, max 400 chars after trim |
 | `result` | `string` | For `complete` | Completion summary, max 128,000 chars |
 | `error` | `string` | For `fail` | Error description, max 400 chars after trim |
-| `exit_code` | `number` | Optional with `fail` | Integer exit code from the executor process; included in the error message |
+| `exit_code` | `number` | Optional with `complete` | Integer exit code from the executor process; only used when `executor_outcome` is non-`success`, where it is appended to the error message. Ignored with `fail`. |
 | `executor_outcome` | `string` | Optional with `complete` | One of: `success`, `auth_failed`, `runtime_failed`, `timeout` — non-success outcomes force the action to `fail` |
 | `message` | `string` | Required with `request_follow_up` | Follow-up prompt for the user; must be non-empty after trim |
 
