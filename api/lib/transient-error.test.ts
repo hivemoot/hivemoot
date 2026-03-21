@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { isTransientError, TRANSIENT_NETWORK_CODES } from "./transient-error.js";
+import { GraphqlResponseError } from "@octokit/graphql";
+import { isTransientError, isAutoMergeNotEnabledError, TRANSIENT_NETWORK_CODES } from "./transient-error.js";
 
 describe("isTransientError", () => {
   describe("network codes", () => {
@@ -74,5 +75,72 @@ describe("isTransientError", () => {
     it("should return false when code is a non-string value", () => {
       expect(isTransientError({ code: 42 })).toBe(false);
     });
+  });
+});
+
+describe("isAutoMergeNotEnabledError", () => {
+  function makeNotEnabledError(): GraphqlResponseError<null> {
+    return new GraphqlResponseError(
+      { url: "https://api.github.com/graphql" },
+      {},
+      {
+        data: null,
+        errors: [{ message: "Pull request Auto merge is not enabled.", type: "UNPROCESSABLE" }],
+      }
+    );
+  }
+
+  it("returns true for a GraphqlResponseError with UNPROCESSABLE type and 'not enabled' message", () => {
+    expect(isAutoMergeNotEnabledError(makeNotEnabledError())).toBe(true);
+  });
+
+  it("returns false for a plain Error with the old string sentinel", () => {
+    // The old string-match check would have incorrectly passed this — the real GitHub
+    // error is a GraphqlResponseError, not a plain Error.
+    expect(isAutoMergeNotEnabledError(new Error("PullRequestAutoMergeNotEnabled"))).toBe(false);
+  });
+
+  it("returns false for a GraphqlResponseError with a different type", () => {
+    const err = new GraphqlResponseError(
+      { url: "https://api.github.com/graphql" },
+      {},
+      { data: null, errors: [{ message: "Not Found", type: "NOT_FOUND" }] }
+    );
+    expect(isAutoMergeNotEnabledError(err)).toBe(false);
+  });
+
+  it("returns false for a GraphqlResponseError with UNPROCESSABLE type but unrelated message", () => {
+    const err = new GraphqlResponseError(
+      { url: "https://api.github.com/graphql" },
+      {},
+      { data: null, errors: [{ message: "Branch protection required.", type: "UNPROCESSABLE" }] }
+    );
+    expect(isAutoMergeNotEnabledError(err)).toBe(false);
+  });
+
+  it("returns false for null", () => {
+    expect(isAutoMergeNotEnabledError(null)).toBe(false);
+  });
+
+  it("returns false for a plain object without name", () => {
+    expect(isAutoMergeNotEnabledError({ message: "PullRequestAutoMergeNotEnabled" })).toBe(false);
+  });
+
+  it("returns true for a cross-version instance (duck-typed, not instanceof)", () => {
+    // Simulates GraphqlResponseError thrown by octokit's bundled @octokit/graphql 9.x
+    // when the root install is 7.x — instanceof would fail, but duck-typing works.
+    const foreignError = Object.assign(new Error("Request failed"), {
+      name: "GraphqlResponseError",
+      errors: [{ message: "Pull request Auto merge is not enabled.", type: "UNPROCESSABLE" }],
+    });
+    expect(isAutoMergeNotEnabledError(foreignError)).toBe(true);
+  });
+
+  it("returns false for a cross-version instance with a non-matching error type", () => {
+    const foreignError = Object.assign(new Error("Request failed"), {
+      name: "GraphqlResponseError",
+      errors: [{ message: "Not Found", type: "NOT_FOUND" }],
+    });
+    expect(isAutoMergeNotEnabledError(foreignError)).toBe(false);
   });
 });

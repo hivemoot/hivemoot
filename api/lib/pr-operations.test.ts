@@ -224,6 +224,7 @@ describe("PROperations", () => {
           get: vi.fn().mockResolvedValue({
             data: {
               number: 42,
+              node_id: "PR_kwNode42",
               state: "open",
               merged: false,
               created_at: "2024-01-10T08:00:00Z",
@@ -266,6 +267,7 @@ describe("PROperations", () => {
 
       expect(result).toEqual({
         number: 42,
+        nodeId: "PR_kwNode42",
         state: "open",
         merged: false,
         createdAt: new Date("2024-01-10T08:00:00Z"),
@@ -317,6 +319,27 @@ describe("PROperations", () => {
 
       expect(result.state).toBe("closed");
       expect(result.merged).toBe(true);
+    });
+
+    it("maps node_id from REST response to nodeId on the returned object", async () => {
+      vi.mocked(mockClient.rest.pulls.get).mockResolvedValue({
+        data: {
+          number: 42,
+          node_id: "PR_kwABCDEF123",
+          state: "open",
+          merged: false,
+          created_at: "2024-01-10T08:00:00Z",
+          updated_at: "2024-01-15T10:30:00Z",
+          user: { login: "author" },
+          head: { sha: "sha1" },
+          draft: false,
+          mergeable: true,
+        },
+      });
+
+      const result = await prOps.get(testRef);
+
+      expect(result.nodeId).toBe("PR_kwABCDEF123");
     });
   });
 

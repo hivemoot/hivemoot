@@ -25,6 +25,7 @@ export interface PRClient {
       }) => Promise<{
         data: {
           number: number;
+          node_id: string;
           state: string;
           merged: boolean;
           created_at: string;
@@ -249,6 +250,7 @@ export class PROperations {
    */
   async get(ref: PRRef): Promise<{
     number: number;
+    nodeId: string;
     state: string;
     merged: boolean;
     createdAt: Date;
@@ -266,6 +268,7 @@ export class PROperations {
 
     return {
       number: data.number,
+      nodeId: data.node_id,
       state: data.state,
       merged: data.merged,
       createdAt: new Date(data.created_at),

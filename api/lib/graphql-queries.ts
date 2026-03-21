@@ -8,6 +8,7 @@
  */
 
 import type { LinkedIssue, PullRequest } from "./types.js";
+import type { MergeMethod } from "./repo-config.js";
 import { logger } from "./logger.js";
 
 /**
@@ -402,4 +403,140 @@ async function getCrossReferencedOpenPRs(
   }
 
   return Array.from(prMap.values());
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Mutation: Enable GitHub native auto-merge on a PR
+// ───────────────────────────────────────────────────────────────────────────────
+
+/** GraphQL merge method enum values expected by GitHub's API. */
+const MERGE_METHOD_MAP: Record<MergeMethod, string> = {
+  squash: "SQUASH",
+  merge: "MERGE",
+  rebase: "REBASE",
+};
+
+const ENABLE_AUTO_MERGE_MUTATION = `
+  mutation enableAutoMerge(
+    $pullRequestId: ID!,
+    $mergeMethod: PullRequestMergeMethod!,
+    $commitHeadline: String,
+    $commitBody: String,
+    $expectedHeadOid: GitObjectID
+  ) {
+    enablePullRequestAutoMerge(input: {
+      pullRequestId: $pullRequestId,
+      mergeMethod: $mergeMethod,
+      commitHeadline: $commitHeadline,
+      commitBody: $commitBody,
+      expectedHeadOid: $expectedHeadOid
+    }) {
+      pullRequest {
+        number
+        autoMergeRequest {
+          mergeMethod
+        }
+      }
+    }
+  }
+`;
+
+interface EnableAutoMergeResponse {
+  enablePullRequestAutoMerge: {
+    pullRequest: {
+      number: number;
+      autoMergeRequest: {
+        mergeMethod: string;
+      } | null;
+    } | null;
+  };
+}
+
+export interface EnableAutoMergeOptions {
+  /** Custom commit headline. Only applies to SQUASH and MERGE; ignored for REBASE. */
+  commitHeadline?: string;
+  /** Custom commit body. Only applies to SQUASH and MERGE; ignored for REBASE. */
+  commitBody?: string;
+  /**
+   * HEAD SHA that was evaluated for automerge eligibility.
+   * GitHub rejects the mutation if the PR's HEAD has moved to a different SHA
+   * since classification — prevents arming auto-merge on an unclassified push.
+   */
+  expectedHeadOid?: string;
+}
+
+/**
+ * Enable GitHub native auto-merge on a PR.
+ *
+ * Calls `enablePullRequestAutoMerge` which defers merge ordering to GitHub's
+ * native mechanism. This avoids the race conditions and `mergeable` polling
+ * issues inherent in direct REST merge calls.
+ *
+ * Requires the repository to have at least one branch protection rule
+ * (required reviews or required status checks).
+ *
+ * @param client - GraphQL client
+ * @param pullRequestId - PR node ID (e.g. "PR_kwABCDEF")
+ * @param mergeMethod - How to merge when conditions are met
+ * @param options - Optional commit message overrides (SQUASH/MERGE only)
+ */
+export async function enablePullRequestAutoMerge(
+  client: GraphQLClient,
+  pullRequestId: string,
+  mergeMethod: MergeMethod,
+  options?: EnableAutoMergeOptions
+): Promise<void> {
+  await client.graphql<EnableAutoMergeResponse>(ENABLE_AUTO_MERGE_MUTATION, {
+    pullRequestId,
+    mergeMethod: MERGE_METHOD_MAP[mergeMethod],
+    commitHeadline: options?.commitHeadline ?? null,
+    commitBody: options?.commitBody ?? null,
+    expectedHeadOid: options?.expectedHeadOid ?? null,
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Mutation: Disable GitHub native auto-merge on a PR
+// ───────────────────────────────────────────────────────────────────────────────
+
+const DISABLE_AUTO_MERGE_MUTATION = `
+  mutation disableAutoMerge($pullRequestId: ID!) {
+    disablePullRequestAutoMerge(input: {
+      pullRequestId: $pullRequestId
+    }) {
+      pullRequest {
+        number
+      }
+    }
+  }
+`;
+
+interface DisableAutoMergeResponse {
+  disablePullRequestAutoMerge: {
+    pullRequest: {
+      number: number;
+    } | null;
+  };
+}
+
+/**
+ * Disable GitHub native auto-merge on a PR.
+ *
+ * Called when the `hivemoot:automerge` label is removed (eligibility lost)
+ * and `dryRun: false`. This reverts any previously enabled auto-merge state.
+ *
+ * Note: GitHub throws `PullRequestAutoMergeNotEnabled` when auto-merge was
+ * never activated on the PR (e.g., enable mutation previously failed, or
+ * the repo was in dryRun mode). Callers should treat this error as a no-op.
+ *
+ * @param client - GraphQL client
+ * @param pullRequestId - PR node ID (e.g. "PR_kwABCDEF")
+ */
+export async function disablePullRequestAutoMerge(
+  client: GraphQLClient,
+  pullRequestId: string
+): Promise<void> {
+  await client.graphql<DisableAutoMergeResponse>(DISABLE_AUTO_MERGE_MUTATION, {
+    pullRequestId,
+  });
 }

@@ -3,6 +3,8 @@ import {
   getLinkedIssues,
   getPRBodyLastEditedAt,
   getOpenPRsForIssue,
+  enablePullRequestAutoMerge,
+  disablePullRequestAutoMerge,
   type GraphQLClient,
 } from "./graphql-queries.js";
 import { logger } from "./logger.js";
@@ -1508,5 +1510,95 @@ describe("getOpenPRsForIssue", () => {
       (call) => (call[0] as string).includes("getLinkedIssues")
     );
     expect(linkedIssuesCalls).toHaveLength(2);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// enablePullRequestAutoMerge / disablePullRequestAutoMerge
+// ───────────────────────────────────────────────────────────────────────────────
+
+describe("enablePullRequestAutoMerge", () => {
+  let mockClient: GraphQLClient;
+
+  beforeEach(() => {
+    mockClient = { graphql: vi.fn().mockResolvedValue({}) };
+  });
+
+  it("calls the mutation with SQUASH method", async () => {
+    await enablePullRequestAutoMerge(mockClient, "PR_kwABC", "squash");
+
+    expect(mockClient.graphql).toHaveBeenCalledOnce();
+    const [query, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(query).toContain("enablePullRequestAutoMerge");
+    expect(variables.pullRequestId).toBe("PR_kwABC");
+    expect(variables.mergeMethod).toBe("SQUASH");
+    expect(variables.commitHeadline).toBeNull();
+    expect(variables.commitBody).toBeNull();
+  });
+
+  it("calls the mutation with MERGE method", async () => {
+    await enablePullRequestAutoMerge(mockClient, "PR_kwABC", "merge");
+
+    const [, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.mergeMethod).toBe("MERGE");
+  });
+
+  it("calls the mutation with REBASE method", async () => {
+    await enablePullRequestAutoMerge(mockClient, "PR_kwABC", "rebase");
+
+    const [, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.mergeMethod).toBe("REBASE");
+  });
+
+  it("passes commitHeadline and commitBody when provided", async () => {
+    await enablePullRequestAutoMerge(mockClient, "PR_kwABC", "squash", {
+      commitHeadline: "chore: auto-merge",
+      commitBody: "Auto-merged by bot.",
+    });
+
+    const [, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.commitHeadline).toBe("chore: auto-merge");
+    expect(variables.commitBody).toBe("Auto-merged by bot.");
+  });
+
+  it("sends null for commitHeadline/commitBody when options are absent", async () => {
+    await enablePullRequestAutoMerge(mockClient, "PR_kwABC", "squash");
+
+    const [, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(variables.commitHeadline).toBeNull();
+    expect(variables.commitBody).toBeNull();
+  });
+
+  it("propagates graphql errors", async () => {
+    vi.mocked(mockClient.graphql).mockRejectedValue(new Error("PullRequestAutoMergeNotAllowed"));
+
+    await expect(
+      enablePullRequestAutoMerge(mockClient, "PR_kwABC", "squash")
+    ).rejects.toThrow("PullRequestAutoMergeNotAllowed");
+  });
+});
+
+describe("disablePullRequestAutoMerge", () => {
+  let mockClient: GraphQLClient;
+
+  beforeEach(() => {
+    mockClient = { graphql: vi.fn().mockResolvedValue({}) };
+  });
+
+  it("calls the mutation with the correct pullRequestId", async () => {
+    await disablePullRequestAutoMerge(mockClient, "PR_kwXYZ");
+
+    expect(mockClient.graphql).toHaveBeenCalledOnce();
+    const [query, variables] = vi.mocked(mockClient.graphql).mock.calls[0] as [string, Record<string, unknown>];
+    expect(query).toContain("disablePullRequestAutoMerge");
+    expect(variables.pullRequestId).toBe("PR_kwXYZ");
+  });
+
+  it("propagates graphql errors", async () => {
+    vi.mocked(mockClient.graphql).mockRejectedValue(new Error("UNPROCESSABLE"));
+
+    await expect(
+      disablePullRequestAutoMerge(mockClient, "PR_kwXYZ")
+    ).rejects.toThrow("UNPROCESSABLE");
   });
 });

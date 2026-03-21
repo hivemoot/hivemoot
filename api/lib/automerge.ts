@@ -22,6 +22,13 @@ import type { PRRef } from "./types.js";
 import type { PROperations } from "./pr-operations.js";
 import type { AutomergeConfig } from "./repo-config.js";
 import { isCIPassing } from "./merge-readiness.js";
+import { logger } from "./logger.js";
+import type { GraphQLClient } from "./graphql-queries.js";
+import {
+  enablePullRequestAutoMerge,
+  disablePullRequestAutoMerge,
+} from "./graphql-queries.js";
+import { isAutoMergeNotEnabledError } from "./transient-error.js";
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Types
@@ -45,13 +52,21 @@ export interface AutomergeParams {
   trustedReviewers: string[];
   /** HEAD SHA for CI check. Fetched from PR if not provided. */
   headSha?: string;
+  /** PR node ID for Phase 2 GraphQL mutations. Fetched from PR if not provided. */
+  nodeId?: string;
   /** Pre-fetched labels from webhook payload to avoid extra API call. */
   currentLabels?: string[];
   /** Draft state from webhook payload. True → skip classification. */
   draft?: boolean;
   /** Mergeable state from webhook payload. False → skip; null = unknown (GitHub still computing). */
   mergeable?: boolean | null;
-  log?: { info: (msg: string) => void };
+  log?: { info: (msg: string) => void; warn?: (msg: string) => void };
+  /**
+   * GraphQL client for Phase 2 (dryRun: false).
+   * Required when config.dryRun is false — used to call
+   * enablePullRequestAutoMerge / disablePullRequestAutoMerge mutations.
+   */
+  graphql?: GraphQLClient;
 }
 
 /** Shape of a file entry from PROperations.listFiles */
@@ -184,9 +199,49 @@ export async function evaluateAutomerge(
   const labels = params.currentLabels ?? await prs.getLabels(ref);
   const hasAutomerge = labels.some(l => isLabelMatch(l, LABELS.AUTOMERGE));
 
-  // Helper to remove label if present
+  // Track nodeId and headSha across steps to avoid redundant prs.get() calls.
+  // Seeded from pre-fetched webhook payload values when available.
+  let capturedNodeId: string | undefined = params.nodeId;
+  let capturedHeadSha: string | undefined = params.headSha;
+
+  // Helper: remove label and, when Phase 2 is active, disable native auto-merge.
+  // Phase 2 disable runs BEFORE label removal: if the GraphQL call fails unexpectedly,
+  // the label is preserved so future reconciliations can retry the disable.
   const removeIfLabeled = async (reason: string): Promise<AutomergeResult> => {
     if (hasAutomerge) {
+      // Phase 2: disable GitHub native auto-merge BEFORE removing the label
+      if (!config.dryRun && params.graphql) {
+        if (!capturedNodeId) {
+          try {
+            capturedNodeId = (await prs.get(ref)).nodeId;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const warnMsg = `[PR #${ref.prNumber}] Failed to fetch PR node ID for auto-merge disable: ${msg}`;
+            if (log?.warn) { log.warn(warnMsg); } else { logger.warn(warnMsg); }
+            // Cannot disable native auto-merge without nodeId — keep the label so
+            // future reconciliations can retry once the REST API is available again.
+            return { action: "noop", labeled: true };
+          }
+        }
+        if (capturedNodeId) {
+          try {
+            await disablePullRequestAutoMerge(params.graphql, capturedNodeId);
+            log?.info(`[PR #${ref.prNumber}] Disabled GitHub native auto-merge`);
+          } catch (err) {
+            if (isAutoMergeNotEnabledError(err)) {
+              // auto-merge was never activated (e.g., enable failed earlier or dryRun mode).
+              // Treat as a no-op and proceed with label removal.
+            } else {
+              // Unexpected failure — keep the label so future reconciliations can retry.
+              const msg = err instanceof Error ? err.message : String(err);
+              const warnMsg = `[PR #${ref.prNumber}] Failed to disable GitHub auto-merge, retaining label for retry: ${msg}`;
+              if (log?.warn) { log.warn(warnMsg); } else { logger.warn(warnMsg); }
+              return { action: "noop", labeled: true };
+            }
+          }
+        }
+      }
+
       await prs.removeLabel(ref, LABELS.AUTOMERGE);
       log?.info(`[PR #${ref.prNumber}] Removed automerge: ${reason}`);
       return { action: "unlabeled", reason };
@@ -226,6 +281,11 @@ export async function evaluateAutomerge(
     if (!headSha) {
       const pr = await prs.get(ref);
       headSha = pr.headSha;
+      // Capture nodeId and headSha while we have the PR — avoids a second prs.get() in Phase 2
+      capturedNodeId ??= pr.nodeId;
+      capturedHeadSha ??= pr.headSha;
+    } else {
+      capturedHeadSha ??= headSha;
     }
 
     const ciPassing = await isCIPassing(prs, ref, headSha);
@@ -238,8 +298,51 @@ export async function evaluateAutomerge(
   if (!hasAutomerge) {
     await prs.addLabels(ref, [LABELS.AUTOMERGE]);
     log?.info(`[PR #${ref.prNumber}] Added automerge label`);
-    return { action: "labeled" };
   }
 
-  return { action: "noop", labeled: true };
+  // Phase 2: reconcile GitHub native auto-merge state for any eligible PR.
+  // Runs on both label-add and label-already-present paths so that:
+  // - PRs labeled during dryRun mode enter the native queue when dryRun flips to false
+  // - config changes (mergeMethod, commitHeadline, commitBody) are applied to existing PRs
+  // Skip when mergeable is null: GitHub is still computing the merge state.
+  // The next check_suite or push event will re-evaluate once the state is known.
+  if (!config.dryRun && params.graphql && params.mergeable != null) {
+    // Fetch nodeId and headSha if either is missing.
+    // headSha must be captured even when nodeId is pre-seeded: without it,
+    // expectedHeadOid is undefined and the TOCTOU guard is silently dropped.
+    if (!capturedNodeId || !capturedHeadSha) {
+      try {
+        const pr = await prs.get(ref);
+        capturedNodeId ??= pr.nodeId;
+        capturedHeadSha ??= pr.headSha;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const warnMsg = `[PR #${ref.prNumber}] Failed to fetch PR node ID for auto-merge: ${msg}`;
+        if (log?.warn) { log.warn(warnMsg); } else { logger.warn(warnMsg); }
+      }
+    }
+
+    if (capturedNodeId && capturedHeadSha) {
+      try {
+        await enablePullRequestAutoMerge(params.graphql, capturedNodeId, config.mergeMethod, {
+          commitHeadline: config.commitHeadline,
+          commitBody: config.commitBody,
+          // expectedHeadOid prevents arming auto-merge on a head that wasn't classified.
+          // GitHub rejects the mutation if a push occurred between classification and here.
+          // The next check_suite/synchronize event will re-evaluate the new head.
+          expectedHeadOid: capturedHeadSha,
+        });
+        log?.info(`[PR #${ref.prNumber}] Enabled GitHub native auto-merge (${config.mergeMethod})`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const hint = msg.includes("PullRequestAutoMergeNotAllowed")
+          ? " Verify the repository has branch protection rules configured."
+          : "";
+        const warnMsg = `[PR #${ref.prNumber}] Failed to enable GitHub auto-merge: ${msg}.${hint}`;
+        if (log?.warn) { log.warn(warnMsg); } else { logger.warn(warnMsg); }
+      }
+    }
+  }
+
+  return hasAutomerge ? { action: "noop", labeled: true } : { action: "labeled" };
 }

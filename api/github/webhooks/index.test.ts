@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { GraphqlResponseError } from "@octokit/graphql";
 import { GovernanceService } from "../../lib/governance.js";
 import { createIssueOperations } from "../../lib/github-client.js";
-import { getLinkedIssues, getOpenPRsForIssue } from "../../lib/graphql-queries.js";
+import { getLinkedIssues, getOpenPRsForIssue, disablePullRequestAutoMerge } from "../../lib/graphql-queries.js";
 import { processImplementationIntake, recalculateLeaderboardForPR } from "../../lib/implementation-intake.js";
 import { evaluateMergeReadiness, evaluateAutomerge, loadRepositoryConfig } from "../../lib/index.js";
 import { LABELS, MESSAGES, REQUIRED_REPOSITORY_LABELS } from "../../config.js";
@@ -32,6 +33,7 @@ vi.mock("../../lib/graphql-queries.js", async (importOriginal) => {
     ...actual,
     getLinkedIssues: vi.fn().mockResolvedValue([]),
     getOpenPRsForIssue: vi.fn().mockResolvedValue([]),
+    disablePullRequestAutoMerge: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -1960,7 +1962,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: true, mergeable: null })
+        expect.objectContaining({ draft: true, mergeable: null, graphql: expect.anything() })
       );
     });
 
@@ -1984,7 +1986,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: true, mergeable: null })
+        expect.objectContaining({ draft: true, mergeable: null, graphql: expect.anything() })
       );
     });
 
@@ -2009,7 +2011,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: true })
+        expect.objectContaining({ draft: true, graphql: expect.anything() })
       );
     });
 
@@ -2034,7 +2036,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: false, mergeable: false })
+        expect.objectContaining({ draft: false, mergeable: false, graphql: expect.anything() })
       );
     });
 
@@ -2059,7 +2061,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: false, mergeable: false })
+        expect.objectContaining({ draft: false, mergeable: false, graphql: expect.anything() })
       );
     });
 
@@ -2086,7 +2088,7 @@ describe("Queen Bot", () => {
       });
 
       expect(evaluateAutomerge).toHaveBeenCalledWith(
-        expect.objectContaining({ draft: false, mergeable: false })
+        expect.objectContaining({ draft: false, mergeable: false, graphql: expect.anything() })
       );
     });
   });
@@ -2151,12 +2153,35 @@ describe("Queen Bot", () => {
 
     const mkLog = () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
+    const phase2Config = {
+      governance: {
+        proposals: { discussion: { exits: [{ type: "manual" }], durationMs: 0 } },
+        pr: {
+          maxPRsPerIssue: 3,
+          trustedReviewers: [],
+          intake: {},
+          mergeReady: {},
+          automerge: {
+            dryRun: false,
+            mergeMethod: "squash",
+            allowedPaths: ["**"],
+            denyPaths: [],
+            maxFiles: 100,
+            maxChangedLines: 1000,
+            minApprovals: 0,
+            requireChecks: false,
+          },
+        },
+      },
+    };
+
     beforeEach(() => {
       vi.mocked(processImplementationIntake).mockReset();
       vi.mocked(evaluateMergeReadiness).mockReset();
       vi.mocked(evaluateAutomerge).mockReset();
       vi.mocked(getLinkedIssues).mockReset();
       vi.mocked(loadRepositoryConfig).mockReset();
+      vi.mocked(disablePullRequestAutoMerge).mockReset().mockResolvedValue(undefined);
     });
 
     it("should call processImplementationIntake on pull_request.opened", async () => {
@@ -2298,6 +2323,7 @@ describe("Queen Bot", () => {
           ref: { owner: "hivemoot", repo: "test-repo", prNumber: 2 },
           currentLabels: [LABELS.IMPLEMENTATION],
           draft: false,
+          graphql: expect.anything(),
         })
       );
     });
@@ -2397,6 +2423,165 @@ describe("Queen Bot", () => {
 
       expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalled();
       expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    });
+
+    it("should call disablePullRequestAutoMerge before removing automerge label on pull_request.synchronize (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          pull_request: {
+            number: 10,
+            node_id: "PR_node_sync",
+            base: { ref: "main" },
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(disablePullRequestAutoMerge).toHaveBeenCalledWith(expect.anything(), "PR_node_sync");
+    });
+
+    it("should call disablePullRequestAutoMerge before removing automerge label on pull_request.converted_to_draft (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+
+      await handlers.get("pull_request.converted_to_draft")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          pull_request: {
+            number: 11,
+            node_id: "PR_node_draft",
+            draft: true,
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(disablePullRequestAutoMerge).toHaveBeenCalledWith(expect.anything(), "PR_node_draft");
+    });
+
+    it("warns and retains automerge label when disablePullRequestAutoMerge throws on pull_request.synchronize (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+      vi.mocked(disablePullRequestAutoMerge).mockRejectedValueOnce(new Error("network failure"));
+
+      const octokit = mkOctokit();
+      const log = mkLog();
+      await handlers.get("pull_request.synchronize")!({
+        octokit,
+        log,
+        payload: {
+          pull_request: {
+            number: 12,
+            node_id: "PR_node_sync_err",
+            base: { ref: "main" },
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to disable GitHub auto-merge on synchronize"));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("retaining label for retry"));
+      expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalledWith(
+        expect.objectContaining({ name: LABELS.AUTOMERGE })
+      );
+    });
+
+    it("silently ignores PullRequestAutoMergeNotEnabled on pull_request.synchronize (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+      vi.mocked(disablePullRequestAutoMerge).mockRejectedValueOnce(
+        new GraphqlResponseError(
+          { url: "https://api.github.com/graphql" },
+          {},
+          { data: null, errors: [{ message: "Pull request Auto merge is not enabled.", type: "UNPROCESSABLE" }] }
+        )
+      );
+
+      const log = mkLog();
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log,
+        payload: {
+          pull_request: {
+            number: 13,
+            node_id: "PR_node_sync_notEnabled",
+            base: { ref: "main" },
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(log.warn).not.toHaveBeenCalled();
+    });
+
+    it("warns and retains automerge label when disablePullRequestAutoMerge throws on pull_request.converted_to_draft (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+      vi.mocked(disablePullRequestAutoMerge).mockRejectedValueOnce(new Error("network failure"));
+
+      const octokit = mkOctokit();
+      const log = mkLog();
+      await handlers.get("pull_request.converted_to_draft")!({
+        octokit,
+        log,
+        payload: {
+          pull_request: {
+            number: 14,
+            node_id: "PR_node_draft_err",
+            draft: true,
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to disable GitHub auto-merge on converted_to_draft"));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("retaining label for retry"));
+      expect(octokit.rest.issues.removeLabel).not.toHaveBeenCalledWith(
+        expect.objectContaining({ name: LABELS.AUTOMERGE })
+      );
+    });
+
+    it("silently ignores PullRequestAutoMergeNotEnabled on pull_request.converted_to_draft (Phase 2 active)", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(phase2Config as any);
+      vi.mocked(disablePullRequestAutoMerge).mockRejectedValueOnce(
+        new GraphqlResponseError(
+          { url: "https://api.github.com/graphql" },
+          {},
+          { data: null, errors: [{ message: "Pull request Auto merge is not enabled.", type: "UNPROCESSABLE" }] }
+        )
+      );
+
+      const log = mkLog();
+      await handlers.get("pull_request.converted_to_draft")!({
+        octokit: mkOctokit(),
+        log,
+        payload: {
+          pull_request: {
+            number: 15,
+            node_id: "PR_node_draft_notEnabled",
+            draft: true,
+            labels: [{ name: LABELS.AUTOMERGE }],
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(log.warn).not.toHaveBeenCalled();
     });
   });
 
