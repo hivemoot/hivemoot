@@ -24,6 +24,7 @@ extract_claude_token_usage_from_log() {
   if [ ! -f "$path" ] || ! command -v jq >/dev/null 2>&1; then
     return 0
   fi
+  # Claude modelUsage uses camelCase keys (inputTokens, outputTokens, etc.)
   jq -Rrs '
     [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
     | map(select(.type == "result")) | last
@@ -31,21 +32,21 @@ extract_claude_token_usage_from_log() {
       else
         (.modelUsage // {}) as $mu |
         {
-          input_tokens:                ([$mu | to_entries[].value.input_tokens               // 0] | add // null),
-          output_tokens:               ([$mu | to_entries[].value.output_tokens              // 0] | add // null),
-          cache_read_input_tokens:     ([$mu | to_entries[].value.cache_read_input_tokens    // 0] | add // null),
-          cache_creation_input_tokens: ([$mu | to_entries[].value.cache_creation_input_tokens // 0] | add // null),
+          input_tokens:                ([$mu | to_entries[].value | (.inputTokens // .input_tokens // 0)] | add // null),
+          output_tokens:               ([$mu | to_entries[].value | (.outputTokens // .output_tokens // 0)] | add // null),
+          cache_read_input_tokens:     ([$mu | to_entries[].value | (.cacheReadInputTokens // .cache_read_input_tokens // 0)] | add // null),
+          cache_creation_input_tokens: ([$mu | to_entries[].value | (.cacheCreationInputTokens // .cache_creation_input_tokens // 0)] | add // null),
           cost_usd:  (.total_cost_usd // null),
           num_turns: (.num_turns // null),
           model_breakdown: (
             if ($mu | keys | length) > 0 then
               $mu | with_entries(.value = (
                 .value | {
-                  input_tokens:                .input_tokens,
-                  output_tokens:               .output_tokens,
-                  cache_read_input_tokens:     .cache_read_input_tokens,
-                  cache_creation_input_tokens: .cache_creation_input_tokens,
-                  cost_usd:                    .cost_usd
+                  input_tokens:                (.inputTokens // .input_tokens),
+                  output_tokens:               (.outputTokens // .output_tokens),
+                  cache_read_input_tokens:     (.cacheReadInputTokens // .cache_read_input_tokens),
+                  cache_creation_input_tokens: (.cacheCreationInputTokens // .cache_creation_input_tokens),
+                  cost_usd:                    (.costUSD // .cost_usd)
                 } | with_entries(select(.value != null))
               ))
             else null end
@@ -71,12 +72,13 @@ extract_codex_token_usage_from_log() {
     | if length == 0 then empty
       else
         {
-          input_tokens:            ([.[].usage.input_tokens          // 0] | add),
-          output_tokens:           ([.[].usage.output_tokens         // 0] | add),
-          cache_read_input_tokens: ([.[].usage.cached_input_tokens   // 0] | add),
-          num_turns:               length
+          input_tokens:                ([.[].usage.input_tokens          // 0] | add),
+          output_tokens:               ([.[].usage.output_tokens         // 0] | add),
+          cache_read_input_tokens:     ([.[].usage.cached_input_tokens   // 0] | add),
+          cache_creation_input_tokens: null,
+          cost_usd:                    null,
+          num_turns:                   length
         }
-        | with_entries(select(.value != null))
       end
   ' "$path" 2>/dev/null || true
 }

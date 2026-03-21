@@ -73,6 +73,33 @@ EOF
   pass "claude: sums input/output/cache tokens from modelUsage across all models"
 }
 
+test_claude_extracts_token_sums_from_camelcase_model_usage() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"num_turns":3,"total_cost_usd":1.23,"modelUsage":{"claude-sonnet-4-6":{"inputTokens":80,"outputTokens":40,"cacheReadInputTokens":200,"cacheCreationInputTokens":100,"costUSD":1.00},"claude-haiku-4-5-20251001":{"inputTokens":20,"outputTokens":10,"cacheReadInputTokens":0,"cacheCreationInputTokens":50,"costUSD":0.23}}}
+EOF
+  local result
+  result="$(extract_claude_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local input_tokens output_tokens cache_read cache_creation cost num_turns
+  input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
+  output_tokens="$(printf '%s' "$result" | jq '.output_tokens')"
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  cache_creation="$(printf '%s' "$result" | jq '.cache_creation_input_tokens')"
+  cost="$(printf '%s' "$result" | jq '.cost_usd')"
+  num_turns="$(printf '%s' "$result" | jq '.num_turns')"
+
+  [ "$input_tokens" = "100" ]   || fail "input_tokens: expected 100, got ${input_tokens}"
+  [ "$output_tokens" = "50" ]   || fail "output_tokens: expected 50, got ${output_tokens}"
+  [ "$cache_read" = "200" ]     || fail "cache_read_input_tokens: expected 200, got ${cache_read}"
+  [ "$cache_creation" = "150" ] || fail "cache_creation_input_tokens: expected 150, got ${cache_creation}"
+  [ "$cost" = "1.23" ]          || fail "cost_usd: expected 1.23, got ${cost}"
+  [ "$num_turns" = "3" ]        || fail "num_turns: expected 3, got ${num_turns}"
+
+  pass "claude: sums input/output/cache tokens from camelCase modelUsage"
+}
+
 test_claude_model_breakdown_includes_all_fields() {
   source_extractor
   cat > "${TEST_TMP}/run.ndjson" <<'EOF'
@@ -93,6 +120,27 @@ EOF
   [ "$bd_cost_ok" = "true" ]   || fail "model_breakdown cost_usd: expected 1.0"
 
   pass "claude: model_breakdown includes cache and cost fields per model"
+}
+
+test_claude_camelcase_model_breakdown_includes_all_fields() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","subtype":"success","num_turns":1,"total_cost_usd":1.00,"modelUsage":{"claude-sonnet-4-6":{"inputTokens":80,"outputTokens":40,"cacheReadInputTokens":200,"cacheCreationInputTokens":100,"costUSD":1.00}}}
+EOF
+  local result
+  result="$(extract_claude_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local bd_input bd_cache_read bd_cost_ok
+  bd_input="$(printf '%s' "$result" | jq '.model_breakdown["claude-sonnet-4-6"].input_tokens')"
+  bd_cache_read="$(printf '%s' "$result" | jq '.model_breakdown["claude-sonnet-4-6"].cache_read_input_tokens')"
+  bd_cost_ok="$(printf '%s' "$result" | jq '.model_breakdown["claude-sonnet-4-6"].cost_usd == 1.0')"
+
+  [ "$bd_input" = "80" ]       || fail "model_breakdown input_tokens: expected 80, got ${bd_input}"
+  [ "$bd_cache_read" = "200" ] || fail "model_breakdown cache_read: expected 200, got ${bd_cache_read}"
+  [ "$bd_cost_ok" = "true" ]   || fail "model_breakdown cost_usd: expected 1.0"
+
+  pass "claude: camelCase model_breakdown includes cache and cost fields per model"
 }
 
 test_claude_uses_cost_usd_key_not_total() {
@@ -186,6 +234,29 @@ EOF
   [ "$num_turns" = "1" ] || fail "num_turns: expected 1, got ${num_turns}"
 
   pass "codex: single turn.completed gives num_turns=1"
+}
+
+test_codex_includes_nullable_fields_as_null() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"turn.completed","usage":{"input_tokens":500,"output_tokens":75,"cached_input_tokens":0}}
+EOF
+  local result
+  result="$(extract_codex_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local has_cache_creation has_cost cache_creation cost
+  has_cache_creation="$(printf '%s' "$result" | jq 'has("cache_creation_input_tokens")')"
+  has_cost="$(printf '%s' "$result" | jq 'has("cost_usd")')"
+  cache_creation="$(printf '%s' "$result" | jq '.cache_creation_input_tokens')"
+  cost="$(printf '%s' "$result" | jq '.cost_usd')"
+
+  [ "$has_cache_creation" = "true" ] || fail "expected cache_creation_input_tokens key in output"
+  [ "$has_cost" = "true" ]           || fail "expected cost_usd key in output"
+  [ "$cache_creation" = "null" ]     || fail "expected cache_creation_input_tokens=null, got ${cache_creation}"
+  [ "$cost" = "null" ]               || fail "expected cost_usd=null, got ${cost}"
+
+  pass "codex: includes nullable cache creation and cost fields as null"
 }
 
 test_codex_no_turn_completed_returns_empty() {
@@ -310,7 +381,9 @@ echo ""
 
 echo "  Claude — token extraction:"
 run_test test_claude_extracts_token_sums_from_model_usage
+run_test test_claude_extracts_token_sums_from_camelcase_model_usage
 run_test test_claude_model_breakdown_includes_all_fields
+run_test test_claude_camelcase_model_breakdown_includes_all_fields
 run_test test_claude_uses_cost_usd_key_not_total
 run_test test_claude_no_result_event_returns_empty
 run_test test_claude_missing_file_returns_empty
@@ -320,6 +393,7 @@ echo ""
 echo "  Codex — token extraction:"
 run_test test_codex_sums_across_all_turn_completed_events
 run_test test_codex_single_turn_returns_correct_counts
+run_test test_codex_includes_nullable_fields_as_null
 run_test test_codex_no_turn_completed_returns_empty
 run_test test_codex_missing_file_returns_empty
 echo ""
