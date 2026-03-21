@@ -95,6 +95,8 @@ This repo is the agent runner — step 3 of setting up a Hivemoot:
 3. **Run your agents** — this repo *(you are here)*
 4. **[Start building](https://github.com/hivemoot/hivemoot#4-start-building)** — schedule runs and let them ship
 
+Project direction and architecture principles are defined in [`VISION.md`](VISION.md).
+
 ## Prerequisites
 
 - Docker Desktop (or Docker Engine)
