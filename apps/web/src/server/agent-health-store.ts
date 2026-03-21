@@ -408,19 +408,19 @@ export function validateReport(body: unknown): ValidationResult {
       return { ok: false, message: "token_usage.output_tokens must be a non-negative integer" };
     }
     if (
-      t.cache_read_input_tokens !== null
+      t.cache_read_input_tokens != null
       && (typeof t.cache_read_input_tokens !== "number" || !Number.isInteger(t.cache_read_input_tokens) || t.cache_read_input_tokens < 0)
     ) {
       return { ok: false, message: "token_usage.cache_read_input_tokens must be a non-negative integer or null" };
     }
     if (
-      t.cache_creation_input_tokens !== null
+      t.cache_creation_input_tokens != null
       && (typeof t.cache_creation_input_tokens !== "number" || !Number.isInteger(t.cache_creation_input_tokens) || t.cache_creation_input_tokens < 0)
     ) {
       return { ok: false, message: "token_usage.cache_creation_input_tokens must be a non-negative integer or null" };
     }
     if (
-      t.cost_usd !== null
+      t.cost_usd != null
       && (typeof t.cost_usd !== "number" || t.cost_usd < 0)
     ) {
       return { ok: false, message: "token_usage.cost_usd must be a non-negative number or null" };
@@ -441,26 +441,26 @@ export function validateReport(body: unknown): ValidationResult {
           return { ok: false, message: `token_usage.model_breakdown.${modelId} must be an object` };
         }
         const u = usage as Record<string, unknown>;
-        if (typeof u.input_tokens !== "number" || !Number.isInteger(u.input_tokens) || u.input_tokens < 0) {
+        if (u.input_tokens != null && (typeof u.input_tokens !== "number" || !Number.isInteger(u.input_tokens) || u.input_tokens < 0)) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.input_tokens must be a non-negative integer` };
         }
-        if (typeof u.output_tokens !== "number" || !Number.isInteger(u.output_tokens) || u.output_tokens < 0) {
+        if (u.output_tokens != null && (typeof u.output_tokens !== "number" || !Number.isInteger(u.output_tokens) || u.output_tokens < 0)) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.output_tokens must be a non-negative integer` };
         }
         if (
-          u.cache_read_input_tokens !== null
+          u.cache_read_input_tokens != null
           && (typeof u.cache_read_input_tokens !== "number" || !Number.isInteger(u.cache_read_input_tokens) || u.cache_read_input_tokens < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_read_input_tokens must be a non-negative integer or null` };
         }
         if (
-          u.cache_creation_input_tokens !== null
+          u.cache_creation_input_tokens != null
           && (typeof u.cache_creation_input_tokens !== "number" || !Number.isInteger(u.cache_creation_input_tokens) || u.cache_creation_input_tokens < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_creation_input_tokens must be a non-negative integer or null` };
         }
         if (
-          u.cost_usd !== null
+          u.cost_usd != null
           && (typeof u.cost_usd !== "number" || u.cost_usd < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cost_usd must be a non-negative number or null` };
