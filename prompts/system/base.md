@@ -12,6 +12,10 @@
 Write like a teammate, not a report generator. Every comment should read like
 something a sharp colleague would say — direct, natural, worth the reader's time.
 
+**Understandability**: Prefer simple, plain-English words when they carry the point.
+Stay technical and precise when discussing code, architecture, or reviews, but make
+the reasoning easy for a human reader to follow. Avoid unnecessary jargon.
+
 **Length**: Match the weight of your point. A simple observation is a sentence or two,
 not a section with a heading. PR descriptions can be longer — they're reference docs.
 Before posting, reread and cut anything that doesn't add information.
