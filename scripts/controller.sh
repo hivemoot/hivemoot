@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "${SCRIPT_DIR}/lib-global-slots.sh"
 # shellcheck source=scripts/lib-slots.sh
 . "${SCRIPT_DIR}/lib-slots.sh"
+# shellcheck source=scripts/lib-classify.sh
+. "${SCRIPT_DIR}/lib-classify.sh"
 # shellcheck source=scripts/health-reporter.sh
 . "${SCRIPT_DIR}/health-reporter.sh"
 
@@ -268,76 +270,10 @@ cleanup_job_home_credentials() {
 }
 
 # Classify a task failure from the worker container log.
-# Scans for known static error patterns emitted by run-once.sh to stderr.
-# Returns a safe one-line error message, or empty string for unknown failures.
-# Never returns raw log content — only pre-defined classified messages.
+# Delegates to the shared classify_run_failure_from_file() from lib-classify.sh,
+# which owns the single authoritative pattern table for run-once.sh errors.
 classify_worker_log_failure() {
-  local log_file="$1"
-
-  [ -s "$log_file" ] || return 0
-
-  # Kilo patterns checked first: ANTHROPIC/OPENAI/GOOGLE keys are also used by
-  # standalone providers. Checking KILO_PROVIDER= specifics first avoids
-  # misclassifying a Kilo run as a Claude/Codex/Gemini failure.
-  if grep -qF "when KILO_PROVIDER=anthropic" "$log_file" 2>/dev/null; then
-    printf 'Kilo provider API key (ANTHROPIC_API_KEY) is missing for KILO_PROVIDER=anthropic'
-    return 0
-  fi
-  if grep -qF "when KILO_PROVIDER=openai" "$log_file" 2>/dev/null; then
-    printf 'Kilo provider API key (OPENAI_API_KEY) is missing for KILO_PROVIDER=openai'
-    return 0
-  fi
-  if grep -qF "when KILO_PROVIDER=google" "$log_file" 2>/dev/null; then
-    printf 'Kilo provider API key (GOOGLE_API_KEY / GEMINI_API_KEY) is missing for KILO_PROVIDER=google'
-    return 0
-  fi
-  if grep -qF "when KILO_PROVIDER=openrouter" "$log_file" 2>/dev/null; then
-    printf 'Kilo provider API key (OPENROUTER_API_KEY) is missing for KILO_PROVIDER=openrouter'
-    return 0
-  fi
-  if grep -qF "KILO_PROVIDER is required" "$log_file" 2>/dev/null; then
-    printf 'KILO_PROVIDER is required — set KILO_PROVIDER or KILOCODE_TOKEN'
-    return 0
-  fi
-  if grep -qF "Missing GitHub token" "$log_file" 2>/dev/null; then
-    printf 'GitHub token is missing'
-    return 0
-  fi
-  if grep -qF "Failed to validate GitHub token" "$log_file" 2>/dev/null; then
-    printf 'GitHub token validation failed — check token scope or installation access'
-    return 0
-  fi
-  if grep -qF "GitHub token cannot access target repository" "$log_file" 2>/dev/null; then
-    printf 'GitHub token cannot access target repository — check token scope or installation access'
-    return 0
-  fi
-  if grep -qF "Failed to clone" "$log_file" 2>/dev/null; then
-    printf 'Failed to clone repository — check token and repo access'
-    return 0
-  fi
-  if grep -qF "ANTHROPIC_API_KEY is required" "$log_file" 2>/dev/null; then
-    printf 'Claude provider API key (ANTHROPIC_API_KEY) is missing'
-    return 0
-  fi
-  if grep -qF "OPENAI_API_KEY is required" "$log_file" 2>/dev/null; then
-    printf 'Codex provider API key (OPENAI_API_KEY) is missing'
-    return 0
-  fi
-  if grep -qF "GOOGLE_API_KEY (or GEMINI_API_KEY) is required" "$log_file" 2>/dev/null; then
-    printf 'Gemini provider API key (GOOGLE_API_KEY / GEMINI_API_KEY) is missing'
-    return 0
-  fi
-  if grep -qF "subscription credentials not found" "$log_file" 2>/dev/null || \
-     grep -qF "subscription login not found" "$log_file" 2>/dev/null; then
-    printf 'Provider subscription credentials not found — run the matching auth command'
-    return 0
-  fi
-  if grep -qF "Failed to configure git credential helper" "$log_file" 2>/dev/null; then
-    printf 'Failed to configure git credentials'
-    return 0
-  fi
-
-  return 0
+  classify_run_failure_from_file "$1"
 }
 
 # POST action=fail to the task execute endpoint from the controller.

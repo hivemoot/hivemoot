@@ -66,6 +66,8 @@ jobs:
         run: bash scripts/test-provider-mismatch.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
+      - name: Verify run-failure classification behavior
+        run: bash scripts/test-classify.sh
       - name: Verify run-loop next_run_at propagation behavior
         run: bash scripts/test-run-loop-next-run-at.sh
       - name: Verify health reporting env wiring
