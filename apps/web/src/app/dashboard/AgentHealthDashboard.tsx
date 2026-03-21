@@ -195,7 +195,7 @@ function TokenSummary({ tu }: { tu: TokenUsage }) {
           <span className="text-zinc-400">{tu.num_turns}</span>
           {" turns"}
         </span>
-        {tu.cost_usd !== null && (
+        {tu.cost_usd != null && (
           <span className="text-zinc-300">
             ${tu.cost_usd.toFixed(2)}
           </span>
@@ -217,7 +217,7 @@ function TokenSummary({ tu }: { tu: TokenUsage }) {
                 <span className="min-w-0 flex-1 truncate text-zinc-600">{modelId}</span>
                 <span>{formatTokens(mu.input_tokens)}in</span>
                 <span>{formatTokens(mu.output_tokens)}out</span>
-                {mu.cost_usd !== null && (
+                {mu.cost_usd != null && (
                   <span className="text-zinc-400">${mu.cost_usd.toFixed(2)}</span>
                 )}
               </div>

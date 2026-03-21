@@ -585,6 +585,64 @@ describe("validateReport", () => {
     }
   });
 
+  it("accepts token_usage with omitted nullable fields and normalizes them to null", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 120,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 300,
+        output_tokens: 60,
+        cache_read_input_tokens: 130,
+        num_turns: 2,
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.token_usage?.cache_creation_input_tokens).toBeNull();
+      expect(result.report.token_usage?.cost_usd).toBeNull();
+      expect(result.report.token_usage?.model_breakdown).toBeNull();
+    }
+  });
+
+  it("accepts model_breakdown with omitted nullable fields and normalizes them to null", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 180,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        num_turns: 1,
+        model_breakdown: {
+          "claude-sonnet-4-6": {
+            input_tokens: 100,
+            output_tokens: 50,
+          },
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.token_usage?.model_breakdown?.["claude-sonnet-4-6"]).toEqual({
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+      });
+    }
+  });
+
   it("accepts token_usage: null (unsupported provider)", () => {
     const result = validateReport({
       agent_id: "bee-1",
@@ -708,6 +766,32 @@ describe("validateReport", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("model_breakdown");
+  });
+
+  it("rejects token_usage with model_breakdown missing required input_tokens", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      token_usage: {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cost_usd: null,
+        num_turns: 1,
+        model_breakdown: {
+          "claude-sonnet-4-6": {
+            output_tokens: 10,
+          },
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("model_breakdown.claude-sonnet-4-6.input_tokens");
   });
 });
 
