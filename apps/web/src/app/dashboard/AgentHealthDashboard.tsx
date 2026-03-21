@@ -171,52 +171,67 @@ function cacheHitRate(tu: TokenUsage): string | null {
   return `${Math.round((read / total) * 100)}%`;
 }
 
+function primaryModel(tu: TokenUsage): string | null {
+  if (!tu.model_breakdown) return null;
+  const entries = Object.entries(tu.model_breakdown);
+  if (entries.length === 0) return null;
+  // Pick model with the most output tokens (the main worker model)
+  entries.sort(([, a], [, b]) => (b.output_tokens ?? 0) - (a.output_tokens ?? 0));
+  return entries[0][0];
+}
+
 function TokenSummary({ tu }: { tu: TokenUsage }) {
   const hitRate = cacheHitRate(tu);
   const breakdown = tu.model_breakdown ? Object.entries(tu.model_breakdown) : [];
+  const model = primaryModel(tu);
 
   return (
     <div className="mt-2 space-y-1.5 text-xs text-zinc-500">
+      {model && (
+        <p className="font-mono text-[11px] text-zinc-500">{model}</p>
+      )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span>
-          <span className="text-zinc-400">{formatTokens(tu.input_tokens)}</span>
-          {" in"}
-        </span>
-        <span>
-          <span className="text-zinc-400">{formatTokens(tu.output_tokens)}</span>
-          {" out"}
-        </span>
-        {hitRate && (
-          <span>
-            cache <span className="text-green-400/80">{hitRate}</span>
-          </span>
-        )}
-        <span>
-          <span className="text-zinc-400">{tu.num_turns}</span>
-          {" turns"}
-        </span>
         {tu.cost_usd != null && (
           <span className="text-zinc-300">
             ${tu.cost_usd.toFixed(2)}
           </span>
         )}
+        <span title="Input tokens">
+          <span className="text-zinc-400">{formatTokens(tu.input_tokens)}</span>
+          {" in"}
+        </span>
+        <span title="Output tokens">
+          <span className="text-zinc-400">{formatTokens(tu.output_tokens)}</span>
+          {" out"}
+        </span>
+        {hitRate && (
+          <span title="Prompt cache hit rate">
+            cache <span className="text-green-400/80">{hitRate}</span>
+          </span>
+        )}
+        {tu.num_turns > 1 && (
+          <span title="Number of tool-use turns (agentic loops)">
+            <span className="text-zinc-400">{tu.num_turns}</span>
+            {" turns"}
+          </span>
+        )}
       </div>
-      {breakdown.length > 0 && (
+      {breakdown.length > 1 && (
         <details className="group">
           <summary className="cursor-pointer list-none text-zinc-600 hover:text-zinc-500">
             <span className="inline-flex items-center gap-1">
               <svg className="h-2.5 w-2.5 transition-transform group-open:rotate-90" viewBox="0 0 8 8" fill="currentColor" aria-hidden="true">
                 <path d="M2 1l4 3-4 3V1z" />
               </svg>
-              model breakdown
+              {breakdown.length} models
             </span>
           </summary>
           <div className="mt-1.5 space-y-0.5 pl-4">
             {breakdown.map(([modelId, mu]) => (
               <div key={modelId} className="flex items-center gap-2 font-mono text-[10px]">
                 <span className="min-w-0 flex-1 truncate text-zinc-600">{modelId}</span>
-                <span>{formatTokens(mu.input_tokens)}in</span>
-                <span>{formatTokens(mu.output_tokens)}out</span>
+                <span>{formatTokens(mu.input_tokens ?? 0)} in</span>
+                <span>{formatTokens(mu.output_tokens ?? 0)} out</span>
                 {mu.cost_usd != null && (
                   <span className="text-zinc-400">${mu.cost_usd.toFixed(2)}</span>
                 )}
@@ -474,7 +489,7 @@ export default function AgentHealthDashboard() {
                     {entry.error && (
                       <p className="mt-0.5 text-sm text-red-400">{entry.error}</p>
                     )}
-                    {entry.exit_code !== undefined && (
+                    {entry.exit_code !== undefined && entry.exit_code !== 0 && (
                       <p className="text-xs text-zinc-500">
                         exit code {entry.exit_code}
                       </p>
