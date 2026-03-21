@@ -1055,7 +1055,6 @@ describe("buzzCommand", () => {
       focusFilters: {
         labels: { include: ["bug"] },
         authors: { exclude: ["dependabot[bot]"] },
-        suppressSections: ["ready-to-implement"],
       },
     };
     mockedLoadTeamConfig.mockResolvedValue(teamWithFocusFilters);
@@ -1070,7 +1069,6 @@ describe("buzzCommand", () => {
     expect(focusFiltersArg).toEqual({
       labels: { include: ["bug"] },
       authors: { exclude: ["dependabot[bot]"] },
-      suppressSections: ["ready-to-implement"],
     });
   });
 

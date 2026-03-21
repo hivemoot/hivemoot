@@ -589,7 +589,6 @@ team:
               authors: {
                 exclude: ["dependabot[bot]"],
               },
-              suppressSections: ["ready-to-implement", "discussion"],
             },
           },
         },
@@ -611,11 +610,10 @@ team:
       authors: {
         exclude: ["dependabot[bot]"],
       },
-      suppressSections: ["ready-to-implement", "discussion"],
     });
   });
 
-  it("ignores malformed focus filters", async () => {
+  it("trims, dedupes, and drops empty focus filter values", async () => {
     const focusesYaml = yaml.dump({
       team: {
         activeFocus: "default",
@@ -623,11 +621,12 @@ team:
           default: {
             objective: "Review queue.",
             filters: {
-              labels: "not-an-object",
-              authors: {
-                include: ["", " worker ", 5, "worker"],
+              labels: {
+                include: ["", " bug ", "bug", "wontfix "],
               },
-              suppressSections: ["", " discussion ", 42, "discussion"],
+              authors: {
+                include: ["", " worker ", "worker"],
+              },
             },
           },
         },
@@ -642,8 +641,138 @@ team:
 
     expect(config.focus).toBe("Review queue.");
     expect(config.focusFilters).toEqual({
+      labels: { include: ["bug", "wontfix"] },
       authors: { include: ["worker"] },
-      suppressSections: ["discussion"],
+    });
+  });
+
+  it("treats empty focus filters as a no-op", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: {
+              labels: {
+                include: ["", "   "],
+              },
+              authors: {
+                exclude: [],
+              },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Review queue.");
+    expect(config.focusFilters).toBeUndefined();
+  });
+
+  it("throws INVALID_CONFIG when filters is not an object", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: "not-an-object",
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("team.focuses.default.filters must be an object"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a match filter is not an object", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: {
+              labels: "bug",
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("team.focuses.default.filters.labels must be an object"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when a filter list contains non-string values", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: {
+              authors: {
+                include: ["worker", 5],
+              },
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("team.focuses.default.filters.authors.include[1] must be a string"),
+    });
+  });
+
+  it("throws INVALID_CONFIG when suppressSections is configured", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+            filters: {
+              suppressSections: ["ready-to-implement"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("team.focuses.default.filters.suppressSections is not supported"),
     });
   });
 

@@ -1393,6 +1393,7 @@ describe("buildSummary()", () => {
     const issues = [
       makeIssue({ number: 720, author: { login: "dependabot[bot]" } }),
       makeIssue({ number: 721, author: { login: "alice" } }),
+      makeIssue({ number: 724, author: null }),
     ];
     const prs = [
       makePR({ number: 722, author: { login: "alice" } }),
@@ -1415,9 +1416,36 @@ describe("buildSummary()", () => {
     expect(summary.reviewPRs.map((item) => item.number)).toEqual([722]);
   });
 
-  it("suppresses configured sections and skips their notifications", () => {
-    const discussionIssue = makeIssue({ number: 730, labels: [{ name: "hivemoot:discussion" }] });
-    const readyIssue = makeIssue({ number: 731, labels: [{ name: "hivemoot:ready-to-implement" }] });
+  it("keeps null-author items visible when only author excludes are configured", () => {
+    const issues = [
+      makeIssue({ number: 725, author: null }),
+      makeIssue({ number: 726, author: { login: "dependabot[bot]" } }),
+    ];
+
+    const summary = buildSummary(
+      repo,
+      issues,
+      [],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { authors: { exclude: ["dependabot[bot]"] } },
+    );
+
+    expect(summary.implement.map((item) => item.number)).toEqual([725]);
+  });
+
+  it("suppresses notifications for filtered-out open items", () => {
+    const discussionIssue = makeIssue({
+      number: 730,
+      labels: [{ name: "hivemoot:discussion" }, { name: "enhancement" }],
+    });
+    const readyIssue = makeIssue({
+      number: 731,
+      labels: [{ name: "bug" }, { name: "hivemoot:ready-to-implement" }],
+    });
     const notifications = new Map([
       [730, { threadId: "T730", reason: "comment", updatedAt: "2025-06-15T11:00:00Z" }],
       [999, {
@@ -1439,11 +1467,11 @@ describe("buildSummary()", () => {
       new Map(),
       notifications,
       undefined,
-      { suppressSections: ["discussion", "ready-to-implement"] },
+      { labels: { include: ["bug"] } },
     );
 
     expect(summary.discuss).toHaveLength(0);
-    expect(summary.implement).toHaveLength(0);
+    expect(summary.implement.map((item) => item.number)).toEqual([731]);
     expect(summary.notifications).toEqual([
       {
         number: 999,
@@ -1458,23 +1486,5 @@ describe("buildSummary()", () => {
         section: "other",
       },
     ]);
-  });
-
-  it("adds a note for unknown suppress section keys", () => {
-    const summary = buildSummary(
-      repo,
-      [],
-      [],
-      "testuser",
-      now,
-      new Map(),
-      new Map(),
-      undefined,
-      { suppressSections: ["discussion", "does-not-exist"] },
-    );
-
-    expect(summary.notes).toContain(
-      "Ignoring unknown focus filters.suppressSections value(s): does-not-exist. Valid values: needs-human, drive-discussion, drive-implementation, voting, discussion, ready-to-implement, unclassified, review-prs, draft-prs, address-feedback.",
-    );
   });
 });

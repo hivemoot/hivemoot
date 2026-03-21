@@ -23,7 +23,6 @@ team:
   #         include: ["bug"]
   #       authors:
   #         exclude: ["dependabot[bot]"]
-  #       suppressSections: ["ready-to-implement"]
   #
   # Legacy fallback format is still supported:
   # focus:

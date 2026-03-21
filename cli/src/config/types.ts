@@ -13,7 +13,6 @@ export interface FocusMatchFilter {
 export interface FocusFilters {
   labels?: FocusMatchFilter;
   authors?: FocusMatchFilter;
-  suppressSections?: string[];
 }
 
 export interface FocusBlock {

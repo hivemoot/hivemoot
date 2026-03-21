@@ -46,28 +46,11 @@ const DEFAULT_HIVEMOOT_PHASE_LABELS = new Set<string>([
 const OMITTED_PIPELINE_NOTE =
   "Issue pipeline and implementation-gap metrics are omitted because default hivemoot phase labels were not detected.";
 
-const FOCUS_SECTION_MAP = {
-  "needs-human": "needsHuman",
-  "drive-discussion": "driveDiscussion",
-  "drive-implementation": "driveImplementation",
-  "voting": "voteOn",
-  "discussion": "discuss",
-  "ready-to-implement": "implement",
-  "unclassified": "unclassified",
-  "review-prs": "reviewPRs",
-  "draft-prs": "draftPRs",
-  "address-feedback": "addressFeedback",
-} as const;
-
-type SuppressSectionKey = keyof typeof FOCUS_SECTION_MAP;
-
 interface NormalizedFocusFilters {
   labelInclude?: Set<string>;
   labelExclude?: Set<string>;
   authorInclude?: Set<string>;
   authorExclude?: Set<string>;
-  suppressSections: Set<SuppressSectionKey>;
-  unknownSuppressSections: string[];
 }
 
 function normalizeFilterValues(values?: string[]): Set<string> | undefined {
@@ -80,36 +63,11 @@ function normalizeFilterValues(values?: string[]): Set<string> | undefined {
 }
 
 function normalizeFocusFilters(focusFilters?: FocusFilters): NormalizedFocusFilters {
-  const labelInclude = normalizeFilterValues(focusFilters?.labels?.include);
-  const labelExclude = normalizeFilterValues(focusFilters?.labels?.exclude);
-  const authorInclude = normalizeFilterValues(focusFilters?.authors?.include);
-  const authorExclude = normalizeFilterValues(focusFilters?.authors?.exclude);
-
-  const suppressSections = new Set<SuppressSectionKey>();
-  const unknownSuppressSections: string[] = [];
-  const unknownSeen = new Set<string>();
-
-  for (const rawSection of focusFilters?.suppressSections ?? []) {
-    const key = rawSection.trim().toLowerCase();
-    if (!key) continue;
-    if (Object.hasOwn(FOCUS_SECTION_MAP, key)) {
-      suppressSections.add(key as SuppressSectionKey);
-      continue;
-    }
-
-    if (!unknownSeen.has(key)) {
-      unknownSeen.add(key);
-      unknownSuppressSections.push(rawSection);
-    }
-  }
-
   return {
-    labelInclude,
-    labelExclude,
-    authorInclude,
-    authorExclude,
-    suppressSections,
-    unknownSuppressSections,
+    labelInclude: normalizeFilterValues(focusFilters?.labels?.include),
+    labelExclude: normalizeFilterValues(focusFilters?.labels?.exclude),
+    authorInclude: normalizeFilterValues(focusFilters?.authors?.include),
+    authorExclude: normalizeFilterValues(focusFilters?.authors?.exclude),
   };
 }
 
@@ -558,33 +516,6 @@ export function buildSummary(
     return true;
   });
 
-  if (normalizedFocusFilters.suppressSections.size > 0) {
-    const sectionData = {
-      needsHuman,
-      driveDiscussion,
-      driveImplementation,
-      voteOn: filteredVoteOn,
-      discuss: filteredDiscuss,
-      implement,
-      unclassified,
-      reviewPRs: filteredReviewPRs,
-      draftPRs,
-      addressFeedback: filteredAddressFeedback,
-    };
-
-    for (const sectionKey of normalizedFocusFilters.suppressSections) {
-      const sectionName = FOCUS_SECTION_MAP[sectionKey];
-      sectionData[sectionName].length = 0;
-    }
-  }
-
-  if (normalizedFocusFilters.unknownSuppressSections.length > 0) {
-    const validSections = Object.keys(FOCUS_SECTION_MAP).join(", ");
-    notes.push(
-      `Ignoring unknown focus filters.suppressSections value(s): ${normalizedFocusFilters.unknownSuppressSections.join(", ")}. Valid values: ${validSections}.`,
-    );
-  }
-
   const sectionEntries: [string, SummaryItem[]][] = [
     ["needsHuman", needsHuman],
     ["driveDiscussion", driveDiscussion],
@@ -636,6 +567,8 @@ export function buildSummary(
 
   // Include unread notification threads that do not map to currently fetched
   // open items (e.g. closed threads or items beyond fetch limit).
+  // Skip items that are open but filtered out by focus — they are
+  // intentionally hidden and should not surface as "other" notifications.
   for (const [number, n] of notifications.entries()) {
     if (matchedNumbers.has(number)) continue;
     if (fetchedOpenNumbers.has(number)) continue;

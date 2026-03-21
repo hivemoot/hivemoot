@@ -68,45 +68,72 @@ const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_FOCUS_NAME_LENGTH = 64;
 const MAX_FILTER_VALUE_LENGTH = 128;
 const MAX_FILTER_VALUES = 100;
-const MAX_SUPPRESS_SECTION_LENGTH = 64;
 
 interface ResolvedFocusBlock {
   objective: string;
   filters?: FocusFilters;
 }
 
+function invalidConfig(message: string): never {
+  throw new CliError(
+    `Config error: ${message}`,
+    "INVALID_CONFIG",
+    1,
+  );
+}
+
 function parseStringList(
   raw: unknown,
   maxLength: number,
+  path: string,
 ): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    invalidConfig(`${path} must be an array of strings`);
+  }
+
+  if (raw.length > MAX_FILTER_VALUES) {
+    invalidConfig(`${path} supports at most ${MAX_FILTER_VALUES} entries`);
+  }
 
   const values: string[] = [];
   const seen = new Set<string>();
 
-  for (const entry of raw) {
-    if (typeof entry !== "string") continue;
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string") {
+      invalidConfig(`${path}[${index}] must be a string`);
+    }
+
     const trimmed = entry.trim();
     if (!trimmed) continue;
-    if (trimmed.length > maxLength) continue;
+    if (trimmed.length > maxLength) {
+      invalidConfig(`${path}[${index}] exceeds ${maxLength} characters`);
+    }
 
     const dedupeKey = trimmed.toLowerCase();
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     values.push(trimmed);
-    if (values.length >= MAX_FILTER_VALUES) break;
   }
 
   return values.length > 0 ? values : undefined;
 }
 
-function parseMatchFilter(raw: unknown): FocusMatchFilter | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+function parseMatchFilter(raw: unknown, path: string): FocusMatchFilter | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    invalidConfig(`${path} must be an object`);
+  }
 
   const filter = raw as Record<string, unknown>;
-  const include = parseStringList(filter.include, MAX_FILTER_VALUE_LENGTH);
-  const exclude = parseStringList(filter.exclude, MAX_FILTER_VALUE_LENGTH);
+  const unknownKeys = Object.keys(filter).filter((key) => key !== "include" && key !== "exclude");
+  if (unknownKeys.length > 0) {
+    invalidConfig(`${path} contains unsupported key(s): ${unknownKeys.join(", ")}`);
+  }
+
+  const include = parseStringList(filter.include, MAX_FILTER_VALUE_LENGTH, `${path}.include`);
+  const exclude = parseStringList(filter.exclude, MAX_FILTER_VALUE_LENGTH, `${path}.exclude`);
 
   if (!include && !exclude) return undefined;
 
@@ -116,20 +143,30 @@ function parseMatchFilter(raw: unknown): FocusMatchFilter | undefined {
   };
 }
 
-function parseFocusFilters(raw: unknown): FocusFilters | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+function parseFocusFilters(raw: unknown, path: string): FocusFilters | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    invalidConfig(`${path} must be an object`);
+  }
 
   const filters = raw as Record<string, unknown>;
-  const labels = parseMatchFilter(filters.labels);
-  const authors = parseMatchFilter(filters.authors);
-  const suppressSections = parseStringList(filters.suppressSections, MAX_SUPPRESS_SECTION_LENGTH);
+  if (Object.hasOwn(filters, "suppressSections")) {
+    invalidConfig(`${path}.suppressSections is not supported; use ${path}.labels.exclude with governance labels instead`);
+  }
 
-  if (!labels && !authors && !suppressSections) return undefined;
+  const unknownKeys = Object.keys(filters).filter((key) => key !== "labels" && key !== "authors");
+  if (unknownKeys.length > 0) {
+    invalidConfig(`${path} contains unsupported key(s): ${unknownKeys.join(", ")}`);
+  }
+
+  const labels = parseMatchFilter(filters.labels, `${path}.labels`);
+  const authors = parseMatchFilter(filters.authors, `${path}.authors`);
+
+  if (!labels && !authors) return undefined;
 
   return {
     ...(labels ? { labels } : {}),
     ...(authors ? { authors } : {}),
-    ...(suppressSections ? { suppressSections } : {}),
   };
 }
 
@@ -171,7 +208,7 @@ function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocusBlock | un
 
       return {
         objective,
-        filters: parseFocusFilters(b.filters),
+        filters: parseFocusFilters(b.filters, `team.focuses.${candidate}.filters`),
       };
     }
 
