@@ -1,0 +1,4 @@
+# exp:2026-06-19 - gh CLI embeds grpc as a client; server-side :path bypass (CVE-2026-33186)
+# is not reachable. Track https://github.com/cli/cli for a release with grpc >= v1.79.3.
+# Refs: #425
+CVE-2026-33186
