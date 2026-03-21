@@ -394,6 +394,8 @@ export function validateReport(body: unknown): ValidationResult {
     return { ok: false, message: "trigger must be one of: scheduled, mention, manual" };
   }
 
+  let normalizedTokenUsage: TokenUsage | null | undefined;
+
   if (obj.token_usage !== undefined && obj.token_usage !== null) {
     const tu = obj.token_usage;
     if (typeof tu !== "object" || Array.isArray(tu)) {
@@ -408,19 +410,19 @@ export function validateReport(body: unknown): ValidationResult {
       return { ok: false, message: "token_usage.output_tokens must be a non-negative integer" };
     }
     if (
-      t.cache_read_input_tokens !== null
+      t.cache_read_input_tokens != null
       && (typeof t.cache_read_input_tokens !== "number" || !Number.isInteger(t.cache_read_input_tokens) || t.cache_read_input_tokens < 0)
     ) {
       return { ok: false, message: "token_usage.cache_read_input_tokens must be a non-negative integer or null" };
     }
     if (
-      t.cache_creation_input_tokens !== null
+      t.cache_creation_input_tokens != null
       && (typeof t.cache_creation_input_tokens !== "number" || !Number.isInteger(t.cache_creation_input_tokens) || t.cache_creation_input_tokens < 0)
     ) {
       return { ok: false, message: "token_usage.cache_creation_input_tokens must be a non-negative integer or null" };
     }
     if (
-      t.cost_usd !== null
+      t.cost_usd != null
       && (typeof t.cost_usd !== "number" || t.cost_usd < 0)
     ) {
       return { ok: false, message: "token_usage.cost_usd must be a non-negative number or null" };
@@ -428,11 +430,13 @@ export function validateReport(body: unknown): ValidationResult {
     if (typeof t.num_turns !== "number" || !Number.isInteger(t.num_turns) || t.num_turns < 0) {
       return { ok: false, message: "token_usage.num_turns must be a non-negative integer" };
     }
+    let normalizedModelBreakdown: Record<string, ModelTokenUsage> | null = null;
     if (t.model_breakdown !== null && t.model_breakdown !== undefined) {
       if (typeof t.model_breakdown !== "object" || Array.isArray(t.model_breakdown)) {
         return { ok: false, message: "token_usage.model_breakdown must be an object or null" };
       }
       const mb = t.model_breakdown as Record<string, unknown>;
+      normalizedModelBreakdown = {};
       for (const [modelId, usage] of Object.entries(mb)) {
         if (!MODEL_PATTERN.test(modelId)) {
           return { ok: false, message: `token_usage.model_breakdown key must match [a-zA-Z0-9._:/-]+ (got: ${modelId})` };
@@ -448,25 +452,43 @@ export function validateReport(body: unknown): ValidationResult {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.output_tokens must be a non-negative integer` };
         }
         if (
-          u.cache_read_input_tokens !== null
+          u.cache_read_input_tokens != null
           && (typeof u.cache_read_input_tokens !== "number" || !Number.isInteger(u.cache_read_input_tokens) || u.cache_read_input_tokens < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_read_input_tokens must be a non-negative integer or null` };
         }
         if (
-          u.cache_creation_input_tokens !== null
+          u.cache_creation_input_tokens != null
           && (typeof u.cache_creation_input_tokens !== "number" || !Number.isInteger(u.cache_creation_input_tokens) || u.cache_creation_input_tokens < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cache_creation_input_tokens must be a non-negative integer or null` };
         }
         if (
-          u.cost_usd !== null
+          u.cost_usd != null
           && (typeof u.cost_usd !== "number" || u.cost_usd < 0)
         ) {
           return { ok: false, message: `token_usage.model_breakdown.${modelId}.cost_usd must be a non-negative number or null` };
         }
+        normalizedModelBreakdown[modelId] = {
+          input_tokens: u.input_tokens,
+          output_tokens: u.output_tokens,
+          cache_read_input_tokens: typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : null,
+          cache_creation_input_tokens: typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : null,
+          cost_usd: typeof u.cost_usd === "number" ? u.cost_usd : null,
+        };
       }
     }
+    normalizedTokenUsage = {
+      input_tokens: t.input_tokens,
+      output_tokens: t.output_tokens,
+      cache_read_input_tokens: typeof t.cache_read_input_tokens === "number" ? t.cache_read_input_tokens : null,
+      cache_creation_input_tokens: typeof t.cache_creation_input_tokens === "number" ? t.cache_creation_input_tokens : null,
+      cost_usd: typeof t.cost_usd === "number" ? t.cost_usd : null,
+      num_turns: t.num_turns,
+      model_breakdown: normalizedModelBreakdown,
+    };
+  } else if (obj.token_usage === null) {
+    normalizedTokenUsage = null;
   }
 
   const report: HealthReport = {
@@ -485,7 +507,7 @@ export function validateReport(body: unknown): ValidationResult {
   if (typeof obj.next_run_at === "string") report.next_run_at = obj.next_run_at;
   if (typeof obj.run_summary === "string") report.run_summary = sanitizeRunSummary(obj.run_summary);
   if (typeof obj.trigger === "string") report.trigger = obj.trigger as TriggerType;
-  if (obj.token_usage !== undefined) report.token_usage = obj.token_usage as TokenUsage | null;
+  if (normalizedTokenUsage !== undefined) report.token_usage = normalizedTokenUsage;
 
   return { ok: true, report };
 }
