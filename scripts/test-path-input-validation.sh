@@ -77,3 +77,31 @@ assert_fails_with \
   env TARGET_REPO=owner/repo GIT_CLONE_DEPTH=1.5 bash scripts/run-once.sh
 
 echo "PASS: GIT_CLONE_DEPTH validation checks"
+
+echo "Running JOB_ID validation checks"
+
+assert_fails_with \
+  "Invalid JOB_ID: ../../etc. Use only letters, digits, hyphens, and underscores." \
+  env TARGET_REPO=owner/repo JOB_ID=../../etc bash scripts/run-once.sh
+
+assert_fails_with \
+  "Invalid JOB_ID: ../escape. Use only letters, digits, hyphens, and underscores." \
+  env TARGET_REPO=owner/repo JOB_ID=../escape bash scripts/run-once.sh
+
+assert_fails_with \
+  "Invalid JOB_ID: bad/slash. Use only letters, digits, hyphens, and underscores." \
+  env TARGET_REPO=owner/repo JOB_ID=bad/slash bash scripts/run-once.sh
+
+assert_fails_with \
+  "Invalid JOB_ID: /abs/path. Use only letters, digits, hyphens, and underscores." \
+  env TARGET_REPO=owner/repo 'JOB_ID=/abs/path' bash scripts/run-once.sh
+
+assert_fails_with \
+  "Invalid JOB_ID: job id. Use only letters, digits, hyphens, and underscores." \
+  env TARGET_REPO=owner/repo 'JOB_ID=job id' bash scripts/run-once.sh
+
+assert_fails_with \
+  'Invalid JOB_ID: job;id. Use only letters, digits, hyphens, and underscores.' \
+  env TARGET_REPO=owner/repo 'JOB_ID=job;id' bash scripts/run-once.sh
+
+echo "PASS: JOB_ID validation checks"

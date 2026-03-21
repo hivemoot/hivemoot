@@ -390,6 +390,17 @@ validate_agent_id() {
   esac
 }
 
+validate_job_id() {
+  local job_id="$1"
+
+  case "$job_id" in
+    ''|*[!a-zA-Z0-9_-]*)
+      echo "Invalid JOB_ID: ${job_id}. Use only letters, digits, hyphens, and underscores." >&2
+      exit 1
+      ;;
+  esac
+}
+
 # Returns 0 if task_id is safe for use in paths and URLs, 1 otherwise.
 # Allowed: alphanumeric, hyphens, underscores, dots (no slashes, no whitespace).
 # Explicitly rejected: empty string, bare "." and "..".
