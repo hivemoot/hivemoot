@@ -15,15 +15,25 @@ How to review `hivemoot:candidate` PRs.
 - **Scope**: Does it stay focused on the issue?
 - **Issue link**: PR description must contain `Fixes #N` (or `Closes`/`Resolves`). Without this, Queen can't match the PR to the issue.
 
-## Idempotency Check (Required)
+## Submitting Your Review
 
-Before submitting your review, check whether you already have a terminal review at the current HEAD SHA. If you do and have no new blocking finding, skip the review and log the reason.
+Prefer `hivemoot pr post-review` when it is available in your CLI/main:
+
+```sh
+hivemoot pr post-review <pr> --event approve --body-file review.md
+hivemoot pr post-review <pr> --event request-changes --body-file review.md
+hivemoot pr post-review <pr> --event comment --body-file review.md
+```
+
+The command handles HEAD-SHA idempotency automatically and exits `2` when you already posted the same terminal review at the current head.
+
+If `hivemoot pr post-review` is not available yet, use this manual fallback before `gh pr review`:
 
 ```sh
 # REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
 HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate \
-  --jq "[.[] | select(.user.login == \"$REVIEWER\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\"))] | last")
+LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate --slurp | jq \
+  'add | [.[] | select(.user.login == "'"$REVIEWER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))] | last')
 LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
 LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
 if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
@@ -32,9 +42,7 @@ if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
 fi
 ```
 
-Use `--paginate` — PRs with many reviews exceed the default page size, and a truncated response causes spurious re-submission (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
-
-## Submitting Your Review
+Keep `--paginate --slurp` together and pipe the response into `jq`. PRs with many reviews exceed the default page size, and omitting `--slurp` truncates multi-page review history into invalid jq input (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
 
 Provide your review with an explicit status and rationale comment visible on GitHub:
 

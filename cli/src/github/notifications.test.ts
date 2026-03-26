@@ -2,15 +2,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("./client.js", () => ({
   gh: vi.fn(),
+  ghWithHeaders: vi.fn(),
 }));
 
-import { gh } from "./client.js";
+import { gh, ghWithHeaders } from "./client.js";
 import {
   fetchNotifications,
   fetchMentionNotifications,
+  fetchMentionNotificationsConditional,
   markNotificationRead,
   fetchCommentBody,
   fetchRecentSubjectComments,
+  fetchLatestReviewRequestEvent,
+  fetchReviewRequestState,
   fetchSubjectBody,
   fetchSubjectBodyResult,
   buildMentionEvent,
@@ -21,6 +25,7 @@ import type { RawNotification, CommentDetail } from "./notifications.js";
 import { CliError } from "../config/types.js";
 
 const mockedGh = vi.mocked(gh);
+const mockedGhWithHeaders = vi.mocked(ghWithHeaders);
 const repo = { owner: "hivemoot", repo: "colony" };
 
 beforeEach(() => {
@@ -552,6 +557,281 @@ describe("fetchRecentSubjectComments()", () => {
   });
 });
 
+describe("fetchReviewRequestState()", () => {
+  it("returns pending with a stable request id for the matching reviewer", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "hivemoot-worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: true,
+      requestId: "9001",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "graphql",
+      "-F", "owner=hivemoot",
+      "-F", "repo=colony",
+      "-F", "pullNumber=42",
+      "-f", expect.stringContaining("reviewRequests(first: 100)"),
+    ]);
+  });
+
+  it("matches reviewer login case-insensitively", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "Hivemoot-Worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+    expect(result.pending).toBe(true);
+    expect(result.requestId).toBe("9001");
+  });
+
+  it("falls back to the GraphQL node id when databaseId is absent", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: null,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "hivemoot-worker",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+    expect(result.requestId).toBe("RR_node_1");
+  });
+
+  it("returns not pending when the reviewer is not currently requested", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewRequests: {
+              nodes: [
+                {
+                  id: "RR_node_1",
+                  databaseId: 9001,
+                  requestedReviewer: {
+                    __typename: "User",
+                    login: "someone-else",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("returns permanent failure when the pull request cannot be resolved", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: null,
+        },
+      },
+    }));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies 404 as permanent failure", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Not Found (HTTP 404)", "GH_ERROR", 1));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies other fetch failures as transient", async () => {
+    mockedGh.mockRejectedValue(new Error("network timeout"));
+
+    const result = await fetchReviewRequestState("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      pending: false,
+      permanentFailure: false,
+      transientFailure: true,
+    });
+  });
+});
+
+describe("fetchLatestReviewRequestEvent()", () => {
+  it("returns the newest matching review_requested event with requester metadata", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_requested",
+        created_at: "2026-03-10T12:00:00Z",
+        review_requester: { login: "maintainer-a" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+      {
+        id: 7002,
+        event: "review_requested",
+        created_at: "2026-03-10T12:05:00Z",
+        review_requester: { login: "maintainer-b" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+      {
+        id: 7003,
+        event: "review_requested",
+        created_at: "2026-03-10T12:06:00Z",
+        review_requester: { login: "maintainer-c" },
+        requested_reviewer: { login: "someone-else" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      eventId: "7002",
+      requester: "maintainer-b",
+      reviewer: "hivemoot-worker",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+    expect(mockedGh).toHaveBeenCalledWith([
+      "api",
+      "--paginate",
+      "--slurp",
+      "/repos/hivemoot/colony/issues/42/events?per_page=100",
+    ]);
+  });
+
+  it("matches reviewer login case-insensitively and falls back to actor when review_requester is absent", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_requested",
+        created_at: "2026-03-10T12:05:00Z",
+        actor: { login: "maintainer-a" },
+        requested_reviewer: { login: "Hivemoot-Worker" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      eventId: "7001",
+      requester: "maintainer-a",
+      reviewer: "Hivemoot-Worker",
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("returns empty metadata when no matching review_requested event is present", async () => {
+    mockedGh.mockResolvedValue(JSON.stringify([[
+      {
+        id: 7001,
+        event: "review_request_removed",
+        created_at: "2026-03-10T12:05:00Z",
+        review_requester: { login: "maintainer-a" },
+        requested_reviewer: { login: "hivemoot-worker" },
+      },
+    ]]));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: false,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies 404 as permanent failure", async () => {
+    mockedGh.mockRejectedValue(new CliError("gh: Not Found (HTTP 404)", "GH_ERROR", 1));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: true,
+      transientFailure: false,
+    });
+  });
+
+  it("classifies other fetch failures as transient", async () => {
+    mockedGh.mockRejectedValue(new Error("network timeout"));
+
+    const result = await fetchLatestReviewRequestEvent("hivemoot", "colony", 42, "hivemoot-worker");
+
+    expect(result).toEqual({
+      permanentFailure: false,
+      transientFailure: true,
+    });
+  });
+});
+
 describe("buildMentionEvent()", () => {
   const baseNotification: RawNotification = {
     id: "5001",
@@ -627,6 +907,18 @@ describe("buildMentionEvent()", () => {
     expect(event!.type).toBe("PullRequest");
     expect(event!.number).toBe(99);
   });
+
+  it("includes trigger metadata when provided", () => {
+    const event = buildMentionEvent(baseNotification, null, "hivemoot-worker", {
+      trigger: "review_requested",
+      requester: "maintainer",
+      reviewer: "hivemoot-worker",
+    });
+
+    expect(event?.trigger).toBe("review_requested");
+    expect(event?.requester).toBe("maintainer");
+    expect(event?.reviewer).toBe("hivemoot-worker");
+  });
 });
 
 describe("isAgentMentioned()", () => {
@@ -664,5 +956,184 @@ describe("isAgentMentioned()", () => {
 
   it("returns false for empty body", () => {
     expect(isAgentMentioned("", "hivemoot-worker")).toBe(false);
+  });
+});
+
+describe("fetchMentionNotificationsConditional()", () => {
+  function makeRawNotification(overrides: Partial<RawNotification> = {}): RawNotification {
+    return {
+      id: "101",
+      unread: true,
+      reason: "mention",
+      updated_at: "2026-03-10T12:00:00Z",
+      subject: {
+        url: "https://api.github.com/repos/hivemoot/colony/issues/42",
+        type: "Issue",
+        title: "Test issue",
+        latest_comment_url: "https://api.github.com/repos/hivemoot/colony/issues/comments/99",
+      },
+      repository: { full_name: "hivemoot/colony" },
+      ...overrides,
+    };
+  }
+
+  // Probe response: only headers matter; probe body is ignored.
+  function makeProbeResponse(extraHeaders: Record<string, string> = {}) {
+    return {
+      notModified: false as const,
+      headers: {
+        "content-type": "application/json",
+        ...extraHeaders,
+      },
+      body: "[]",
+    };
+  }
+
+  // Mock both the conditional probe (ghWithHeaders) and the paginated fetch (gh).
+  function mockSuccessfulFetch(
+    notifications: RawNotification[],
+    extraHeaders: Record<string, string> = {},
+  ) {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse(extraHeaders));
+    // --paginate --slurp wraps each page in an outer array
+    mockedGh.mockResolvedValue(JSON.stringify([notifications]));
+  }
+
+  it("returns notModified: false with filtered notifications on success", async () => {
+    const notification = makeRawNotification();
+    mockSuccessfulFetch([notification]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notModified).toBe(false);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("passes If-Modified-Since header to probe when lastModified is provided", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"], "Mon, 10 Mar 2026 10:00:00 GMT");
+
+    expect(mockedGhWithHeaders).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        "-H",
+        "If-Modified-Since: Mon, 10 Mar 2026 10:00:00 GMT",
+      ]),
+    );
+  });
+
+  it("does not pass If-Modified-Since when lastModified is absent", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    const callArgs = mockedGhWithHeaders.mock.calls[0][0] as string[];
+    expect(callArgs).not.toContain("If-Modified-Since:");
+    expect(callArgs).not.toContain("-H");
+  });
+
+  it("returns notModified: true immediately on 304 without making paginated fetch", async () => {
+    mockedGhWithHeaders.mockResolvedValue({ notModified: true });
+
+    const result = await fetchMentionNotificationsConditional(
+      "hivemoot/colony",
+      ["mention"],
+      "Mon, 10 Mar 2026 10:00:00 GMT",
+    );
+
+    expect(result.notModified).toBe(true);
+    expect(result.notifications).toHaveLength(0);
+    expect(mockedGh).not.toHaveBeenCalled();
+  });
+
+  it("extracts Last-Modified from probe response headers", async () => {
+    mockSuccessfulFetch([], { "last-modified": "Mon, 10 Mar 2026 12:00:00 GMT" });
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.lastModified).toBe("Mon, 10 Mar 2026 12:00:00 GMT");
+  });
+
+  it("extracts X-Poll-Interval from probe response headers", async () => {
+    mockSuccessfulFetch([], { "x-poll-interval": "60" });
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.pollInterval).toBe(60);
+  });
+
+  it("leaves pollInterval undefined when X-Poll-Interval header is absent", async () => {
+    mockSuccessfulFetch([]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.pollInterval).toBeUndefined();
+  });
+
+  it("makes paginated fetch with --paginate --slurp after 200 probe", async () => {
+    mockSuccessfulFetch([]);
+
+    await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(mockedGh).toHaveBeenCalledWith(
+      expect.arrayContaining(["--paginate", "--slurp"]),
+    );
+    // Paginated fetch must NOT send If-Modified-Since (it's unconditional)
+    const paginatedArgs = mockedGh.mock.calls[0][0] as string[];
+    expect(paginatedArgs.join(" ")).not.toContain("If-Modified-Since");
+  });
+
+  it("flattens multiple pages from paginated fetch, returning all notifications", async () => {
+    const page1 = [makeRawNotification({ id: "101" })];
+    const page2 = [makeRawNotification({ id: "102" })];
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    // --paginate --slurp produces an array of page-arrays
+    mockedGh.mockResolvedValue(JSON.stringify([page1, page2]));
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(2);
+    expect(result.notifications.map((n) => n.id)).toEqual(["101", "102"]);
+  });
+
+  it("filters out read notifications", async () => {
+    const unread = makeRawNotification({ id: "101", unread: true });
+    const read = makeRawNotification({ id: "102", unread: false });
+    mockSuccessfulFetch([unread, read]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("filters by reason", async () => {
+    const mention = makeRawNotification({ id: "101", reason: "mention" });
+    const comment = makeRawNotification({ id: "102", reason: "comment" });
+    mockSuccessfulFetch([mention, comment]);
+
+    const result = await fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]);
+
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0].id).toBe("101");
+  });
+
+  it("throws on paginated body parse failure so caller does not advance lastModified", async () => {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    mockedGh.mockResolvedValue("not valid json");
+
+    await expect(
+      fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]),
+    ).rejects.toMatchObject({ code: "GH_ERROR" });
+  });
+
+  it("throws when paginated response is valid JSON but not an array", async () => {
+    mockedGhWithHeaders.mockResolvedValue(makeProbeResponse());
+    mockedGh.mockResolvedValue(JSON.stringify({ error: "oops" }));
+
+    await expect(
+      fetchMentionNotificationsConditional("hivemoot/colony", ["mention"]),
+    ).rejects.toMatchObject({ code: "GH_ERROR" });
   });
 });

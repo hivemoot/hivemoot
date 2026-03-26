@@ -322,4 +322,13 @@ describe("POST /api/tasks/[taskId]/execute", () => {
     const body = await res.json();
     expect(body.code).toBe("task_forbidden");
   });
+
+  it("returns 500 when getTask throws", async () => {
+    vi.mocked(getTask).mockRejectedValue(new Error("redis down"));
+
+    const res = await POST(makeRequest({ action: "progress", progress: "Scanning" }));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe("task_server_error");
+  });
 });

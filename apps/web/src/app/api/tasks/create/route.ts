@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { parseContentLength } from "@/server/request-utils";
 import { TASK_ERROR, taskError } from "@/server/task-error";
+import { preflightTaskRepos } from "@/server/task-repo-preflight";
 import {
   checkTaskCreateRateLimit,
   createTask,
@@ -65,44 +66,67 @@ export async function POST(request: NextRequest) {
     return taskError(TASK_ERROR.VALIDATION_FAILED, validation.message, 400);
   }
 
-  const rateLimit = await checkTaskCreateRateLimit(
-    auth.session.installationId,
-    auth.session.userId,
-    auth.redis,
-  );
-
-  if (!rateLimit.allowed) {
-    return taskError(
-      TASK_ERROR.RATE_LIMITED,
-      "Too many task create requests. Please retry shortly.",
-      429,
-      { retry_after_secs: rateLimit.retryAfterSeconds },
+  try {
+    const rateLimit = await checkTaskCreateRateLimit(
+      auth.session.installationId,
+      auth.session.userId,
+      auth.redis,
     );
-  }
 
-  const created = await createTask(
-    auth.session.installationId,
-    auth.session.userLogin,
-    validation.request,
-    auth.redis,
-  );
+    if (!rateLimit.allowed) {
+      return taskError(
+        TASK_ERROR.RATE_LIMITED,
+        "Too many task create requests. Please retry shortly.",
+        429,
+        { retry_after_secs: rateLimit.retryAfterSeconds },
+      );
+    }
 
-  if (!created.ok) {
-    return taskError(
-      TASK_ERROR.CONCURRENCY_LIMITED,
-      "Maximum concurrent tasks reached (3)",
-      429,
+    const repoAccess = await preflightTaskRepos(
+      validation.request.repos,
+      auth.session.installationId,
     );
-  }
+    if (!repoAccess.ok) {
+      return taskError(
+        repoAccess.reason === "repo_unavailable"
+          ? TASK_ERROR.REPO_UNAVAILABLE
+          : TASK_ERROR.SERVER_ERROR,
+        repoAccess.message,
+        repoAccess.reason === "repo_unavailable" ? 403 : 503,
+      );
+    }
 
-  return NextResponse.json(
-    {
-      task_id: created.task.task_id,
-      status: created.task.status,
-      timeout_secs: created.task.timeout_secs,
-      stream_url: `/api/tasks/${created.task.task_id}/stream`,
-      task: created.task,
-    },
-    { status: 202 },
-  );
+    const created = await createTask(
+      auth.session.installationId,
+      auth.session.userLogin,
+      validation.request,
+      auth.redis,
+    );
+
+    if (!created.ok) {
+      return taskError(
+        TASK_ERROR.CONCURRENCY_LIMITED,
+        "Maximum concurrent tasks reached (3)",
+        429,
+      );
+    }
+
+    return NextResponse.json(
+      {
+        task_id: created.task.task_id,
+        status: created.task.status,
+        timeout_secs: created.task.timeout_secs,
+        stream_url: `/api/tasks/${created.task.task_id}/stream`,
+        task: created.task,
+      },
+      { status: 202 },
+    );
+  } catch (error) {
+    console.error("[tasks] Failed to create task", {
+      installationId: auth.session.installationId,
+      error,
+    });
+
+    return taskError(TASK_ERROR.SERVER_ERROR, "Failed to create task", 500);
+  }
 }

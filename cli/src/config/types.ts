@@ -255,11 +255,14 @@ export interface MentionEvent {
   number: number;     // issue/PR number
   type: string;       // "Issue" | "PullRequest"
   title: string;
-  author: string;     // commenter who triggered the mention
-  body: string;       // comment text
-  url: string;        // HTML URL of the comment
+  author: string;     // commenter who triggered the event, or "unknown"
+  body: string;       // comment text when applicable
+  url: string;        // HTML URL of the triggering comment when applicable
   threadId: string;   // notification thread ID
   timestamp: string;  // ISO 8601
+  trigger?: "review_requested";
+  requester?: string; // for review_requested: login that requested the review
+  reviewer?: string;  // for review_requested: login the review was requested from
 }
 
 // ── Error Types ────────────────────────────────────────────────────

@@ -27,7 +27,31 @@ Auth split is intentional:
 
 ## 2. POST /api/agent-health Contract
 
-Each POST represents one run for one `agent_id` + `repo`.
+Each POST represents either a **run report** or a **heartbeat**.
+
+### 2a. Heartbeat Payloads
+
+Heartbeats are lightweight liveness signals sent between runs. They carry no run data and use a separate validation path.
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `agent_id` | string | yes | 1-64 chars, regex `[a-z0-9_-]+` |
+| `repo` | string | yes | 1-200 chars, `owner/name` format |
+| `outcome` | string | yes | Must be `"heartbeat"` |
+| `next_run_at` | string | no | ISO-8601, max 64 chars, between `now-5m` and `now+48h` |
+
+Heartbeat behavior:
+- Detected by `outcome === "heartbeat"` before run-report validation.
+- No `run_id`, `duration_secs`, or `consecutive_failures` — these are rejected as unknown fields.
+- Skips idempotency (no `run_id` to dedupe).
+- Rate-limited at one per agent per repo per 60 seconds (shared bucket with run reports).
+- If a prior run report exists in the `latest` key, the heartbeat patches `received_at` (and optionally `next_run_at`) while preserving all run data. If no prior report exists, a minimal heartbeat entry is stored.
+- Heartbeats are NOT added to the runs sorted set (they aren't runs).
+- Success response: `200` + `{"received": true, "received_at": "<iso>"}`.
+
+### 2b. Run Report Payloads
+
+Each run report represents one completed run for one `agent_id` + `repo`.
 
 ### Required Fields
 
@@ -49,8 +73,8 @@ Each POST represents one run for one `agent_id` + `repo`.
 | `exit_code` | integer | Any integer |
 | `next_run_at` | string | ISO-8601, max 64 chars, between `now-5m` and `now+48h` |
 | `run_summary` | string | Markdown, ANSI-stripped, truncated to 4096 chars; empty after stripping rejected |
-| `trigger` | string | `scheduled` \| `mention` \| `manual` |
-| `token_usage` | object or `null` | Exact nested schema below; when present as an object, required scalar fields must be present even if their value is `null` |
+| `trigger` | string | `scheduled` \| `mention` \| `manual` \| `task` |
+| `token_usage` | object or `null` | Exact nested schema below; required numeric counters must be present, nullable fields may be omitted and are normalized to `null` |
 
 #### `token_usage` object shape
 
@@ -60,9 +84,9 @@ When `token_usage` is an object, these top-level fields are accepted:
 |---|---|---|
 | `input_tokens` | integer | Required, non-negative |
 | `output_tokens` | integer | Required, non-negative |
-| `cache_read_input_tokens` | integer or `null` | Required, non-negative when not `null` |
-| `cache_creation_input_tokens` | integer or `null` | Required, non-negative when not `null` |
-| `cost_usd` | number or `null` | Required, non-negative when not `null` |
+| `cache_read_input_tokens` | integer or `null` | Optional; non-negative when present, normalized to `null` when omitted |
+| `cache_creation_input_tokens` | integer or `null` | Optional; non-negative when present, normalized to `null` when omitted |
+| `cost_usd` | number or `null` | Optional; non-negative when present, normalized to `null` when omitted |
 | `num_turns` | integer | Required, non-negative |
 | `model_breakdown` | object or `null` | Optional; keys must match `[a-zA-Z0-9._:/-]+` |
 
@@ -72,9 +96,9 @@ When `token_usage` is an object, these top-level fields are accepted:
 |---|---|---|
 | `input_tokens` | integer | Required, non-negative |
 | `output_tokens` | integer | Required, non-negative |
-| `cache_read_input_tokens` | integer or `null` | Required, non-negative when not `null` |
-| `cache_creation_input_tokens` | integer or `null` | Required, non-negative when not `null` |
-| `cost_usd` | number or `null` | Required, non-negative when not `null` |
+| `cache_read_input_tokens` | integer or `null` | Optional; non-negative when present, normalized to `null` when omitted |
+| `cache_creation_input_tokens` | integer or `null` | Optional; non-negative when present, normalized to `null` when omitted |
+| `cost_usd` | number or `null` | Optional; non-negative when present, normalized to `null` when omitted |
 
 Validation behavior:
 - Maximum payload size: 10KB (checked via `Content-Length` and actual body bytes).
@@ -117,7 +141,7 @@ Dashboard status values:
 - `unknown`: no valid latest report.
 - `failed`: latest outcome is `failure` or `timeout`.
 - `late`: latest outcome is `success` and now is beyond `next_run_at` plus a 50% interval buffer.
-- `ok`: all other successful states.
+- `ok`: latest outcome is `success` (within schedule), or `heartbeat` (agent alive, no run yet).
 
 Read behavior:
 - Overview is sorted by `received_at` descending.

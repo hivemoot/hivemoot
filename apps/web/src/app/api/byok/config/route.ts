@@ -20,7 +20,7 @@ interface ConfigRequestBody {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
   let body: ConfigRequestBody;

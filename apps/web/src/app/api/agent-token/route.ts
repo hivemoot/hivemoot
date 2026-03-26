@@ -20,7 +20,7 @@ import {
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
 
 export async function POST(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
   try {
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
   try {
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
   try {

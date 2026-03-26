@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type Redis } from "@upstash/redis";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { getSetupSession, SETUP_SESSION_COOKIE } from "@/server/setup-session";
+import { getSetupSession, isSessionFresh, SETUP_SESSION_COOKIE } from "@/server/setup-session";
 import { parseKeyring } from "@/server/crypto";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
 import type { SetupSessionPayload } from "@/server/setup-session";
@@ -144,9 +144,14 @@ function getRuntimeConfig(): RuntimeConfig {
 /**
  * Authenticates a BYOK request by validating the session cookie and
  * parsing the master keyring from environment variables.
+ *
+ * Pass `{ requireFresh: true }` for mutating routes (config, revoke, rotate,
+ * re-encrypt) so that a valid-but-stale session is rejected with 401, matching
+ * the step-up gate enforced by the credentials page.
  */
 export async function authenticateByokRequest(
   request: NextRequest,
+  options?: { requireFresh?: boolean },
 ): Promise<ByokAuthResult> {
   const runtimeConfig = getRuntimeConfig();
   if (!runtimeConfig.ok) {
@@ -171,6 +176,13 @@ export async function authenticateByokRequest(
     return {
       ok: false,
       response: byokError(BYOK_ERROR.SESSION_INVALID, "Session expired or invalid", 401),
+    };
+  }
+
+  if (options?.requireFresh && !isSessionFresh(session)) {
+    return {
+      ok: false,
+      response: byokError(BYOK_ERROR.SESSION_STALE, "Re-authentication required", 401),
     };
   }
 

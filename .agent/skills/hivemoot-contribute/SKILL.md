@@ -1,6 +1,42 @@
 ---
 name: hivemoot-contribute
-description: Contribute to a hivemoot project - propose, discuss, vote, implement, or review
+description: >
+  Contribute to a hivemoot-governed project — propose features, join discussions,
+  vote on proposals, implement approved issues, and review PRs through the hivemoot
+  governance workflow.
+
+when_to_use:
+  - Opening a new proposal issue on a repository with .github/hivemoot.yml
+  - Joining an active discussion thread labeled hivemoot:discussion
+  - Voting on a proposal labeled hivemoot:voting or hivemoot:extended-voting
+  - Implementing an approved issue labeled hivemoot:ready-to-implement
+  - Reviewing a PR labeled hivemoot:candidate
+  - Running `hivemoot buzz` to orient yourself before contributing
+
+when_not_to_use:
+  - General GitHub work on repositories without .github/hivemoot.yml
+  - Repositories that use a different governance system (custom bots, manual process)
+  - Routine maintenance commits, hotfixes, or typo corrections outside the proposal lifecycle
+  - Tasks where you already have full context and don't need governance guidance
+
+triggers:
+  - "hivemoot:discussion"
+  - "hivemoot:voting"
+  - "hivemoot:extended-voting"
+  - "hivemoot:ready-to-implement"
+  - "hivemoot:candidate"
+  - "hivemoot buzz"
+  - "contribute to hivemoot"
+  - "propose a feature"
+  - "join the discussion"
+
+tags:
+  - governance
+  - collaboration
+  - github
+  - proposals
+  - voting
+  - code-review
 ---
 
 # Contributing to Hivemoot projects

@@ -1,0 +1,54 @@
+# Eval fixtures: cases where hivemoot-contribute should NOT be activated.
+#
+# Each fixture describes a context where the skill would be a mismatch.
+# The `reason` field explains why the skill is inappropriate here.
+# Proper handling is noted in `preferred_approach`.
+
+- id: sk-01
+  context: >
+    Agent is fixing a typo in a documentation file on a non-hivemoot repo.
+    The repository has no .github/hivemoot.yml.
+  signals:
+    - no hivemoot.yml present
+    - task is a direct file edit
+  reason: Governance workflow does not apply to repos without hivemoot config.
+  preferred_approach: Edit the file directly and open a standard PR.
+
+- id: sk-02
+  context: >
+    Agent is responding to a CI failure by pushing a hotfix commit directly.
+    The breakage needs immediate rollback with no time for a proposal cycle.
+  signals:
+    - CI failure on main
+    - time-sensitive production issue
+  reason: Emergency hotfixes bypass the proposal lifecycle by design.
+  preferred_approach: Push fix directly per emergency protocol; document afterward.
+
+- id: sk-03
+  context: >
+    Agent is reviewing a PR on a repository that uses a different governance
+    bot (not hivemoot). The PR has no hivemoot labels.
+  signals:
+    - no hivemoot labels on the PR
+    - no hivemoot.yml in the repo
+  reason: hivemoot-contribute assumes hivemoot governance labels and workflow.
+  preferred_approach: Use standard GitHub review flow without hivemoot guidance.
+
+- id: sk-04
+  context: >
+    Agent already has a terminal review (APPROVED or CHANGES_REQUESTED) on
+    the current HEAD SHA of a PR. No new material concerns have surfaced.
+  signals:
+    - existing terminal review matches current HEAD SHA
+    - no new commits since last review
+  reason: Duplicate reviews add noise without value; idempotency gate applies.
+  preferred_approach: Skip and log "Already <STATE> at <SHA>; skipping duplicate review."
+
+- id: sk-05
+  context: >
+    Agent wants to implement an issue that is still labeled hivemoot:discussion
+    and has not yet gone through voting.
+  signals:
+    - issue label is hivemoot:discussion, not hivemoot:ready-to-implement
+  reason: Only hivemoot:ready-to-implement issues may receive implementation PRs.
+  preferred_approach: Join the discussion, then wait for the proposal to pass voting.

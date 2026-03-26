@@ -22,6 +22,15 @@ import { createOAuthState, OAUTH_STATE_BINDING_COOKIE } from "@/server/setup-ses
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_STATE_COOKIE_MAX_AGE = 600; // 10 minutes, aligned with Redis state TTL
 
+/**
+ * Validates that `next` is a safe same-origin path.
+ * Blocks protocol-relative URLs (//evil.com), backslash-relative URLs (/\evil.com),
+ * and absolute URLs.
+ */
+function isSafeNextPath(next: string): boolean {
+  return next.startsWith("/") && !next.startsWith("//") && !next.includes("\\");
+}
+
 function setupErrorRedirect(
   request: NextRequest,
   code: string,
@@ -36,6 +45,8 @@ function setupErrorRedirect(
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const installationId = searchParams.get("installation_id") ?? undefined;
+  const nextParam = searchParams.get("next");
+  const safeNext = nextParam && isSafeNextPath(nextParam) ? nextParam : undefined;
 
   const env = validateEnv();
   if (!env.ok) {
@@ -60,7 +71,7 @@ export async function GET(request: NextRequest) {
 
   let stateRecord: { state: string; stateBinding: string };
   try {
-    stateRecord = await createOAuthState(installationId, redis);
+    stateRecord = await createOAuthState(installationId, redis, safeNext);
   } catch (err) {
     console.error("[oauth-start] Failed to store OAuth state", { installationId, error: err });
     return setupErrorRedirect(request, "oauth_state_store_failed", installationId);

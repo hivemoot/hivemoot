@@ -50,30 +50,40 @@ export async function POST(request: NextRequest) {
     return taskError(TASK_ERROR.MISSING_FIELDS, "message is required", 400);
   }
 
-  const result = await resumeTaskWithFollowUp(
-    auth.session.installationId,
-    taskId,
-    obj.message.trim(),
-    auth.redis,
-  );
+  try {
+    const result = await resumeTaskWithFollowUp(
+      auth.session.installationId,
+      taskId,
+      obj.message.trim(),
+      auth.redis,
+    );
 
-  if (!result.ok) {
-    if (result.reason === "not_found") {
-      return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
-    }
-    if (result.reason === "invalid_transition") {
+    if (!result.ok) {
+      if (result.reason === "not_found") {
+        return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
+      }
+      if (result.reason === "invalid_transition") {
+        return taskError(
+          TASK_ERROR.FOLLOW_UP_NOT_ALLOWED,
+          "Task is not in a state that accepts follow-up messages",
+          409,
+        );
+      }
       return taskError(
-        TASK_ERROR.FOLLOW_UP_NOT_ALLOWED,
-        "Task is not in a state that accepts follow-up messages",
-        409,
+        TASK_ERROR.CONCURRENCY_LIMITED,
+        "Maximum concurrent tasks reached (3)",
+        429,
       );
     }
-    return taskError(
-      TASK_ERROR.CONCURRENCY_LIMITED,
-      "Maximum concurrent tasks reached (3)",
-      429,
-    );
-  }
 
-  return NextResponse.json({ task: result.task });
+    return NextResponse.json({ task: result.task });
+  } catch (error) {
+    console.error("[tasks] Failed to resume task with follow-up", {
+      installationId: auth.session.installationId,
+      taskId,
+      error,
+    });
+
+    return taskError(TASK_ERROR.SERVER_ERROR, "Failed to resume task", 500);
+  }
 }
