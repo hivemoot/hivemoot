@@ -68,6 +68,8 @@ jobs:
         run: bash scripts/test-controller.sh
       - name: Verify run-failure classification behavior
         run: bash scripts/test-classify.sh
+      - name: Verify task mode behavior
+        run: bash scripts/test-run-task-mode.sh
       - name: Verify run-loop next_run_at propagation behavior
         run: bash scripts/test-run-loop-next-run-at.sh
       - name: Verify health reporting env wiring

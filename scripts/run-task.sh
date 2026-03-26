@@ -8,6 +8,8 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-classify.sh
+. "${SCRIPT_DIR}/lib-classify.sh"
 
 load_provider_secrets
 load_secret_from_file HIVEMOOT_AGENT_TOKEN
@@ -264,11 +266,16 @@ start_task_heartbeat_loop() {
   heartbeat_pid="$!"
 }
 
+run_stderr_file=""
 trap '
   stop_task_heartbeat_loop
   if [ -n "$task_messages_tmp_file" ]; then
     rm -f "$task_messages_tmp_file"
     task_messages_tmp_file=""
+  fi
+  if [ -n "$run_stderr_file" ]; then
+    rm -f "$run_stderr_file"
+    run_stderr_file=""
   fi
 ' EXIT
 
@@ -390,13 +397,16 @@ if [ -d "$log_dir" ]; then
 fi
 
 run_exit_code=0
+run_stderr_file="$(mktemp)"
 start_task_heartbeat_loop
-if "$run_once_script"; then
+if "$run_once_script" 2>"$run_stderr_file"; then
   run_exit_code=0
 else
   run_exit_code=$?
 fi
 stop_task_heartbeat_loop
+# Re-emit stderr so it appears in container/terminal logs.
+cat "$run_stderr_file" >&2
 
 latest_log=""
 if [ -d "$log_dir" ]; then
@@ -633,7 +643,12 @@ elif [ "$run_exit_code" -eq 124 ]; then
 elif [ -n "$auth_error_code" ]; then
   post_task_update fail "Provider authentication failed: ${auth_error_code}" || true
 else
-  post_task_update fail "Task execution failed with exit code ${run_exit_code}" || true
+  _failure_reason="$(classify_run_failure_from_file "$run_stderr_file")"
+  if [ -n "$_failure_reason" ]; then
+    post_task_update fail "${_failure_reason} (exit code ${run_exit_code})" || true
+  else
+    post_task_update fail "Task execution failed with exit code ${run_exit_code}" || true
+  fi
 fi
 
 log "Task run finished: task_id=${task_id} exit_code=${run_exit_code} result_path=${result_path}"

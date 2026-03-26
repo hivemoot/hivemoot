@@ -1285,6 +1285,90 @@ JSONL
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
+# When run-once.sh emits a known failure pattern on stderr, run-task.sh should
+# classify it and send an actionable message to the backend instead of the
+# generic "exit code N" fallback.
+run_case_classified_failure_reason() {
+  local case_dir="${tmp_root}/case-classified-failure"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  # Mock run-once that writes a known run-once.sh error pattern to stderr.
+  local mock_fail_with_stderr="${case_dir}/mock-fail-stderr.sh"
+  cat > "$mock_fail_with_stderr" <<'FAIL_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
+printf 'Missing GitHub token for agent worker\n' >&2
+exit 1
+FAIL_MOCK
+  chmod +x "$mock_fail_with_stderr"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_fail_with_stderr" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-cls" \
+    AGENT_TASK_ID="task-token-fail" \
+    AGENT_TASK_PROMPT="Do something" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "GitHub token is missing"
+}
+
+# When run-once.sh exits non-zero with unrecognized stderr, run-task.sh should
+# fall back to the generic "exit code N" message.
+run_case_unclassified_failure_fallback() {
+  local case_dir="${tmp_root}/case-unclassified-failure"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  local mock_fail_unknown="${case_dir}/mock-fail-unknown.sh"
+  cat > "$mock_fail_unknown" <<'FAIL_MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
+printf 'Something completely unexpected happened\n' >&2
+exit 1
+FAIL_MOCK
+  chmod +x "$mock_fail_unknown"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_fail_unknown" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-unk" \
+    AGENT_TASK_ID="task-unknown-fail" \
+    AGENT_TASK_PROMPT="Do something" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "Task execution failed with exit code 1"
+}
+
 run_case_direct_env
 run_case_preserves_explicit_prompt_override
 run_case_direct_env_messages_file
@@ -1319,5 +1403,7 @@ run_case_codex_auth_error_with_nested_code
 run_case_codex_auth_error_suppressed_when_result_exists
 run_case_codex_auth_error_message_only
 run_case_codex_auth_error_turn_failed
+run_case_classified_failure_reason
+run_case_unclassified_failure_fallback
 
 echo "PASS: task mode checks"
