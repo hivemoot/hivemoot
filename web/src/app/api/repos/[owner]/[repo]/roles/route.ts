@@ -21,6 +21,7 @@ import { authenticateByokRequest } from "@/server/byok-auth";
 import { requireInstallation } from "@/server/require-installation";
 import { validateEnv } from "@/server/env";
 import { generateAppJwt, generateInstallationToken } from "@/server/github-auth";
+import { REPO_ERROR, repoError } from "@/server/repo-error";
 import {
   readRepoFile,
   getBranchSha,
@@ -52,10 +53,6 @@ interface RolesResponse {
   fileSha: string;
   /** "main" or "pending-pr:{number}" */
   source: string;
-}
-
-function repoError(code: string, message: string, status: number): NextResponse {
-  return NextResponse.json({ code, message }, { status });
 }
 
 function extractOwnerRepo(pathname: string): { owner: string; repo: string } | null {
@@ -154,18 +151,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { pathname } = new URL(request.url);
   const parsed = extractOwnerRepo(pathname);
   if (!parsed) {
-    return repoError("invalid_path", "Invalid repository path", 400);
+    return repoError(REPO_ERROR.INVALID_PATH, "Invalid repository path", 400);
   }
   const { owner, repo } = parsed;
 
   const env = validateEnv();
   if (!env.ok) {
-    return repoError("server_misconfiguration", "Server misconfiguration", 503);
+    return repoError(REPO_ERROR.SERVER_MISCONFIGURATION, "Server misconfiguration", 503);
   }
 
   const { githubAppId, githubAppPrivateKey } = env.config;
   if (!githubAppId || !githubAppPrivateKey) {
-    return repoError("server_misconfiguration", "GitHub App not configured", 503);
+    return repoError(REPO_ERROR.SERVER_MISCONFIGURATION, "GitHub App not configured", 503);
   }
 
   try {
@@ -183,7 +180,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const file = await readRepoFile(owner, repo, HIVEMOOT_CONFIG_PATH, installationToken, ref);
     if (!file) {
       return repoError(
-        "config_not_found",
+        REPO_ERROR.CONFIG_NOT_FOUND,
         `${HIVEMOOT_CONFIG_PATH} not found in ${owner}/${repo}`,
         404,
       );
@@ -192,7 +189,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const roles = parseRoles(file.content);
     if (roles === null) {
       return repoError(
-        "config_parse_error",
+        REPO_ERROR.CONFIG_PARSE_ERROR,
         `Could not parse roles from ${HIVEMOOT_CONFIG_PATH} in ${owner}/${repo}`,
         422,
       );
@@ -209,7 +206,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       repo,
       error,
     });
-    return repoError("server_error", "Failed to fetch roles", 500);
+    return repoError(REPO_ERROR.SERVER_ERROR, "Failed to fetch roles", 500);
   }
 }
 
@@ -224,7 +221,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
   const { pathname } = new URL(request.url);
   const parsed = extractOwnerRepo(pathname);
   if (!parsed) {
-    return repoError("invalid_path", "Invalid repository path", 400);
+    return repoError(REPO_ERROR.INVALID_PATH, "Invalid repository path", 400);
   }
   const { owner, repo } = parsed;
 
@@ -232,22 +229,22 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
   try {
     body = (await request.json()) as PutRoleBody;
   } catch {
-    return repoError("invalid_body", "Request body must be JSON", 400);
+    return repoError(REPO_ERROR.INVALID_BODY, "Request body must be JSON", 400);
   }
 
   const { roleName, description, instructions, fileSha } = body;
 
   if (!isValidRoleName(roleName)) {
-    return repoError("invalid_role_name", "roleName must be a non-empty string (max 100 chars)", 400);
+    return repoError(REPO_ERROR.INVALID_ROLE_NAME, "roleName must be a non-empty string (max 100 chars)", 400);
   }
   if (typeof description !== "string") {
-    return repoError("invalid_description", "description must be a string", 400);
+    return repoError(REPO_ERROR.INVALID_DESCRIPTION, "description must be a string", 400);
   }
   if (typeof instructions !== "string") {
-    return repoError("invalid_instructions", "instructions must be a string", 400);
+    return repoError(REPO_ERROR.INVALID_INSTRUCTIONS, "instructions must be a string", 400);
   }
   if (typeof fileSha !== "string" || !fileSha) {
-    return repoError("invalid_file_sha", "fileSha is required for conflict detection", 400);
+    return repoError(REPO_ERROR.INVALID_FILE_SHA, "fileSha is required for conflict detection", 400);
   }
 
   const sanitizedDescription = sanitizeString(description);
@@ -255,12 +252,12 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
 
   const env = validateEnv();
   if (!env.ok) {
-    return repoError("server_misconfiguration", "Server misconfiguration", 503);
+    return repoError(REPO_ERROR.SERVER_MISCONFIGURATION, "Server misconfiguration", 503);
   }
 
   const { githubAppId, githubAppPrivateKey } = env.config;
   if (!githubAppId || !githubAppPrivateKey) {
-    return repoError("server_misconfiguration", "GitHub App not configured", 503);
+    return repoError(REPO_ERROR.SERVER_MISCONFIGURATION, "GitHub App not configured", 503);
   }
 
   try {
@@ -279,7 +276,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     const file = await readRepoFile(owner, repo, HIVEMOOT_CONFIG_PATH, installationToken, readRef);
     if (!file) {
       return repoError(
-        "config_not_found",
+        REPO_ERROR.CONFIG_NOT_FOUND,
         `${HIVEMOOT_CONFIG_PATH} not found in ${owner}/${repo}`,
         404,
       );
@@ -288,7 +285,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     // Optimistic concurrency: reject if the file changed since the GET.
     if (file.sha !== fileSha) {
       return repoError(
-        "conflict",
+        REPO_ERROR.CONFLICT,
         "The configuration file has changed since you loaded it. Reload and reapply your edits.",
         409,
       );
@@ -303,7 +300,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     );
     if (updatedContent === null) {
       return repoError(
-        "role_not_found",
+        REPO_ERROR.ROLE_NOT_FOUND,
         `Role "${roleName}" not found in ${HIVEMOOT_CONFIG_PATH}`,
         404,
       );
@@ -316,7 +313,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       defaultBranch = await getDefaultBranch(owner, repo, installationToken);
       const baseSha = await getBranchSha(owner, repo, defaultBranch, installationToken);
       if (!baseSha) {
-        return repoError("server_error", `Could not resolve ${defaultBranch} branch SHA`, 500);
+        return repoError(REPO_ERROR.SERVER_ERROR, `Could not resolve ${defaultBranch} branch SHA`, 500);
       }
       // Try to force-reset the branch to the default branch first. If it doesn't exist
       // yet, resetBranchToSha returns null and we create it fresh. This handles the
@@ -375,6 +372,6 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       roleName,
       error,
     });
-    return repoError("server_error", "Failed to write role edit", 500);
+    return repoError(REPO_ERROR.SERVER_ERROR, "Failed to write role edit", 500);
   }
 }
