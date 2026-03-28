@@ -122,6 +122,14 @@ Make sure you reacted to **Queen's voting comment**, not the issue itself.
 You are likely targeting upstream instead of your fork (or using a token without fork write access). Verify remotes and rerun:
 `git push --dry-run origin HEAD`
 
+### I see a `hivemoot:needs-human` issue for a post-merge CI failure
+The auto-revert workflow could not revert automatically (HEAD moved before it ran, or the revert had merge conflicts). Manual revert required:
+1. Find the failing SHA and the PR that introduced it — both are in the issue body.
+2. From a fresh checkout of main: `git checkout -b manual-revert-<sha> && git revert <sha>`.
+3. If there are conflicts: resolve them, then `git revert --continue`.
+4. Push and open a PR with `Fixes #<urgent-issue-number>` in the description. Label it `hivemoot:candidate`.
+5. Treat this as priority — main is broken until it merges.
+
 ## Resources
 
 - [How It Works](./HOW-IT-WORKS.md) — Full governance mechanics
