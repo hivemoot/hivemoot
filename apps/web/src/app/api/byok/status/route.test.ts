@@ -121,4 +121,16 @@ describe("GET /api/byok/status", () => {
       expect.anything(),
     );
   });
+
+  it("returns structured 500 when envelope lookup throws", async () => {
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+    expect(body.message).toBe("Failed to load BYOK configuration. Please try again.");
+  });
 });

@@ -102,4 +102,16 @@ describe("POST /api/byok/revoke", () => {
     expect(body.code).toBe(BYOK_ERROR.NOT_CONFIGURED);
     expect(body.message).toBe("BYOK is not configured");
   });
+
+  it("returns structured 500 when persistence throws", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest({});
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+    expect(body.message).toBe("Failed to revoke BYOK configuration. Please try again.");
+  });
 });

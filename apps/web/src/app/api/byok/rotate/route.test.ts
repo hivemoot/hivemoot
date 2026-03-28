@@ -160,4 +160,20 @@ describe("POST /api/byok/rotate", () => {
       expect.anything(),
     );
   });
+
+  it("returns structured 500 when persistence throws", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("redis down"));
+
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-new-key5678",
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+    expect(body.message).toBe("Failed to rotate BYOK configuration. Please try again.");
+  });
 });
