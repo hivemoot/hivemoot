@@ -66,13 +66,13 @@ jobs:
           HEAD_SHA=$(git rev-parse HEAD)
           short="${FAILING_SHA:0:7}"
 
-          # Find the PR that introduced this commit (best-effort; empty if not found).
-          PR_INFO=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state merged \
-            --search "$FAILING_SHA" \
-            --json number,url \
-            --jq '.[0]' 2>/dev/null || echo '{}')
+          # Find the PR that introduced this commit via the commits-to-pulls API.
+          # This is the authoritative lookup — text search (--search) is unreliable
+          # for SHAs because GitHub's index does not guarantee SHA tokenization.
+          PR_INFO=$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$FAILING_SHA/pulls" \
+            -H "Accept: application/vnd.github+json" \
+            --jq '.[0] | {number: .number, url: .html_url}' 2>/dev/null || echo '{}')
           PR_NUMBER=$(echo "$PR_INFO" | jq -r '.number // empty')
           PR_URL=$(echo "$PR_INFO" | jq -r '.url // empty')
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -102,15 +102,87 @@ jobs:
             BODY+=$'\n**Introduced by:** #'"$PR_NUMBER"
           fi
 
-          gh pr create \
+          REVERT_PR_URL=$(gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --head "$BRANCH" \
             --base main \
             --title "revert: auto-revert $short ($WORKFLOW_NAME CI failure)" \
             --body "$BODY" \
-            --label "hivemoot:automerge"
+            --label "hivemoot:automerge")
 
+          echo "revert_pr_url=$REVERT_PR_URL" >> "$GITHUB_OUTPUT"
           echo "needs_human=false" >> "$GITHUB_OUTPUT"
+
+      - name: Escalate if revert PR blocked by automerge config
+        if: >
+          steps.idempotency.outputs.skip != 'true' &&
+          steps.revert.outputs.needs_human != 'true' &&
+          steps.revert.outputs.revert_pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILING_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+          PR_NUMBER: ${{ steps.revert.outputs.pr_number }}
+          PR_URL: ${{ steps.revert.outputs.pr_url }}
+          REVERT_PR_URL: ${{ steps.revert.outputs.revert_pr_url }}
+        run: |
+          # Extract PR number from URL (e.g. https://github.com/org/repo/pull/123 → 123).
+          REVERT_NUMBER="${REVERT_PR_URL##*/}"
+
+          # Check if the revert diff touches automerge denyPaths.
+          # If so, the revert PR will not auto-merge and needs human attention.
+          FILES=$(gh pr diff \
+            --repo "$GITHUB_REPOSITORY" \
+            "$REVERT_NUMBER" \
+            --name-only 2>/dev/null || echo "")
+
+          BLOCKED=false
+          BLOCKED_FILE=""
+          while IFS= read -r file; do
+            case "$file" in
+              .github/*|*/package.json|*/package-lock.json|*.lock|*/pnpm-lock.yaml|*/go.sum|*/bun.lockb|*/go.work.sum)
+                BLOCKED=true
+                BLOCKED_FILE="$file"
+                break
+                ;;
+            esac
+          done <<< "$FILES"
+
+          [ "$BLOCKED" = "false" ] && exit 0
+
+          # Revert PR exists but cannot auto-merge — escalate so a human can merge it.
+          TRUSTED=$(python3 - <<'PYEOF' 2>/dev/null || true
+import yaml
+try:
+    with open('.github/hivemoot.yml') as f:
+        config = yaml.safe_load(f)
+    reviewers = config.get('governance', {}).get('pr', {}).get('trustedReviewers', [])
+    print(' '.join('@' + r for r in reviewers))
+except Exception:
+    pass
+PYEOF
+)
+
+          short="${FAILING_SHA:0:7}"
+
+          BODY="**Revert PR created but cannot auto-merge — manual merge required.**"
+          BODY+=$'\n\nThe revert diff includes `'"$BLOCKED_FILE"'`, which is in automerge `denyPaths`.'
+          BODY+=$'\n\n**Action required:** review and merge '"$REVERT_PR_URL"$' manually.\n'
+          BODY+=$'\n- **Failing SHA:** `'"$FAILING_SHA"'`'
+          BODY+=$'\n- **Failing run:** '"$WORKFLOW_URL"
+          if [ -n "$PR_NUMBER" ]; then
+            BODY+=$'\n- **Introduced by:** #'"$PR_NUMBER ($PR_URL)"
+          fi
+          if [ -n "$TRUSTED" ]; then
+            BODY+=$'\n\nCC: '"$TRUSTED"
+          fi
+
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "[urgent] revert PR $REVERT_NUMBER blocked by denyPaths — manual merge required ($short)" \
+            --body "$BODY" \
+            --label "hivemoot:needs-human"
 
       - name: Escalate to humans
         if: >
