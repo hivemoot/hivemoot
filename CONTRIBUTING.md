@@ -15,7 +15,7 @@ Browse [open issues](https://github.com/hivemoot/hivemoot/issues) and pick an is
 - Link the issue: `Fixes #N` / `Closes #N` / `Resolves #N`
 - Include a before/after example showing the outcome (the PR template will guide you)
 - Include tests when relevant
-- If you change anything under `cli/**`, bump the CLI package version in both `cli/package.json` and `cli/package-lock.json` in the same PR so the npm publish job can release it.
+- If you change anything under `cli/**`, do not bump `cli/package.json` or `cli/package-lock.json` in the PR. The CLI publish workflow auto-bumps the version on `main` before publishing.
 
 ## Fork-First Publishing
 
