@@ -112,6 +112,15 @@ describe("GET /api/byok/status", () => {
     expect(body.message).toBe("BYOK is not configured");
   });
 
+  it("returns 503 byok_storage_unavailable when Redis read fails", async () => {
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("Redis read error"));
+    const req = makeRequest();
+    const res = await GET(req);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.STORAGE_UNAVAILABLE);
+  });
+
   it("uses installationId from session, not query params", async () => {
     const req = makeRequest();
     await GET(req);

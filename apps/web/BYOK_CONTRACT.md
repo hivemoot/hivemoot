@@ -68,10 +68,14 @@ These are the wire values the bot resolver should emit/consume for runtime resol
 | `byok_decrypt_failed` | Ciphertext/tag/IV invalid or tampered | Fail closed for this request; emit correlation id |
 | `byok_key_version_unavailable` | Envelope keyVersion missing from keyring | Fail closed for this request; emit correlation id |
 
-Related server-side configuration errors exposed by web routes:
-- `byok_encryption_not_configured`
-- `byok_encryption_config_invalid`
-- `byok_server_misconfiguration`
+Related server-side runtime errors exposed by web routes:
+
+| Code | Meaning | Client behavior |
+|---|---|---|
+| `byok_storage_unavailable` | Redis call failed during request (auth or data path) | Retry after backoff; this is transient |
+| `byok_encryption_not_configured` | `BYOK_ACTIVE_KEY_VERSION` or `BYOK_MASTER_KEYS` missing | Server misconfiguration; operator action required |
+| `byok_encryption_config_invalid` | Keyring JSON malformed or key format invalid | Server misconfiguration; operator action required |
+| `byok_server_misconfiguration` | Environment validation failed | Server misconfiguration; operator action required |
 
 ## 5. Runtime Environment Variables
 

@@ -118,6 +118,30 @@ describe("authenticateByokRequest runtime config cache", () => {
   });
 });
 
+describe("authenticateByokRequest Redis error handling", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    mocks.validateEnv.mockReturnValue({ ok: true, config: VALID_ENV_CONFIG });
+    mocks.parseKeyring.mockReturnValue(new Map([["v1", Buffer.alloc(32)]]));
+    mocks.getRedisClient.mockReturnValue({} as never);
+    mocks.isSessionFresh.mockReturnValue(true);
+  });
+
+  it("returns 503 byok_storage_unavailable when getSetupSession throws", async () => {
+    mocks.getSetupSession.mockRejectedValue(new Error("Redis connection refused"));
+    const { authenticateByokRequest } = await import("./byok-auth");
+    const result = await authenticateByokRequest(makeRequest());
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected failure");
+    expect(result.response.status).toBe(503);
+    await expect(result.response.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.STORAGE_UNAVAILABLE,
+    });
+  });
+});
+
 describe("authenticateByokRequest freshness gate", () => {
   beforeEach(() => {
     vi.resetModules();

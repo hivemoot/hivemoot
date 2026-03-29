@@ -195,6 +195,19 @@ describe("POST /api/byok/config", () => {
     expect(parsed).toHaveProperty("model", "gpt-4o");
   });
 
+  it("returns 503 byok_storage_unavailable when Redis write fails", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("Redis write error"));
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.STORAGE_UNAVAILABLE);
+  });
+
   it("uses installationId from session, not request body", async () => {
     const req = makeRequest({
       provider: "anthropic",
