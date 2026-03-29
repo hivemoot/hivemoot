@@ -6,7 +6,9 @@ on:
     paths: [cli/**]
   pull_request:
     branches: [main]
-    paths: [cli/**]
+    paths:
+      - cli/**
+      - .github/workflows/cli.yml
   workflow_dispatch:
 
 jobs:
