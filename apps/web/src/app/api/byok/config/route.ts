@@ -70,7 +70,12 @@ export async function POST(request: NextRequest) {
     fingerprint: "",
   };
 
-  await setByokEnvelope(installationId, envelope, auth.redis);
+  try {
+    await setByokEnvelope(installationId, envelope, auth.redis);
+  } catch (err) {
+    console.error("[byok-config] Redis error saving envelope", { installationId, error: err });
+    return byokError(BYOK_ERROR.STORAGE_UNAVAILABLE, "Failed to save BYOK configuration", 503);
+  }
 
   return NextResponse.json({
     status: "active",

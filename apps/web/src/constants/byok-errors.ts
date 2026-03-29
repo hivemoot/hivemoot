@@ -25,6 +25,7 @@ export const BYOK_ERROR = {
   SESSION_INVALID: "byok_session_invalid",
   SESSION_STALE: "byok_session_stale",
   SESSION_STORAGE_NOT_CONFIGURED: "byok_session_storage_not_configured",
+  STORAGE_UNAVAILABLE: "byok_storage_unavailable",
 } as const;
 
 export type ByokErrorCode = (typeof BYOK_ERROR)[keyof typeof BYOK_ERROR];

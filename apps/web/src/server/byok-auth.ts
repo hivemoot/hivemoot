@@ -171,7 +171,16 @@ export async function authenticateByokRequest(
     };
   }
 
-  const session = await getSetupSession(token, redis);
+  let session: Awaited<ReturnType<typeof getSetupSession>>;
+  try {
+    session = await getSetupSession(token, redis);
+  } catch (err) {
+    console.error("[byok-auth] Redis error during session lookup", { error: err });
+    return {
+      ok: false,
+      response: byokError(BYOK_ERROR.STORAGE_UNAVAILABLE, "Session storage unavailable", 503),
+    };
+  }
   if (!session) {
     return {
       ok: false,
