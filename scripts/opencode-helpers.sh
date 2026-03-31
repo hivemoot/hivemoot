@@ -32,17 +32,30 @@ generate_opencode_config() {
     local opencode_provider="${OPENCODE_PROVIDER:-}"
     if [ -n "$opencode_provider" ]; then
       local model_default=""
-      local provider_config=""
+      local provider_base_url=""
       case "$opencode_provider" in
         zai)
           model_default="${OPENCODE_MODEL:-zai/glm-5}"
-          provider_config='{"zai":{"name":"Z.AI","npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://api.z.ai/api/coding/paas/v4"},"models":{"glm-5":{"id":"glm-5","name":"GLM-5"}}}}'
+          provider_base_url="https://api.z.ai/api/coding/paas/v4"
           ;;
         *)
           model_default="${OPENCODE_MODEL:-}"
           log "Warning: unknown OPENCODE_PROVIDER '${opencode_provider}'; no provider config will be generated"
           ;;
       esac
+
+      # Build provider config dynamically from OPENCODE_MODEL so the models
+      # map always matches the requested model without a hardcoded allowlist.
+      local provider_config=""
+      if [ -n "$provider_base_url" ] && [ -n "$model_default" ]; then
+        local model_id="${model_default#*/}"  # strip "zai/" prefix
+        provider_config=$(jq -n \
+          --arg prov "$opencode_provider" \
+          --arg name "$(echo "$opencode_provider" | tr '[:lower:]' '[:upper:]')" \
+          --arg url "$provider_base_url" \
+          --arg mid "$model_id" \
+          '{($prov): {"name": $name, "npm": "@ai-sdk/openai-compatible", "options": {"baseURL": $url}, "models": {($mid): {"name": $mid}}}}')
+      fi
 
       # $model/$provider below are jq variables (--arg), not shell — single quotes intentional
       # shellcheck disable=SC2016
