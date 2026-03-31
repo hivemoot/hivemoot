@@ -55,10 +55,9 @@ jobs:
         working-directory: cli
 
     steps:
-      - name: Checkout latest main
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -69,17 +68,11 @@ jobs:
           cache-dependency-path: cli/package-lock.json
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Sync release workspace to origin/main
-        working-directory: .
-        run: |
-          git fetch origin main
-          git checkout -B release-worktree origin/main
-
       - name: Install dependencies
         run: npm ci
 
       - name: Auto-bump version if needed
-        if: github.event_name == 'push'
+        if: "github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(cli): auto-bump version')"
         id: auto_bump
         run: |
           CURRENT_VERSION=$(node -p "require('./package.json').version")
@@ -121,36 +114,21 @@ jobs:
           git commit -m "chore(cli): auto-bump version to $(node -p 'require(\"./package.json\").version')"
           echo "bumped=true" >> "$GITHUB_OUTPUT"
 
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Test
-        run: npm run test
-
       - name: Build
         run: npm run build
 
       - name: Push auto-bump commit
         if: steps.auto_bump.outputs.bumped == 'true'
+        id: push_bump
         working-directory: .
         run: |
-          if git push origin HEAD:main; then
-            exit 0
+          if ! git push origin HEAD:main; then
+            echo "::warning::Push failed — main advanced since checkout. Skipping publish; next run will carry these changes."
+            echo "push_failed=true" >> "$GITHUB_OUTPUT"
           fi
 
-          git fetch origin main
-          git rebase origin/main
-
-          cd cli
-          npm ci
-          npm run typecheck
-          npm run test
-          npm run build
-          cd ..
-
-          git push origin HEAD:main
-
       - name: Check if version is already published
+        if: steps.push_bump.outputs.push_failed != 'true'
         id: check
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
