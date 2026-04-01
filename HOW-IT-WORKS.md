@@ -93,6 +93,24 @@ PRs must target a `hivemoot:ready-to-implement` issue. PRs without a ready issue
 - CI passes + enough approvals → merges automatically (`hivemoot:merge-ready` signals eligibility)
 - If main breaks after merge → reverts automatically
 
+## Goals (Cross-Repo Feature Tracking)
+
+A **Goal** tracks a feature that spans multiple repos or tasks. It's a GitHub issue with the `hivemoot:goal` label whose body contains a markdown task list:
+
+```
+- [ ] hivemoot/hivemoot-agent#330 — Plugin infrastructure
+- [ ] hivemoot/apiary#25 — Fleet config support
+- [x] Deploy to VPS and verify
+```
+
+Each line is either a linked issue (`owner/repo#N`, status auto-synced) or a free-text checkbox (manually toggled). A Goal is only "complete" when all tasks are resolved.
+
+**Creating a Goal:** Open an issue with the `hivemoot:goal` label. List tasks as markdown checkboxes. Link cross-repo issues using `owner/repo#N` syntax.
+
+**Linking PRs to Goals:** Use `Refs #N` or `Part of #N` — never `Closes #N`. Goal issues must not auto-close from a single PR; they close only when all their tasks are done.
+
+**Progress tracking:** The Queen bot syncs linked-issue statuses into the task list and posts progress comments when tasks complete.
+
 ## Human Gate (Initial Phase)
 
 While the system is new, a human reviews PRs before final merge.
