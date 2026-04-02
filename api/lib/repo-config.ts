@@ -1109,6 +1109,7 @@ function parseAutomergeConfig(
     dryRun?: unknown;
     allowedPaths?: unknown;
     denyPaths?: unknown;
+    excludedPaths?: unknown;
     maxFiles?: unknown;
     maxChangedLines?: unknown;
     minApprovals?: unknown;
@@ -1164,7 +1165,11 @@ function parseAutomergeConfig(
   }
 
   const allowedPaths = parsePathPatterns(obj.allowedPaths, DEFAULT_ALLOWED_PATHS, "automerge.allowedPaths", repoFullName);
-  const denyPaths = parsePathPatterns(obj.denyPaths, DEFAULT_DENY_PATHS, "automerge.denyPaths", repoFullName);
+  const denyPathSource = obj.denyPaths ?? obj.excludedPaths;
+  const denyPathKey = obj.denyPaths !== undefined && obj.denyPaths !== null
+    ? "automerge.denyPaths"
+    : "automerge.excludedPaths";
+  const denyPaths = parsePathPatterns(denyPathSource, DEFAULT_DENY_PATHS, denyPathKey, repoFullName);
 
   const maxFiles = parseIntValue(
     obj.maxFiles,

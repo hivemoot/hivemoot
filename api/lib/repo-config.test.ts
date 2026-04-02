@@ -2348,6 +2348,45 @@ governance:
         expect(automerge!.denyPaths).toEqual(["secrets/**"]);
       });
 
+      it("should accept excludedPaths as an alias for denyPaths", async () => {
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(`
+governance:
+  pr:
+    trustedReviewers: ["alice"]
+    automerge:
+      excludedPaths: ["secrets/**", ".github/**"]
+`),
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        const automerge = config!.governance.pr!.automerge;
+        expect(automerge!.denyPaths).toEqual(["secrets/**", ".github/**"]);
+      });
+
+      it("should prefer denyPaths when both denyPaths and excludedPaths are set", async () => {
+        const octokit = createMockOctokit({
+          data: {
+            type: "file",
+            content: encodeBase64(`
+governance:
+  pr:
+    trustedReviewers: ["alice"]
+    automerge:
+      denyPaths: ["deny/**"]
+      excludedPaths: ["excluded/**"]
+`),
+          },
+        });
+
+        const config = await loadRepositoryConfig(octokit, "owner", "repo");
+        const automerge = config!.governance.pr!.automerge;
+        expect(automerge!.denyPaths).toEqual(["deny/**"]);
+      });
+
       it("should parse dryRun as false", async () => {
         const octokit = createMockOctokit({
           data: {
