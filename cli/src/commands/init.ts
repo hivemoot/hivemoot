@@ -13,9 +13,19 @@ team:
   #   This project is ...
   #   Read CONTRIBUTING.md for contribution workflow and access model.
 
-  # focus: optional repo steering for buzz output
+  # Structured focus blocks are optional and let you steer buzz output:
+  # activeFocus: default
+  # focuses:
+  #   default:
+  #     objective: Focus on PR reviews first.
+  #     filters:
+  #       labels:
+  #         include: ["bug"]
+  #       authors:
+  #         exclude: ["dependabot[bot]"]
+  #
+  # Legacy fallback format is still supported:
   # focus:
-  #   # default is free-form focus text (does not change filters in MVP)
   #   default: Focus on PR reviews first.
 
   roles:

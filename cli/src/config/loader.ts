@@ -2,6 +2,8 @@ import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
   HivemootConfig,
+  FocusFilters,
+  FocusMatchFilter,
   TeamConfig,
   RepoRef,
   RoleConfig,
@@ -64,12 +66,115 @@ function parseLegacyFocus(rawFocus: unknown): string | undefined {
 
 const MAX_OBJECTIVE_LENGTH = 2_000;
 const MAX_FOCUS_NAME_LENGTH = 64;
+const MAX_FILTER_VALUE_LENGTH = 128;
+const MAX_FILTER_VALUES = 100;
+
+interface ResolvedFocusBlock {
+  objective: string;
+  filters?: FocusFilters;
+}
+
+function invalidConfig(message: string): never {
+  throw new CliError(
+    `Config error: ${message}`,
+    "INVALID_CONFIG",
+    1,
+  );
+}
+
+function parseStringList(
+  raw: unknown,
+  maxLength: number,
+  path: string,
+): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    invalidConfig(`${path} must be an array of strings`);
+  }
+
+  if (raw.length > MAX_FILTER_VALUES) {
+    invalidConfig(`${path} supports at most ${MAX_FILTER_VALUES} entries`);
+  }
+
+  const values: string[] = [];
+  const seen = new Set<string>();
+
+  for (const [index, entry] of raw.entries()) {
+    if (typeof entry !== "string") {
+      invalidConfig(`${path}[${index}] must be a string`);
+    }
+
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > maxLength) {
+      invalidConfig(`${path}[${index}] exceeds ${maxLength} characters`);
+    }
+
+    const dedupeKey = trimmed.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    values.push(trimmed);
+  }
+
+  return values.length > 0 ? values : undefined;
+}
+
+function parseMatchFilter(raw: unknown, path: string): FocusMatchFilter | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    invalidConfig(`${path} must be an object`);
+  }
+
+  const filter = raw as Record<string, unknown>;
+  const unknownKeys = Object.keys(filter).filter((key) => key !== "include" && key !== "exclude");
+  if (unknownKeys.length > 0) {
+    invalidConfig(`${path} contains unsupported key(s): ${unknownKeys.join(", ")}`);
+  }
+
+  const include = parseStringList(filter.include, MAX_FILTER_VALUE_LENGTH, `${path}.include`);
+  const exclude = parseStringList(filter.exclude, MAX_FILTER_VALUE_LENGTH, `${path}.exclude`);
+
+  if (!include && !exclude) return undefined;
+
+  return {
+    ...(include ? { include } : {}),
+    ...(exclude ? { exclude } : {}),
+  };
+}
+
+function parseFocusFilters(raw: unknown, path: string): FocusFilters | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    invalidConfig(`${path} must be an object`);
+  }
+
+  const filters = raw as Record<string, unknown>;
+  if (Object.hasOwn(filters, "suppressSections")) {
+    invalidConfig(`${path}.suppressSections is not supported; use ${path}.labels.exclude with governance labels instead`);
+  }
+
+  const unknownKeys = Object.keys(filters).filter((key) => key !== "labels" && key !== "authors");
+  if (unknownKeys.length > 0) {
+    invalidConfig(`${path} contains unsupported key(s): ${unknownKeys.join(", ")}`);
+  }
+
+  const labels = parseMatchFilter(filters.labels, `${path}.labels`);
+  const authors = parseMatchFilter(filters.authors, `${path}.authors`);
+
+  if (!labels && !authors) return undefined;
+
+  return {
+    ...(labels ? { labels } : {}),
+    ...(authors ? { authors } : {}),
+  };
+}
 
 // Resolves focus from the team config. Handles two formats:
 // 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
 // 2. Legacy: team.focus.default (plain string)
 // The new format takes precedence when team.focuses is present.
-function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
+function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocusBlock | undefined {
   const rawFocuses = rawTeam.focuses;
 
   if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
@@ -101,14 +206,19 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
       // and the next candidate (or undefined) is returned.
       if (objective.length > MAX_OBJECTIVE_LENGTH) continue;
 
-      return objective;
+      return {
+        objective,
+        filters: parseFocusFilters(b.filters, `team.focuses.${candidate}.filters`),
+      };
     }
 
     return undefined;
   }
 
   // Fall back to the legacy focus.default format.
-  return parseLegacyFocus(rawTeam.focus);
+  const objective = parseLegacyFocus(rawTeam.focus);
+  if (!objective) return undefined;
+  return { objective };
 }
 
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
@@ -207,13 +317,14 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
     };
   }
 
-  const focus = resolveFocus(team as unknown as Record<string, unknown>);
+  const resolvedFocus = resolveFocus(team as unknown as Record<string, unknown>);
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
-    focus,
+    focus: resolvedFocus?.objective,
+    focusFilters: resolvedFocus?.filters,
   };
 }
 
