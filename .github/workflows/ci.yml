@@ -24,9 +24,11 @@ jobs:
             docker:
               - 'Dockerfile'
               - '.dockerignore'
-              - 'scripts/**'
-              - 'prompts/**'
-              - 'skills/**'
+              - 'worker/**'
+              - 'shared/**'
+              - 'identities/**'
+              - 'integrations/**'
+              - 'workloads/**'
               - '.trivyignore'
               - '.github/workflows/ci.yml'
             dockerfile:
@@ -39,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Run ShellCheck
-        run: shellcheck scripts/*.sh
+        run: find compat controller worker shared scripts identities integrations workloads -name '*.sh' -print0 | xargs -0 shellcheck
 
   script-validation:
     name: Script Validation
@@ -64,6 +66,8 @@ jobs:
         run: bash scripts/test-session-resume-lifecycle.sh
       - name: Verify provider mismatch detection behavior
         run: bash scripts/test-provider-mismatch.sh
+      - name: Verify plugin loader and dispatch guard behavior
+        run: bash scripts/test-plugin-loader-guards.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
       - name: Verify run-failure classification behavior
@@ -140,6 +144,30 @@ jobs:
           tags: hivemoot-agent:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke runtime plugin dispatch in built image
+        run: |
+          set -euo pipefail
+          stderr_file="$(mktemp)"
+          trap 'rm -f "$stderr_file"' EXIT
+
+          if docker run --rm \
+            -e AGENT_WORKLOAD=hivemoot \
+            -e AGENT_TRIGGER=periodic \
+            hivemoot-agent:ci > /dev/null 2> "$stderr_file"; then
+            echo "::error::entrypoint unexpectedly accepted worker-side AGENT_TRIGGER"
+            exit 1
+          fi
+          grep -F "AGENT_TRIGGER is controller-only" "$stderr_file"
+
+          : > "$stderr_file"
+          if docker run --rm \
+            -e AGENT_WORKLOAD=hivemoot \
+            -e AGENT_DRIVER=does-not-exist \
+            hivemoot-agent:ci > /dev/null 2> "$stderr_file"; then
+            echo "::error::entrypoint unexpectedly succeeded for invalid driver"
+            exit 1
+          fi
+          grep -F "Driver not found" "$stderr_file"
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:

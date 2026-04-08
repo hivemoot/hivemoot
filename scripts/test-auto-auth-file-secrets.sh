@@ -65,12 +65,13 @@ assert_fails_with \
   env \
     AGENT_PROVIDER=codex \
     AGENT_AUTH_MODE=auto \
+    AGENT_DRIVER=once \
     OPENAI_API_KEY=sk-inline \
     OPENAI_API_KEY_FILE="${tmp_key_file}" \
     TARGET_REPO=owner/repo \
     AGENT_ID_01=worker \
     AGENT_GITHUB_TOKEN_01=dummy \
-    bash scripts/run-multi.sh
+    bash scripts/entrypoint.sh
 
 # These wrappers should load *_FILE secrets before resolving auth mode
 # or parsing agents. A missing file must fail fast with the file error.
@@ -81,12 +82,13 @@ assert_fails_with \
   env \
     AGENT_PROVIDER=codex \
     AGENT_AUTH_MODE=auto \
+    AGENT_DRIVER=once \
     OPENAI_API_KEY= \
     OPENAI_API_KEY_FILE="${missing_key_file}" \
     TARGET_REPO=owner/repo \
     AGENT_ID_01=worker \
     AGENT_GITHUB_TOKEN_01=dummy \
-    bash scripts/run-multi.sh
+    bash scripts/entrypoint.sh
 
 assert_fails_with \
   "OPENAI_API_KEY_FILE is set but file does not exist: ${missing_key_file}" \

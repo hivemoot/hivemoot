@@ -174,10 +174,16 @@ ENV DOCKER_PROVIDER=${PROVIDER}
 
 WORKDIR /workspace
 
-COPY --chown=node:node scripts /opt/hivemoot-agent/scripts
-COPY --chown=node:node prompts /opt/hivemoot-agent/prompts
-COPY --chown=node:node skills /opt/hivemoot-agent/skills
+COPY --chown=node:node worker /opt/hivemoot-agent/worker
+COPY --chown=node:node shared /opt/hivemoot-agent/shared
+COPY --chown=node:node identities /opt/hivemoot-agent/identities
+COPY --chown=node:node integrations /opt/hivemoot-agent/integrations
+COPY --chown=node:node workloads /opt/hivemoot-agent/workloads
 
-RUN chmod +x /opt/hivemoot-agent/scripts/*.sh
+RUN find /opt/hivemoot-agent/worker -name '*.sh' -exec chmod +x {} + \
+  && find /opt/hivemoot-agent/shared -name '*.sh' -exec chmod +x {} + \
+  && find /opt/hivemoot-agent/identities -name '*.sh' -exec chmod +x {} + \
+  && find /opt/hivemoot-agent/integrations -name '*.sh' -exec chmod +x {} + \
+  && find /opt/hivemoot-agent/workloads -name '*.sh' -exec chmod +x {} +
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hivemoot-agent/scripts/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hivemoot-agent/worker/entrypoint.sh"]

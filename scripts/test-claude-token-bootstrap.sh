@@ -8,8 +8,10 @@ fail() {
 
 assert_file_mode_600() {
   local path="$1"
-  local mode
-  mode="$(stat -c '%a' "$path")"
+  local mode=""
+  if ! mode="$(stat -c '%a' "$path" 2>/dev/null)"; then
+    mode="$(stat -f '%Lp' "$path")"
+  fi
   [ "$mode" = "600" ] || fail "expected mode 600 for $path, got $mode"
 }
 
@@ -37,22 +39,22 @@ trap cleanup EXIT
 
 if env \
   HOME="$tmp_home" \
-  CLAUDE_CODE_OAUTH_TOKEN="token-from-env" \
-  RUN_MODE="invalid" \
+  CLAUDE_CODE_OAUTH_TOKEN='tok"en\slash' \
+  AGENT_WORKLOAD="nonexistent" \
   bash scripts/entrypoint.sh > /dev/null 2> "$tmp_stderr"
 then
-  fail "entrypoint unexpectedly succeeded with invalid RUN_MODE"
+  fail "entrypoint unexpectedly succeeded with nonexistent workload"
 fi
 
-grep -Fqx "Invalid RUN_MODE: invalid. Expected: once|loop|task" "$tmp_stderr" \
-  || fail "expected invalid RUN_MODE error"
+grep -Fq "Workload plugin not found" "$tmp_stderr" \
+  || fail "expected workload-not-found error"
 
 [ -f "$tmp_home/.claude/.credentials.json" ] || fail "missing credentials file"
 [ -f "$tmp_home/.claude.json" ] || fail "missing onboarding file"
 
 assert_file_content_exact \
   "$tmp_home/.claude/.credentials.json" \
-  '{"claudeAiOauth":{"accessToken":"token-from-env","expiresAt":4102444800000}}'
+  '{"claudeAiOauth":{"accessToken":"tok\"en\\slash","expiresAt":4102444800000}}'
 
 assert_file_content_exact \
   "$tmp_home/.claude.json" \

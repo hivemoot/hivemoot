@@ -25,20 +25,20 @@ tool calls.
 
 ## Runtime Architecture
 
-- Entrypoint: `scripts/entrypoint.sh`
-- One-shot orchestration: `scripts/run-multi.sh`
-- Loop orchestration: `scripts/run-loop.sh`
-- Per-agent execution unit: `scripts/run-once.sh`
-- Shared shell helpers: `scripts/lib.sh`
-- Host controller (per-job worker containers): `scripts/controller.sh`
+- Worker entrypoint: `worker/entrypoint.sh`
+- Worker drivers: `worker/drivers/once.sh`, `worker/drivers/loop.sh`
+- Per-agent execution unit: `worker/run-once.sh`
+- Shared shell helpers: `shared/lib.sh`
+- Host controller (per-job worker containers): `controller/main.sh`
+- Backward-compatible wrappers remain under `scripts/` and `compat/`
+- Legacy `drivers/` and `runners/` paths are aliases to `compat/`
 
 High-level flow:
 
-1. `entrypoint.sh` loads secrets and selects `RUN_MODE`.
-2. `run-multi.sh` or `run-loop.sh` validates config, initializes per-agent state,
-   and launches `run-once.sh` per agent.
-3. `run-once.sh` prepares isolated workspace and home paths, then runs provider
-   CLI tasks for issue/PR/discussion work.
+1. `controller/main.sh` owns host-side trigger handling and spawns isolated worker containers, or `worker/entrypoint.sh` is invoked directly for standalone worker execution.
+2. `worker/entrypoint.sh` loads secrets, validates the explicit worker driver, and dispatches execution.
+3. `worker/drivers/once.sh` or `worker/drivers/loop.sh` validates execution mode and launches `worker/run-once.sh`.
+4. `worker/run-once.sh` prepares isolated workspace and home paths, then runs provider CLI tasks for issue/PR/discussion work.
 
 ## Provider and Auth Model
 
@@ -48,21 +48,21 @@ Auth modes:
 
 - `api_key`
 - `subscription`
-- `auto` (resolved per provider via `resolve_effective_auth_mode` in `scripts/lib.sh`)
+- `auto` (resolved per provider via `resolve_effective_auth_mode` in `shared/lib.sh`)
 
 Provider secrets can be set inline or via `*_FILE` env vars and are loaded through
-`load_provider_secrets` in `scripts/lib.sh`.
+`load_provider_secrets` in `shared/lib.sh`.
 
 ## Shell Conventions
 
-Scripts in `scripts/*.sh` are Bash scripts and should follow existing patterns:
+Shell runtime code in `controller/`, `worker/`, and `shared/` should follow existing patterns:
 
 - `#!/usr/bin/env bash`
 - `set -euo pipefail`
 - Use `local` variables inside functions
 - Prefer `printf` for structured output/logging
 - Use command arrays for safe argument handling
-- Reuse shared helpers in `scripts/lib.sh` instead of duplicating logic
+- Reuse shared helpers in `shared/lib.sh` instead of duplicating logic
 
 ## Key Implementation Patterns
 
@@ -79,7 +79,7 @@ Credential seeding pattern:
 - `seed_shared_provider_state` copies shared provider state to agent homes
 - `seed_provider_auth` copies only auth material (not session state)
 
-Both are defined in `scripts/lib.sh`.
+Both are defined in `shared/lib.sh`.
 
 ## CI and Quality Gates
 

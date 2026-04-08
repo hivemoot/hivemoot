@@ -54,8 +54,7 @@ The project currently provides:
 
 - Dockerized runtime for supported providers (Claude, Codex, Gemini, Kilo,
   and OpenCode)
-- Multi-agent slot orchestration (`run-multi.sh`) and periodic execution
-  (`run-loop.sh`)
+- Explicit worker drivers for single-run and legacy loop execution
 - Per-agent homes and repository clones under `./data`
 - CI coverage for shell correctness, compose validation, markdown linting, image
   build, and security scanning

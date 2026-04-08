@@ -83,17 +83,35 @@ assert_eq \
   "$(classify_run_failure_from_file "${tmp}/gh-missing")" \
   "Missing GitHub token"
 
+printf 'GitHub integration: missing token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN.\n' > "${tmp}/gh-missing-integration"
+assert_eq \
+  "GitHub token is missing" \
+  "$(classify_run_failure_from_file "${tmp}/gh-missing-integration")" \
+  "GitHub integration missing token"
+
 printf 'Failed to validate GitHub token: 401\n' > "${tmp}/gh-validate"
 assert_eq \
   "GitHub token validation failed — check token scope or installation access" \
   "$(classify_run_failure_from_file "${tmp}/gh-validate")" \
   "GitHub token validation failed"
 
+printf 'GitHub integration: failed to validate token.\n' > "${tmp}/gh-validate-integration"
+assert_eq \
+  "GitHub token validation failed — check token scope or installation access" \
+  "$(classify_run_failure_from_file "${tmp}/gh-validate-integration")" \
+  "GitHub integration token validation failed"
+
 printf 'GitHub token cannot access target repository foo/bar\n' > "${tmp}/gh-access"
 assert_eq \
   "GitHub token cannot access target repository — check token scope or installation access" \
   "$(classify_run_failure_from_file "${tmp}/gh-access")" \
   "GitHub token access denied"
+
+printf 'GitHub integration: token cannot access owner/repo.\n' > "${tmp}/gh-access-integration"
+assert_eq \
+  "GitHub token cannot access target repository — check token scope or installation access" \
+  "$(classify_run_failure_from_file "${tmp}/gh-access-integration")" \
+  "GitHub integration access denied"
 
 # --- Clone failure ---
 
@@ -102,6 +120,12 @@ assert_eq \
   "Failed to clone repository — check token and repo access" \
   "$(classify_run_failure_from_file "${tmp}/clone-fail")" \
   "Failed to clone"
+
+printf 'GitHub integration: failed to clone owner/repo.\n' > "${tmp}/clone-fail-integration"
+assert_eq \
+  "Failed to clone repository — check token and repo access" \
+  "$(classify_run_failure_from_file "${tmp}/clone-fail-integration")" \
+  "GitHub integration failed to clone"
 
 # --- Standalone provider key patterns ---
 
@@ -144,6 +168,12 @@ assert_eq \
   "Failed to configure git credentials" \
   "$(classify_run_failure_from_file "${tmp}/git-cred")" \
   "git credential helper"
+
+printf 'GitHub integration: gh auth setup-git failed.\n' > "${tmp}/git-cred-integration"
+assert_eq \
+  "Failed to configure git credentials" \
+  "$(classify_run_failure_from_file "${tmp}/git-cred-integration")" \
+  "GitHub integration setup-git failure"
 
 # --- Unknown error returns empty ---
 

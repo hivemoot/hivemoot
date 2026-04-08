@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2317,SC2329  # test fixtures use indirect slot globals and mocked helpers.
 set -euo pipefail
 
 fail() {
@@ -321,9 +322,12 @@ test_slot_specific_skill_loading() {
   export AGENT_GITHUB_TOKEN_02="token-two"
   export AGENT_SKILLS="global-skill"
 
+  # shellcheck disable=SC2034  # arrays are populated/consumed indirectly by sourced slot helpers.
   declare -A seen_agents=()
   declare -A agent_skill_lists=()
+  # shellcheck disable=SC2034  # arrays are populated/consumed indirectly by sourced slot helpers.
   declare -a agent_ids=()
+  # shellcheck disable=SC2034  # arrays are populated/consumed indirectly by sourced slot helpers.
   declare -a agent_tokens=()
   load_agent_slots 2
 
@@ -393,7 +397,7 @@ test_shipped_skills_load() {
 
   source_lib
 
-  local skills_dir="${SCRIPT_DIR}/../skills"
+  local skills_dir="${SCRIPT_DIR}/../workloads/hivemoot/skills"
   local expected_skills="security-reviewer code-reviewer test-advocate dep-auditor pr-hygiene"
 
   for skill in $expected_skills; do
@@ -535,6 +539,7 @@ test_generate_claude_plugin_dir_cp_failure() {
   source_lib
 
   # Override cp to simulate a write failure
+  # shellcheck disable=SC2317  # cp is overridden for the sourced helper under test.
   cp() { return 1; }
 
   local plugin_dir before_count after_count

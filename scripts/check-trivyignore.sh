@@ -5,6 +5,22 @@ ignore_file="${1:-.trivyignore}"
 report_file="${2:-trivy-report.json}"
 today_utc="$(date -u +%Y-%m-%d)"
 
+normalize_utc_date() {
+  local raw_date="$1"
+
+  if parsed_date="$(date -u -d "$raw_date" +%Y-%m-%d 2>/dev/null)"; then
+    printf '%s\n' "$parsed_date"
+    return 0
+  fi
+
+  if parsed_date="$(date -u -j -f "%Y-%m-%d" "$raw_date" +%Y-%m-%d 2>/dev/null)"; then
+    printf '%s\n' "$parsed_date"
+    return 0
+  fi
+
+  return 1
+}
+
 if [ ! -f "$ignore_file" ]; then
   echo "Ignore file not found: $ignore_file" >&2
   exit 1
@@ -39,7 +55,7 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
       fi
 
       if [[ "$expiry_token" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-        parsed_expiry="$(date -u -d "$expiry_token" +%Y-%m-%d 2>/dev/null || true)"
+        parsed_expiry="$(normalize_utc_date "$expiry_token" 2>/dev/null || true)"
         if [[ "$parsed_expiry" == "$expiry_token" ]]; then
           pending_expiry="$expiry_token"
         else

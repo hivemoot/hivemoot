@@ -6,10 +6,46 @@ fail() {
   exit 1
 }
 
+assert_eq() {
+  local expected="$1"
+  local actual="$2"
+  local label="$3"
+  if [ "$expected" != "$actual" ]; then
+    echo "FAIL: ${label}" >&2
+    echo "  expected: ${expected}" >&2
+    echo "  actual:   ${actual}" >&2
+    exit 1
+  fi
+}
+
+assert_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    echo "FAIL: ${label}" >&2
+    echo "  expected to find: ${needle}" >&2
+    echo "  actual: ${haystack}" >&2
+    exit 1
+  fi
+}
+
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "FAIL: ${label}" >&2
+    echo "  expected to not find: ${needle}" >&2
+    echo "  actual: ${haystack}" >&2
+    exit 1
+  fi
+}
+
 assert_file_contains() {
   local file="$1"
   local needle="$2"
-  if ! grep -Fq "$needle" "$file"; then
+  if ! grep -Fq -- "$needle" "$file"; then
     echo "Expected file to contain: $needle" >&2
     echo "Actual file ($file):" >&2
     sed 's/^/  /' "$file" >&2 || true
@@ -20,7 +56,7 @@ assert_file_contains() {
 assert_file_not_contains() {
   local file="$1"
   local needle="$2"
-  if grep -Fq "$needle" "$file"; then
+  if grep -Fq -- "$needle" "$file"; then
     echo "Expected file to NOT contain: $needle" >&2
     echo "Actual file ($file):" >&2
     sed 's/^/  /' "$file" >&2 || true
@@ -28,20 +64,9 @@ assert_file_not_contains() {
   fi
 }
 
-assert_file_starts_with() {
-  local file="$1"
-  local expected="$2"
-  local first_line=""
-  first_line="$(head -n 1 "$file")"
-  if [ "$first_line" != "$expected" ]; then
-    echo "Expected first line: $expected" >&2
-    echo "Actual first line: $first_line" >&2
-    fail "assertion failed"
-  fi
-}
+echo "Running task-mode regression checks"
 
-echo "Running task mode checks"
-
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 tmp_root="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp_root"
@@ -51,62 +76,14 @@ trap cleanup EXIT
 mock_bin="${tmp_root}/bin"
 mkdir -p "$mock_bin"
 
-mock_run_once="${tmp_root}/mock-run-once.sh"
-cat > "$mock_run_once" <<'RUN_ONCE'
-#!/usr/bin/env bash
-set -euo pipefail
-mkdir -p "${LOG_DIR:?}"
-printf '%s\n' "TARGET_REPO=${TARGET_REPO:-}" > "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "LOG_DIR=${LOG_DIR:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "SESSION_RESUME=${SESSION_RESUME:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_SESSION_KEY=${AGENT_SESSION_KEY:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_GITHUB_TOKEN=${AGENT_GITHUB_TOKEN:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_GITHUB_TOKEN_FILE=${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_PROMPT_FILE=${AGENT_PROMPT_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_EXTRA_PROMPT_START" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "AGENT_EXTRA_PROMPT_END" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
-if [ -n "${MOCK_RUN_ONCE_LOG_JSONL_FILE:-}" ]; then
-  cat "${MOCK_RUN_ONCE_LOG_JSONL_FILE}" > "${LOG_DIR}/mock-run.log"
-elif [ -n "${MOCK_RUN_ONCE_LOG_TEXT:-}" ]; then
-  printf '%s' "$MOCK_RUN_ONCE_LOG_TEXT" > "${LOG_DIR}/mock-run.log"
-else
-  cat > "${LOG_DIR}/mock-run.log" <<'LOG'
-mock provider output line 1
-mock provider output line 2
-LOG
-fi
-if [ -n "${CODEX_ANSWER_FILE:-}" ] && [ -n "${MOCK_CODEX_ANSWER_CONTENT:-}" ]; then
-  mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
-  printf '%s' "$MOCK_CODEX_ANSWER_CONTENT" > "$CODEX_ANSWER_FILE"
-fi
-if [ "${MOCK_RUN_ONCE_SLEEP_SECS:-0}" -gt 0 ]; then
-  sleep "${MOCK_RUN_ONCE_SLEEP_SECS}"
-fi
-exit "${MOCK_RUN_ONCE_EXIT_CODE:-0}"
-RUN_ONCE
-chmod +x "$mock_run_once"
-
-mock_run_once_fail_early="${tmp_root}/mock-run-once-fail-early.sh"
-cat > "$mock_run_once_fail_early" <<'RUN_ONCE_FAIL_EARLY'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
-exit 1
-RUN_ONCE_FAIL_EARLY
-chmod +x "$mock_run_once_fail_early"
-
-mock_curl="${mock_bin}/curl"
-cat > "$mock_curl" <<'MOCK_CURL'
+cat > "${mock_bin}/curl" <<'MOCK_CURL'
 #!/usr/bin/env bash
 set -euo pipefail
 
 output_file=""
 write_format=""
-data_payload=""
 url=""
+data_payload=""
 headers=""
 
 while [ "$#" -gt 0 ]; do
@@ -123,18 +100,20 @@ while [ "$#" -gt 0 ]; do
       data_payload="$2"
       shift 2
       ;;
-    -X|-H)
-      if [ "$1" = "-H" ]; then
-        if [ -n "$headers" ]; then
-          headers="${headers}|$2"
-        else
-          headers="$2"
-        fi
+    -H)
+      if [ -n "$headers" ]; then
+        headers="${headers}|$2"
+      else
+        headers="$2"
       fi
       shift 2
       ;;
-    -s|-S)
-      shift
+    -X|-s|-S)
+      if [ "$1" = "-X" ]; then
+        shift 2
+      else
+        shift
+      fi
       ;;
     *)
       url="$1"
@@ -145,1265 +124,251 @@ done
 
 printf 'URL=%s DATA=%s HEADERS=%s\n' "$url" "$data_payload" "$headers" >> "${MOCK_CURL_CALLS:?}"
 
-status="200"
-body='{}'
-default_claim_body='{"task":{"task_id":"claim-task-1","prompt":"Analyze the repo","repos":["owner/repo"]},"claim_token":"claim-token-default"}'
-
-case "$url" in
-  */claim)
-    if [ "${MOCK_CLAIM_MODE:-task}" = "empty" ]; then
-      status="204"
-      body=''
-    else
-      status="200"
-      body="${MOCK_CLAIM_BODY:-$default_claim_body}"
-    fi
-    ;;
-  */execute)
-    status="${MOCK_EXECUTE_STATUS:-200}"
-    body='{"task":{"status":"ok"}}'
-    ;;
-esac
-
 if [ -n "$output_file" ]; then
-  printf '%s' "$body" > "$output_file"
+  printf '%s' "${MOCK_CURL_BODY:-{}}" > "$output_file"
 fi
 
-if [ -n "$write_format" ]; then
-  printf '%s' "$status"
-else
-  printf '%s' "$body"
-fi
+printf '%s' "${MOCK_CURL_STATUS:-200}"
 MOCK_CURL
-chmod +x "$mock_curl"
+chmod +x "${mock_bin}/curl"
 
 export PATH="${mock_bin}:$PATH"
-export AGENT_PROVIDER="claude"
+export REPO_ROOT="$repo_root"
 
-run_case_direct_env() {
-  local case_dir="${tmp_root}/case-direct"
-  local result_path="${case_dir}/workspace/task-output/task-abc/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+log() {
+  :
+}
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
+# shellcheck source=scripts/lib-classify.sh
+. "$repo_root/scripts/lib-classify.sh"
+# shellcheck source=controller/triggers/common.sh
+. "$repo_root/controller/triggers/common.sh"
+# shellcheck source=controller/triggers/hivemoot-task.sh
+. "$repo_root/controller/triggers/hivemoot-task.sh"
+
+reset_task_globals() {
+  controller_reset_trigger_job_context
+  controller_trigger_background_pid=""
+  task_execute_base_url="https://api.example.com/api/tasks"
+  task_executor_token="shared-token"
+  task_heartbeat_interval_seconds=1
+  export MOCK_CURL_STATUS=200
+  export MOCK_CURL_BODY='{}'
+}
+
+run_entrypoint_task_workload_case() {
+  local case_dir="${tmp_root}/entrypoint"
+  local token_file="${case_dir}/agent-token"
+  local env_snapshot="${case_dir}/env.log"
+  local mock_run_once="${case_dir}/mock-run-once.sh"
+
+  mkdir -p "$case_dir"
+  printf '%s' 'ghs_worker_token' > "$token_file"
+  chmod 600 "$token_file"
+
+  cat > "$mock_run_once" <<'RUN_ONCE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'AGENT_GITHUB_TOKEN=%s\n' "${AGENT_GITHUB_TOKEN:-}" > "${MOCK_ENV_SNAPSHOT:?}"
+printf 'AGENT_GITHUB_TOKEN_FILE=%s\n' "${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf 'AGENT_WORKLOAD=%s\n' "${AGENT_WORKLOAD:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf 'TARGET_REPO=%s\n' "${TARGET_REPO:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf 'AGENT_TASK_ID=%s\n' "${AGENT_TASK_ID:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+printf 'AGENT_EXTRA_PROMPT=%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
+RUN_ONCE
+  chmod +x "$mock_run_once"
 
   env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-direct" \
-    AGENT_TASK_ID="task-abc" \
-    AGENT_TASK_PROMPT="Find auth regressions" \
+    HOME="${case_dir}/home" \
+    AGENT_IDENTITY="hivemoot-agent" \
+    AGENT_WORKLOAD="hivemoot-task" \
+    AGENT_DRIVER="once" \
+    AGENT_PROVIDER="claude" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01_FILE="$token_file" \
+    AGENT_TASK_ID="task-123" \
+    AGENT_EXTRA_PROMPT="Execute delegated task" \
     TARGET_REPO="owner/repo" \
-    SESSION_RESUME=1 \
-    bash scripts/run-task.sh
+    WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+    IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
+    INTEGRATION_DIR="${repo_root}/integrations" \
+    DRIVER_DIR="${repo_root}/drivers" \
+    KERNEL_DIR="${repo_root}/scripts" \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    MOCK_ENV_SNAPSHOT="$env_snapshot" \
+    bash "$repo_root/scripts/entrypoint.sh"
 
-  assert_file_contains "$result_path" "# Task Result"
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/repo"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=1"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=task:task-abc"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "system/task.md"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Find auth regressions"
-  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-abc/execute"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-direct"
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "progress"'
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+  assert_file_contains "$env_snapshot" "AGENT_GITHUB_TOKEN="
+  assert_file_contains "$env_snapshot" "AGENT_GITHUB_TOKEN_FILE=${token_file}"
+  assert_file_contains "$env_snapshot" "AGENT_WORKLOAD=hivemoot-task"
+  assert_file_contains "$env_snapshot" "TARGET_REPO=owner/repo"
+  assert_file_contains "$env_snapshot" "AGENT_TASK_ID=task-123"
+  assert_file_contains "$env_snapshot" "AGENT_EXTRA_PROMPT=Execute delegated task"
+
+  echo "PASS: single-run task workload uses explicit once driver"
 }
 
-run_case_overrides_inherited_session_key() {
-  local case_dir="${tmp_root}/case-inherited-session-key"
-  local result_path="${case_dir}/workspace/task-output/task-session-key/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+run_prepare_job_session_key_case() {
+  local case_dir="${tmp_root}/prepare-session"
+  mkdir -p "${case_dir}/workspace-a" "${case_dir}/workspace-b" "${case_dir}/workspace-c"
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
+  reset_task_globals
+  controller_trigger_prepare_job__hivemoot_task \
+    "job-a" "owner/repo" "worker" "${case_dir}/workspace-a" "unused-home" "claude" \
+    "task-alpha" "Inspect queue behavior" "claim-a" "" "" ""
+  assert_eq "task:task-alpha" "$controller_trigger_prepared_session_key" "default task session key"
+  assert_contains "$controller_trigger_prepared_extra_prompt" "task-alpha" "default prompt includes task id"
+  assert_contains "$controller_trigger_prepared_extra_prompt" "Inspect queue behavior" "default prompt includes task prompt"
 
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-inherited-key" \
-    AGENT_TASK_ID="task-session-key" \
-    AGENT_TASK_PROMPT="Keep the task session scoped correctly" \
-    TARGET_REPO="owner/repo" \
-    SESSION_RESUME=1 \
-    AGENT_SESSION_KEY="mention-thread:12345" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "# Task Result"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "SESSION_RESUME=1"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=task:task-session-key"
-  assert_file_not_contains "$MOCK_ENV_SNAPSHOT" "AGENT_SESSION_KEY=mention-thread:12345"
-}
-
-run_case_preserves_explicit_prompt_override() {
-  local case_dir="${tmp_root}/case-explicit-prompt-override"
-  local result_path="${case_dir}/workspace/task-output/task-custom-prompt/result.md"
-  local custom_prompt="${case_dir}/custom.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  printf 'custom system prompt\n' > "$custom_prompt"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-custom-prompt" \
-    AGENT_TASK_PROMPT="Use my custom system prompt" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROMPT_FILE="$custom_prompt" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_PROMPT_FILE=${custom_prompt}"
-  assert_file_not_contains "$MOCK_ENV_SNAPSHOT" "system/task.md"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Use my custom system prompt"
-}
-
-run_case_direct_env_messages_file() {
-  local case_dir="${tmp_root}/case-direct-messages-file"
-  local result_path="${case_dir}/workspace/task-output/task-msg-file/result.md"
-  local messages_file="${case_dir}/messages.json"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  cat > "$messages_file" <<'JSON'
-[
-  {"role":"user","content":"Original task details","created_at":"2026-03-05T03:00:00.000Z"},
-  {"role":"system","content":"Task reopened by user","created_at":"2026-03-05T03:05:00.000Z"}
-]
-JSON
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-msg-file" \
-    AGENT_TASK_ID="task-msg-file" \
-    AGENT_TASK_PROMPT="Use complete timeline context" \
-    AGENT_TASK_MESSAGES_FILE="$messages_file" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "## Conversation Context"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Original task details"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Task reopened by user"
-}
-
-run_case_claim_mode() {
-  local case_dir="${tmp_root}/case-claim"
-  local result_path="${case_dir}/workspace/task-output/claimed-42/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-42","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-42","messages":[{"role":"user","content":"Original prompt from user","created_at":"2026-03-05T03:00:00.000Z"},{"role":"system","content":"Task was reopened","created_at":"2026-03-05T03:05:00.000Z"}]}'
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    TARGET_REPO= \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TIMEOUT_SECONDS="333" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claim"
-  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claimed-42/execute"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-42"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/claimed"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_TIMEOUT_SECONDS=333"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "## Conversation Context"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Original prompt from user"
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "Task was reopened"
-}
-
-run_case_slot_token_file_bridge() {
-  local case_dir="${tmp_root}/case-slot-token-file-bridge"
-  local result_path="${case_dir}/workspace/task-output/task-slot-file/result.md"
-  local slot_token_file="${case_dir}/secrets/slot-token"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace" "$(dirname "$slot_token_file")"
-  printf '%s' "ghs_slot_file_token" > "$slot_token_file"
-  chmod 600 "$slot_token_file"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-slot-file" \
-    AGENT_TASK_PROMPT="Verify slot token file bridge" \
-    TARGET_REPO="owner/repo" \
-    AGENT_GITHUB_TOKEN= \
-    AGENT_GITHUB_TOKEN_FILE= \
-    AGENT_GITHUB_TOKEN_01= \
-    AGENT_GITHUB_TOKEN_01_FILE="$slot_token_file" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_GITHUB_TOKEN="
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "AGENT_GITHUB_TOKEN_FILE=${slot_token_file}"
-}
-
-run_case_claim_repo_mismatch() {
-  local case_dir="${tmp_root}/case-claim-repo-mismatch"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-99","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-99"}'
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    TARGET_REPO="owner/expected" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when claimed repo mismatches TARGET_REPO"
+  reset_task_globals
+  controller_trigger_prepare_job__hivemoot_task \
+    "job-b" "owner/repo" "worker" "${case_dir}/workspace-b" "unused-home" "claude" \
+    "task-beta" "Inspect queue behavior" "claim-b" "" "" ""
+  assert_eq "task:task-beta" "$controller_trigger_prepared_session_key" "second task gets independent session key"
+  if [ "$controller_trigger_prepared_session_key" = "task:task-alpha" ]; then
+    fail "task session keys must stay isolated by task id"
   fi
 
-  assert_file_contains "${case_dir}/stderr.log" "Claimed task repo owner/claimed does not match TARGET_REPO owner/expected."
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute on claim repo mismatch"
-  fi
+  reset_task_globals
+  controller_trigger_prepare_job__hivemoot_task \
+    "job-c" "owner/repo" "worker" "${case_dir}/workspace-c" "unused-home" "claude" \
+    "task-gamma" "Inspect queue behavior" "claim-c" "" "" "mention-thread:123"
+  assert_eq "mention-thread:123" "$controller_trigger_prepared_session_key" "explicit session key override"
+
+  echo "PASS: task prepare_job isolates session keys by task id"
 }
 
-run_case_claim_missing_token() {
-  local case_dir="${tmp_root}/case-claim-missing-token"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+run_conversation_context_case() {
+  local case_dir="${tmp_root}/conversation-context"
+  local task_messages_json='[{"role":"user","content":"Original task details","created_at":"2026-03-05T03:00:00.000Z"},{"role":"system","content":"Task reopened by user","created_at":"2026-03-05T03:05:00.000Z"}]'
+  local messages_file=""
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"claimed-no-token","prompt":"Inspect queue behavior","repos":["owner/claimed"]}}'
+  mkdir -p "${case_dir}/workspace"
+
+  reset_task_globals
+  controller_trigger_prepare_job__hivemoot_task \
+    "job-msg" "owner/repo" "worker" "${case_dir}/workspace" "unused-home" "claude" \
+    "task-msg" "Use complete timeline context" "claim-msg" "$task_messages_json" "Controller context line 1" ""
+
+  messages_file="${case_dir}/workspace/task-input/task-msg/messages.json"
+  [ -f "$messages_file" ] || fail "expected task messages file to be created"
+  assert_file_contains "$messages_file" '"role":"user"'
+  assert_file_contains "$messages_file" '"content":"Original task details"'
+  assert_contains "$controller_trigger_prepared_extra_prompt" "Controller context line 1" "base extra prompt preserved"
+  assert_contains "$controller_trigger_prepared_extra_prompt" "## Conversation Context" "conversation context header rendered"
+  assert_contains "$controller_trigger_prepared_extra_prompt" "Original task details" "conversation context includes first message"
+  assert_contains "$controller_trigger_prepared_extra_prompt" "Task reopened by user" "conversation context includes reopened message"
+
+  echo "PASS: task prepare_job renders conversation context into the extra prompt"
+}
+
+run_claim_token_header_case() {
+  local case_dir="${tmp_root}/claim-token"
+  export MOCK_CURL_CALLS="${case_dir}/curl.log"
+  mkdir -p "$case_dir"
   : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
 
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when claim response omits claim_token"
-  fi
+  reset_task_globals
+  post_task_update_from_controller "task-header" "claim-token-123" progress "Working" >/dev/null
 
-  assert_file_contains "${case_dir}/stderr.log" "Claimed task response missing claim_token."
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute when claim token is missing"
-  fi
+  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-header/execute"
+  assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"progress","progress":"Working"}'
+  assert_file_contains "$MOCK_CURL_CALLS" 'Authorization: Bearer shared-token'
+  assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-123'
+
+  echo "PASS: task updates forward X-Task-Claim-Token to the execute endpoint"
 }
 
-run_case_no_pending_task() {
-  local case_dir="${tmp_root}/case-empty"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_CLAIM_MODE="empty"
+run_heartbeat_lifecycle_case() {
+  local case_dir="${tmp_root}/heartbeat"
+  export MOCK_CURL_CALLS="${case_dir}/curl.log"
+  mkdir -p "$case_dir"
   : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
 
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    TARGET_REPO= \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    bash scripts/run-task.sh
+  reset_task_globals
+  task_heartbeat_interval_seconds=1
+  start_task_heartbeat_loop_from_controller "task-heartbeat" "claim-token-heartbeat"
+  sleep 2
+  stop_background_loop_pid "$controller_trigger_background_pid"
+  controller_trigger_background_pid=""
 
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute when claim returns 204"
-  fi
+  assert_file_contains "$MOCK_CURL_CALLS" 'URL=https://api.example.com/api/tasks/task-heartbeat/execute'
+  assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"heartbeat"}'
+  assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-heartbeat'
+
+  echo "PASS: task heartbeat loop emits authenticated heartbeat updates"
 }
 
-run_case_no_stale_log_tail_on_early_failure() {
-  local case_dir="${tmp_root}/case-no-stale-tail"
-  local result_path="${case_dir}/workspace/task-output/task-fail/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+run_codex_auth_detection_case() {
+  local case_dir="${tmp_root}/codex-auth-detect"
+  local log_invalid="${case_dir}/invalid.jsonl"
+  local log_nested="${case_dir}/nested.jsonl"
+  local log_message="${case_dir}/message.jsonl"
+  local log_turn_failed="${case_dir}/turn-failed.jsonl"
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-  printf '%s\n' "OLD SECRET LINE" > "${case_dir}/logs/old.log"
+  mkdir -p "$case_dir"
 
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once_fail_early" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-fail" \
-    AGENT_TASK_PROMPT="Check failure path" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when run-once exits non-zero"
-  fi
-
-  assert_file_contains "$result_path" "Execution failed."
-  assert_file_not_contains "$result_path" "OLD SECRET LINE"
-  assert_file_not_contains "$result_path" "## Log Tail"
-}
-
-run_case_rejects_invalid_repo() {
-  local case_dir="${tmp_root}/case-invalid-repo"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-invalid-repo" \
-    AGENT_TASK_PROMPT="Reject traversal repo" \
-    TARGET_REPO="../evil" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when TARGET_REPO is invalid"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Invalid TARGET_REPO: ../evil. Expected owner/repo."
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute when TARGET_REPO is invalid"
-  fi
-}
-
-run_case_allows_dot_leading_repo_segment() {
-  local case_dir="${tmp_root}/case-dot-leading-repo-segment"
-  local result_path="${case_dir}/workspace/task-output/task-dot-repo/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-dot-repo" \
-    AGENT_TASK_PROMPT="Allow dot-leading repo segment" \
-    TARGET_REPO="owner/.github" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "TARGET_REPO=owner/.github"
-}
-
-run_case_shared_agent_token() {
-  local case_dir="${tmp_root}/case-shared-agent-token"
-  local result_path="${case_dir}/workspace/task-output/task-token-check/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="shared-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-shared" \
-    AGENT_TASK_ID="task-token-check" \
-    AGENT_TASK_PROMPT="Check shared token fallback" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/task-token-check/execute"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-shared"
-}
-
-run_case_emits_heartbeat_updates() {
-  local case_dir="${tmp_root}/case-heartbeat-updates"
-  local result_path="${case_dir}/workspace/task-output/task-heartbeat/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_SLEEP_SECS=2
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS=1 \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-heartbeat" \
-    AGENT_TASK_ID="task-heartbeat" \
-    AGENT_TASK_PROMPT="Emit task heartbeat while running" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$result_path" "Execution finished successfully."
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-heartbeat"
-  assert_file_contains "$MOCK_CURL_CALLS" '"action":"heartbeat"'
-  unset MOCK_RUN_ONCE_SLEEP_SECS
-}
-
-run_case_requires_agent_token() {
-  local case_dir="${tmp_root}/case-missing-token"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN= \
-    HIVEMOOT_AGENT_TOKEN_FILE= \
-    AGENT_TASK_ID="task-no-token" \
-    AGENT_TASK_PROMPT="Check missing token" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when HIVEMOOT_AGENT_TOKEN is missing"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Missing task executor token."
-}
-
-run_case_rejects_invalid_heartbeat_interval() {
-  local case_dir="${tmp_root}/case-invalid-heartbeat-interval"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS="abc" \
-    AGENT_TASK_ID="task-invalid-heartbeat" \
-    AGENT_TASK_PROMPT="Check invalid heartbeat interval" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail for invalid AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS must be a non-negative integer."
-}
-
-run_case_rejects_missing_claim_token_when_execute_enabled() {
-  local case_dir="${tmp_root}/case-missing-claim-token"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN= \
-    AGENT_TASK_ID="task-missing-claim-token" \
-    AGENT_TASK_PROMPT="Claim token should be required" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when execute URL is set but claim token is missing"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Task claim token is required when execute URL is configured."
-}
-
-run_case_default_log_dir_when_unset() {
-  local case_dir="${tmp_root}/case-default-log-dir"
-  local result_path="${case_dir}/workspace/task-output/task-default-log-dir/result.md"
-  mkdir -p "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    LOG_DIR= \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="task-default-log-dir" \
-    AGENT_TASK_PROMPT="Verify default log dir wiring" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$MOCK_ENV_SNAPSHOT" "LOG_DIR=${case_dir}/workspace/runs"
-  assert_file_contains "$result_path" "## Debug Log Tail"
-  assert_file_contains "$result_path" "mock provider output line 1"
-}
-
-run_case_codex_result_extraction() {
-  local case_dir="${tmp_root}/case-codex-result-extraction"
-  local result_path="${case_dir}/workspace/task-output/task-codex/result.md"
-  local codex_log="${case_dir}/codex.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
-{"type":"item.completed","item":{"type":"agent_message","text":"## Final Answer\n\n- alpha\n- beta"}}
-{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+  cat > "$log_invalid" <<'LOG'
+{"type":"error","code":"invalid_api_key","message":"Incorrect API key provided"}
 LOG
+  assert_eq "invalid_api_key" "$(detect_codex_auth_error "$log_invalid")" "codex top-level auth code"
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-a" \
-    AGENT_TASK_ID="task-codex" \
-    AGENT_TASK_PROMPT="Return markdown answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Final Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-a"
-  assert_file_not_contains "$MOCK_CURL_CALLS" "thread.started"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_codex_result_extraction_fallback() {
-  local case_dir="${tmp_root}/case-codex-result-fallback"
-  local result_path="${case_dir}/workspace/task-output/task-codex-fallback/result.md"
-  local codex_log="${case_dir}/codex-empty.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
-{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+  cat > "$log_nested" <<'LOG'
+{"type":"error","error":{"code":"refresh_token_reused","message":"Refresh token has already been used"}}
 LOG
+  assert_eq "refresh_token_reused" "$(detect_codex_auth_error "$log_nested")" "codex nested auth code"
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
+  cat > "$log_message" <<'LOG'
+{"type":"error","message":"Unauthorized"}
+LOG
+  assert_eq "auth_error" "$(detect_codex_auth_error "$log_message")" "codex message-only auth detection"
 
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-b" \
-    AGENT_TASK_ID="task-codex-fallback" \
-    AGENT_TASK_PROMPT="Return markdown answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
+  cat > "$log_turn_failed" <<'LOG'
+{"type":"turn.failed","error":{"message":"Invalid API key"}}
+LOG
+  assert_eq "auth_error" "$(detect_codex_auth_error "$log_turn_failed")" "codex turn.failed auth detection"
 
-  assert_file_contains "$result_path" "could not be extracted from Codex logs"
-  assert_file_contains "$MOCK_CURL_CALLS" "could be extracted from Codex JSON logs"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-b"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+  echo "PASS: codex auth detection covers structured and message-only errors"
 }
 
-run_case_codex_auth_error_detected() {
-  local case_dir="${tmp_root}/case-codex-auth-error"
-  local result_path="${case_dir}/workspace/task-output/task-codex-auth/result.md"
-  local codex_log="${case_dir}/codex-auth-error.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # Codex emits type=error with a known auth code and exits 0; run-task.sh
-  # must detect this and report action=fail, not action=complete.
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"auth-test-thread"}
+run_codex_auth_promotion_case() {
+  local case_dir="${tmp_root}/codex-auth-promotion"
+  local log_file="${case_dir}/codex-auth.jsonl"
+  local workspace="${case_dir}/workspace"
+  local result_path="${workspace}/task-output/task-codex-auth/result.md"
+  local status=0
+
+  mkdir -p "$workspace"
+  export MOCK_CURL_CALLS="${case_dir}/curl.log"
+  : > "$MOCK_CURL_CALLS"
+
+  cat > "$log_file" <<'LOG'
+{"type":"thread.started","thread_id":"auth-thread"}
 {"type":"error","code":"invalid_api_key","message":"Incorrect API key provided"}
 LOG
 
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
+  reset_task_globals
+  if handle_task_job_result "task-codex-auth" "owner/repo" "codex" 0 "$log_file" "$workspace" "claim-token-auth" ""; then
+    fail "codex auth error should be promoted to failure"
+  else
+    status=$?
+  fi
 
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-auth-err" \
-    AGENT_TASK_ID="task-codex-auth" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh || true  # run-task.sh exits non-zero after promoting failure
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
-  assert_file_contains "$MOCK_CURL_CALLS" "invalid_api_key"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-auth-err"
+  assert_eq "1" "$status" "codex auth promotion exit code"
+  [ -f "$result_path" ] || fail "expected result artifact for codex auth promotion case"
   assert_file_contains "$result_path" "Provider authentication failed: invalid_api_key"
-  assert_file_not_contains "$result_path" "Execution failed."
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+  assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"fail","error":"Provider authentication failed: invalid_api_key"}'
+  assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-auth'
+  assert_file_contains "$MOCK_CURL_CALLS" 'URL=https://api.example.com/api/tasks/task-codex-auth/execute'
+  assert_file_not_contains "$MOCK_CURL_CALLS" '"action":"complete"'
+
+  echo "PASS: codex auth errors are promoted from success logs into task failures"
 }
 
-run_case_codex_auth_error_with_nested_code() {
-  local case_dir="${tmp_root}/case-codex-auth-nested"
-  local result_path="${case_dir}/workspace/task-output/task-codex-auth-nested/result.md"
-  local codex_log="${case_dir}/codex-auth-nested.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # Codex also emits auth errors with the code nested under .error.code
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"auth-nested-thread"}
-{"type":"error","error":{"code":"refresh_token_reused","message":"Refresh token has already been used"}}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-nested-err" \
-    AGENT_TASK_ID="task-codex-auth-nested" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh || true
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
-  assert_file_contains "$MOCK_CURL_CALLS" "refresh_token_reused"
-  assert_file_contains "$result_path" "Provider authentication failed: refresh_token_reused"
-  assert_file_not_contains "$result_path" "Execution failed."
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_codex_auth_error_suppressed_when_result_exists() {
-  local case_dir="${tmp_root}/case-codex-auth-suppressed"
-  local result_path="${case_dir}/workspace/task-output/task-codex-auth-supp/result.md"
-  local codex_log="${case_dir}/codex-auth-suppressed.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # If a successful item.completed result exists, auth error detection is
-  # skipped. The result takes precedence.
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"auth-supp-thread"}
-{"type":"item.completed","item":{"type":"agent_message","text":"## Done\n\n- task finished"}}
-{"type":"error","code":"refresh_token_reused","message":"Refresh token has already been used"}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-supp" \
-    AGENT_TASK_ID="task-codex-auth-supp" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_starts_with "$result_path" "## Done"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_codex_auth_error_message_only() {
-  local case_dir="${tmp_root}/case-codex-auth-msg"
-  local result_path="${case_dir}/workspace/task-output/task-codex-auth-msg/result.md"
-  local codex_log="${case_dir}/codex-auth-msg.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # Real Codex exec --json output emits {"type":"error","message":"Unauthorized"}
-  # without a .code field. The detector must fall back to message-based detection.
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"auth-msg-thread"}
-{"type":"error","message":"Unauthorized"}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-auth-msg" \
-    AGENT_TASK_ID="task-codex-auth-msg" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh || true
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
-  assert_file_contains "$MOCK_CURL_CALLS" "auth_error"
-  assert_file_contains "$result_path" "Provider authentication failed: auth_error"
-  assert_file_not_contains "$result_path" "Execution failed."
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_codex_auth_error_turn_failed() {
-  local case_dir="${tmp_root}/case-codex-auth-turn"
-  local result_path="${case_dir}/workspace/task-output/task-codex-auth-turn/result.md"
-  local codex_log="${case_dir}/codex-auth-turn.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  # Real Codex exec --json output can also emit turn.failed events with
-  # {"type":"turn.failed","error":{"message":"Unauthorized"}} for auth failures.
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"auth-turn-thread"}
-{"type":"turn.failed","error":{"message":"Unauthorized"}}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-auth-turn" \
-    AGENT_TASK_ID="task-codex-auth-turn" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh || true
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
-  assert_file_contains "$result_path" "Provider authentication failed: auth_error"
-  assert_file_not_contains "$result_path" "Execution failed."
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_codex_result_extraction_with_malformed_lines() {
-  local case_dir="${tmp_root}/case-codex-result-malformed"
-  local result_path="${case_dir}/workspace/task-output/task-codex-malformed/result.md"
-  local codex_log="${case_dir}/codex-malformed.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  cat > "$codex_log" <<'LOG'
-{"type":"thread.started","thread_id":"8f26b0d2-cbf8-4f17-a48e-aef76f95f2de"}
-not-json-line
-{"type":"item.completed","item":{"type":"agent_message","text":"## First Answer\n\n- old"}}
-{broken-json
-{"type":"item.completed","item":{"type":"agent_message","text":"## Final Answer\n\n- fresh"}}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-generic-c" \
-    AGENT_TASK_ID="task-codex-malformed" \
-    AGENT_TASK_PROMPT="Return markdown answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Final Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## Final Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-generic-c"
-  assert_file_not_contains "$MOCK_CURL_CALLS" "not-json-line"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_rejects_traversal_task_id() {
-  local case_dir="${tmp_root}/case-traversal-task-id"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID="../../pwned" \
-    AGENT_TASK_PROMPT="Traversal attempt" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when AGENT_TASK_ID contains path separators"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute on invalid task_id"
-  fi
-  # Confirm no artifact was written outside task-output
-  if find "${case_dir}/workspace" -name "result.md" | grep -qv "task-output"; then
-    fail "result.md written outside task-output subtree"
-  fi
-}
-
-run_case_rejects_dotdot_task_id() {
-  local case_dir="${tmp_root}/case-dotdot-task-id"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_ID=".." \
-    AGENT_TASK_PROMPT="Dotdot attempt" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when AGENT_TASK_ID is '..'"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute on invalid task_id"
-  fi
-}
-
-run_case_rejects_slash_in_claimed_task_id() {
-  local case_dir="${tmp_root}/case-claim-slash-task-id"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_CLAIM_MODE="task"
-  export MOCK_CLAIM_BODY='{"task":{"task_id":"bad/id","prompt":"Slash in id","repos":["owner/repo"]},"claim_token":"claim-token-bad-id"}'
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    TARGET_REPO= \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when claimed task_id contains a slash"
-  fi
-
-  assert_file_contains "${case_dir}/stderr.log" "Invalid task_id"
-  if [ -s "$MOCK_RUN_ONCE_CALLS" ]; then
-    fail "run-once should not execute when claimed task_id is invalid"
-  fi
-}
-
-run_case_codex_sidecar_result() {
-  local case_dir="${tmp_root}/case-codex-sidecar"
-  local result_path="${case_dir}/workspace/task-output/task-codex-sidecar/result.md"
-  local codex_log="${case_dir}/codex-jsonl-bg.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  cat > "$codex_log" <<'LOG'
-{"type":"item.completed","item":{"type":"agent_message","text":"## JSONL Answer\n\n- old"}}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  export MOCK_CODEX_ANSWER_CONTENT="## Sidecar Answer
-
-- alpha
-- beta"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-codex-sidecar" \
-    AGENT_TASK_ID="task-codex-sidecar" \
-    AGENT_TASK_PROMPT="Return answer via sidecar" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Sidecar Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## Sidecar Answer"
-  assert_file_not_contains "$MOCK_CURL_CALLS" "## JSONL Answer"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-  unset MOCK_CODEX_ANSWER_CONTENT
-}
-
-run_case_codex_sidecar_fallback_to_jsonl() {
-  local case_dir="${tmp_root}/case-codex-sidecar-fallback"
-  local result_path="${case_dir}/workspace/task-output/task-codex-sf/result.md"
-  local codex_log="${case_dir}/codex-fallback.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-  cat > "$codex_log" <<'LOG'
-{"type":"item.completed","item":{"type":"agent_message","text":"## JSONL Answer\n\n- fresh"}}
-LOG
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-codex-sf" \
-    AGENT_TASK_ID="task-codex-sf" \
-    AGENT_TASK_PROMPT="Return answer via JSONL fallback" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="codex" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## JSONL Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## JSONL Answer"
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-run_case_gemini_text_result() {
-  local case_dir="${tmp_root}/case-gemini-text"
-  local result_path="${case_dir}/workspace/task-output/task-gemini-text/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_TEXT="## Gemini Answer
-
-Some text response."
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-gemini-text" \
-    AGENT_TASK_ID="task-gemini-text" \
-    AGENT_TASK_PROMPT="Return text answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="gemini" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Gemini Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## Gemini Answer"
-  assert_file_not_contains "$MOCK_CURL_CALLS" "thread.started"
-  unset MOCK_RUN_ONCE_LOG_TEXT
-}
-
-run_case_claude_text_result() {
-  local case_dir="${tmp_root}/case-claude-text"
-  local result_path="${case_dir}/workspace/task-output/task-claude-text/result.md"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_TEXT="## Claude Answer
-
-Some text response."
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-claude-text" \
-    AGENT_TASK_ID="task-claude-text" \
-    AGENT_TASK_PROMPT="Return text answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="claude" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Claude Answer"
-  assert_file_contains "$MOCK_CURL_CALLS" "## Claude Answer"
-  unset MOCK_RUN_ONCE_LOG_TEXT
-}
-
-run_case_claude_stream_json_result() {
-  local case_dir="${tmp_root}/case-claude-stream-json"
-  local result_path="${case_dir}/workspace/task-output/task-claude-stream/result.md"
-  local log_jsonl="${case_dir}/claude-stream.jsonl"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  cat > "$log_jsonl" <<'JSONL'
-{"type":"system","subtype":"init","session_id":"55555555-5555-5555-5555-555555555555"}
-{"type":"result","subtype":"success","result":"## Claude Stream Answer\n\nLine one.\nLine two."}
-JSONL
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$log_jsonl"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  env \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-claude-stream" \
-    AGENT_TASK_ID="task-claude-stream" \
-    AGENT_TASK_PROMPT="Return structured answer" \
-    TARGET_REPO="owner/repo" \
-    AGENT_PROVIDER="claude" \
-    bash scripts/run-task.sh
-
-  assert_file_starts_with "$result_path" "## Claude Stream Answer"
-  assert_file_contains "$result_path" "Line two."
-  assert_file_contains "$MOCK_CURL_CALLS" "## Claude Stream Answer"
-  assert_file_not_contains "$MOCK_CURL_CALLS" '"type":"system"'
-  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
-}
-
-# When run-once.sh emits a known failure pattern on stderr, run-task.sh should
-# classify it and send an actionable message to the backend instead of the
-# generic "exit code N" fallback.
-run_case_classified_failure_reason() {
-  local case_dir="${tmp_root}/case-classified-failure"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  # Mock run-once that writes a known run-once.sh error pattern to stderr.
-  local mock_fail_with_stderr="${case_dir}/mock-fail-stderr.sh"
-  cat > "$mock_fail_with_stderr" <<'FAIL_MOCK'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
-printf 'Missing GitHub token for agent worker\n' >&2
-exit 1
-FAIL_MOCK
-  chmod +x "$mock_fail_with_stderr"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_fail_with_stderr" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-cls" \
-    AGENT_TASK_ID="task-token-fail" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when run-once exits non-zero"
-  fi
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_contains "$MOCK_CURL_CALLS" "GitHub token is missing"
-}
-
-# When run-once.sh exits non-zero with unrecognized stderr, run-task.sh should
-# fall back to the generic "exit code N" message.
-run_case_unclassified_failure_fallback() {
-  local case_dir="${tmp_root}/case-unclassified-failure"
-  mkdir -p "$case_dir/logs" "$case_dir/workspace"
-
-  local mock_fail_unknown="${case_dir}/mock-fail-unknown.sh"
-  cat > "$mock_fail_unknown" <<'FAIL_MOCK'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "called" >> "${MOCK_RUN_ONCE_CALLS:?}"
-printf 'Something completely unexpected happened\n' >&2
-exit 1
-FAIL_MOCK
-  chmod +x "$mock_fail_unknown"
-
-  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
-  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
-  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
-  : > "$MOCK_CURL_CALLS"
-  : > "$MOCK_RUN_ONCE_CALLS"
-
-  if env \
-    RUN_ONCE_SCRIPT="$mock_fail_unknown" \
-    WORKSPACE_ROOT="${case_dir}/workspace" \
-    LOG_DIR="${case_dir}/logs" \
-    HIVEMOOT_AGENT_TOKEN="task-token" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    AGENT_TASK_CLAIM_TOKEN="claim-token-unk" \
-    AGENT_TASK_ID="task-unknown-fail" \
-    AGENT_TASK_PROMPT="Do something" \
-    TARGET_REPO="owner/repo" \
-    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
-  then
-    fail "run-task should fail when run-once exits non-zero"
-  fi
-
-  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
-  assert_file_contains "$MOCK_CURL_CALLS" "Task execution failed with exit code 1"
-}
-
-run_case_direct_env
-run_case_preserves_explicit_prompt_override
-run_case_direct_env_messages_file
-run_case_claim_mode
-run_case_slot_token_file_bridge
-run_case_claim_repo_mismatch
-run_case_claim_missing_token
-run_case_no_pending_task
-run_case_no_stale_log_tail_on_early_failure
-run_case_rejects_invalid_repo
-run_case_allows_dot_leading_repo_segment
-run_case_shared_agent_token
-run_case_emits_heartbeat_updates
-run_case_requires_agent_token
-run_case_rejects_invalid_heartbeat_interval
-run_case_rejects_missing_claim_token_when_execute_enabled
-run_case_default_log_dir_when_unset
-run_case_codex_result_extraction
-run_case_codex_result_extraction_fallback
-run_case_codex_result_extraction_with_malformed_lines
-run_case_rejects_traversal_task_id
-run_case_rejects_dotdot_task_id
-run_case_rejects_slash_in_claimed_task_id
-run_case_codex_sidecar_result
-run_case_codex_sidecar_fallback_to_jsonl
-run_case_gemini_text_result
-run_case_claude_text_result
-run_case_claude_stream_json_result
-run_case_overrides_inherited_session_key
-run_case_codex_auth_error_detected
-run_case_codex_auth_error_with_nested_code
-run_case_codex_auth_error_suppressed_when_result_exists
-run_case_codex_auth_error_message_only
-run_case_codex_auth_error_turn_failed
-run_case_classified_failure_reason
-run_case_unclassified_failure_fallback
-
-echo "PASS: task mode checks"
+run_entrypoint_task_workload_case
+run_prepare_job_session_key_case
+run_conversation_context_case
+run_claim_token_header_case
+run_heartbeat_lifecycle_case
+run_codex_auth_detection_case
+run_codex_auth_promotion_case

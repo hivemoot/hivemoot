@@ -4,8 +4,20 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 check_script="$repo_root/scripts/check-trivyignore.sh"
 today_utc="$(date -u +%Y-%m-%d)"
-tomorrow_utc="$(date -u -d 'tomorrow' +%Y-%m-%d)"
-yesterday_utc="$(date -u -d 'yesterday' +%Y-%m-%d)"
+
+date_utc_days_from_now() {
+  local offset="$1"
+
+  if date -u -d "${offset} day" +%Y-%m-%d >/dev/null 2>&1; then
+    date -u -d "${offset} day" +%Y-%m-%d
+    return 0
+  fi
+
+  date -u -v"${offset}"d +%Y-%m-%d
+}
+
+tomorrow_utc="$(date_utc_days_from_now +1)"
+yesterday_utc="$(date_utc_days_from_now -1)"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT

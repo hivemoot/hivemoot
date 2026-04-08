@@ -592,7 +592,7 @@ MOCK
   PATH="${mock_dir}:$PATH"
 
   # Override sleep to avoid delays in tests
-  # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
+  # shellcheck disable=SC2329,SC2317  # invoked indirectly by _send_health_report
   _sleep_with_jitter() { :; }
 
   # shellcheck disable=SC2034  # read by sourced _send_health_report
@@ -623,7 +623,7 @@ test_response_5xx_gives_up() {
   PATH="$(dirname "$mock_curl"):$PATH"
 
   # Override sleep to avoid delays
-  # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
+  # shellcheck disable=SC2329,SC2317  # invoked indirectly by _send_health_report
   _sleep_with_jitter() { :; }
 
   # shellcheck disable=SC2034  # read by sourced _send_health_report
@@ -667,7 +667,7 @@ MOCK
   PATH="${mock_dir}:$PATH"
 
   # Override sleep to avoid delays
-  # shellcheck disable=SC2329  # invoked indirectly by _send_health_report
+  # shellcheck disable=SC2329,SC2317  # invoked indirectly by _send_health_report
   _sleep_with_jitter() { :; }
 
   # shellcheck disable=SC2034  # read by sourced _send_health_report
@@ -1112,8 +1112,11 @@ MOCK
 
   local original_path="$PATH"
   set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034  # read by send_heartbeat from sourced health-reporter helpers
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
+  # shellcheck disable=SC2034  # read by send_heartbeat from sourced health-reporter helpers
   HEALTH_REPORT_MAX_RETRIES=5
+  # shellcheck disable=SC2034  # read by send_heartbeat from sourced health-reporter helpers
   HEALTH_REPORT_TIMEOUT_SECS=30
 
   send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true

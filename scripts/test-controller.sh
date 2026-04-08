@@ -125,6 +125,19 @@ active_file="${state_dir}/active-container"
 active_lock_dir="${state_dir}/active-container.lock"
 run_log_file="${state_dir}/docker-run.log"
 overlap_file="${state_dir}/overlap.log"
+log_lock_dir="${state_dir}/log.lock"
+
+append_line_locked() {
+  local target_file="$1"
+  local text="$2"
+
+  while ! mkdir "$log_lock_dir" 2>/dev/null; do
+    sleep 0.01
+  done
+
+  printf '%s\n' "$text" >> "$target_file"
+  rmdir "$log_lock_dir"
+}
 
 container_exited_file() {
   local container_id="${1:-}"
@@ -192,30 +205,29 @@ snapshot_job_home() {
   done
 
   if [ -z "$job_home" ]; then
-    printf '%s\n' "job_home=missing gemini_settings=missing" >> "$snapshot_file"
+    append_line_locked "$snapshot_file" "job_home=missing gemini_settings=missing"
     return 0
   fi
 
   if [ -f "${job_home}/.gemini/settings.json" ]; then
-    printf 'job_home=%s gemini_settings=%s\n' \
-      "$job_home" \
-      "$(tr -d '\n' < "${job_home}/.gemini/settings.json")" \
-      >> "$snapshot_file"
+    append_line_locked \
+      "$snapshot_file" \
+      "job_home=${job_home} gemini_settings=$(tr -d '\n' < "${job_home}/.gemini/settings.json")"
     return 0
   fi
 
-  printf 'job_home=%s gemini_settings=missing\n' "$job_home" >> "$snapshot_file"
+  append_line_locked "$snapshot_file" "job_home=${job_home} gemini_settings=missing"
 }
 
 case "$cmd" in
   run)
     # mkdir is atomic and keeps overlap detection deterministic under concurrency.
     if ! mkdir "$active_lock_dir" 2>/dev/null; then
-      echo "overlap" >> "$overlap_file"
+      append_line_locked "$overlap_file" "overlap"
     fi
 
     snapshot_job_home "$@"
-    printf '%s\n' "$*" >> "$run_log_file"
+    append_line_locked "$run_log_file" "$*"
 
     if [ "${MOCK_DOCKER_RUN_FAIL:-0}" = "1" ]; then
       rmdir "$active_lock_dir" 2>/dev/null || true
@@ -251,6 +263,15 @@ case "$cmd" in
       : > "$(container_exited_file "$container_id")"
     fi
     printf '%s\n' "${MOCK_DOCKER_WAIT_EXIT:-0}"
+    ;;
+
+  inspect)
+    if [ "${1:-}" = "--format" ]; then
+      shift 2
+    fi
+    printf '%s %s\n' \
+      "${MOCK_DOCKER_INSPECT_OOMKILLED:-false}" \
+      "${MOCK_DOCKER_INSPECT_EXIT:-${MOCK_DOCKER_WAIT_EXIT:-0}}"
     ;;
 
   rm)
@@ -522,6 +543,8 @@ run_success_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="2" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -548,7 +571,9 @@ run_success_case() {
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
-  assert_file_contains "$run_log" "-e RUN_MODE=once"
+  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=hivemoot"
+  assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
+  assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e RUN_TRIGGER_TYPE=scheduled"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
   assert_file_contains "$run_log" "-e JOB_ID="
@@ -621,6 +646,8 @@ EOF_SKILL
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -635,8 +662,8 @@ EOF_SKILL
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log in per-agent skill routing case"
 
-  worker_line="$(grep -F "AGENT_ID_01=worker" "$run_log" | head -n 1 || true)"
-  builder_line="$(grep -F "AGENT_ID_01=builder" "$run_log" | head -n 1 || true)"
+  worker_line="$(grep -F "AGENT_ID=worker" "$run_log" | head -n 1 || true)"
+  builder_line="$(grep -F "AGENT_ID=builder" "$run_log" | head -n 1 || true)"
   [ -n "$worker_line" ] || fail "missing worker launch in per-agent skill routing case"
   [ -n "$builder_line" ] || fail "missing builder launch in per-agent skill routing case"
 
@@ -678,6 +705,8 @@ run_invalid_skill_bind_mount_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -716,6 +745,8 @@ run_custom_prompt_companion_base_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -755,6 +786,8 @@ run_failure_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -805,6 +838,8 @@ run_spawn_failure_cleanup_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -849,6 +884,8 @@ run_mentions_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -863,7 +900,7 @@ run_mentions_case() {
   [ -f "$run_log" ] || fail "missing docker run log in mention case"
   assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=mention-thread:thread-123"
 
-  mention_summary_count="$(grep -R --include=summary -F 'trigger=mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
+  mention_summary_count="$(grep -R --include=summary -F 'trigger=github-mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
   assert_eq "1" "$mention_summary_count" "expected one mention-triggered job summary"
 
   shopt -s nullglob
@@ -911,6 +948,8 @@ run_mentions_dedup_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -925,7 +964,7 @@ run_mentions_dedup_case() {
   [ -f "$run_log" ] || fail "missing docker run log in mention dedup case"
   assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=mention-thread:thread-dup"
 
-  mention_summary_count="$(grep -R --include=summary -F 'trigger=mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
+  mention_summary_count="$(grep -R --include=summary -F 'trigger=github-mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
   assert_eq "1" "$mention_summary_count" "expected one mention-triggered job summary after duplicate suppression"
 
   shopt -s nullglob
@@ -987,6 +1026,8 @@ EOF_TRIGGER
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -1001,7 +1042,7 @@ EOF_TRIGGER
   [ -f "$run_log" ] || fail "missing docker run log in orphan recovery case"
   assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=mention-thread:thread-orphan"
 
-  mention_summary_count="$(grep -R --include=summary -F 'trigger=mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
+  mention_summary_count="$(grep -R --include=summary -F 'trigger=github-mention' "${case_dir}/workspace/workspaces" | wc -l | tr -d '[:space:]')"
   assert_eq "1" "$mention_summary_count" "expected recovered orphan trigger to execute once"
 
   shopt -s nullglob
@@ -1059,6 +1100,8 @@ run_mentions_retry_after_failure_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -1091,6 +1134,8 @@ run_mentions_retry_after_failure_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -1120,6 +1165,8 @@ run_mentions_retry_after_failure_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -1139,7 +1186,7 @@ run_mentions_retry_after_failure_case() {
   shopt -u nullglob
 
   for summary_file in "${summary_files[@]}"; do
-    if ! grep -Fq 'trigger=mention' "$summary_file"; then
+    if ! grep -Fq 'trigger=github-mention' "$summary_file"; then
       continue
     fi
     if grep -Fq 'status=failed' "$summary_file"; then
@@ -1167,6 +1214,7 @@ run_task_watch_case() {
   local case_dir="$2"
   local run_log=""
   local curl_log=""
+  local -a extra_prompt_files=()
   local -a messages_files=()
   local -a status_files=()
   local -a summary_files=()
@@ -1186,8 +1234,11 @@ run_task_watch_case() {
     TASK_DISPATCH_AGENT_IDS="worker" \
     AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
     HIVEMOOT_AGENT_TOKEN="shared-token" \
+    AGENT_EXTRA_PROMPT=$'Controller context line 1\nController context line 2' \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1198,35 +1249,221 @@ run_task_watch_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log in task-watch case"
-  assert_file_contains "$run_log" "-e RUN_MODE=task"
+  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=hivemoot-task"
+  assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
+  assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=task:task-claim-1"
-  assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
-  assert_file_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE=/workspace/task-input/task-claim-1/messages.json"
-  assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"
-  assert_file_contains "$run_log" "-e AGENT_TASK_EXECUTE_BASE_URL=https://api.example.com/api/tasks"
-  assert_file_not_contains "$run_log" "-e RUN_MODE=once"
+  assert_file_contains "$run_log" "-e AGENT_EXTRA_PROMPT_FILE=/workspace/job-input/extra-prompt.md"
+  assert_file_not_contains "$run_log" "-e AGENT_EXTRA_PROMPT=Controller context line 1"
+  assert_file_not_contains "$run_log" "-e AGENT_TRIGGER="
+  assert_file_not_contains "$run_log" "-e AGENT_TASK_PROMPT="
+  assert_file_not_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE="
+  assert_file_not_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN="
+  assert_file_not_contains "$run_log" "-e AGENT_TASK_EXECUTE_BASE_URL="
 
   curl_log="${case_dir}/curl-state/curl.log"
   [ -f "$curl_log" ] || fail "missing curl log in task-watch case"
   assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/claim"
   assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/task-claim-1/execute"
+  assert_file_contains "$curl_log" 'DATA={"action":"progress"'
+  assert_file_contains "$curl_log" 'DATA={"action":"complete"'
 
   shopt -s nullglob
+  extra_prompt_files=("${case_dir}/workspace"/workspaces/*/job-input/extra-prompt.md)
   messages_files=("${case_dir}/workspace"/workspaces/*/task-input/task-claim-1/messages.json)
   status_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/status)
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
   shopt -u nullglob
+  assert_eq "1" "${#extra_prompt_files[@]}" "expected one extra prompt file for task-watch case"
   assert_eq "1" "${#messages_files[@]}" "expected one task messages file for task-watch case"
   assert_eq "1" "${#status_files[@]}" "expected one status file for task-watch case"
   assert_eq "1" "${#summary_files[@]}" "expected one summary file for task-watch case"
+  assert_file_contains "${extra_prompt_files[0]}" "Controller context line 1"
+  assert_file_contains "${extra_prompt_files[0]}" "Controller context line 2"
   assert_file_contains "${messages_files[0]}" "\"role\":\"user\""
   assert_file_contains "${messages_files[0]}" "\"content\":\"Initial context\""
   assert_eq "completed" "$(cat "${status_files[0]}")" "expected completed task-watch status"
-  assert_file_contains "${summary_files[0]}" "trigger=task"
+  assert_file_contains "${summary_files[0]}" "trigger=hivemoot-task"
 
   echo "PASS: task-watch mode claims and runs delegated tasks"
+}
+
+run_task_watch_custom_workload_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    TASK_DISPATCH_WORKLOAD="custom-task-workload" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_PROMPT_FILE="${repo_root}/workloads/hivemoot-task/prompts/messages/task.md" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log in task-watch custom-workload case"
+  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=custom-task-workload"
+
+  echo "PASS: task-watch mode dispatches claimed tasks to configurable workloads"
+}
+
+run_task_watch_heartbeat_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS="1" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch heartbeat case"
+  assert_file_contains "$curl_log" 'DATA={"action":"heartbeat"}'
+  assert_file_contains "$curl_log" 'DATA={"action":"progress"'
+  assert_file_contains "$curl_log" 'DATA={"action":"complete"'
+
+  echo "PASS: task-watch mode sends task heartbeats while the worker is running"
+}
+
+run_task_watch_unknown_provider_result_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_DOCKER_LOG_CONTENT="Unknown provider result line" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    AGENT_PROVIDER="opencode" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-watch unknown-provider case"
+  assert_file_contains "$curl_log" 'DATA={"action":"complete","result":"Unknown provider result line'
+
+  echo "PASS: task-watch mode preserves results for providers without custom extractors"
+}
+
+run_task_oom_failure_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local curl_log=""
+  local -a summary_files=()
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_DOCKER_WAIT_EXIT="0" \
+    MOCK_DOCKER_INSPECT_OOMKILLED="true" \
+    MOCK_DOCKER_INSPECT_EXIT="137" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task OOM case"
+  assert_file_contains "$curl_log" 'Worker exited with code 137'
+  assert_file_contains "$controller_log" 'Worker container was OOM-killed:'
+
+  shopt -s nullglob
+  summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
+  shopt -u nullglob
+  assert_eq "1" "${#summary_files[@]}" "expected one summary file for task OOM case"
+  assert_file_contains "${summary_files[0]}" "exit_code=137"
+
+  echo "PASS: OOM-killed workers are reported as task failures with exit 137"
 }
 
 run_task_watch_linux_permission_repair_case() {
@@ -1256,6 +1493,8 @@ run_task_watch_linux_permission_repair_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1306,6 +1545,8 @@ run_task_watch_token_file_case() {
     HIVEMOOT_AGENT_TOKEN_FILE="${token_file}" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1356,6 +1597,8 @@ run_heartbeat_auth_case() {
     CONTROLLER_RUN_MODE="loop" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="0" \
     HEALTH_REPORT_URL="https://api.example.com/api/agent-health" \
@@ -1451,6 +1694,8 @@ run_task_watch_no_task_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1494,6 +1739,8 @@ run_task_watch_invalid_repo_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1537,6 +1784,8 @@ run_task_watch_scope_validation_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1598,6 +1847,8 @@ run_workspace_prune_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1651,6 +1902,8 @@ run_workspace_ttl_disabled_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1698,6 +1951,8 @@ run_workspace_prune_failure_reporting_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1748,6 +2003,8 @@ run_shutdown_signal_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -1817,6 +2074,8 @@ run_exit_trap_reaps_job_subshells_case() {
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -2000,6 +2259,99 @@ run_global_slots_cross_controller_case() {
   echo "PASS: global slot semaphore limits combined concurrency across controllers"
 }
 
+run_global_slots_missing_dir_warning_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    GLOBAL_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1
+
+  assert_file_contains "$controller_log" "[global-slots] disabled: GLOBAL_SLOTS_DIR is required when GLOBAL_MAX_WORKERS>0"
+
+  echo "PASS: controller warns when GLOBAL_MAX_WORKERS is set without GLOBAL_SLOTS_DIR"
+}
+
+run_mention_watcher_failure_logging_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local controller_pid=0
+  local deadline=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_hivemoot "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    MOCK_HIVEMOOT_WATCH_FAIL="1" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 15))
+  while true; do
+    if grep -Fq "mention watcher failed (" "$controller_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before watcher failure was logged"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for watcher failure log"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  wait "$controller_pid" 2>/dev/null || true
+
+  assert_file_contains "$controller_log" "mention watcher failed ("
+  assert_file_contains "$controller_log" "hivemoot_exit=1"
+
+  echo "PASS: mention watcher logs pipeline failure details before restart"
+}
+
 run_global_slot_mention_timeout_requeue_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2047,6 +2399,8 @@ EOF_TRIGGER
     GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
     GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -2165,6 +2519,8 @@ EOF_TRIGGER
     GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
     GLOBAL_SLOT_TIMEOUT_MENTION_SECS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -2290,6 +2646,8 @@ run_global_slot_periodic_timeout_cleanup_case() {
     GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
     GLOBAL_SLOT_TIMEOUT_PERIODIC_SECS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="0" \
     AGENT_ID_01="worker" \
@@ -2383,6 +2741,8 @@ run_task_global_slot_timeout_report_case() {
     GLOBAL_SLOTS_DIR="${case_dir}/global-slots" \
     GLOBAL_SLOT_TIMEOUT_TASK_SECS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -2455,6 +2815,8 @@ EOF_TRIGGER
     CONTROLLER_RUN_MODE="once" \
     CONTROLLER_MAX_WORKERS="2" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
@@ -2472,7 +2834,7 @@ EOF_TRIGGER
   assert_eq "1" "$launch_count" "per-agent guard should prevent second launch for same agent"
 
   assert_file_contains "$controller_log" "already running"
-  assert_file_contains "$controller_log" "deferring mention trigger"
+  assert_file_contains "$controller_log" "deferring github-mention trigger"
 
   # Mention trigger must be re-queued as .trigger.json, not lost or marked done.
   shopt -s nullglob
@@ -2512,6 +2874,8 @@ run_periodic_deferral_cleanup_case() {
     CONTROLLER_RUN_MODE="loop" \
     CONTROLLER_MAX_WORKERS="2" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="0" \
     AGENT_ID_01="worker" \
@@ -2590,6 +2954,8 @@ run_task_failure_report_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -2638,6 +3004,8 @@ run_task_failure_report_classified_error_case() {
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
     WORKER_IMAGE="hivemoot-agent:test" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
@@ -2694,8 +3062,11 @@ run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_custom_workload_case "$repo_root" "${tmpdir}/task-watch-custom-workload"
 run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
+run_task_watch_heartbeat_case "$repo_root" "${tmpdir}/task-watch-heartbeat"
 run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
+run_task_watch_unknown_provider_result_case "$repo_root" "${tmpdir}/task-watch-unknown-provider"
 run_heartbeat_inline_token_case "$repo_root" "${tmpdir}/heartbeat-inline-token"
 run_heartbeat_token_file_case "$repo_root" "${tmpdir}/heartbeat-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
@@ -2707,6 +3078,8 @@ run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-pru
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
 run_global_slots_cross_controller_case "$repo_root" "${tmpdir}/global-slots-cross-controller"
+run_global_slots_missing_dir_warning_case "$repo_root" "${tmpdir}/global-slots-missing-dir"
+run_mention_watcher_failure_logging_case "$repo_root" "${tmpdir}/mention-watcher-failure-logging"
 run_global_slot_mention_timeout_requeue_case "$repo_root" "${tmpdir}/global-slot-mention-timeout"
 run_global_slot_mention_timeout_missing_run_dir_case "$repo_root" "${tmpdir}/global-slot-mention-timeout-missing-run-dir"
 run_global_slot_periodic_timeout_cleanup_case "$repo_root" "${tmpdir}/global-slot-periodic-timeout"
@@ -2715,4 +3088,5 @@ run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
 run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
+run_task_oom_failure_case "$repo_root" "${tmpdir}/task-oom-failure"
 echo "PASS: controller script checks"

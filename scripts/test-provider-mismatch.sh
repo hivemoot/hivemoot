@@ -30,23 +30,6 @@ assert_fails_with() {
   rm -f "$stderr_file"
 }
 
-assert_succeeds() {
-  local description="$1"
-  shift
-
-  local stderr_file
-  stderr_file="$(mktemp)"
-
-  if ! "$@" > /dev/null 2> "$stderr_file"; then
-    echo "Unexpected failure for: $description" >&2
-    sed 's/^/  /' "$stderr_file" >&2
-    rm -f "$stderr_file"
-    fail "command failed unexpectedly"
-  fi
-
-  rm -f "$stderr_file"
-}
-
 tmp_home="$(mktemp -d)"
 cleanup() { rm -rf "$tmp_home"; }
 trap cleanup EXIT
@@ -59,7 +42,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      RUN_MODE=once \
+      AGENT_WORKLOAD=hivemoot \
       bash scripts/entrypoint.sh
 
 # Mismatch message offers .env fix first (cheaper than rebuild)
@@ -68,7 +51,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      RUN_MODE=once \
+      AGENT_WORKLOAD=hivemoot \
       bash scripts/entrypoint.sh
 
 # Mismatch message also offers the rebuild path
@@ -77,7 +60,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      RUN_MODE=once \
+      AGENT_WORKLOAD=hivemoot \
       bash scripts/entrypoint.sh
 
 # Mismatch: image built for claude but agent requests gemini
@@ -86,34 +69,34 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=claude \
       AGENT_PROVIDER=gemini \
-      RUN_MODE=once \
+      AGENT_WORKLOAD=hivemoot \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER=all passes through regardless of AGENT_PROVIDER
-# (all-provider image supports any provider — use invalid RUN_MODE to stop early)
+# (all-provider image supports any provider — use nonexistent workload to stop early)
 assert_fails_with \
-  "Invalid RUN_MODE" \
+  "Workload plugin not found" \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=all \
       AGENT_PROVIDER=claude \
-      RUN_MODE=invalid \
+      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER matches AGENT_PROVIDER
 assert_fails_with \
-  "Invalid RUN_MODE" \
+  "Workload plugin not found" \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=claude \
       AGENT_PROVIDER=claude \
-      RUN_MODE=invalid \
+      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER unset (defaults to all, passes through)
 assert_fails_with \
-  "Invalid RUN_MODE" \
+  "Workload plugin not found" \
   env HOME="$tmp_home" \
       AGENT_PROVIDER=claude \
-      RUN_MODE=invalid \
+      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 echo "PASS: provider mismatch detection checks"

@@ -40,12 +40,14 @@ echo "Running credential storage mode checks"
 
 OPENAI_API_KEY=""
 assert_eq "subscription" "$(resolve_effective_auth_mode "codex" "auto")" "codex auto resolves to subscription without API key"
+# shellcheck disable=SC2034  # read by resolve_effective_auth_mode from sourced scripts/lib.sh
 OPENAI_API_KEY="dummy"
 assert_eq "api_key" "$(resolve_effective_auth_mode "codex" "auto")" "codex auto resolves to api_key with API key"
 unset OPENAI_API_KEY
 
 ANTHROPIC_API_KEY=""
 assert_eq "subscription" "$(resolve_effective_auth_mode "claude" "auto")" "claude auto resolves to subscription without API key"
+# shellcheck disable=SC2034  # read by resolve_effective_auth_mode from sourced scripts/lib.sh
 ANTHROPIC_API_KEY="dummy"
 assert_eq "api_key" "$(resolve_effective_auth_mode "claude" "auto")" "claude auto resolves to api_key with API key"
 unset ANTHROPIC_API_KEY
@@ -95,6 +97,7 @@ printf '%s' '{"refresh_token":"api-key-mode-gemini-token"}' \
 printf '%s' '{"selectedType":"oauth-personal"}' \
   > "$tmp_source_home/.gemini/settings.json"
 
+# shellcheck disable=SC2034  # read by seeded provider helpers from sourced scripts/lib.sh
 AGENT_PROVIDER=claude
 seed_provider_auth "$api_key_job_home" "$tmp_source_home"
 seed_shared_provider_state "$api_key_agent_home" "$tmp_source_home"
