@@ -732,6 +732,36 @@ describe("buzzCommand", () => {
     ]);
   });
 
+  it("suppresses filtered-out open mentions from unackedMentions", async () => {
+    const notificationMap = new Map([[42, {
+      threadId: "T42",
+      reason: "mention",
+      updatedAt: "2025-06-15T10:00:00Z",
+      title: "Fix dashboard",
+      url: "https://github.com/hivemoot/test/issues/42",
+      itemType: "Issue" as const,
+    }]]);
+    mockedFetchIssues.mockResolvedValue([{
+      number: 42,
+      labels: [{ name: "enhancement" }],
+      assignees: [],
+      author: { login: "alice" },
+      comments: [],
+      createdAt: "2025-06-14T10:00:00Z",
+      updatedAt: "2025-06-15T10:00:00Z",
+      url: "https://github.com/hivemoot/test/issues/42",
+      title: "Fix dashboard",
+    }] as any);
+    mockedFetchNotifications.mockResolvedValue(notificationMap);
+    mockedBuildSummary.mockReturnValue({ ...testSummary, notes: [], unackedMentions: [] });
+    mockedFormatStatus.mockReturnValue("output");
+
+    await buzzCommand({});
+
+    const summaryArg = mockedFormatStatus.mock.calls[0][0];
+    expect(summaryArg.unackedMentions).toEqual([]);
+  });
+
   it("filters already-acked mentions out of unackedMentions", async () => {
     const notificationMap = new Map([[42, {
       threadId: "T42",

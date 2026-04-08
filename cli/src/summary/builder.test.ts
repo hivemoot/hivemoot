@@ -450,6 +450,39 @@ describe("buildSummary()", () => {
     expect(summary.implement[0].competingPRs).toBe(2);
   });
 
+  it("counts filtered-out competing PRs toward visible implement items", () => {
+    const issue = makeIssue({
+      number: 452,
+      title: "Bug queue",
+      labels: [{ name: "bug" }, { name: "hivemoot:ready-to-implement" }],
+    });
+    const pr1 = makePR({
+      number: 1002,
+      labels: [{ name: "bug" }],
+      closingIssuesReferences: [{ number: 452 }],
+    });
+    const pr2 = makePR({
+      number: 1003,
+      labels: [{ name: "enhancement" }],
+      closingIssuesReferences: [{ number: 452 }],
+    });
+
+    const summary = buildSummary(
+      repo,
+      [issue],
+      [pr1, pr2],
+      "testuser",
+      now,
+      new Map(),
+      new Map(),
+      undefined,
+      { labels: { include: ["bug"] } },
+    );
+
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.implement[0].competingPRs).toBe(2);
+  });
+
   it("does not set competingPRs when no competing PRs exist", () => {
     const issue = makeIssue({ number: 45, title: "User Dashboard" });
 

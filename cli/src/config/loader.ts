@@ -170,6 +170,24 @@ function parseFocusFilters(raw: unknown, path: string): FocusFilters | undefined
   };
 }
 
+function validateFocusBlocks(
+  focuses: Record<string, unknown>,
+): Map<string, FocusFilters | undefined> {
+  const parsedFilters = new Map<string, FocusFilters | undefined>();
+
+  for (const [name, block] of Object.entries(focuses)) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+
+    const focusBlock = block as Record<string, unknown>;
+    parsedFilters.set(
+      name,
+      parseFocusFilters(focusBlock.filters, `team.focuses.${name}.filters`),
+    );
+  }
+
+  return parsedFilters;
+}
+
 // Resolves focus from the team config. Handles two formats:
 // 1. New: team.focuses (dict of FocusBlock) + team.activeFocus (key)
 // 2. Legacy: team.focus.default (plain string)
@@ -179,6 +197,7 @@ function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocusBlock | un
 
   if (rawFocuses && typeof rawFocuses === "object" && !Array.isArray(rawFocuses)) {
     const focuses = rawFocuses as Record<string, unknown>;
+    const parsedFilters = validateFocusBlocks(focuses);
 
     // Determine which block is active.
     const rawActiveFocus = rawTeam.activeFocus;
@@ -208,7 +227,7 @@ function resolveFocus(rawTeam: Record<string, unknown>): ResolvedFocusBlock | un
 
       return {
         objective,
-        filters: parseFocusFilters(b.filters, `team.focuses.${candidate}.filters`),
+        filters: parsedFilters.get(candidate),
       };
     }
 

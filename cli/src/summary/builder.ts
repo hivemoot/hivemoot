@@ -450,7 +450,7 @@ export function buildSummary(
   }
 
   // Annotate implement items with competing PR counts
-  const competitionMap = currentUser ? buildCompetitionMap(visiblePRs, currentUser) : new Map<number, number>();
+  const competitionMap = currentUser ? buildCompetitionMap(prs, currentUser) : new Map<number, number>();
   for (const item of implement) {
     const count = competitionMap.get(item.number) ?? 0;
     if (count > 0) {

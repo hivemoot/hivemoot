@@ -776,6 +776,34 @@ team:
     });
   });
 
+  it("throws INVALID_CONFIG when an inactive focus still uses suppressSections", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Review queue.",
+          },
+          "bug-hunt": {
+            objective: "Fix bugs.",
+            filters: {
+              suppressSections: ["ready-to-implement"],
+            },
+          },
+        },
+        roles: {
+          engineer: { description: "Engineer", instructions: "Build things." },
+        },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    await expect(loadTeamConfig(repo)).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("team.focuses.bug-hunt.filters.suppressSections is not supported"),
+    });
+  });
+
   it("falls back to default block when activeFocus is absent", async () => {
     const focusesYaml = yaml.dump({
       team: {

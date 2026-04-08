@@ -3,6 +3,7 @@ import {
   type BuzzOptions,
   type GitHubIssue,
   type NotificationRef,
+  type RepoSummary,
   type RecentClosedItem,
   type RepoRef,
   type TeamConfig,
@@ -45,11 +46,14 @@ function buildUnackedMentions(
   notifications: NotificationMap,
   processedThreadIds: Set<string>,
   now: Date,
+  visibleOpenNumbers: Set<number>,
+  fetchedOpenNumbers: Set<number>,
 ): NotificationRef[] {
   const mentions: NotificationRef[] = [];
 
   for (const [number, n] of notifications.entries()) {
     if (n.reason !== "mention") continue;
+    if (fetchedOpenNumbers.has(number) && !visibleOpenNumbers.has(number)) continue;
 
     const ackKey = `${n.threadId}:${n.updatedAt}`;
     if (processedThreadIds.has(ackKey)) continue;
@@ -74,6 +78,30 @@ function buildUnackedMentions(
     return a.ackKey.localeCompare(b.ackKey);
   });
   return mentions;
+}
+
+function collectVisibleOpenNumbers(summary: RepoSummary): Set<number> {
+  const visibleOpenNumbers = new Set<number>();
+  const sections = [
+    summary.needsHuman,
+    summary.driveDiscussion,
+    summary.driveImplementation,
+    summary.voteOn,
+    summary.discuss,
+    summary.implement,
+    summary.unclassified ?? [],
+    summary.reviewPRs,
+    summary.draftPRs,
+    summary.addressFeedback,
+  ];
+
+  for (const items of sections) {
+    for (const item of items) {
+      visibleOpenNumbers.add(item.number);
+    }
+  }
+
+  return visibleOpenNumbers;
 }
 
 export async function buzzCommand(options: BuzzOptions): Promise<void> {
@@ -186,7 +214,16 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     teamConfig?.focusFilters,
   );
   const processedThreadIds = await processedThreadIdsPromise;
-  summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
+  const fetchedOpenNumbers = new Set<number>();
+  for (const issue of issues) fetchedOpenNumbers.add(issue.number);
+  for (const pr of prs) fetchedOpenNumbers.add(pr.number);
+  summary.unackedMentions = buildUnackedMentions(
+    notifications,
+    processedThreadIds,
+    new Date(),
+    collectVisibleOpenNumbers(summary),
+    fetchedOpenNumbers,
+  );
   summary.recentlyClosedByYou = recentlyClosedByYou;
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
