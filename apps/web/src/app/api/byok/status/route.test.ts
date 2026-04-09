@@ -121,4 +121,27 @@ describe("GET /api/byok/status", () => {
       expect.anything(),
     );
   });
+
+  it("returns a structured 500 when envelope lookup throws", async () => {
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("redis unavailable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const req = makeRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[byok-status] Failed to process request",
+      expect.objectContaining({
+        installationId: "123",
+        error: expect.any(Error),
+      }),
+    );
+
+    errorSpy.mockRestore();
+  });
 });

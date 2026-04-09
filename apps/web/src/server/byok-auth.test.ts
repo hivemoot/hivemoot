@@ -161,4 +161,29 @@ describe("authenticateByokRequest freshness gate", () => {
       code: "byok_session_stale",
     });
   });
+
+  it("returns a structured 500 when session lookup throws", async () => {
+    mocks.getSetupSession.mockRejectedValue(new Error("redis unavailable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { authenticateByokRequest } = await import("./byok-auth");
+
+    const result = await authenticateByokRequest(makeRequest());
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected failure");
+    expect(result.response.status).toBe(500);
+    await expect(result.response.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[byok-auth] Failed to load setup session",
+      expect.objectContaining({
+        code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+        error: expect.any(Error),
+      }),
+    );
+
+    errorSpy.mockRestore();
+  });
 });

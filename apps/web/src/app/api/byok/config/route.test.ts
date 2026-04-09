@@ -209,4 +209,31 @@ describe("POST /api/byok/config", () => {
       expect.anything(),
     );
   });
+
+  it("returns a structured 500 when storing the envelope throws", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("redis unavailable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-test1234",
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[byok-config] Failed to process request",
+      expect.objectContaining({
+        installationId: "123",
+        error: expect.any(Error),
+      }),
+    );
+
+    errorSpy.mockRestore();
+  });
 });

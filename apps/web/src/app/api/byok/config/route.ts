@@ -41,41 +41,49 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Validate the key with the provider
-  const validation = await validateProviderKey(provider, apiKey, model);
-  if (!validation.valid) {
-    return byokError(
-      BYOK_ERROR.PROVIDER_INVALID,
-      validation.reason ?? "Provider rejected API key",
-      400,
+  try {
+    // Validate the key with the provider
+    const validation = await validateProviderKey(provider, apiKey, model);
+    if (!validation.valid) {
+      return byokError(
+        BYOK_ERROR.PROVIDER_INVALID,
+        validation.reason ?? "Provider rejected API key",
+        400,
+      );
+    }
+
+    // Encrypt the full payload so provider and model are GCM-authenticated
+    const encrypted = encrypt(
+      JSON.stringify({ apiKey, provider, model }),
+      auth.activeKeyVersion,
+      auth.keyring,
     );
+    const envelope: ByokEnvelope = {
+      provider,
+      model,
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+      tag: encrypted.tag,
+      keyVersion: encrypted.keyVersion,
+      status: "active",
+      updatedAt: new Date().toISOString(),
+      updatedBy: auth.session.userLogin,
+      fingerprint: "",
+    };
+
+    await setByokEnvelope(installationId, envelope, auth.redis);
+
+    return NextResponse.json({
+      status: "active",
+      provider,
+      model,
+      updatedAt: envelope.updatedAt,
+    });
+  } catch (error) {
+    console.error("[byok-config] Failed to process request", {
+      installationId,
+      error,
+    });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Internal server error", 500);
   }
-
-  // Encrypt the full payload so provider and model are GCM-authenticated
-  const encrypted = encrypt(
-    JSON.stringify({ apiKey, provider, model }),
-    auth.activeKeyVersion,
-    auth.keyring,
-  );
-  const envelope: ByokEnvelope = {
-    provider,
-    model,
-    ciphertext: encrypted.ciphertext,
-    iv: encrypted.iv,
-    tag: encrypted.tag,
-    keyVersion: encrypted.keyVersion,
-    status: "active",
-    updatedAt: new Date().toISOString(),
-    updatedBy: auth.session.userLogin,
-    fingerprint: "",
-  };
-
-  await setByokEnvelope(installationId, envelope, auth.redis);
-
-  return NextResponse.json({
-    status: "active",
-    provider,
-    model,
-    updatedAt: envelope.updatedAt,
-  });
 }

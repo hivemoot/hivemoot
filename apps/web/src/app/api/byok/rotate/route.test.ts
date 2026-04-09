@@ -160,4 +160,31 @@ describe("POST /api/byok/rotate", () => {
       expect.anything(),
     );
   });
+
+  it("returns a structured 500 when provider validation throws", async () => {
+    vi.mocked(validateProviderKey).mockRejectedValue(new Error("provider unavailable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const req = makeRequest({
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      apiKey: "sk-ant-new-key5678",
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      code: BYOK_ERROR.SERVER_MISCONFIGURATION,
+      message: "Internal server error",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[byok-rotate] Failed to process request",
+      expect.objectContaining({
+        installationId: "123",
+        error: expect.any(Error),
+      }),
+    );
+
+    errorSpy.mockRestore();
+  });
 });
