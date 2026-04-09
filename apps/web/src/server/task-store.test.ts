@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
   addUserMessage,
+  appendTaskArtifacts,
   appendTaskMessage,
   checkTaskCreateRateLimit,
   claimNextPendingTask,
@@ -1182,6 +1183,37 @@ describe("post-transition append failure resilience", () => {
       verifyTaskClaimToken("inst-1", secondClaim.task.task_id, secondClaim.claim_token, redis),
     ).resolves.toBe(false);
   });
+
+  it("expires the artifacts key alongside the messages key on terminal transition", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        prompt: "Investigate",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    const appendResult = await appendTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ url: "https://github.com/hivemoot/hivemoot/pull/1" }],
+      redis,
+    );
+    expect(appendResult.ok).toBe(true);
+
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    const artifactsKey = `task:inst-1:${created.task.task_id}:artifacts`;
+    const messagesKey = `task:inst-1:${created.task.task_id}:messages`;
+    expect(redis._ttl.has(artifactsKey)).toBe(true);
+    expect(redis._ttl.get(artifactsKey)).toBe(redis._ttl.get(messagesKey));
+  });
 });
 
 describe("deleteTask", () => {
@@ -1623,6 +1655,47 @@ describe("retryTask", () => {
     expect(afterRetry[afterRetry.length - 1].content).toContain("retried");
   });
 
+  it("removes artifact TTLs when retrying a failed task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      {
+        prompt: "Retry me",
+        repos: ["hivemoot/hivemoot"],
+        timeout_secs: 300,
+      },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    const appendResult = await appendTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ url: "https://github.com/hivemoot/hivemoot/issues/22" }],
+      redis,
+    );
+    expect(appendResult.ok).toBe(true);
+    await failTask("inst-1", created.task.task_id, "boom", redis);
+
+    const artifactsKey = `task:inst-1:${created.task.task_id}:artifacts`;
+    expect(redis._ttl.has(artifactsKey)).toBe(true);
+
+    const retried = await retryTask("inst-1", created.task.task_id, redis);
+    expect(retried.ok).toBe(true);
+    expect(redis._ttl.has(artifactsKey)).toBe(false);
+
+    const task = await getTask("inst-1", created.task.task_id, redis);
+    expect(task?.artifacts).toEqual([
+      {
+        type: "issue",
+        url: "https://github.com/hivemoot/hivemoot/issues/22",
+        number: 22,
+      },
+    ]);
+  });
+
   it("returns not_found for a nonexistent task", async () => {
     const result = await retryTask("inst-1", "aabbccddeeff001122334455", redis);
     expect(result).toEqual({ ok: false, reason: "not_found" });
@@ -1868,6 +1941,41 @@ describe("addUserMessage", () => {
     expect(redis._ttl.has(taskTtlKey)).toBe(false);
   });
 
+  it("removes artifact TTLs when reviving a completed task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    const appendResult = await appendTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ url: "https://github.com/hivemoot/hivemoot/commit/abc1234" }],
+      redis,
+    );
+    expect(appendResult.ok).toBe(true);
+    await completeTask("inst-1", created.task.task_id, "Done", redis);
+
+    const artifactsKey = `task:inst-1:${created.task.task_id}:artifacts`;
+    expect(redis._ttl.has(artifactsKey)).toBe(true);
+
+    await addUserMessage("inst-1", created.task.task_id, "Reopen", redis);
+    expect(redis._ttl.has(artifactsKey)).toBe(false);
+
+    const task = await getTask("inst-1", created.task.task_id, redis);
+    expect(task?.artifacts).toEqual([
+      {
+        type: "commit",
+        url: "https://github.com/hivemoot/hivemoot/commit/abc1234",
+      },
+    ]);
+  });
+
   it("does not return success when terminal TTL removal fails", async () => {
     const created = await createTask(
       "inst-1",
@@ -1953,5 +2061,194 @@ describe("addUserMessage", () => {
     const userMsg = messages[messages.length - 2];
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Do more");
+  });
+});
+
+describe("appendTaskArtifacts", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  async function createRunningTask() {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Do the thing", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("task creation failed");
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    return created.task.task_id;
+  }
+
+  it("appends artifacts and exposes them through getTask", async () => {
+    const taskId = await createRunningTask();
+
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [
+        { url: "https://github.com/hivemoot/hivemoot/pull/12", title: "Fix the deploy bug" },
+        { url: "https://github.com/hivemoot/hivemoot/issues/18" },
+      ],
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.artifacts).toEqual([
+      {
+        type: "pull_request",
+        url: "https://github.com/hivemoot/hivemoot/pull/12",
+        number: 12,
+        title: "Fix the deploy bug",
+      },
+      {
+        type: "issue",
+        url: "https://github.com/hivemoot/hivemoot/issues/18",
+        number: 18,
+      },
+    ]);
+
+    const task = await getTask("inst-1", taskId, redis);
+    expect(task?.artifacts).toEqual(result.artifacts);
+  });
+
+  it("rejects artifacts scoped to a different repo", async () => {
+    const taskId = await createRunningTask();
+
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/other-org/other-repo/pull/1" }],
+      redis,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "validation_failed" });
+  });
+
+  it("rejects same-repo urls that are not recognized GitHub objects", async () => {
+    const taskId = await createRunningTask();
+
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/releases/tag/v1.0.0" }],
+      redis,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "validation_failed" });
+  });
+
+  it("derives artifact type and number from the url instead of trusting caller input", async () => {
+    const taskId = await createRunningTask();
+
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "issue", number: 999, url: "https://github.com/hivemoot/hivemoot/pull/5" }],
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.artifacts).toEqual([
+      {
+        type: "pull_request",
+        url: "https://github.com/hivemoot/hivemoot/pull/5",
+        number: 5,
+      },
+    ]);
+  });
+
+  it("parses issue_comment urls using the comment id in the fragment", async () => {
+    const taskId = await createRunningTask();
+
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/issues/8#issuecomment-12345" }],
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.artifacts).toEqual([
+      {
+        type: "issue_comment",
+        url: "https://github.com/hivemoot/hivemoot/issues/8#issuecomment-12345",
+        number: 12345,
+      },
+    ]);
+  });
+
+  it("caps a task at 20 artifacts across multiple requests", async () => {
+    const taskId = await createRunningTask();
+
+    for (let i = 1; i <= 20; i += 1) {
+      const result = await appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ url: `https://github.com/hivemoot/hivemoot/issues/${i}` }],
+        redis,
+      );
+      expect(result.ok).toBe(true);
+    }
+
+    const capped = await appendTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ url: "https://github.com/hivemoot/hivemoot/issues/21" }],
+      redis,
+    );
+
+    expect(capped).toEqual({ ok: false, reason: "cap_exceeded" });
+  });
+
+  it("preserves both concurrent writes under the installation lock", async () => {
+    const taskId = await createRunningTask();
+
+    const [first, second] = await Promise.all([
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ url: "https://github.com/hivemoot/hivemoot/pull/41" }],
+        redis,
+      ),
+      appendTaskArtifacts(
+        "inst-1",
+        taskId,
+        [{ url: "https://github.com/hivemoot/hivemoot/issues/42" }],
+        redis,
+      ),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    const task = await getTask("inst-1", taskId, redis);
+    expect(task?.artifacts).toHaveLength(2);
+    expect(task?.artifacts?.map((artifact) => artifact.url).sort()).toEqual([
+      "https://github.com/hivemoot/hivemoot/issues/42",
+      "https://github.com/hivemoot/hivemoot/pull/41",
+    ]);
+  });
+
+  it("returns not_found for missing tasks", async () => {
+    const result = await appendTaskArtifacts(
+      "inst-1",
+      "aabbccddeeff001122334455",
+      [{ url: "https://github.com/hivemoot/hivemoot/pull/1" }],
+      redis,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 });

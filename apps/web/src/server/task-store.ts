@@ -32,6 +32,17 @@ export interface TaskMessage {
 
 const MAX_MESSAGE_CONTENT_CHARS = 128_000;
 const MAX_MESSAGES_PER_TASK = 200;
+const MAX_ARTIFACTS_PER_TASK = 20;
+const MAX_ARTIFACT_TITLE_CHARS = 200;
+
+export type TaskArtifactType = "pull_request" | "issue" | "issue_comment" | "commit";
+
+export interface TaskArtifact {
+  type: TaskArtifactType;
+  url: string;
+  number?: number;
+  title?: string;
+}
 
 export interface TaskRecord {
   task_id: string;
@@ -46,6 +57,7 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
+  artifacts?: TaskArtifact[];
 }
 
 export interface ClaimedTask {
@@ -119,6 +131,10 @@ function taskMessagesKey(installationId: string, taskId: string): string {
 
 function taskClaimTokenHashKey(installationId: string, taskId: string): string {
   return `task:${installationId}:${taskId}:claim-token-hash`;
+}
+
+function taskArtifactsKey(installationId: string, taskId: string): string {
+  return `task:${installationId}:${taskId}:artifacts`;
 }
 
 function pendingKey(installationId: string): string {
@@ -303,6 +319,7 @@ async function cleanupMissingTask(
     .del(taskProgressKey(installationId, taskId))
     .del(taskMessagesKey(installationId, taskId))
     .del(taskClaimTokenHashKey(installationId, taskId))
+    .del(taskArtifactsKey(installationId, taskId))
     .exec();
 }
 
@@ -329,13 +346,19 @@ async function buildTaskRecord(
   stored: StoredTaskRecord,
   redis: Redis,
 ): Promise<TaskRecord> {
-  const progressRaw = await redis.get(taskProgressKey(installationId, stored.task_id));
+  const [progressRaw, artifactsRaw] = await Promise.all([
+    redis.get(taskProgressKey(installationId, stored.task_id)),
+    redis.get(taskArtifactsKey(installationId, stored.task_id)),
+  ]);
 
   const task: TaskRecord = {
     ...stored,
   };
 
   if (typeof progressRaw === "string") task.progress = progressRaw;
+  if (Array.isArray(artifactsRaw) && artifactsRaw.length > 0) {
+    task.artifacts = artifactsRaw as TaskArtifact[];
+  }
 
   return task;
 }
@@ -621,12 +644,15 @@ async function finalizeTask(
         .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
         .exec();
 
-      // Best-effort: expire the messages list alongside the task data.
+      // Best-effort: expire the messages/artifacts keys alongside the task data.
       // The task has already been finalized so a failure here must not propagate.
       try {
-        await redis.expire(taskMessagesKey(installationId, taskId), ttl);
+        await Promise.all([
+          redis.expire(taskMessagesKey(installationId, taskId), ttl),
+          redis.expire(taskArtifactsKey(installationId, taskId), ttl),
+        ]);
       } catch (error) {
-        console.error("[tasks] Failed to expire messages key (task finalized)", {
+        console.error("[tasks] Failed to expire task side-channel keys (task finalized)", {
           installationId,
           taskId,
           error,
@@ -1017,6 +1043,7 @@ export async function deleteTask(
       .del(taskKey(installationId, taskId))
       .del(taskProgressKey(installationId, taskId))
       .del(taskMessagesKey(installationId, taskId))
+      .del(taskArtifactsKey(installationId, taskId))
       .zrem(pendingKey(installationId), taskId)
       .zrem(runningKey(installationId), taskId)
       .zrem(recentKey(installationId), taskId)
@@ -1056,6 +1083,7 @@ export async function retryTask(
         .persist(taskKey(installationId, taskId))
         .persist(taskProgressKey(installationId, taskId))
         .persist(taskMessagesKey(installationId, taskId))
+        .persist(taskArtifactsKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), progress)
         .zrem(runningKey(installationId), taskId)
@@ -1164,6 +1192,154 @@ export async function getTaskMessages(
   }
 
   return messages;
+}
+
+function parseArtifactMetadata(
+  url: string,
+): { type: TaskArtifactType; number?: number } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+    return null;
+  }
+
+  const parts = parsed.pathname.replace(/^\//, "").split("/");
+  if (parts.length < 4) return null;
+
+  const kind = parts[2];
+  const segment = parts[3];
+
+  if (kind === "pull") {
+    const number = Number.parseInt(segment, 10);
+    if (!Number.isInteger(number) || number <= 0 || String(number) !== segment) {
+      return null;
+    }
+    return { type: "pull_request", number };
+  }
+
+  if (kind === "issues") {
+    const issueNumber = Number.parseInt(segment, 10);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0 || String(issueNumber) !== segment) {
+      return null;
+    }
+
+    const commentMatch = parsed.hash.match(/^#issuecomment-(\d+)$/);
+    if (commentMatch) {
+      const commentId = Number.parseInt(commentMatch[1], 10);
+      if (!Number.isInteger(commentId) || commentId <= 0) {
+        return null;
+      }
+      return { type: "issue_comment", number: commentId };
+    }
+
+    return { type: "issue", number: issueNumber };
+  }
+
+  if (kind === "commit") {
+    if (!/^[0-9a-f]{7,40}$/i.test(segment)) {
+      return null;
+    }
+    return { type: "commit" };
+  }
+
+  return null;
+}
+
+function validateArtifactRepoScope(url: string, repos: string[]): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+      return false;
+    }
+
+    const pathParts = parsed.pathname.replace(/^\//, "").split("/");
+    if (pathParts.length < 2) return false;
+
+    const repoSlug = `${pathParts[0]}/${pathParts[1]}`.toLowerCase();
+    return repos.some((repo) => repo.toLowerCase() === repoSlug);
+  } catch {
+    return false;
+  }
+}
+
+function parseArtifact(raw: unknown, repos: string[]): TaskArtifact | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.url !== "string" || !validateArtifactRepoScope(obj.url, repos)) {
+    return null;
+  }
+
+  const metadata = parseArtifactMetadata(obj.url);
+  if (!metadata) return null;
+
+  const artifact: TaskArtifact = {
+    type: metadata.type,
+    url: obj.url,
+  };
+
+  if (metadata.number !== undefined) {
+    artifact.number = metadata.number;
+  }
+
+  if (typeof obj.title === "string" && obj.title.trim().length > 0) {
+    artifact.title = obj.title.trim().slice(0, MAX_ARTIFACT_TITLE_CHARS);
+  }
+
+  return artifact;
+}
+
+export type AppendArtifactsResult =
+  | { ok: true; artifacts: TaskArtifact[] }
+  | { ok: false; reason: "not_found" | "cap_exceeded" | "validation_failed" | "lock_timeout" };
+
+export async function appendTaskArtifacts(
+  installationId: string,
+  taskId: string,
+  incoming: unknown[],
+  redis: Redis,
+): Promise<AppendArtifactsResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) {
+        return { ok: false, reason: "not_found" };
+      }
+
+      const parsedArtifacts: TaskArtifact[] = [];
+      for (const raw of incoming) {
+        const artifact = parseArtifact(raw, stored.repos);
+        if (!artifact) {
+          return { ok: false, reason: "validation_failed" };
+        }
+        parsedArtifacts.push(artifact);
+      }
+
+      const existingRaw = await redis.get(taskArtifactsKey(installationId, taskId));
+      const existingArtifacts = Array.isArray(existingRaw)
+        ? existingRaw as TaskArtifact[]
+        : [];
+
+      if (existingArtifacts.length + parsedArtifacts.length > MAX_ARTIFACTS_PER_TASK) {
+        return { ok: false, reason: "cap_exceeded" };
+      }
+
+      const updatedArtifacts = [...existingArtifacts, ...parsedArtifacts];
+      await redis.set(taskArtifactsKey(installationId, taskId), updatedArtifacts);
+
+      return { ok: true, artifacts: updatedArtifacts };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      return { ok: false, reason: "lock_timeout" };
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1379,6 +1555,7 @@ export async function addUserMessage(
         .persist(taskKey(installationId, taskId))
         .persist(taskProgressKey(installationId, taskId))
         .persist(taskMessagesKey(installationId, taskId))
+        .persist(taskArtifactsKey(installationId, taskId))
         .set(taskKey(installationId, taskId), nextStored)
         .set(taskProgressKey(installationId, taskId), "Re-queued with new message")
         .zadd(pendingKey(installationId), { score: Date.now(), member: taskId })

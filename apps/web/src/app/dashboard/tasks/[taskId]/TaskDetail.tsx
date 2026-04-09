@@ -11,7 +11,7 @@ import {
   taskComposerPlaceholder,
 } from "../task-helpers";
 import { MarkdownContent } from "../../MarkdownContent";
-import { type TaskMessage, type TaskRecord } from "../types";
+import { type TaskArtifact, type TaskMessage, type TaskRecord } from "../types";
 
 // ---------------------------------------------------------------------------
 // Icons
@@ -192,6 +192,25 @@ function RepoIcon({ className }: { className?: string }) {
   );
 }
 
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-3 w-3"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3" />
+      <path d="M10 2h4v4" />
+      <line x1="14" y1="2" x2="7" y2="9" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -310,6 +329,31 @@ function canSendMessage(status: string): boolean {
 
 function messageEndpoint(status: string): "messages" | "follow-up" {
   return status === "needs_follow_up" ? "follow-up" : "messages";
+}
+
+function artifactLabel(artifact: TaskArtifact): string {
+  if (artifact.title) return artifact.title;
+  if (artifact.number !== undefined) {
+    if (artifact.type === "pull_request") return `PR #${artifact.number}`;
+    if (artifact.type === "issue") return `Issue #${artifact.number}`;
+    if (artifact.type === "issue_comment") return `Comment #${artifact.number}`;
+  }
+  if (artifact.type === "commit") return "Commit";
+  return artifact.type.replace(/_/g, " ");
+}
+
+function ArtifactBadge({ artifact }: { artifact: TaskArtifact }) {
+  return (
+    <a
+      href={artifact.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.04] px-2.5 py-1 text-xs text-zinc-400 transition-colors hover:border-white/10 hover:text-zinc-300"
+    >
+      <ExternalLinkIcon className="h-3 w-3 shrink-0 text-zinc-600" />
+      <span>{artifactLabel(artifact)}</span>
+    </a>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +696,17 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
         {task.error && isTerminal(task.status) && (
           <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5">
             <p className="text-sm text-red-400">{task.error}</p>
+          </div>
+        )}
+
+        {task.artifacts && task.artifacts.length > 0 && (
+          <div className="mt-4">
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-600">Outputs</p>
+            <div className="flex flex-wrap gap-2">
+              {task.artifacts.map((artifact, index) => (
+                <ArtifactBadge key={`${artifact.url}-${index}`} artifact={artifact} />
+              ))}
+            </div>
           </div>
         )}
       </div>
