@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   less \
   openssh-client \
   procps \
-  python3-minimal \
+  python3 \
   ripgrep \
   tini \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
