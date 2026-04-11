@@ -412,6 +412,14 @@ workload_skills_dir() {
   printf '%s' ""
 }
 
+workload_pre_execute() {
+  return 0
+}
+
+workload_post_execute() {
+  return 0
+}
+
 integration_preflight_creds() {
   return 0
 }

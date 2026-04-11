@@ -3088,5 +3088,236 @@ run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
 run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
+# ── Messaging trigger tests ────────────────────────────────────────────────
+
+run_messaging_trigger_prepare_job_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  mkdir -p "$case_dir"
+
+  # Source the controller files in a subshell and call prepare_job
+  # directly to verify it sets the correct context variables.
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2154,SC1091
+  (
+    set -euo pipefail
+    export SHARED_DIR="${repo_root}/shared"
+    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
+    export WORKLOADS_BASE_DIR="${repo_root}/workloads"
+    export INTEGRATION_DIR="${repo_root}/integrations"
+
+    workspace_root="${case_dir}/workspace"
+    messaging_homes_root="${workspace_root}/messaging-homes"
+    messaging_sessions_root="${workspace_root}/messaging-sessions"
+    mkdir -p "$messaging_homes_root" "$messaging_sessions_root"
+
+    . "${repo_root}/shared/lib.sh"
+    TRIGGER_DIR="${repo_root}/controller/triggers"
+    . "${TRIGGER_DIR}/common.sh"
+    . "${TRIGGER_DIR}/messaging.sh"
+
+    controller_reset_trigger_job_context
+    controller_trigger_prepare_job__messaging \
+      "job-001" "owner/repo" "chat-agent" "${case_dir}/ws" "/tmp/home" \
+      "claude" "" "" "" "" "" "tg:55555"
+
+    [ -n "$controller_trigger_prepared_job_home" ] \
+      || { echo "FAIL: prepared_job_home is empty" >&2; exit 1; }
+    [ "$controller_trigger_prepared_skip_credential_cleanup" -eq 1 ] \
+      || { echo "FAIL: skip_credential_cleanup not set" >&2; exit 1; }
+    [ "$controller_trigger_prepared_session_key" = "tg:55555" ] \
+      || { echo "FAIL: session_key mismatch (got ${controller_trigger_prepared_session_key})" >&2; exit 1; }
+    [ -n "$controller_trigger_prepared_persistent_session_dir" ] \
+      || { echo "FAIL: persistent_session_dir is empty" >&2; exit 1; }
+    [ -d "$controller_trigger_prepared_job_home" ] \
+      || { echo "FAIL: persistent home not created" >&2; exit 1; }
+    [ -d "${controller_trigger_prepared_persistent_session_dir}/sessions/claude" ] \
+      || { echo "FAIL: persistent session dir not created" >&2; exit 1; }
+  ) || fail "messaging prepare_job subshell failed"
+
+  echo "PASS: messaging prepare_job hook sets correct context variables and creates persistent dirs"
+}
+
+run_messaging_validation_rejection_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_log="${case_dir}/controller.log"
+  local exit_code=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+
+  # WATCH_MESSAGING=1 without MESSAGING_AGENT_ID should fail.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MESSAGING="1" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || exit_code=$?
+
+  if [ "$exit_code" -eq 0 ]; then
+    fail "expected controller to reject WATCH_MESSAGING=1 without MESSAGING_AGENT_ID"
+  fi
+  assert_file_contains "$controller_log" "MESSAGING_AGENT_ID is required"
+
+  # WATCH_MESSAGING=1 in once mode should also fail.
+  exit_code=0
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace2" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks2" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp2" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MESSAGING="1" \
+    MESSAGING_AGENT_ID="worker" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 || exit_code=$?
+
+  if [ "$exit_code" -eq 0 ]; then
+    fail "expected controller to reject WATCH_MESSAGING=1 in once mode"
+  fi
+  assert_file_contains "$controller_log" "requires CONTROLLER_RUN_MODE=loop"
+
+  echo "PASS: messaging validation rejects missing agent ID and once mode"
+}
+
+run_messaging_dedup_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  mkdir -p "$case_dir"
+
+  # Test that queue_has_ack_key correctly deduplicates messaging triggers.
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2154,SC1091
+  (
+    set -euo pipefail
+    export SHARED_DIR="${repo_root}/shared"
+    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
+    export INTEGRATION_DIR="${repo_root}/integrations"
+
+    workspace_root="${case_dir}/workspace"
+    queue_root="${workspace_root}/queue"
+    watch_trigger_failure_backoff_secs=0
+    messaging_homes_root="${workspace_root}/messaging-homes"
+    messaging_sessions_root="${workspace_root}/messaging-sessions"
+    mkdir -p "$queue_root" "$messaging_homes_root" "$messaging_sessions_root"
+
+    . "${repo_root}/shared/lib.sh"
+    CORE_DIR="${repo_root}/controller/core"
+    . "${CORE_DIR}/common.sh"
+    TRIGGER_DIR="${repo_root}/controller/triggers"
+    . "${TRIGGER_DIR}/common.sh"
+    . "${TRIGGER_DIR}/messaging.sh"
+
+    # Write a trigger via the standard function.
+    write_trigger_file "messaging" "owner/repo" "chat" \
+      "First message" "tg-msg:200001" "" "tg:99999"
+
+    # The same ack_key should now be found in the queue.
+    if ! queue_has_ack_key "tg-msg:200001"; then
+      echo "FAIL: queue_has_ack_key should find existing ack_key" >&2
+      exit 1
+    fi
+
+    # A different ack_key should NOT be found.
+    if queue_has_ack_key "tg-msg:999999"; then
+      echo "FAIL: queue_has_ack_key should not find different ack_key" >&2
+      exit 1
+    fi
+  ) || fail "messaging dedup subshell failed"
+
+  echo "PASS: messaging ack_key deduplication works correctly"
+}
+
+run_messaging_duplicate_agent_ack_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local send_log="${case_dir}/send.log"
+
+  mkdir -p "$case_dir"
+
+  # Verify that on_duplicate_agent sends exactly one ack across
+  # multiple queue passes.  The ack flag in the JSON prevents spam.
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2154,SC1091,SC2317,SC2329
+  (
+    set -euo pipefail
+    export SHARED_DIR="${repo_root}/shared"
+    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
+    export INTEGRATION_DIR="${repo_root}/integrations"
+
+    workspace_root="${case_dir}/workspace"
+    queue_root="${workspace_root}/queue"
+    messaging_homes_root="${workspace_root}/messaging-homes"
+    messaging_sessions_root="${workspace_root}/messaging-sessions"
+    mkdir -p "$queue_root" "$messaging_homes_root" "$messaging_sessions_root"
+
+    . "${repo_root}/shared/lib.sh"
+    CORE_DIR="${repo_root}/controller/core"
+    . "${CORE_DIR}/common.sh"
+    TRIGGER_DIR="${repo_root}/controller/triggers"
+    . "${TRIGGER_DIR}/common.sh"
+    . "${TRIGGER_DIR}/messaging.sh"
+
+    # Stub platform functions.
+    messaging_platform_send() { printf '%s|%s\n' "$1" "$2" >> "$send_log"; }
+    messaging_platform_extract_chat_id() { printf '%s' "${1#tg:}"; }
+
+    # Simulate a .processing file (first queue pass).
+    local proc_file="${queue_root}/msg-dup.processing"
+    printf '{"trigger_type":"messaging","repo":"owner/repo","agent_id":"chat","extra_prompt":"hi","ack_key":"tg-msg:1","state_file":"","session_key":"tg:55555"}' > "$proc_file"
+
+    # Pass 1: should send ack and mark file as acked.
+    controller_trigger_on_duplicate_agent__messaging "$proc_file"
+
+    local requeued_file="${queue_root}/msg-dup.trigger.json"
+    [ -f "$requeued_file" ] || { echo "FAIL: trigger not requeued after pass 1" >&2; exit 1; }
+
+    # Verify the acked flag was written into the JSON.
+    local acked_val=""
+    acked_val="$(jq -r '.messaging_acked' "$requeued_file" 2>/dev/null)"
+    [ "$acked_val" = "true" ] || { echo "FAIL: messaging_acked not set in requeued file (got ${acked_val})" >&2; exit 1; }
+
+    # Pass 2: simulate next queue cycle — rename back to .processing.
+    mv "$requeued_file" "$proc_file"
+    controller_trigger_on_duplicate_agent__messaging "$proc_file"
+
+    # Pass 3: one more cycle.
+    requeued_file="${queue_root}/msg-dup.trigger.json"
+    [ -f "$requeued_file" ] || { echo "FAIL: trigger not requeued after pass 3" >&2; exit 1; }
+    mv "$requeued_file" "$proc_file"
+    controller_trigger_on_duplicate_agent__messaging "$proc_file"
+  ) || fail "messaging duplicate-agent ack subshell failed"
+
+  # Verify exactly ONE ack was sent across three queue passes.
+  [ -f "$send_log" ] || fail "expected send log to exist"
+  local ack_count=""
+  ack_count="$(wc -l < "$send_log" | tr -d '[:space:]')"
+  assert_eq "1" "$ack_count" "expected exactly one ack across three queue passes (got ${ack_count})"
+  assert_file_contains "$send_log" "55555|"
+
+  echo "PASS: on_duplicate_agent sends exactly one ack across repeated queue passes"
+}
+
 run_task_oom_failure_case "$repo_root" "${tmpdir}/task-oom-failure"
+run_messaging_trigger_prepare_job_case "$repo_root" "${tmpdir}/messaging-prepare-job"
+run_messaging_validation_rejection_case "$repo_root" "${tmpdir}/messaging-validation"
+run_messaging_dedup_case "$repo_root" "${tmpdir}/messaging-dedup"
+run_messaging_duplicate_agent_ack_case "$repo_root" "${tmpdir}/messaging-dup-ack"
 echo "PASS: controller script checks"

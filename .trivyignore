@@ -1,12 +1,8 @@
-# exp:2026-06-19 - gh CLI embeds grpc as a client; server-side :path bypass (CVE-2026-33186)
-# is not reachable. Track https://github.com/cli/cli for a release with grpc >= v1.79.3.
-# Refs: #425
-CVE-2026-33186
-
-# exp:2026-06-30 - path-to-regexp ReDoS (CVE-2026-4926) via @google/gemini-cli transitive
-# dep (router → path-to-regexp 8.3.0). Fix requires gemini-cli upstream to bump to >= 8.4.0.
-CVE-2026-4926
-
 # exp:2026-06-30 - picomatch ReDoS (CVE-2026-33671) via @google/gemini-cli transitive dep
 # (fdir → picomatch). Fix requires gemini-cli upstream to bump to >= 4.0.4.
 CVE-2026-33671
+
+# exp:2026-06-30 - openssh-client GSSAPI info disclosure / DoS (CVE-2026-3497). Agents use
+# SSH only for git clone over SSH; GSSAPI auth is not configured. Fix requires Debian to
+# ship openssh >= 1:9.2p1-2+deb12u9 in the base image.
+CVE-2026-3497

@@ -295,7 +295,13 @@ else
 fi
 
 session_resume_key="$(build_scoped_session_key "$agent_session_key" "$target_repo" "$provider" "$agent_model" "$agent_tool_options_json")"
-provider_session_map_dir="${workspace_root}/sessions/${provider}"
+# Use a persistent session-map directory when the controller provides one
+# (messaging triggers).  Otherwise fall back to the per-job workspace.
+if [ -n "${PERSISTENT_SESSION_DIR:-}" ] && [ -d "$PERSISTENT_SESSION_DIR" ]; then
+  provider_session_map_dir="${PERSISTENT_SESSION_DIR}/sessions/${provider}"
+else
+  provider_session_map_dir="${workspace_root}/sessions/${provider}"
+fi
 provider_session_map_file="${provider_session_map_dir}/tool-session-map.tsv"
 
 # ── Identity ──────────────────────────────────────────────────────
@@ -896,6 +902,7 @@ run_selected_command() {
 last_command_log="$log_file"
 _event_seq=$((_event_seq + 1))
 log_event "$events_file" run.start "$agent_name" "$run_id" "$_event_seq"
+workload_pre_execute
 run_selected_command
 
 # Strict policy: at most one resume failure before forcing fresh.
@@ -954,6 +961,10 @@ if [ "$provider" = "claude" ] && [ -n "$session_resume_key" ] && [ "$exit_code" 
     log "Claude session id not found in log for key=${agent_session_key}"
   fi
 fi
+
+# Let the workload handle post-execution concerns (e.g. messaging
+# workload sends the response back and stops the typing indicator).
+workload_post_execute "$exit_code" "${last_command_log:-}" "$provider"
 
 if [ "$exit_code" -eq 124 ]; then
   log "Run timed out after ${timeout_secs}s"

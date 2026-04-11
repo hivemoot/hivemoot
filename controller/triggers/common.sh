@@ -151,6 +151,9 @@ controller_reset_trigger_job_context() {
   controller_trigger_prepared_codex_answer_host_path=""
   controller_trigger_prepared_codex_answer_worker_path=""
   controller_trigger_background_pid=""
+  controller_trigger_prepared_job_home=""
+  controller_trigger_prepared_persistent_session_dir=""
+  controller_trigger_prepared_skip_credential_cleanup=0
 }
 
 requeue_processing_file() {

@@ -79,7 +79,16 @@ run_loop_mode() {
     start_review_request_watchers
   fi
 
+  if [ "$watch_messaging" = "1" ]; then
+    start_messaging_watcher
+  fi
+
   for agent_id in "${agent_ids[@]}"; do
+    # Messaging agent handles interactive chat — exclude from periodic
+    # autonomous scheduling to avoid conflicts.
+    if [ "$watch_messaging" = "1" ] && [ "$agent_id" = "$messaging_agent_id" ]; then
+      continue
+    fi
     offset="$(compute_agent_offset "$target_repo" "$agent_id" "$periodic_interval")"
     start_agent_scheduler "$agent_id" "$offset"
   done

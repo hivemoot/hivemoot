@@ -72,6 +72,8 @@ fi
 . "${TRIGGER_DIR}/hivemoot-task.sh"
 # shellcheck source=controller/triggers/periodic.sh
 . "${TRIGGER_DIR}/periodic.sh"
+# shellcheck source=controller/triggers/messaging.sh
+. "${TRIGGER_DIR}/messaging.sh"
 
 # shellcheck source=controller/core/common.sh
 . "${CORE_DIR}/common.sh"
@@ -104,6 +106,11 @@ watch_trigger_failure_backoff_secs="${WATCH_TRIGGER_FAILURE_BACKOFF_SECS:-300}"
 task_poll_interval_secs="${TASK_POLL_INTERVAL_SECS:-120}"
 task_heartbeat_interval_seconds="${AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS:-45}"
 task_dispatch_agent_ids="${TASK_DISPATCH_AGENT_IDS:-}"
+watch_messaging="${WATCH_MESSAGING:-0}"
+messaging_agent_id="${MESSAGING_AGENT_ID:-}"
+# shellcheck disable=SC2034  # used by triggers/messaging.sh
+messaging_target_repo="${MESSAGING_TARGET_REPO:-}"
+global_slot_timeout_messaging_secs="${GLOBAL_SLOT_TIMEOUT_MESSAGING_SECS:-600}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
 workspace_ttl_secs="${WORKSPACE_TTL_SECS:-86400}"
@@ -119,6 +126,8 @@ workspaces_root="${workspace_root}/workspaces"
 homes_root="${workspace_root}/homes"
 queue_root="${workspace_root}/queue"
 watch_state_root="${workspace_root}/watch-state"
+messaging_homes_root="${workspace_root}/messaging-homes"
+messaging_sessions_root="${workspace_root}/messaging-sessions"
 lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
@@ -146,6 +155,9 @@ controller_trigger_prepared_session_key=""
 controller_trigger_prepared_codex_answer_host_path=""
 controller_trigger_prepared_codex_answer_worker_path=""
 controller_trigger_background_pid=""
+controller_trigger_prepared_job_home=""
+controller_trigger_prepared_persistent_session_dir=""
+controller_trigger_prepared_skip_credential_cleanup=0
 
 declare -a temp_token_files=()
 declare -a running_pids=()
@@ -274,9 +286,32 @@ if [ "$watch_mentions" = "1" ] || [ "$watch_review_requests" = "1" ]; then
     exit 1
   fi
 fi
+if [ "$watch_messaging" = "1" ] && [ "$controller_mode" = "once" ]; then
+  echo "WATCH_MESSAGING=1 requires CONTROLLER_RUN_MODE=loop (once mode has no poll loop)." >&2
+  exit 1
+fi
+if [ "$watch_messaging" = "1" ] && [ "$watch_tasks" = "1" ]; then
+  echo "WATCH_MESSAGING=1 and WATCH_TASKS=1 cannot be used together (task-watch returns before messaging starts)." >&2
+  exit 1
+fi
+if [ "$watch_messaging" = "1" ]; then
+  if [ -z "$messaging_agent_id" ]; then
+    echo "MESSAGING_AGENT_ID is required when WATCH_MESSAGING=1" >&2
+    exit 1
+  fi
+  if ! messaging_load_platform; then
+    exit 1
+  fi
+  if ! messaging_platform_check_deps; then
+    exit 1
+  fi
+  if ! messaging_platform_validate_config; then
+    exit 1
+  fi
+fi
 
-mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root"
-chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
+mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root"
+chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 init_global_slots "$global_slots_dir" "$global_max_workers"
 declare -A seen_agents=()
@@ -303,6 +338,10 @@ done
 
 if [ "$watch_tasks" = "1" ]; then
   load_task_dispatch_agent_scope "$task_dispatch_agent_ids"
+fi
+if [ "$watch_messaging" = "1" ] && [ -z "${agent_token_files[$messaging_agent_id]:-}" ]; then
+  echo "MESSAGING_AGENT_ID '${messaging_agent_id}' is not a configured agent slot." >&2
+  exit 1
 fi
 
 for slot in $(seq 1 "$max_agents"); do
@@ -337,6 +376,9 @@ else
     log "Review-request watching enabled (poll interval: ${watch_poll_interval}s)"
   else
     log "Review-request watching disabled"
+  fi
+  if [ "$watch_messaging" = "1" ]; then
+    log "Messaging enabled (platform=${MESSAGING_PLATFORM:-telegram}, agent=${messaging_agent_id})"
   fi
 fi
 

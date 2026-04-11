@@ -54,6 +54,19 @@ spawn_worker() {
     -v "${token_file}:/run/secrets/agent_token:ro"
   )
 
+  # Tag messaging containers so injection logic can find them by session key.
+  # Scoped to messaging triggers to avoid labeling mention/task containers.
+  if [ -n "$session_key" ] && [ "$worker_trigger" = "messaging" ]; then
+    docker_run_args+=( --label "hivemoot.messaging.session_key=${session_key}" )
+  fi
+
+  # Mount persistent session-map directory when the trigger provides one.
+  if [ -n "${controller_trigger_prepared_persistent_session_dir:-}" ]; then
+    docker_run_args+=(
+      -v "${controller_trigger_prepared_persistent_session_dir}:/workspace/persistent-sessions"
+    )
+  fi
+
   local codex_auth_file="${CODEX_AUTH_FILE:-}"
   if [ -n "$codex_auth_file" ] && [ -f "$codex_auth_file" ]; then
     mkdir -p "${job_home}/.codex"
@@ -105,6 +118,16 @@ spawn_worker() {
   if [ -n "$session_key" ]; then
     docker_run_args+=( -e "AGENT_SESSION_KEY=${session_key}" )
   fi
+  if [ -n "${controller_trigger_prepared_persistent_session_dir:-}" ]; then
+    docker_run_args+=( -e "PERSISTENT_SESSION_DIR=/workspace/persistent-sessions" )
+  fi
+  # Messaging jobs use the persistent HOME mounted at /home/node.  Setting
+  # REPO_DIR/LOG_DIR enables managed mode in run-once.sh, which skips
+  # per-job HOME creation and keeps HOME=/home/node.
+  if [ -n "${controller_trigger_prepared_job_home:-}" ]; then
+    docker_run_args+=( -e "REPO_DIR=/workspace/repo" )
+    docker_run_args+=( -e "LOG_DIR=/workspace/runs" )
+  fi
   if [ -n "$task_id" ]; then
     docker_run_args+=( -e "AGENT_TASK_ID=${task_id}" )
   fi
@@ -136,6 +159,8 @@ spawn_worker() {
   append_env_if_set HEALTH_REPORT_TIMEOUT_SECS
   append_env_if_set HEALTH_REPORT_MAX_RETRIES
   append_env_if_set HEALTH_REPORT_RUN_SUMMARY
+  append_env_if_set MESSAGING_PLATFORM
+  append_env_if_set MESSAGING_ALLOWED_CHAT_IDS
 
   append_secret_env HIVEMOOT_AGENT_TOKEN
   append_secret_env OPENAI_API_KEY
@@ -144,6 +169,7 @@ spawn_worker() {
   append_secret_env ANTHROPIC_API_KEY
   append_secret_env OPENROUTER_API_KEY
   append_secret_env CLAUDE_CODE_OAUTH_TOKEN
+  append_secret_env TELEGRAM_BOT_TOKEN
   append_secret_env KILOCODE_TOKEN
   append_secret_env ZAI_API_KEY
 
@@ -377,17 +403,16 @@ run_job() {
     repo_lock_file="${repo_lock_files[$lock_key]}"
   fi
 
-  mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir"
-  chmod 700 "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir" 2>/dev/null || true
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    chown 1000:1000 "$job_workspace" "$job_home" 2>/dev/null || true
-  fi
+  mkdir -p "$job_workspace" "$job_run_dir" "$job_spec_dir"
+  chmod 700 "$job_workspace" "$job_run_dir" "$job_spec_dir" 2>/dev/null || true
 
   write_job_spec "$job_spec_file" "$job_id" "$repo" "$agent_id" "$trigger_type" "$agent_timeout_seconds"
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "queued" "-"
 
   if ! controller_invoke_trigger_hook prepare_job "$trigger_type" "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$provider_name" "$task_id" "$task_prompt" "$task_claim_token" "$task_messages_json" "$extra_prompt" "$session_key"; then
-    cleanup_job_home_credentials "$job_home"
+    if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
+      cleanup_job_home_credentials "$job_home"
+    fi
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     return 125
   fi
@@ -397,6 +422,18 @@ run_job() {
   fi
   if [ -n "$controller_trigger_prepared_session_key" ]; then
     session_key="$controller_trigger_prepared_session_key"
+  fi
+  if [ -n "$controller_trigger_prepared_job_home" ]; then
+    job_home="$controller_trigger_prepared_job_home"
+  fi
+
+  # Create job_home after prepare_job has had a chance to override it
+  # (e.g. messaging trigger sets a persistent home).  Creating it before
+  # the hook would leave an orphaned transient directory.
+  mkdir -p "$job_home"
+  chmod 700 "$job_home" 2>/dev/null || true
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    chown 1000:1000 "$job_workspace" "$job_home" 2>/dev/null || true
   fi
 
   global_slot_timeout_secs="$(global_slot_timeout_for_trigger "$trigger_type")"
@@ -422,7 +459,9 @@ run_job() {
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
   if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key" "$trigger_type" "$task_id" "$controller_trigger_prepared_codex_answer_worker_path")"; then
-    cleanup_job_home_credentials "$job_home"
+    if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
+      cleanup_job_home_credentials "$job_home"
+    fi
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     controller_invoke_trigger_hook on_spawn_failure "$trigger_type" "$job_id" "$repo" "$agent_id" "$task_id" "$task_claim_token" || true
     close_slot_fd "$repo_lock_fd"
@@ -485,7 +524,9 @@ run_job() {
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
-  cleanup_job_home_credentials "$job_home"
+  if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
+    cleanup_job_home_credentials "$job_home"
+  fi
   close_slot_fd "$repo_lock_fd"
   repo_lock_fd=""
   release_global_slot
