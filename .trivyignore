@@ -1,8 +1,3 @@
 # exp:2026-06-30 - picomatch ReDoS (CVE-2026-33671) via @google/gemini-cli transitive dep
 # (fdir → picomatch). Fix requires gemini-cli upstream to bump to >= 4.0.4.
 CVE-2026-33671
-
-# exp:2026-06-30 - openssh-client GSSAPI info disclosure / DoS (CVE-2026-3497). Agents use
-# SSH only for git clone over SSH; GSSAPI auth is not configured. Fix requires Debian to
-# ship openssh >= 1:9.2p1-2+deb12u9 in the base image.
-CVE-2026-3497

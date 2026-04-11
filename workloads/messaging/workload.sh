@@ -96,8 +96,11 @@ workload_post_execute() {
   [ -z "$log_file" ] && return 0
   [ ! -f "$log_file" ] && return 0
 
+  # Use the CLI for response extraction — proper JSON parsing for all providers.
   local response=""
-  response="$(_messaging_extract_response "$provider" "$log_file")"
+  if command -v hivemoot-agent >/dev/null 2>&1; then
+    response="$(hivemoot-agent extract response --provider "$provider" --log-file "$log_file" 2>/dev/null)"
+  fi
 
   if [ -n "$response" ]; then
     messaging_platform_send "$_messaging_chat_id" "$response"
@@ -105,66 +108,4 @@ workload_post_execute() {
     messaging_platform_send "$_messaging_chat_id" \
       "Something went wrong processing your message. I'll try again next time."
   fi
-}
-
-# ── Response extraction ───────────────────────────────────────────
-
-_messaging_extract_response() {
-  local provider="$1"
-  local log_file="$2"
-  local encoded=""
-
-  case "$provider" in
-    claude)
-      encoded="$(jq -Rr '
-        fromjson?
-        | select(.type=="result")
-        | .result // empty
-        | @base64
-      ' "$log_file" 2>/dev/null | tail -n 1)"
-      if [ -n "$encoded" ]; then
-        printf '%s' "$encoded" | base64 -d 2>/dev/null
-        return 0
-      fi
-      ;;
-    codex)
-      encoded="$(jq -Rr '
-        fromjson?
-        | select(.type=="item.completed")
-        | .item
-        | select(.type=="agent_message")
-        | .text // empty
-        | @base64
-      ' "$log_file" 2>/dev/null | tail -n 1)"
-      if [ -n "$encoded" ]; then
-        printf '%s' "$encoded" | base64 -d 2>/dev/null
-        return 0
-      fi
-      ;;
-    gemini|kilo|opencode)
-      # These providers emit stream-json in non-task mode but lack a
-      # typed "result" event.  Try to extract the last substantial text
-      # block from the log — skip short metadata lines.
-      local line=""
-      line="$(tail -n 200 "$log_file" 2>/dev/null \
-        | grep -v '^[[:space:]]*$' \
-        | awk 'length > 20' \
-        | tail -n 1)"
-      if [ -n "$line" ]; then
-        # If the line is JSON, try to pull a text/result field.
-        if [[ "$line" == "{"* ]]; then
-          local parsed=""
-          parsed="$(printf '%s' "$line" | jq -r '.result // .text // .content // empty' 2>/dev/null)"
-          [ -n "$parsed" ] && { printf '%s' "$parsed"; return 0; }
-        fi
-        printf '%s' "$line"
-        return 0
-      fi
-      ;;
-  esac
-
-  # Last resort: longest non-empty line from the tail of the log.
-  tail -n 50 "$log_file" 2>/dev/null \
-    | grep -v '^[[:space:]]*$' \
-    | awk '{ if (length > max_len) { max_len = length; best = $0 } } END { if (best) print best }'
 }

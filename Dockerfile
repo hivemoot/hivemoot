@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   less \
   openssh-client \
   procps \
+  python3-minimal \
   ripgrep \
   tini \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -179,11 +180,17 @@ COPY --chown=node:node shared /opt/hivemoot-agent/shared
 COPY --chown=node:node identities /opt/hivemoot-agent/identities
 COPY --chown=node:node integrations /opt/hivemoot-agent/integrations
 COPY --chown=node:node workloads /opt/hivemoot-agent/workloads
+COPY --chown=node:node cli /opt/hivemoot-agent/cli
 
 RUN find /opt/hivemoot-agent/worker -name '*.sh' -exec chmod +x {} + \
   && find /opt/hivemoot-agent/shared -name '*.sh' -exec chmod +x {} + \
   && find /opt/hivemoot-agent/identities -name '*.sh' -exec chmod +x {} + \
   && find /opt/hivemoot-agent/integrations -name '*.sh' -exec chmod +x {} + \
-  && find /opt/hivemoot-agent/workloads -name '*.sh' -exec chmod +x {} +
+  && find /opt/hivemoot-agent/workloads -name '*.sh' -exec chmod +x {} + \
+  && chmod +x /opt/hivemoot-agent/cli/hivemoot-agent
+
+USER root
+RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent
+USER node
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hivemoot-agent/worker/entrypoint.sh"]
