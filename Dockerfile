@@ -193,4 +193,4 @@ USER root
 RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent
 USER node
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hivemoot-agent/worker/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "hivemoot-agent", "run"]

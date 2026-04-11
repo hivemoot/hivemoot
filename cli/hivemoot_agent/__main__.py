@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""hivemoot-agent CLI entry point.
+"""hivemoot-agent CLI.
 
-Usage:
-    hivemoot-agent messaging poll   --platform telegram --token-file TOKEN_FILE
-    hivemoot-agent messaging send   --platform telegram --token-file TOKEN_FILE --chat-id ID --text TEXT
-    hivemoot-agent messaging typing --platform telegram --token-file TOKEN_FILE --chat-id ID
-    hivemoot-agent extract response --provider claude --log-file LOG
-    hivemoot-agent doctor
+Commands:
+    hivemoot-agent run                Start the engine
+    hivemoot-agent plugin list        List available plugins
+    hivemoot-agent plugin doctor X    Validate a plugin's config
+    hivemoot-agent doctor             Health check
 """
 
 import argparse
 import sys
 
-from hivemoot_agent.messaging.commands import register_messaging_commands
-from hivemoot_agent.extract.commands import register_extract_commands
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hivemoot-agent",
-        description="Hivemoot agent runtime CLI",
+        description="Hivemoot agent runtime",
     )
     parser.add_argument(
         "--version", action="store_true", help="Show version and exit"
@@ -27,24 +23,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    register_messaging_commands(sub)
-    register_extract_commands(sub)
+    # run
+    sub.add_parser("run", help="Start the engine").set_defaults(func=_cmd_run)
+
+    # plugin
+    from hivemoot_agent.plugins.commands import register_plugin_commands
+    register_plugin_commands(sub)
 
     # doctor
-    doctor = sub.add_parser("doctor", help="Health check — validate config, tokens, Docker")
-    doctor.set_defaults(func=_cmd_doctor)
+    sub.add_parser("doctor", help="Health check").set_defaults(func=_cmd_doctor)
 
     return parser
 
 
-def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Basic health check."""
-    import shutil
+def _cmd_run(args: argparse.Namespace) -> int:
+    from hivemoot_agent.engine import Engine
+    return Engine().run()
 
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    import shutil
     checks = [
-        ("docker", shutil.which("docker")),
-        ("jq", shutil.which("jq")),
-        ("curl", shutil.which("curl")),
+        ("claude", shutil.which("claude")),
+        ("python3", shutil.which("python3")),
     ]
     ok = True
     for name, path in checks:
@@ -62,12 +63,7 @@ def main() -> int:
 
     if args.version:
         from hivemoot_agent import __version__
-
         print(f"hivemoot-agent {__version__}")
-        return 0
-
-    if not args.command:
-        parser.print_help()
         return 0
 
     func = getattr(args, "func", None)

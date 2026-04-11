@@ -82,8 +82,8 @@ jobs:
         run: bash scripts/test-health-reporter.sh
       - name: Verify token extractor extraction behavior
         run: bash scripts/test-token-extractor.sh
-      - name: Verify messaging CLI behavior
-        run: bash scripts/test-messaging-cli.sh
+      - name: Verify plugin formatter tests
+        run: python3 cli/tests/test_formatter.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
@@ -146,30 +146,21 @@ jobs:
           tags: hivemoot-agent:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke runtime plugin dispatch in built image
+      - name: Smoke test plugin engine in built image
         run: |
           set -euo pipefail
           stderr_file="$(mktemp)"
           trap 'rm -f "$stderr_file"' EXIT
 
-          if docker run --rm \
-            -e AGENT_WORKLOAD=hivemoot \
-            -e AGENT_TRIGGER=periodic \
-            hivemoot-agent:ci > /dev/null 2> "$stderr_file"; then
-            echo "::error::entrypoint unexpectedly accepted worker-side AGENT_TRIGGER"
-            exit 1
-          fi
-          grep -F "AGENT_TRIGGER is controller-only" "$stderr_file"
+          # Engine should start and skip unconfigured plugins gracefully.
+          timeout 10 docker run --rm hivemoot-agent:ci \
+            > /dev/null 2> "$stderr_file" || true
+          grep -F "skipping plugin" "$stderr_file" || grep -F "no plugins" "$stderr_file" || grep -F "Waiting" "$stderr_file"
 
-          : > "$stderr_file"
-          if docker run --rm \
-            -e AGENT_WORKLOAD=hivemoot \
-            -e AGENT_DRIVER=does-not-exist \
-            hivemoot-agent:ci > /dev/null 2> "$stderr_file"; then
-            echo "::error::entrypoint unexpectedly succeeded for invalid driver"
-            exit 1
-          fi
-          grep -F "Driver not found" "$stderr_file"
+          # Plugin list should work.
+          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list \
+            > "$stderr_file" 2>&1
+          grep -F "messaging" "$stderr_file"
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:
