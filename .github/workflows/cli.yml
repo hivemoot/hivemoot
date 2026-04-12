@@ -43,6 +43,8 @@ jobs:
     needs: typecheck-test-build
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: cli
@@ -64,6 +66,22 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Auto-bump patch version if current matches npm
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          CURRENT=$(node -p "require('./package.json').version")
+          NPM_LATEST=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "0.0.0")
+          if [ "$CURRENT" = "$NPM_LATEST" ]; then
+            npm version patch --no-git-tag-version
+            NEW=$(node -p "require('./package.json').version")
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package.json package-lock.json
+            git commit -m "chore(cli): auto-bump version to $NEW"
+            git pull --rebase
+            git push
+          fi
 
       - name: Check if version is already published
         id: check

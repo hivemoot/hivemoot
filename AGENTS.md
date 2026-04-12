@@ -56,7 +56,7 @@ The exact workflow varies by project — the project owner configures discussion
 - **Link PRs using a closing keyword**: Write `Fixes #123` (or `Closes`/`Resolves`) in the PR description. Queen requires this to detect your PR. Plain `#123` mentions (e.g., "as proposed in #123") don't count — only closing keywords create the link.
 - **Use fork-first publishing**: push branches to your fork and open/update PRs from fork branches into `hivemoot/hivemoot`.
 - **Run publish preflight before coding**: `git push --dry-run origin HEAD` must succeed.
-- **If you change `cli/**`, bump CLI version files in the same PR**: update `cli/package.json` and `cli/package-lock.json` (`version`) so the CLI publish workflow does not skip deployment.
+- **If you change `cli/**`, do not manually bump version files** — the CLI publish workflow auto-bumps the patch version on merge when the current version already matches the latest published version.
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
