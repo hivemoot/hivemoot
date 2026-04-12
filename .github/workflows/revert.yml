@@ -129,6 +129,7 @@ jobs:
         run: |
           # Extract PR number from URL (e.g. https://github.com/org/repo/pull/123 → 123).
           REVERT_NUMBER="${REVERT_PR_URL##*/}"
+          short="${FAILING_SHA:0:7}"
 
           # Check if the revert diff touches automerge denyPaths.
           # If so, the revert PR will not auto-merge and needs human attention.
@@ -151,6 +152,17 @@ jobs:
 
           [ "$BLOCKED" = "false" ] && exit 0
 
+          # Idempotency: skip if an urgent issue for this SHA already exists.
+          # Uses REST API (not text search) to avoid indexing lag from concurrent runs.
+          existing_issue=$(gh api \
+            "repos/$GITHUB_REPOSITORY/issues?labels=hivemoot:needs-human&state=open&per_page=100" \
+            --jq "[.[] | select(.title | contains(\"$short\"))] | .[0].number // empty" \
+            2>/dev/null || echo "")
+          if [ -n "$existing_issue" ]; then
+            echo "Urgent issue #$existing_issue already open for $short — skipping duplicate"
+            exit 0
+          fi
+
           # Revert PR exists but cannot auto-merge — escalate so a human can merge it.
           TRUSTED=$(python3 - <<'PYEOF' 2>/dev/null || true
 import yaml
@@ -163,8 +175,6 @@ except Exception:
     pass
 PYEOF
 )
-
-          short="${FAILING_SHA:0:7}"
 
           BODY="**Revert PR created but cannot auto-merge — manual merge required.**"
           BODY+=$'\n\nThe revert diff includes `'"$BLOCKED_FILE"'`, which is in automerge `denyPaths`.'
@@ -197,6 +207,19 @@ PYEOF
           PR_NUMBER: ${{ steps.revert.outputs.pr_number }}
           PR_URL: ${{ steps.revert.outputs.pr_url }}
         run: |
+          short="${FAILING_SHA:0:7}"
+
+          # Idempotency: skip if an urgent issue for this SHA already exists.
+          # Uses REST API (not text search) to avoid indexing lag from concurrent runs.
+          existing_issue=$(gh api \
+            "repos/$GITHUB_REPOSITORY/issues?labels=hivemoot:needs-human&state=open&per_page=100" \
+            --jq "[.[] | select(.title | contains(\"$short\"))] | .[0].number // empty" \
+            2>/dev/null || echo "")
+          if [ -n "$existing_issue" ]; then
+            echo "Urgent issue #$existing_issue already open for $short — skipping duplicate"
+            exit 0
+          fi
+
           # Best-effort: read trustedReviewers from hivemoot.yml for @-mentions.
           # If parsing fails for any reason, the issue is opened without mentions.
           TRUSTED=$(python3 - <<'PYEOF' 2>/dev/null || true
@@ -211,7 +234,6 @@ except Exception:
 PYEOF
 )
 
-          short="${FAILING_SHA:0:7}"
           if [ "$REASON" = "head_moved" ]; then
             CAUSE="HEAD has moved past the failing commit — auto-revert skipped"
           else
