@@ -151,6 +151,7 @@ spawn_worker() {
   append_env_if_set SESSION_RESUME
   append_env_if_set SESSION_RESUME_MAX_IDLE_HOURS
   append_env_if_set SESSION_RESUME_MAX_AGE_HOURS
+  append_env_if_set SESSION_RESET_AT_HOUR
   append_env_if_set KILO_PROVIDER
   append_env_if_set KILO_MODEL
   append_env_if_set OPENCODE_PROVIDER

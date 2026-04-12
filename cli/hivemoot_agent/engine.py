@@ -20,6 +20,17 @@ from typing import Any
 
 from hivemoot_agent.plugins import registry
 from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
+from hivemoot_agent.providers import get as get_provider
+from hivemoot_agent.sessions import (
+    SessionStore,
+    build_scoped_key,
+    create_session_store,
+)
+
+_RESUME_STALENESS_NOTE = (
+    "You are resuming a prior session. Some data in your context "
+    "may be stale; refresh relevant information before acting."
+)
 
 
 class Engine:
@@ -27,8 +38,7 @@ class Engine:
 
     def __init__(self) -> None:
         self._running = True
-        # session_key → claude session_id for --resume.
-        self._sessions: dict[str, str] = {}
+        self._session_store: SessionStore | None = None
         # All enabled plugins — set by run()/oneshot() so run_agent()
         # can merge system prompts from every plugin, not just the
         # one that triggered the job.
@@ -127,6 +137,25 @@ class Engine:
                 return False
         return True
 
+    def _init_session_store(self, config: PluginConfig) -> None:
+        """Lazy-init the persistent session store from config/env."""
+        if self._session_store is not None:
+            return
+        self._session_store = create_session_store(config)
+        reset_info = (
+            f", reset_at_hour={self._session_store.reset_at_hour}"
+            if self._session_store.reset_at_hour is not None
+            else ""
+        )
+        print(
+            f"[engine] session store: {self._session_store.map_file} "
+            f"(resume={'on' if self._session_store.resume_enabled else 'off'}"
+            f", idle={self._session_store.max_idle_hours}h"
+            f", age={self._session_store.max_age_hours}h"
+            f"{reset_info})",
+            file=sys.stderr, flush=True,
+        )
+
     def run(self) -> int:
         """Main entry point.  Blocks until shutdown."""
         _load_file_secrets()
@@ -147,6 +176,10 @@ class Engine:
         # One-time plugin setup (clone repos, authenticate, etc.).
         if not self._setup_plugins(enabled):
             return 1
+
+        # Initialize persistent session store.
+        first_config = registry.config_for(next(iter(enabled)))
+        self._init_session_store(first_config)
 
         # Start triggers in background threads.
         threads: list[threading.Thread] = []
@@ -219,7 +252,9 @@ class Engine:
             prompt = "Make meaningful contributions to the repository."
 
         config = PluginConfig(name="oneshot", settings=dict(os.environ))
-        provider = config.get("AGENT_PROVIDER", "claude")
+        provider_name = config.get("AGENT_PROVIDER", "claude")
+        provider = get_provider(provider_name)
+        model = config.get("AGENT_MODEL", "") or ""
 
         # Load plugins if explicitly requested.
         requested = os.environ.get("AGENT_PLUGINS", "").strip()
@@ -246,13 +281,14 @@ class Engine:
                 "in the user message. Be thorough and systematic."
             )
 
-        cmd = self._build_agent_cmd(
-            provider, system_prompt, prompt, "", config
+        cmd = self._build_provider_cmd(
+            provider, provider_name, prompt, system_prompt,
+            model, "", "",
         )
 
         plugin_label = ", ".join(plugins) if plugins else "none"
         print(
-            f"[engine] oneshot: provider={provider} "
+            f"[engine] oneshot: provider={provider_name} "
             f"plugins={plugin_label} prompt={len(prompt)} chars",
             file=sys.stderr, flush=True,
         )
@@ -360,28 +396,98 @@ class Engine:
     ) -> AgentResult:
         """Run the agent with MCP tools from the plugin."""
         system_prompt = self._build_system_prompt()
-        provider = config.get("AGENT_PROVIDER", "claude")
+        provider_name = config.get("AGENT_PROVIDER", "claude")
+        provider = get_provider(provider_name)
+        model = config.get("AGENT_MODEL", "") or ""
 
         # Build MCP config so the agent can call plugin tools.
         mcp_config = self._build_mcp_config(plugin_name, job, config)
 
-        # Resume from previous session if available.
-        session_id = self._sessions.get(job.session_key, "")
+        # Session lookup — check persistent store with resume policy.
+        self._init_session_store(config)
+        scoped_key = build_scoped_key(
+            base_key=job.session_key,
+            provider=provider_name,
+            model=model,
+            repo=config.get("GITHUB_REPOS", "") or "",
+            tool_options_json=config.get("AGENT_TOOL_OPTIONS_JSON", "") or "",
+        )
+        session_id = ""
+        prior_record = None
+        is_resume = False
+        if scoped_key and self._session_store:
+            session_id, prior_record = self._session_store.lookup(scoped_key)
+            is_resume = bool(session_id)
 
-        cmd = self._build_agent_cmd(
-            provider, system_prompt, job.prompt, mcp_config, config,
-            session_id=session_id,
+        # When resuming, warn the agent about potential staleness.
+        effective_prompt = job.prompt
+        if is_resume:
+            effective_prompt = f"{job.prompt}\n\n{_RESUME_STALENESS_NOTE}"
+
+        cmd = self._build_provider_cmd(
+            provider, provider_name, effective_prompt, system_prompt,
+            model, mcp_config, session_id,
         )
 
         plugin.on_job_started(job, config)
 
+        resume_label = f", resume={session_id[:12]}..." if is_resume else ""
         print(
             f"[engine] running agent (plugin={plugin_name}, "
-            f"mcp={'yes' if mcp_config else 'no'})",
+            f"provider={provider_name}, "
+            f"mcp={'yes' if mcp_config else 'no'}{resume_label})",
             file=sys.stderr, flush=True,
         )
 
-        stdout = ""
+        exit_code, stdout = self._run_subprocess(cmd, config)
+
+        # Retry once with a fresh session if resume failed.
+        if is_resume and exit_code != 0:
+            print(
+                "[engine] session resume failed; retrying with fresh session",
+                file=sys.stderr, flush=True,
+            )
+            is_resume = False
+            prior_record = None
+            cmd = self._build_provider_cmd(
+                provider, provider_name, job.prompt, system_prompt,
+                model, mcp_config, "",
+            )
+            exit_code, stdout = self._run_subprocess(cmd, config)
+
+        # Clean up MCP config.
+        if mcp_config and os.path.isfile(mcp_config):
+            os.unlink(mcp_config)
+
+        # Persist session on success.
+        if exit_code == 0 and stdout and provider:
+            new_session = provider.extract_session_id(stdout)
+            if new_session and scoped_key and self._session_store:
+                self._session_store.save(
+                    scoped_key, new_session,
+                    was_resume=is_resume,
+                    prior_record=prior_record,
+                )
+                print(
+                    f"[engine] session saved: {job.session_key} → "
+                    f"{new_session[:12]}...",
+                    file=sys.stderr, flush=True,
+                )
+
+        # Providers that don't support MCP (everything except Claude)
+        # need the response extracted from stdout for delivery.
+        response = ""
+        if provider_name != "claude" and stdout:
+            response = _extract_response(stdout)
+
+        result = AgentResult(exit_code=exit_code, response=response)
+        plugin.on_job_finished(job, result, config)
+        return result
+
+    def _run_subprocess(
+        self, cmd: list[str], config: PluginConfig,
+    ) -> tuple[int, str]:
+        """Run an agent subprocess, returning (exit_code, stdout)."""
         try:
             proc = subprocess.run(
                 cmd,
@@ -389,11 +495,9 @@ class Engine:
                 text=True,
                 timeout=int(config.get("AGENT_TIMEOUT_SECONDS", "1800")),
             )
-            exit_code = proc.returncode
-            stdout = proc.stdout
             print(
-                f"[engine] agent exit={exit_code} "
-                f"stdout={len(stdout)} stderr={len(proc.stderr)}",
+                f"[engine] agent exit={proc.returncode} "
+                f"stdout={len(proc.stdout)} stderr={len(proc.stderr)}",
                 file=sys.stderr, flush=True,
             )
             if proc.stderr:
@@ -401,112 +505,40 @@ class Engine:
                     f"[engine] stderr: {proc.stderr[:500]}",
                     file=sys.stderr, flush=True,
                 )
+            return (proc.returncode, proc.stdout)
         except subprocess.TimeoutExpired:
-            exit_code = 124
             print("[engine] agent timed out", file=sys.stderr, flush=True)
+            return (124, "")
         except Exception as exc:
             print(f"[engine] agent failed: {exc}", file=sys.stderr, flush=True)
-            exit_code = 1
+            return (1, "")
 
-        # Clean up MCP config.
-        if mcp_config and os.path.isfile(mcp_config):
-            os.unlink(mcp_config)
-
-        # Extract session_id from stream-json for --resume on next message.
-        if exit_code == 0 and provider == "claude" and stdout:
-            new_session = _extract_session_id(stdout)
-            if new_session:
-                self._sessions[job.session_key] = new_session
-                print(
-                    f"[engine] session saved: {job.session_key} → {new_session[:12]}...",
-                    file=sys.stderr, flush=True,
-                )
-
-        # For providers without MCP (Codex, Gemini), extract the
-        # response from stdout so on_job_finished can deliver it.
-        response = ""
-        if provider != "claude" and stdout:
-            response = _extract_response(stdout)
-
-        result = AgentResult(exit_code=exit_code, response=response)
-        plugin.on_job_finished(job, result, config)
-        return result
-
-    def _build_agent_cmd(
-        self,
-        provider: str,
-        system_prompt: str,
+    @staticmethod
+    def _build_provider_cmd(
+        provider: Any,
+        provider_name: str,
         prompt: str,
+        system_prompt: str,
+        model: str,
         mcp_config: str,
-        config: PluginConfig,
-        session_id: str = "",
+        session_id: str,
     ) -> list[str]:
-        """Build the agent CLI command for the given provider."""
-        model = config.get("AGENT_MODEL", "")
-
-        if provider == "claude":
-            if session_id:
-                # Resume existing session.
-                cmd = [
-                    "claude", "--resume", session_id, "-p",
-                    "--verbose",
-                    "--output-format", "stream-json",
-                    "--dangerously-skip-permissions",
-                    "--append-system-prompt", system_prompt,
-                ]
-            else:
-                # Fresh session.
-                cmd = [
-                    "claude", "-p",
-                    "--verbose",
-                    "--output-format", "stream-json",
-                    "--dangerously-skip-permissions",
-                    "--append-system-prompt", system_prompt,
-                ]
-            if mcp_config:
-                cmd += ["--mcp-config", mcp_config]
-            if model:
-                cmd += ["--model", model]
-            cmd += ["--", prompt]
-            return cmd
-
-        combined = f"{system_prompt}\n\n{prompt}"
-
-        if provider == "codex":
-            cmd = ["codex", "exec"]
-            if model:
-                cmd += ["--model", model]
-            cmd += [combined]
-            return cmd
-
-        if provider == "gemini":
-            cmd = ["gemini", "--yolo"]
-            if model:
-                cmd += ["-m", model]
-            cmd += ["-p", combined]
-            return cmd
-
-        if provider == "kilo":
-            cmd = ["kilo", "run", "--auto"]
-            if model:
-                cmd += ["--model", model]
-            cmd += [combined]
-            return cmd
-
-        if provider == "opencode":
-            cmd = ["opencode", "run"]
-            if model:
-                cmd += ["--model", model]
-            cmd += [combined]
-            return cmd
-
-        # Unknown provider — try common pattern.
+        """Delegate command building to the provider module."""
+        if provider is not None:
+            return provider.build_cmd(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model,
+                mcp_config=mcp_config,
+                session_id=session_id,
+            )
+        # Unknown provider — best-effort generic invocation.
         print(
-            f"[engine] unknown provider '{provider}', trying generic invocation",
+            f"[engine] unknown provider '{provider_name}', "
+            f"trying generic invocation",
             file=sys.stderr, flush=True,
         )
-        cmd = [provider, combined]
-        return cmd
+        return [provider_name, f"{system_prompt}\n\n{prompt}"]
 
     def _build_mcp_config(
         self, plugin_name: str, job: Job, config: PluginConfig
@@ -643,21 +675,6 @@ def _extract_response(output: str) -> str:
         if len(stripped) > len(best):
             best = stripped
     return best
-
-
-def _extract_session_id(output: str) -> str:
-    """Extract Claude session_id from stream-json init event."""
-    for line in output.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("type") == "system" and obj.get("subtype") == "init":
-            return obj.get("session_id", "")
-    return ""
 
 
 class _PluginDispatcher:

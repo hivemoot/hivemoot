@@ -9,6 +9,8 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.engine import Engine, _extract_response, _load_file_secrets
+from hivemoot_agent.providers.claude import extract_session_id as claude_extract_session_id
+from hivemoot_agent.providers.codex import extract_session_id as codex_extract_session_id
 
 
 # ── _extract_response tests ───────────────────────────────────────
@@ -38,6 +40,24 @@ def test_extract_last_result_wins():
     output = '{"type":"result","result":"first"}\n'
     output += '{"type":"result","result":"second"}\n'
     assert _extract_response(output) == "second"
+
+
+# ── _extract_session_id tests ────────────────────────────────────
+
+
+def test_extract_claude_session_id():
+    output = '{"type":"system","subtype":"init","session_id":"abc-123"}\n'
+    assert claude_extract_session_id(output) == "abc-123"
+
+
+def test_extract_codex_session_id():
+    output = '{"type":"thread.started","thread_id":"def-456"}\n'
+    assert codex_extract_session_id(output) == "def-456"
+
+
+def test_extract_session_id_no_match():
+    assert claude_extract_session_id('{"type":"something_else"}\n') == ""
+    assert codex_extract_session_id('{"type":"something_else"}\n') == ""
 
 
 # ── _load_file_secrets tests ──────────────────────────────────────
