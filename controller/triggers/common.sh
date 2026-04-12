@@ -153,6 +153,8 @@ controller_reset_trigger_job_context() {
   controller_trigger_background_pid=""
   controller_trigger_prepared_job_home=""
   controller_trigger_prepared_persistent_session_dir=""
+  controller_trigger_prepared_memory_host_dir=""
+  controller_trigger_prepared_memory_mode=""
   controller_trigger_prepared_skip_credential_cleanup=0
 }
 

@@ -128,6 +128,7 @@ queue_root="${workspace_root}/queue"
 watch_state_root="${workspace_root}/watch-state"
 messaging_homes_root="${workspace_root}/messaging-homes"
 messaging_sessions_root="${workspace_root}/messaging-sessions"
+memory_root="${workspace_root}/memory"
 lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
@@ -157,6 +158,8 @@ controller_trigger_prepared_codex_answer_worker_path=""
 controller_trigger_background_pid=""
 controller_trigger_prepared_job_home=""
 controller_trigger_prepared_persistent_session_dir=""
+controller_trigger_prepared_memory_host_dir=""
+controller_trigger_prepared_memory_mode=""
 controller_trigger_prepared_skip_credential_cleanup=0
 
 declare -a temp_token_files=()
@@ -310,8 +313,8 @@ if [ "$watch_messaging" = "1" ]; then
   fi
 fi
 
-mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root"
-chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" 2>/dev/null || true
+mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" "$memory_root"
+chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$messaging_homes_root" "$messaging_sessions_root" "$memory_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 init_global_slots "$global_slots_dir" "$global_max_workers"
 declare -A seen_agents=()

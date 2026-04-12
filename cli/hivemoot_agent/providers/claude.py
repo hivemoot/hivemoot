@@ -7,6 +7,28 @@ import json
 name = "claude"
 supports_system_prompt_flag = True
 
+# Deny rules block naive single-command exfiltration from prompt injection.
+# Enforced even with --dangerously-skip-permissions.  Container isolation
+# is the primary defense; these are defense-in-depth.  See issue #94.
+_DISALLOWED_TOOLS = [
+    "Bash(env)",
+    "Bash(env *)",
+    "Bash(printenv)",
+    "Bash(printenv *)",
+    "Bash(set)",
+    "Bash(set *)",
+    "Bash(export)",
+    "Bash(export *)",
+    "Bash(declare)",
+    "Bash(declare *)",
+    "Bash(cat /run/secrets/*)",
+    "Bash(* /run/secrets/*)",
+    "Read(/run/secrets/*)",
+    "Bash(cat /proc/*/environ)",
+    "Bash(* /proc/*/environ)",
+    "Read(/proc/*/environ)",
+]
+
 
 def build_cmd(
     prompt: str,
@@ -31,6 +53,8 @@ def build_cmd(
             "--dangerously-skip-permissions",
             "--append-system-prompt", system_prompt,
         ]
+    for tool in _DISALLOWED_TOOLS:
+        cmd += ["--disallowedTools", tool]
     if mcp_config:
         cmd += ["--mcp-config", mcp_config]
     if model:

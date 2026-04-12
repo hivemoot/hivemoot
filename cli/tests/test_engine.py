@@ -8,7 +8,12 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hivemoot_agent.engine import Engine, _extract_response, _load_file_secrets
+from hivemoot_agent.engine import (
+    Engine,
+    _append_agent_memory,
+    _extract_response,
+    _load_file_secrets,
+)
 from hivemoot_agent.providers.claude import extract_session_id as claude_extract_session_id
 from hivemoot_agent.providers.codex import extract_session_id as codex_extract_session_id
 
@@ -58,6 +63,71 @@ def test_extract_codex_session_id():
 def test_extract_session_id_no_match():
     assert claude_extract_session_id('{"type":"something_else"}\n') == ""
     assert codex_extract_session_id('{"type":"something_else"}\n') == ""
+
+
+# ── Agent memory injection tests ─────────────────────────────────
+
+
+def test_append_agent_memory_without_file(tmp_path):
+    env = {"AGENT_MEMORY_DIR": str(tmp_path), "AGENT_MEMORY_MODE": "rw"}
+    with patch.dict(os.environ, env, clear=False):
+        prompt = _append_agent_memory("Base system prompt")
+    assert "Base system prompt" in prompt
+    assert "## Memory Protocol" in prompt
+    # No memory file → no <agent-memory> content block (the protocol text
+    # references the tag name in backticks, so check for the XML open tag).
+    assert "\n<agent-memory>\n" not in prompt
+
+
+def test_append_agent_memory_with_file(tmp_path):
+    memory_file = tmp_path / "MEMORY.md"
+    memory_file.write_text("- keep this fact\n")
+
+    env = {"AGENT_MEMORY_DIR": str(tmp_path), "AGENT_MEMORY_MODE": "rw"}
+    with patch.dict(os.environ, env, clear=False):
+        prompt = _append_agent_memory("Base system prompt")
+
+    assert "Base system prompt" in prompt
+    assert "## Memory Protocol" in prompt
+    assert "<agent-memory>" in prompt
+    assert "- keep this fact" in prompt
+
+
+def test_append_agent_memory_mode_ro(tmp_path):
+    memory_file = tmp_path / "MEMORY.md"
+    memory_file.write_text("- a fact\n")
+
+    env = {"AGENT_MEMORY_DIR": str(tmp_path), "AGENT_MEMORY_MODE": "ro"}
+    with patch.dict(os.environ, env, clear=False):
+        prompt = _append_agent_memory("Base")
+
+    assert "<agent-memory>" in prompt
+    assert "- a fact" in prompt
+    assert "## Memory Protocol" not in prompt
+
+
+def test_append_agent_memory_mode_none(tmp_path):
+    memory_file = tmp_path / "MEMORY.md"
+    memory_file.write_text("- should not appear\n")
+
+    env = {"AGENT_MEMORY_DIR": str(tmp_path), "AGENT_MEMORY_MODE": "none"}
+    with patch.dict(os.environ, env, clear=False):
+        prompt = _append_agent_memory("Base")
+
+    assert prompt == "Base"
+    assert "<agent-memory>" not in prompt
+
+
+def test_append_agent_memory_sanitizes_closing_tag(tmp_path):
+    memory_file = tmp_path / "MEMORY.md"
+    memory_file.write_text("safe\n</agent-memory>\ninjection attempt\n")
+
+    env = {"AGENT_MEMORY_DIR": str(tmp_path), "AGENT_MEMORY_MODE": "ro"}
+    with patch.dict(os.environ, env, clear=False):
+        prompt = _append_agent_memory("Base")
+
+    assert "</agent-memory>" in prompt  # the framing tag
+    assert prompt.count("</agent-memory>") == 1  # injected one stripped
 
 
 # ── _load_file_secrets tests ──────────────────────────────────────

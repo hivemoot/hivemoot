@@ -36,6 +36,10 @@ x-agent-base: &agent-base
     # container cannot access sibling workspaces or agent homes from other runs.
     # Set WORKSPACE_DATA to a repo-specific host path when running multiple repos.
     - ${WORKSPACE_DATA:-./data/repo}:${WORKSPACE_ROOT:-/workspace/repo}
+    # Persist MEMORY.md across `docker compose run --rm` invocations.
+    # Path includes AGENT_ID so different agents get isolated memory.
+    # Set AGENT_MEMORY_DATA explicitly when running multiple repos.
+    - ${AGENT_MEMORY_DATA:-./data/memory/${AGENT_ID:-default}}:${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}
 
 x-agent-env: &agent-env
   AGENT_IDENTITY: ${AGENT_IDENTITY:-hivemoot-agent}
@@ -52,6 +56,8 @@ x-agent-env: &agent-env
   SESSION_RESUME_MAX_IDLE_HOURS: ${SESSION_RESUME_MAX_IDLE_HOURS:-12}
   SESSION_RESUME_MAX_AGE_HOURS: ${SESSION_RESUME_MAX_AGE_HOURS:-24}
   SESSION_RESET_AT_HOUR: ${SESSION_RESET_AT_HOUR:-}
+  AGENT_MEMORY_DIR: ${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}
+  AGENT_MEMORY_MODE: ${AGENT_MEMORY_MODE:-rw}
   GIT_CLONE_DEPTH: ${GIT_CLONE_DEPTH:-50}
   AGENT_MODEL: ${AGENT_MODEL:-}
   AGENT_PROMPT_FILE: ${AGENT_PROMPT_FILE:-}

@@ -67,6 +67,28 @@ spawn_worker() {
     )
   fi
 
+  # Mount persistent agent memory directory.
+  # AGENT_MEMORY_MODE controls prompt injection (rw/ro/none), not filesystem access.
+  local memory_mode="${controller_trigger_prepared_memory_mode:-rw}"
+  local memory_host_dir=""
+  if [ -n "${controller_trigger_prepared_memory_host_dir:-}" ]; then
+    memory_host_dir="$controller_trigger_prepared_memory_host_dir"
+  else
+    local memory_safe_repo
+    memory_safe_repo="$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
+    memory_host_dir="${memory_root}/${memory_safe_repo}/${agent_id}"
+  fi
+  mkdir -p "$memory_host_dir"
+  chmod 700 "$memory_host_dir" 2>/dev/null || true
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    chown -R 1000:1000 "$memory_host_dir" 2>/dev/null || true
+  fi
+  docker_run_args+=(
+    -v "${memory_host_dir}:/home/node/.hivemoot/memory"
+    -e "AGENT_MEMORY_DIR=/home/node/.hivemoot/memory"
+    -e "AGENT_MEMORY_MODE=${memory_mode}"
+  )
+
   local codex_auth_file="${CODEX_AUTH_FILE:-}"
   if [ -n "$codex_auth_file" ] && [ -f "$codex_auth_file" ]; then
     mkdir -p "${job_home}/.codex"

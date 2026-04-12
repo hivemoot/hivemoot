@@ -580,6 +580,8 @@ run_success_case() {
   assert_file_contains "$run_log" "-e HIVEMOOT_CLI_UPDATE=skip"
   assert_file_contains "$run_log" "-e GIT_CLONE_DEPTH=1"
   assert_file_contains "$run_log" "-e SHARED_CLONE_CACHE=0"
+  assert_file_contains "$run_log" "-e AGENT_MEMORY_DIR=/home/node/.hivemoot/memory"
+  assert_file_contains "$run_log" "/home/node/.hivemoot/memory"
   assert_file_not_contains "$settings_snapshot" "gemini_settings=missing"
   assert_file_contains "$settings_snapshot" 'gemini_settings={"selectedType":"oauth-personal"}'
   settings_count="$(grep -Fc 'gemini_settings={"selectedType":"oauth-personal"}' "$settings_snapshot" | tr -d '[:space:]')"
@@ -3129,10 +3131,14 @@ run_messaging_trigger_prepare_job_case() {
       || { echo "FAIL: session_key mismatch (got ${controller_trigger_prepared_session_key})" >&2; exit 1; }
     [ -n "$controller_trigger_prepared_persistent_session_dir" ] \
       || { echo "FAIL: persistent_session_dir is empty" >&2; exit 1; }
+    [ -n "$controller_trigger_prepared_memory_host_dir" ] \
+      || { echo "FAIL: memory_host_dir is empty" >&2; exit 1; }
     [ -d "$controller_trigger_prepared_job_home" ] \
       || { echo "FAIL: persistent home not created" >&2; exit 1; }
     [ -d "${controller_trigger_prepared_persistent_session_dir}/sessions/claude" ] \
       || { echo "FAIL: persistent session dir not created" >&2; exit 1; }
+    [ -d "$controller_trigger_prepared_memory_host_dir" ] \
+      || { echo "FAIL: memory_host_dir not created" >&2; exit 1; }
   ) || fail "messaging prepare_job subshell failed"
 
   echo "PASS: messaging prepare_job hook sets correct context variables and creates persistent dirs"

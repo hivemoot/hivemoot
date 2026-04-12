@@ -350,6 +350,7 @@ controller_trigger_prepare_job__hivemoot_task() {
     return 1
   fi
 
+  controller_trigger_prepared_memory_mode="ro"
   controller_trigger_prepared_extra_prompt="$task_extra_prompt"
   if [ -n "$base_session_key" ]; then
     controller_trigger_prepared_session_key="$base_session_key"

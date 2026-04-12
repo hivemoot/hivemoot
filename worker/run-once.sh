@@ -168,6 +168,7 @@ should_resume_session() {
   local now_epoch="$3"
   local max_idle_hours="$4"
   local max_age_hours="$5"
+  local reset_hour="${6:-}"
   local idle_age=""
   local total_age=""
 
@@ -186,8 +187,51 @@ should_resume_session() {
     return 1
   fi
 
-  [ "$idle_age" -le $((max_idle_hours * 3600)) ] \
-    && [ "$total_age" -le $((max_age_hours * 3600)) ]
+  if [ "$idle_age" -gt $((max_idle_hours * 3600)) ]; then
+    return 1
+  fi
+
+  if [ "$total_age" -gt $((max_age_hours * 3600)) ]; then
+    return 1
+  fi
+
+  # Day-boundary reset: if configured, expire sessions that were created
+  # before the most recent reset hour AND have been idle for at least 1h
+  # (grace window prevents killing active late-night conversations).
+  if [ -n "$reset_hour" ] && is_non_negative_integer "$reset_hour" \
+    && [ "$reset_hour" -ge 0 ] && [ "$reset_hour" -le 23 ]; then
+    local boundary_epoch=""
+    boundary_epoch="$(_last_reset_boundary "$now_epoch" "$reset_hour")"
+    if [ -n "$boundary_epoch" ] \
+      && [ "$created_epoch" -lt "$boundary_epoch" ] \
+      && [ "$idle_age" -ge 3600 ]; then
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+_last_reset_boundary() {
+  # Compute the most recent occurrence of reset_hour as a Unix epoch.
+  # Uses the system's local timezone (honoring TZ env var).
+  local now_epoch="$1"
+  local reset_hour="$2"
+
+  # date -d is GNU, date -j -f is BSD.  Try GNU first, fall back to
+  # a portable awk approach using localtime().
+  local today_str=""
+  today_str="$(date -d "@${now_epoch}" '+%Y-%m-%d' 2>/dev/null || date -r "$now_epoch" '+%Y-%m-%d' 2>/dev/null)" || return 1
+
+  local boundary_epoch=""
+  boundary_epoch="$(date -d "${today_str} ${reset_hour}:00:00" '+%s' 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S' "${today_str} ${reset_hour}:00:00" '+%s' 2>/dev/null)" || return 1
+
+  if [ "$now_epoch" -ge "$boundary_epoch" ]; then
+    printf '%s' "$boundary_epoch"
+  else
+    # Haven't reached today's boundary yet — use yesterday's.
+    printf '%s' $((boundary_epoch - 86400))
+  fi
 }
 
 provider="${AGENT_PROVIDER:-claude}"
@@ -209,6 +253,7 @@ timeout_secs="${AGENT_TIMEOUT_SECONDS:-1800}"
 session_resume="${SESSION_RESUME:-${SESSION_RESUME_ENABLED:-1}}"
 session_resume_max_idle_hours="${SESSION_RESUME_MAX_IDLE_HOURS:-12}"
 session_resume_max_age_hours="${SESSION_RESUME_MAX_AGE_HOURS:-24}"
+session_reset_at_hour="${SESSION_RESET_AT_HOUR:-}"
 
 
 agent_session_key="${AGENT_SESSION_KEY:-}"
@@ -335,6 +380,87 @@ if [ -n "$job_home" ]; then
   log "Job HOME set to: ${job_home}"
 fi
 
+inject_agent_memory() {
+  # AGENT_MEMORY_MODE controls what gets injected into the system prompt:
+  #   rw   — inject memory content + write protocol (agent reads and writes)
+  #   ro   — inject memory content only (agent reads, no write instructions)
+  #   none — skip entirely (no memory in the prompt)
+  local mode="${AGENT_MEMORY_MODE:-rw}"
+  if [ "$mode" = "none" ]; then
+    return 0
+  fi
+
+  local memory_file="${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}/MEMORY.md"
+  local has_memory=0
+  if [ -f "$memory_file" ] && [ -s "$memory_file" ]; then
+    has_memory=1
+  fi
+
+  # Nothing to inject: no existing memory and no write protocol to add.
+  if [ "$has_memory" -eq 0 ] && [ "$mode" != "rw" ]; then
+    return 0
+  fi
+
+  printf '\n\n'
+
+  # Inject existing memory content.
+  if [ "$has_memory" -eq 1 ]; then
+    # Strip closing tag to prevent prompt injection via poisoned memory files.
+    local sanitized=""
+    sanitized="$(sed 's|</agent-memory>||g' "$memory_file")"
+    printf '<agent-memory>\n'
+    printf 'These are notes you wrote in prior runs. Use them to build on prior work.\n'
+    printf 'If anything conflicts with current repo state, trust the repo and update your memory.\n\n'
+    printf '%s' "$sanitized"
+    printf '\n</agent-memory>\n'
+  fi
+
+  # Inject write protocol only in read-write mode.
+  if [ "$mode" = "rw" ]; then
+    cat <<'MEMORY_PROTOCOL'
+
+## Memory Protocol
+You have persistent memory at `~/.hivemoot/memory/MEMORY.md` that survives across runs.
+
+**Reading memory**: Your memory (if any) is included above in `<agent-memory>` tags. Use it to avoid rediscovering things you already know and to continue incomplete work.
+
+**Writing memory**: Update `~/.hivemoot/memory/MEMORY.md` when you:
+- Discover architectural patterns or code conventions
+- Make or observe a significant decision (with rationale)
+- Encounter a gotcha or non-obvious behavior
+- Complete work that future runs should know about
+- Identify work that needs follow-up in a future run
+
+**Before finishing**: Review and update your memory file. Remove stale entries (merged PRs, resolved issues, outdated facts). Add what you learned this run.
+
+**Format**:
+```md
+# Agent Memory — {your-role}/{repo}
+
+## Architecture
+- [YYYY-MM-DD] Key structural facts about the codebase
+
+## Decisions
+- [YYYY-MM-DD] Significant decisions with rationale
+
+## Patterns
+- Recurring patterns, conventions, and anti-patterns
+
+## Gotchas
+- [YYYY-MM-DD] Non-obvious behaviors, traps, edge cases
+
+## Progress
+- [YYYY-MM-DD] Current state of ongoing work
+
+## Next Run
+- Concrete actions for the next run to pick up
+```
+
+**Size limit**: Keep under ~200 lines. Consolidate related entries. Remove outdated information. Quality over quantity — save what a future version of you actually needs.
+MEMORY_PROTOCOL
+  fi
+}
+
 # Per-job cleanup: remove transient state on exit when JOB_ID is set.
 # Registered early (before clone_repo) so that any failure between the
 # HOME redirect and provider launch still gets cleaned up.
@@ -373,9 +499,11 @@ else
   workload_block="$(workload_build_prompt)"
 fi
 
+memory_block="$(inject_agent_memory)"
+
 system_prompt="${identity_block}
 
-${workload_block}"
+${workload_block}${memory_block}"
 
 if [ -n "$agent_skills" ]; then
   skills_dir="$(workload_skills_dir)"
@@ -529,7 +657,7 @@ case "$provider" in
         codex_active_session_id=""
       elif [ -n "$codex_record_session_id" ] && ! should_resume_session \
         "$codex_record_created_epoch" "$codex_record_last_used_epoch" "$codex_resume_now_epoch" \
-        "$session_resume_max_idle_hours" "$session_resume_max_age_hours"; then
+        "$session_resume_max_idle_hours" "$session_resume_max_age_hours" "$session_reset_at_hour"; then
         log "Codex session resume: policy reset for key=${agent_session_key} (max_idle=${session_resume_max_idle_hours}h max_age=${session_resume_max_age_hours}h)"
         codex_active_session_id=""
       else
@@ -724,7 +852,7 @@ ${resume_staleness_note}"
         claude_active_session_id=""
       elif [ -n "$claude_record_session_id" ] && ! should_resume_session \
         "$claude_record_created_epoch" "$claude_record_last_used_epoch" "$claude_resume_now_epoch" \
-        "$session_resume_max_idle_hours" "$session_resume_max_age_hours"; then
+        "$session_resume_max_idle_hours" "$session_resume_max_age_hours" "$session_reset_at_hour"; then
         log "Claude session resume: policy reset for key=${agent_session_key} (max_idle=${session_resume_max_idle_hours}h max_age=${session_resume_max_age_hours}h)"
         claude_active_session_id=""
       else

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 name = "kilo"
 supports_system_prompt_flag = False
+
+# Provider-specific model override (matches bash worker's KILO_MODEL).
+_MODEL_ENV = "KILO_MODEL"
 
 
 def build_cmd(
@@ -15,8 +20,10 @@ def build_cmd(
 ) -> list[str]:
     combined = f"{system_prompt}\n\n{prompt}"
     cmd = ["kilo", "run", "--auto"]
-    if model:
-        cmd += ["--model", model]
+    # Prefer KILO_MODEL over the generic AGENT_MODEL passed as `model`.
+    effective_model = os.environ.get(_MODEL_ENV, "") or model
+    if effective_model:
+        cmd += ["-m", effective_model]
     cmd += [combined]
     return cmd
 

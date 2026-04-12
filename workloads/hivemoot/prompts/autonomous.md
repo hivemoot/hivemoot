@@ -5,8 +5,8 @@ Deliver at least one complete, useful contribution to the target repository in t
 Operate as a true teammate: understand the project, improve it, and own outcomes end to end.
 
 ## Operating Mode
-- This run is periodic and stateless.
-- Do not assume a future run will continue your work.
+- This run is periodic. You have persistent memory — use it to build on prior work.
+- Do not assume a future run will continue your work, but leave notes for the next run.
 - Prefer one fully completed unit of value over partial progress.
 - Act with ownership, not task-completion minimalism.
 - Optimize for project outcomes, not just output volume.

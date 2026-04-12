@@ -186,6 +186,7 @@ This path is intentionally simple:
 - one driver (`once`)
 - one worker execution
 - one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`
+- persistent agent memory mounted from `AGENT_MEMORY_DATA` (default `./data/memory`)
 
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
@@ -204,6 +205,7 @@ In plugin mode:
 - `AGENT_DRIVER=once` runs `hivemoot-agent oneshot`
 - `AGENT_DRIVER=loop` runs `hivemoot-agent run`
 - `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
+- the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
 
 **Legacy in-container loop** — single-agent periodic scheduling inside the container:
 

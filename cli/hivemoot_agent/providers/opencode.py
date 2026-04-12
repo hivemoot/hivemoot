@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 name = "opencode"
 supports_system_prompt_flag = False
+
+# Provider-specific model override (matches bash worker's OPENCODE_MODEL).
+_MODEL_ENV = "OPENCODE_MODEL"
 
 
 def build_cmd(
@@ -15,8 +20,10 @@ def build_cmd(
 ) -> list[str]:
     combined = f"{system_prompt}\n\n{prompt}"
     cmd = ["opencode", "run"]
-    if model:
-        cmd += ["--model", model]
+    # Prefer OPENCODE_MODEL over the generic AGENT_MODEL passed as `model`.
+    effective_model = os.environ.get(_MODEL_ENV, "") or model
+    if effective_model:
+        cmd += ["--model", effective_model]
     cmd += [combined]
     return cmd
 

@@ -147,14 +147,19 @@ controller_trigger_prepare_job__messaging() {
   local chat_key="${base_session_key:-messaging-default}"
   local msg_home=""
   local msg_session_dir=""
+  local resolved_memory_root=""
+  local msg_memory_dir=""
 
   msg_home="$(resolve_messaging_home "$agent_id" "$chat_key")"
   msg_session_dir="$(resolve_messaging_session_dir "$agent_id")"
+  resolved_memory_root="${memory_root:-${workspace_root:-${job_workspace}}/memory}"
+  msg_memory_dir="${resolved_memory_root}/_messaging/${agent_id}"
 
   mkdir -p \
     "$msg_home/.config" \
     "$msg_home/.cache" \
-    "$msg_home/.local/share"
+    "$msg_home/.local/share" \
+    "$msg_memory_dir"
   chmod 700 "$msg_home" 2>/dev/null || true
 
   mkdir -p "$msg_session_dir/sessions/${provider_name}"
@@ -162,10 +167,12 @@ controller_trigger_prepare_job__messaging() {
   if [[ "$(uname -s)" == "Linux" ]]; then
     chown -R 1000:1000 "$msg_home" 2>/dev/null || true
     chown -R 1000:1000 "$msg_session_dir" 2>/dev/null || true
+    chown -R 1000:1000 "$msg_memory_dir" 2>/dev/null || true
   fi
 
   controller_trigger_prepared_job_home="$msg_home"
   controller_trigger_prepared_persistent_session_dir="$msg_session_dir"
+  controller_trigger_prepared_memory_host_dir="$msg_memory_dir"
   controller_trigger_prepared_skip_credential_cleanup=1
 
   if [ -n "$base_session_key" ]; then

@@ -31,6 +31,7 @@ _RESUME_STALENESS_NOTE = (
     "You are resuming a prior session. Some data in your context "
     "may be stale; refresh relevant information before acting."
 )
+_DEFAULT_AGENT_MEMORY_DIR = "/home/node/.hivemoot/memory"
 
 
 class Engine:
@@ -280,6 +281,12 @@ class Engine:
                 "You are an autonomous AI agent. Complete the task described "
                 "in the user message. Be thorough and systematic."
             )
+        oneshot_repo = (
+            config.get("TARGET_REPO", "")
+            or config.get("GITHUB_REPOS", "")
+            or ""
+        )
+        system_prompt = _append_agent_memory(system_prompt, repo=oneshot_repo)
 
         cmd = self._build_provider_cmd(
             provider, provider_name, prompt, system_prompt,
@@ -395,7 +402,8 @@ class Engine:
         plugin_name: str,
     ) -> AgentResult:
         """Run the agent with MCP tools from the plugin."""
-        system_prompt = self._build_system_prompt()
+        job_repo = config.get("GITHUB_REPOS", "") or ""
+        system_prompt = _append_agent_memory(self._build_system_prompt(), repo=job_repo)
         provider_name = config.get("AGENT_PROVIDER", "claude")
         provider = get_provider(provider_name)
         model = config.get("AGENT_MODEL", "") or ""
@@ -675,6 +683,92 @@ def _extract_response(output: str) -> str:
         if len(stripped) > len(best):
             best = stripped
     return best
+
+
+def _append_agent_memory(system_prompt: str, repo: str = "") -> str:
+    """Append memory content and write protocol based on AGENT_MEMORY_MODE.
+
+    Modes (controlled by the trigger, passed as env var):
+      rw   — inject memory content + write protocol (default)
+      ro   — inject memory content only, no write instructions
+      none — skip memory injection entirely
+
+    When *repo* is provided, memory is scoped to a subdirectory so
+    multi-repo plugin-engine runs don't share one MEMORY.md.
+    """
+    mode = os.environ.get("AGENT_MEMORY_MODE", "rw").strip() or "rw"
+    if mode == "none":
+        return system_prompt
+
+    memory_dir = os.environ.get("AGENT_MEMORY_DIR", _DEFAULT_AGENT_MEMORY_DIR).strip()
+    if not memory_dir:
+        memory_dir = _DEFAULT_AGENT_MEMORY_DIR
+
+    # Scope memory per-repo so multi-repo runs get isolated files.
+    if repo:
+        import re
+        safe_repo = re.sub(r"[^A-Za-z0-9._-]", "_", repo)
+        memory_dir = os.path.join(memory_dir, safe_repo)
+        os.makedirs(memory_dir, exist_ok=True)
+
+    memory_file = os.path.join(memory_dir, "MEMORY.md")
+
+    has_memory = os.path.isfile(memory_file)
+
+    # Nothing to inject: no existing memory and no write protocol to add.
+    if not has_memory and mode != "rw":
+        return system_prompt
+
+    parts: list[str] = []
+
+    # Inject existing memory content.
+    if has_memory:
+        try:
+            with open(memory_file) as f:
+                memory_text = f.read().strip()
+        except OSError as exc:
+            print(
+                f"[engine] failed to read agent memory {memory_file}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            memory_text = ""
+        if memory_text:
+            # Strip closing tag to prevent prompt injection via poisoned files.
+            memory_text = memory_text.replace("</agent-memory>", "")
+            parts.append(
+                "<agent-memory>\n"
+                "These are notes you wrote in prior runs. Use them to build on prior work.\n"
+                "If anything conflicts with current repo state, trust the repo and update your memory.\n\n"
+                f"{memory_text}\n"
+                "</agent-memory>"
+            )
+
+    # Inject write protocol only in read-write mode.
+    if mode == "rw":
+        parts.append(
+            "## Memory Protocol\n"
+            f"You have persistent memory at `{memory_file}` that survives across runs.\n\n"
+            "**Reading memory**: Your memory (if any) is included above in `<agent-memory>` tags. "
+            "Use it to avoid rediscovering things you already know and to continue incomplete work.\n\n"
+            "**Writing memory**: Update the memory file when you:\n"
+            "- Discover architectural patterns or code conventions\n"
+            "- Make or observe a significant decision (with rationale)\n"
+            "- Encounter a gotcha or non-obvious behavior\n"
+            "- Complete work that future runs should know about\n"
+            "- Identify work that needs follow-up in a future run\n\n"
+            "**Before finishing**: Review and update your memory file. Remove stale entries. "
+            "Add what you learned this run.\n\n"
+            "**Size limit**: Keep under ~200 lines. Consolidate related entries. "
+            "Quality over quantity."
+        )
+
+    if not parts:
+        return system_prompt
+
+    memory_section = "\n\n".join(parts)
+    if system_prompt:
+        return f"{system_prompt}\n\n{memory_section}"
+    return memory_section
 
 
 class _PluginDispatcher:

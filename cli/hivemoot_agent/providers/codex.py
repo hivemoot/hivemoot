@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 name = "codex"
 supports_system_prompt_flag = False
@@ -18,6 +19,13 @@ def build_cmd(
     # --json is required for JSONL output so we can extract thread_id
     # for session persistence and item.completed for responses.
     common = ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json"]
+
+    # model_reasoning_effort from AGENT_TOOL_OPTIONS_JSON (matches bash
+    # worker's extraction at run-once.sh line 474).
+    reasoning = _resolve_reasoning_effort()
+    if reasoning:
+        common += ["--config", f'model_reasoning_effort="{reasoning}"']
+
     combined = f"{system_prompt}\n\n{prompt}"
     if session_id:
         cmd = ["codex", "exec", "resume"] + common
@@ -47,3 +55,23 @@ def extract_session_id(output: str) -> str:
             if tid:
                 return tid
     return ""
+
+
+def _resolve_reasoning_effort() -> str:
+    """Extract model_reasoning_effort from AGENT_TOOL_OPTIONS_JSON."""
+    raw = os.environ.get("AGENT_TOOL_OPTIONS_JSON", "")
+    if not raw:
+        return ""
+    try:
+        opts = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    effort = opts.get("model_reasoning_effort", "")
+    if not effort:
+        return ""
+    # Normalize: "x-high" → "xhigh" (matches bash worker).
+    effort = str(effort).lower().replace("-", "")
+    valid = {"low", "medium", "high", "xhigh"}
+    if effort not in valid:
+        return ""
+    return effort

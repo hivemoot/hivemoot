@@ -236,7 +236,14 @@ class SessionStore:
                     )
             os.replace(tmp_path, self.map_file)
         except Exception:
-            # Clean up temp file on failure.
+            # Clean up temp file and leaked fd on failure.
+            # os.fdopen may fail before wrapping the fd (e.g. EMFILE),
+            # leaving the raw descriptor open.  os.close on an already-
+            # closed fd raises OSError which we suppress.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             try:
                 os.unlink(tmp_path)
             except OSError:
