@@ -5,6 +5,43 @@ log() {
   printf '[entrypoint %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+bridge_plugin_github_token_env() {
+  if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN_FILE:-}" ]; then
+    return 0
+  fi
+
+  if [ -n "${GH_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${GH_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_GITHUB_TOKEN_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_GITHUB_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_TOKEN_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_TOKEN_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_GITHUB_TOKEN_01_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_01_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_GITHUB_TOKEN_01:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN_01}"
+  fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SHARED_DIR="${SHARED_DIR:-${REPO_ROOT}/shared}"
@@ -37,9 +74,6 @@ if [ "$docker_provider" != "all" ] && [ "$docker_provider" != "$agent_provider" 
   exit 1
 fi
 
-# ── Workload ──────────────────────────────────────────────────────
-load_workload_plugin
-
 # ── Driver Dispatch ───────────────────────────────────────────────
 # AGENT_DRIVER is the public worker-plane execution selector.
 # AGENT_RUNNER remains as a temporary compatibility alias during migration.
@@ -54,6 +88,27 @@ if [ "$driver" = "task" ]; then
   echo "Driver 'task' has been removed. Task lifecycle is controller-owned; use AGENT_DRIVER=once for workers." >&2
   exit 1
 fi
+
+if [ -n "${AGENT_PLUGINS:-}" ]; then
+  bridge_plugin_github_token_env
+  case "$driver" in
+    once)
+      log "Dispatching plugin engine: mode=oneshot plugins=${AGENT_PLUGINS}"
+      exec hivemoot-agent oneshot
+      ;;
+    loop)
+      log "Dispatching plugin engine: mode=run plugins=${AGENT_PLUGINS}"
+      exec hivemoot-agent run
+      ;;
+    *)
+      echo "Plugin mode supports AGENT_DRIVER=once|loop." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# ── Workload ──────────────────────────────────────────────────────
+load_workload_plugin
 
 driver_file="${DRIVER_DIR}/${driver}.sh"
 

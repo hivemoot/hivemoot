@@ -66,6 +66,8 @@ jobs:
         run: bash scripts/test-session-resume-lifecycle.sh
       - name: Verify provider mismatch detection behavior
         run: bash scripts/test-provider-mismatch.sh
+      - name: Verify plugin engine routing behavior
+        run: bash scripts/test-plugin-engine-routing.sh
       - name: Verify plugin loader and dispatch guard behavior
         run: bash scripts/test-plugin-loader-guards.sh
       - name: Verify controller behavior

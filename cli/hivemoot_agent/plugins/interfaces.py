@@ -99,12 +99,28 @@ class Plugin(Protocol):
         """Validate configuration."""
         ...
 
+    def setup(self, config: PluginConfig) -> None:
+        """One-time setup after validation (clone repos, auth, etc.).
+
+        Called once before triggers start or oneshot runs.  Heavy work
+        (network, disk) belongs here — not in on_job_started which
+        fires on every inbound job.
+        """
+        ...
+
     def triggers(self) -> list[Trigger]:
         """Return triggers provided by this plugin."""
         ...
 
     def system_prompt(self, config: PluginConfig) -> str:
-        """Return the system prompt for the agent."""
+        """Persistent system context — injected into every agent run.
+
+        Called once after setup().  The result is merged from all
+        enabled plugins and reused across all jobs.
+
+        Use for: mode instructions, repo paths, tool descriptions,
+        skills, and other context that applies to every run.
+        """
         ...
 
     def on_job_started(self, job: Job, config: PluginConfig) -> None:

@@ -189,6 +189,22 @@ This path is intentionally simple:
 
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
+**Plugin engine mode** — hand the container to the Python plugin runtime:
+
+```env
+AGENT_DRIVER=once
+AGENT_PLUGINS=github
+GITHUB_TOKEN_FILE=/run/secrets/github_token
+GITHUB_REPOS=hivemoot/hivemoot-agent,hivemoot/hivemoot
+# Optional. Defaults to WORKSPACE_ROOT when unset.
+GITHUB_WORKSPACE=
+```
+
+In plugin mode:
+- `AGENT_DRIVER=once` runs `hivemoot-agent oneshot`
+- `AGENT_DRIVER=loop` runs `hivemoot-agent run`
+- `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
+
 **Legacy in-container loop** — single-agent periodic scheduling inside the container:
 
 > **Deprecated:** the in-container loop runner is deprecated.

@@ -29,41 +29,110 @@ class Engine:
         self._running = True
         # session_key → claude session_id for --resume.
         self._sessions: dict[str, str] = {}
+        # All enabled plugins — set by run()/oneshot() so run_agent()
+        # can merge system prompts from every plugin, not just the
+        # one that triggered the job.
+        self._plugins: dict[str, Any] = {}
 
-    def run(self) -> int:
-        """Main entry point.  Blocks until shutdown."""
-        _load_file_secrets()
+    def _resolve_plugins(self) -> dict[str, Any] | None:
+        """Discover and validate plugins.
+
+        When AGENT_PLUGINS is set, only the listed plugins are loaded and
+        validation failures are hard errors.  When unset, all discovered
+        plugins are loaded and those with config errors are skipped.
+
+        Returns a dict of validated plugins, or None on fatal error.
+        """
         registry.discover()
-        plugins = registry.all()
+        all_plugins = registry.all()
 
-        if not plugins:
+        requested = os.environ.get("AGENT_PLUGINS", "").strip()
+
+        if requested:
+            # Explicit mode — only activate listed plugins.
+            names = [n.strip() for n in requested.split(",") if n.strip()]
+            selected: dict[str, Any] = {}
+            had_error = False
+
+            for name in names:
+                plugin = all_plugins.get(name)
+                if plugin is None:
+                    print(
+                        f"[engine] FATAL: requested plugin '{name}' not found. "
+                        f"Available: {', '.join(all_plugins) or '(none)'}",
+                        file=sys.stderr,
+                    )
+                    had_error = True
+                    continue
+
+                config = registry.config_for(name)
+                errors = plugin.validate(config)
+                if errors:
+                    print(
+                        f"[engine] FATAL: plugin '{name}' config invalid:",
+                        file=sys.stderr,
+                    )
+                    for err in errors:
+                        print(f"  - {err}", file=sys.stderr)
+                    had_error = True
+                else:
+                    selected[name] = plugin
+
+            if had_error:
+                return None
+            return selected
+
+        # Auto-discover mode — skip plugins with config errors.
+        if not all_plugins:
             print("No plugins found.", file=sys.stderr)
-            return 1
+            return None
 
         enabled = {
             name: p
-            for name, p in plugins.items()
+            for name, p in all_plugins.items()
             if registry.config_for(name).enabled
         }
 
         if not enabled:
             print("No plugins enabled.", file=sys.stderr)
-            return 1
+            return None
 
-        # Validate plugins — skip those with config errors instead of failing.
         valid: dict[str, Any] = {}
         for name, plugin in enabled.items():
             config = registry.config_for(name)
             errors = plugin.validate(config)
             if errors:
-                print(f"[engine] skipping plugin '{name}' (config incomplete):", file=sys.stderr)
+                print(
+                    f"[engine] skipping plugin '{name}' (config incomplete):",
+                    file=sys.stderr,
+                )
                 for err in errors:
                     print(f"  - {err}", file=sys.stderr)
             else:
                 valid[name] = plugin
-        enabled = valid
 
-        if not enabled:
+        return valid if valid else None
+
+    def _setup_plugins(self, plugins: dict[str, Any]) -> bool:
+        """Run one-time plugin setup and fail closed on errors."""
+        for name, plugin in plugins.items():
+            config = registry.config_for(name)
+            try:
+                plugin.setup(config)
+            except Exception as exc:
+                print(
+                    f"[engine] FATAL: plugin '{name}' setup failed: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                return False
+        return True
+
+    def run(self) -> int:
+        """Main entry point.  Blocks until shutdown."""
+        _load_file_secrets()
+        enabled = self._resolve_plugins()
+
+        if enabled is None:
             print("[engine] no plugins with valid config. Waiting...", file=sys.stderr)
             # Don't exit — let the container stay alive for debugging.
             try:
@@ -72,6 +141,12 @@ class Engine:
             except KeyboardInterrupt:
                 pass
             return 0
+
+        self._plugins = enabled
+
+        # One-time plugin setup (clone repos, authenticate, etc.).
+        if not self._setup_plugins(enabled):
+            return 1
 
         # Start triggers in background threads.
         threads: list[threading.Thread] = []
@@ -127,9 +202,9 @@ class Engine:
     ) -> int:
         """Run the agent once and exit.
 
-        Plain execution — no plugins, no MCP, no triggers.  Just run
-        the agent with a prompt and exit.  Plugin support will be added
-        when non-messaging plugins exist (e.g., github).
+        When AGENT_PLUGINS is set, loads the specified plugins, runs
+        their setup hooks (e.g. clone repos), and uses their system
+        prompts.  When unset, runs a plain agent with no plugin support.
         """
         _load_file_secrets()
 
@@ -146,17 +221,39 @@ class Engine:
         config = PluginConfig(name="oneshot", settings=dict(os.environ))
         provider = config.get("AGENT_PROVIDER", "claude")
 
-        system_prompt = (
-            "You are an autonomous AI agent. Complete the task described "
-            "in the user message. Be thorough and systematic."
-        )
+        # Load plugins if explicitly requested.
+        requested = os.environ.get("AGENT_PLUGINS", "").strip()
+        plugins: dict[str, Any] | None = None
+        if requested:
+            plugins = self._resolve_plugins()
+            if plugins is None:
+                return 1
+
+        # One-time plugin setup (clone repos, authenticate, etc.).
+        job = Job(session_key="oneshot", prompt=prompt)
+        if plugins:
+            self._plugins = plugins
+            if not self._setup_plugins(plugins):
+                return 1
+
+        # Build system prompt — after setup() so plugins have real
+        # state (cloned repos, resolved branches, etc.).
+        if plugins:
+            system_prompt = self._build_system_prompt()
+        else:
+            system_prompt = (
+                "You are an autonomous AI agent. Complete the task described "
+                "in the user message. Be thorough and systematic."
+            )
 
         cmd = self._build_agent_cmd(
             provider, system_prompt, prompt, "", config
         )
 
+        plugin_label = ", ".join(plugins) if plugins else "none"
         print(
-            f"[engine] oneshot: provider={provider} prompt={len(prompt)} chars",
+            f"[engine] oneshot: provider={provider} "
+            f"plugins={plugin_label} prompt={len(prompt)} chars",
             file=sys.stderr, flush=True,
         )
 
@@ -184,10 +281,18 @@ class Engine:
             exit_code = 1
 
         # Print the agent's response to stdout so callers can capture it.
+        response = ""
         if exit_code == 0 and stdout:
             response = _extract_response(stdout)
             if response:
                 print(response, flush=True)
+
+        # Run plugin teardown hooks.
+        if plugins:
+            result = AgentResult(exit_code=exit_code, response=response)
+            for name, plugin in plugins.items():
+                plugin_config = registry.config_for(name)
+                plugin.on_job_finished(job, result, plugin_config)
 
         return exit_code
 
@@ -224,6 +329,28 @@ class Engine:
             time.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
+    def _build_system_prompt(self) -> str:
+        """Merge system prompts from all enabled plugins.
+
+        Each plugin's prompt is wrapped in a <plugin> tag so the agent
+        knows which capabilities come from which plugin.  Collected
+        from ALL enabled plugins, not just the triggering one.
+        """
+        parts: list[str] = []
+        for name, p in self._plugins.items():
+            p_config = registry.config_for(name)
+            sp = p.system_prompt(p_config)
+            if sp:
+                parts.append(
+                    f"<plugin name=\"{name}\" version=\"{p.version}\">\n"
+                    f"{sp}\n"
+                    f"</plugin>"
+                )
+        if not parts:
+            return ""
+        header = "Your capabilities are provided by hivemoot agent plugins. Each <plugin> block describes one."
+        return header + "\n\n" + "\n\n".join(parts)
+
     def run_agent(
         self,
         plugin: Any,
@@ -232,7 +359,7 @@ class Engine:
         plugin_name: str,
     ) -> AgentResult:
         """Run the agent with MCP tools from the plugin."""
-        system_prompt = plugin.system_prompt(config)
+        system_prompt = self._build_system_prompt()
         provider = config.get("AGENT_PROVIDER", "claude")
 
         # Build MCP config so the agent can call plugin tools.
@@ -447,6 +574,7 @@ def _load_file_secrets() -> None:
         ("KILOCODE_TOKEN_FILE", "KILOCODE_TOKEN"),
         ("HIVEMOOT_AGENT_TOKEN_FILE", "HIVEMOOT_AGENT_TOKEN"),
         ("TELEGRAM_BOT_TOKEN_FILE", "TELEGRAM_BOT_TOKEN"),
+        ("GITHUB_TOKEN_FILE", "GITHUB_TOKEN"),
     ]
     for file_var, target_var in file_vars:
         file_path = os.environ.get(file_var, "")
