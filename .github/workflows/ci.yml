@@ -84,6 +84,8 @@ jobs:
         run: bash scripts/test-token-extractor.sh
       - name: Verify plugin formatter tests
         run: python3 cli/tests/test_formatter.py
+      - name: Verify engine and oneshot tests
+        run: python3 cli/tests/test_engine.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
@@ -152,15 +154,16 @@ jobs:
           stderr_file="$(mktemp)"
           trap 'rm -f "$stderr_file"' EXIT
 
-          # Engine should start and skip unconfigured plugins gracefully.
-          timeout 10 docker run --rm hivemoot-agent:ci \
-            > /dev/null 2> "$stderr_file" || true
-          grep -F "skipping plugin" "$stderr_file" || grep -F "no plugins" "$stderr_file" || grep -F "Waiting" "$stderr_file"
+          # Verify the bash entrypoint still works (validates AGENT_WORKLOAD).
+          if timeout 10 docker run --rm hivemoot-agent:ci \
+            > /dev/null 2> "$stderr_file"; then
+            echo "::error::entrypoint should fail without AGENT_WORKLOAD"
+            exit 1
+          fi
+          grep -qF "AGENT_WORKLOAD" "$stderr_file"
 
-          # Plugin list should work.
-          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list \
-            > "$stderr_file" 2>&1
-          grep -F "messaging" "$stderr_file"
+          # Verify the Python CLI is available and plugin discovery works.
+          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | grep -qF "messaging"
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:

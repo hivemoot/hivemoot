@@ -25,11 +25,6 @@ class PluginRegistry:
         if not plugins_dir.is_dir():
             return
 
-        # Add parent to sys.path so plugins can import each other.
-        parent = str(plugins_dir.parent)
-        if parent not in sys.path:
-            sys.path.insert(0, parent)
-
         for entry in sorted(plugins_dir.iterdir()):
             if not entry.is_dir() or entry.name.startswith("_"):
                 continue
@@ -37,7 +32,7 @@ class PluginRegistry:
             if not init_file.exists():
                 continue
             try:
-                mod = importlib.import_module(f"plugins_builtin.{entry.name}")
+                mod = importlib.import_module(f"hivemoot_agent.plugins_builtin.{entry.name}")
                 plugin_factory = getattr(mod, "create_plugin", None)
                 if plugin_factory is None:
                     continue

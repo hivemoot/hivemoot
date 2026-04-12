@@ -121,6 +121,76 @@ class Engine:
 
         return 0
 
+    def oneshot(
+        self,
+        prompt: str | None = None,
+    ) -> int:
+        """Run the agent once and exit.
+
+        Plain execution — no plugins, no MCP, no triggers.  Just run
+        the agent with a prompt and exit.  Plugin support will be added
+        when non-messaging plugins exist (e.g., github).
+        """
+        _load_file_secrets()
+
+        if not prompt:
+            prompt = os.environ.get("AGENT_EXTRA_PROMPT", "")
+        if not prompt:
+            prompt_file = os.environ.get("AGENT_EXTRA_PROMPT_FILE", "")
+            if prompt_file and os.path.isfile(prompt_file):
+                with open(prompt_file) as f:
+                    prompt = f.read().strip()
+        if not prompt:
+            prompt = "Make meaningful contributions to the repository."
+
+        config = PluginConfig(name="oneshot", settings=dict(os.environ))
+        provider = config.get("AGENT_PROVIDER", "claude")
+
+        system_prompt = (
+            "You are an autonomous AI agent. Complete the task described "
+            "in the user message. Be thorough and systematic."
+        )
+
+        cmd = self._build_agent_cmd(
+            provider, system_prompt, prompt, "", config
+        )
+
+        print(
+            f"[engine] oneshot: provider={provider} prompt={len(prompt)} chars",
+            file=sys.stderr, flush=True,
+        )
+
+        stdout = ""
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=int(config.get("AGENT_TIMEOUT_SECONDS", "1800")),
+            )
+            exit_code = proc.returncode
+            stdout = proc.stdout
+            print(
+                f"[engine] oneshot exit={exit_code}",
+                file=sys.stderr, flush=True,
+            )
+            if proc.stderr:
+                print(proc.stderr[:500], file=sys.stderr, flush=True)
+        except subprocess.TimeoutExpired:
+            exit_code = 124
+            print("[engine] oneshot timed out", file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[engine] oneshot failed: {exc}", file=sys.stderr, flush=True)
+            exit_code = 1
+
+        # Print the agent's response to stdout so callers can capture it.
+        if exit_code == 0 and stdout:
+            response = _extract_response(stdout)
+            if response:
+                print(response, flush=True)
+
+        return exit_code
+
     def _run_trigger(
         self,
         trigger: Any,

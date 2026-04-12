@@ -76,7 +76,7 @@ class MessagingPlugin:
         return SYSTEM_PROMPT
 
     def on_job_started(self, job: Job, config: PluginConfig) -> None:
-        """Start typing indicator."""
+        """Start typing indicator (skip for non-chat sessions)."""
         chat_id = self._extract_chat_id(job.session_key)
         if not chat_id:
             return
@@ -133,9 +133,14 @@ class MessagingPlugin:
         return self._platform_adapter or self._load_platform()
 
     def _extract_chat_id(self, session_key: str) -> str:
+        """Extract chat_id from session key (e.g., 'tg:12345' → '12345').
+
+        Returns empty string for non-chat sessions so lifecycle
+        callbacks skip gracefully (e.g., oneshot mode).
+        """
         if ":" in session_key:
             return session_key.split(":", 1)[1]
-        return session_key
+        return ""
 
     def _typing_loop(
         self, adapter: Any, config: PluginConfig, chat_id: str

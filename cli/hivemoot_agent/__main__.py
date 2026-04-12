@@ -2,7 +2,8 @@
 """hivemoot-agent CLI.
 
 Commands:
-    hivemoot-agent run                Start the engine
+    hivemoot-agent run                Daemon mode (triggers poll continuously)
+    hivemoot-agent oneshot            Run agent once and exit
     hivemoot-agent plugin list        List available plugins
     hivemoot-agent plugin doctor X    Validate a plugin's config
     hivemoot-agent doctor             Health check
@@ -23,8 +24,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    # run
-    sub.add_parser("run", help="Start the engine").set_defaults(func=_cmd_run)
+    # run — daemon mode
+    sub.add_parser(
+        "run", help="Start the engine (daemon — triggers poll continuously)"
+    ).set_defaults(func=_cmd_run)
+
+    # oneshot — run once and exit
+    oneshot = sub.add_parser(
+        "oneshot", help="Run the agent once and exit"
+    )
+    oneshot.add_argument(
+        "--prompt", default="",
+        help="User prompt (or AGENT_EXTRA_PROMPT env var)",
+    )
+    oneshot.set_defaults(func=_cmd_oneshot)
 
     # plugin
     from hivemoot_agent.plugins.commands import register_plugin_commands
@@ -39,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_run(args: argparse.Namespace) -> int:
     from hivemoot_agent.engine import Engine
     return Engine().run()
+
+
+def _cmd_oneshot(args: argparse.Namespace) -> int:
+    from hivemoot_agent.engine import Engine
+    return Engine().oneshot(prompt=args.prompt or None)
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
