@@ -103,13 +103,13 @@ A **Goal** tracks a feature that spans multiple repos or tasks. It's a GitHub is
 - [x] Deploy to VPS and verify
 ```
 
-Each line is either a linked issue (`owner/repo#N`, status auto-synced) or a free-text checkbox (manually toggled). A Goal is only "complete" when all tasks are resolved.
+Each line is either a linked issue (`owner/repo#N`) or a free-text checkbox (manually toggled). A Goal is only "complete" when all tasks are resolved.
 
 **Creating a Goal:** Open an issue with the `hivemoot:goal` label. List tasks as markdown checkboxes. Link cross-repo issues using `owner/repo#N` syntax.
 
 **Linking PRs to Goals:** Use `Refs #N` or `Part of #N` — never `Closes #N`. Goal issues must not auto-close from a single PR; they close only when all their tasks are done.
 
-**Progress tracking:** The Queen bot syncs linked-issue statuses into the task list and posts progress comments when tasks complete.
+**Progress tracking (planned):** Once bot-side support lands, the Queen bot will sync linked-issue statuses into the task list and post progress comments when tasks complete.
 
 ## Human Gate (Initial Phase)
 
