@@ -2,8 +2,10 @@
 
 import json
 import os
-import sys
 import subprocess
+import sys
+import threading
+import time
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -14,6 +16,7 @@ from hivemoot_agent.engine import (
     _extract_response,
     _load_file_secrets,
 )
+from hivemoot_agent.plugins.interfaces import AgentEvent, AgentResult, PluginConfig
 from hivemoot_agent.providers.claude import extract_session_id as claude_extract_session_id
 from hivemoot_agent.providers.codex import extract_session_id as codex_extract_session_id
 
@@ -205,6 +208,236 @@ def test_oneshot_failure():
             engine = Engine()
             code = engine.oneshot(prompt="Bad task")
             assert code == 1
+
+
+# ── _run_subprocess streaming tests ──────────────────────────────
+
+
+def _make_mock_popen(stdout_lines, stderr_lines=None, returncode=0):
+    """Create a mock Popen that yields lines from stdout/stderr."""
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter(stdout_lines)
+    mock_proc.stderr = iter(stderr_lines or [])
+    mock_proc.returncode = returncode
+    mock_proc.wait = MagicMock()
+    mock_proc.kill = MagicMock()
+    return mock_proc
+
+
+def test_run_subprocess_streaming_calls_on_event():
+    """Verify on_event receives AgentEvent objects from parsed lines."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    lines = [
+        '{"type":"system","subtype":"init","session_id":"abc"}\n',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}\n',
+        '{"type":"result","result":"Final answer"}\n',
+    ]
+    mock_proc = _make_mock_popen(lines)
+    events: list[AgentEvent] = []
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        exit_code, stdout = engine._run_subprocess(
+            ["echo"], config,
+            on_event=lambda e: events.append(e),
+            provider=claude_provider,
+        )
+
+    assert exit_code == 0
+    assert len(events) == 3
+    assert events[0].kind == "system"
+    assert events[1].kind == "assistant_message"
+    assert events[1].text == "Hello"
+    assert events[2].kind == "result"
+    assert events[2].text == "Final answer"
+
+
+def test_run_subprocess_streaming_collects_stdout():
+    """Returned stdout matches all lines concatenated."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    lines = ["line1\n", "line2\n", "line3\n"]
+    mock_proc = _make_mock_popen(lines)
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        _, stdout = engine._run_subprocess(
+            ["echo"], config, provider=claude_provider,
+        )
+
+    assert stdout == "line1\nline2\nline3\n"
+
+
+def test_run_subprocess_callback_error_nonfatal():
+    """on_event raising an exception doesn't crash the subprocess."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    lines = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}\n',
+        '{"type":"result","result":"Done"}\n',
+    ]
+    mock_proc = _make_mock_popen(lines)
+
+    call_count = 0
+    def exploding_callback(event):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("boom")
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        exit_code, stdout = engine._run_subprocess(
+            ["echo"], config,
+            on_event=exploding_callback,
+            provider=claude_provider,
+        )
+
+    # Both lines were processed despite the first callback exploding.
+    assert call_count == 2
+    assert exit_code == 0
+
+
+def test_run_subprocess_timeout_kills_process():
+    """Timeout path kills the process and returns exit code 124."""
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter([])
+    mock_proc.stderr = iter([])
+    # First wait() raises timeout; second wait() (after kill) succeeds.
+    mock_proc.wait = MagicMock(
+        side_effect=[subprocess.TimeoutExpired("cmd", 30), None],
+    )
+    mock_proc.kill = MagicMock()
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "1"})
+        exit_code, stdout = engine._run_subprocess(["echo"], config)
+
+    assert exit_code == 124
+    assert stdout == ""
+    mock_proc.kill.assert_called_once()
+
+
+def test_run_subprocess_slow_callback_does_not_truncate_stdout():
+    """Slow event delivery must not drop later stdout lines."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    lines = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Working on this now"}]}}\n',
+        '{"type":"result","result":"Final answer"}\n',
+    ]
+    mock_proc = _make_mock_popen(lines)
+
+    call_count = 0
+    def slow_first_callback(event):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            time.sleep(10.2)
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        exit_code, stdout = engine._run_subprocess(
+            ["echo"], config,
+            on_event=slow_first_callback,
+            provider=claude_provider,
+        )
+
+    assert exit_code == 0
+    assert call_count == 2
+    assert stdout == "".join(lines)
+
+
+def test_run_subprocess_messaging_status_stays_off_critical_path():
+    """Telegram status delivery must not delay subprocess completion."""
+    import hivemoot_agent.providers.claude as claude_provider
+    from hivemoot_agent.plugins.interfaces import Job
+    from hivemoot_agent.plugins_builtin.messaging import MessagingPlugin
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowAdapter:
+        def send_and_get_id(self, config, chat_id, text):
+            started.set()
+            release.wait(timeout=2)
+            return "42"
+
+        def edit_message(self, config, chat_id, message_id, text):
+            return True
+
+        def delete_message(self, config, chat_id, message_id):
+            return True
+
+        def send(self, config, chat_id, text):
+            return True
+
+        def typing(self, config, chat_id):
+            return True
+
+    lines = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Working on this now"}]}}\n',
+        '{"type":"result","result":"Final answer"}\n',
+    ]
+    mock_proc = _make_mock_popen(lines)
+    plugin = MessagingPlugin()
+    plugin._platform_adapter = SlowAdapter()
+    job = Job(session_key="tg:12345", prompt="hello")
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        plugin.on_job_started(job, config)
+        start = time.monotonic()
+        exit_code, stdout = engine._run_subprocess(
+            ["echo"], config,
+            on_event=lambda event: plugin.on_agent_output(job, event, config),
+            provider=claude_provider,
+        )
+        elapsed = time.monotonic() - start
+
+    assert exit_code == 0
+    assert stdout == "".join(lines)
+    assert elapsed < 0.2
+    assert started.wait(timeout=1.0)
+
+    release.set()
+    plugin.on_job_finished(job, AgentResult(exit_code=0, response="Final answer"), config)
+    plugin._status_queue.join()
+
+
+def test_response_extracted_for_claude():
+    """Response is extracted from stdout for Claude (no longer skipped)."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    lines = [
+        '{"type":"system","subtype":"init","session_id":"abc"}\n',
+        '{"type":"result","result":"Final Claude answer"}\n',
+    ]
+    mock_proc = _make_mock_popen(lines)
+    mock_plugin = MagicMock()
+    mock_plugin.on_agent_output = MagicMock()
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        with patch.dict(os.environ, {"AGENT_PROVIDER": "claude"}, clear=False):
+            engine = Engine()
+            engine._plugins = {"messaging": mock_plugin}
+
+            # Call _run_subprocess + _extract_response the same way
+            # run_agent does.
+            config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+            _, stdout = engine._run_subprocess(
+                ["echo"], config, provider=claude_provider,
+            )
+            response = _extract_response(stdout) if stdout else ""
+
+    assert response == "Final Claude answer"
 
 
 if __name__ == "__main__":

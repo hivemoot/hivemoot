@@ -77,11 +77,15 @@ class MessagingTrigger:
                 print(f"[trigger] dispatching for chat={chat_id}", file=sys.stderr, flush=True)
                 job = Job(session_key=f"tg:{chat_id}", prompt=text)
 
-                if dispatcher.dispatch(job):
-                    print(f"[trigger] ok, offset→{update_id + 1}", file=sys.stderr, flush=True)
-                    offset = max(offset, update_id + 1)
+                # Always advance the offset — a failed run must never
+                # cause the same user message to be re-processed, or
+                # a persistent error creates an infinite spam loop.
+                ok = dispatcher.dispatch(job)
+                offset = max(offset, update_id + 1)
+                if ok:
+                    print(f"[trigger] ok, offset→{offset}", file=sys.stderr, flush=True)
                 else:
-                    print("[trigger] dispatch failed", file=sys.stderr, flush=True)
+                    print(f"[trigger] dispatch failed, offset→{offset}", file=sys.stderr, flush=True)
 
     def stop(self) -> None:
         self._stop_event.set()

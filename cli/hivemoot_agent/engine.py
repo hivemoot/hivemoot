@@ -3,23 +3,25 @@
 Loads plugins, starts triggers, runs the agent with MCP tools, and
 fires plugin lifecycle callbacks.  One process, one container.
 
-The agent communicates with the user through MCP tools (send_message,
-send_file) — not through console output.
+The agent's stdout is streamed and parsed into AgentEvent objects.
+The final response is extracted from stdout for all providers and
+delivered by the plugin (e.g., sent to Telegram).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from hivemoot_agent.plugins import registry
-from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
+from hivemoot_agent.plugins.interfaces import AgentEvent, AgentResult, Job, PluginConfig
 from hivemoot_agent.providers import get as get_provider
 from hivemoot_agent.sessions import (
     SessionStore,
@@ -439,6 +441,12 @@ class Engine:
 
         plugin.on_job_started(job, config)
 
+        # Build event callback for streaming progress.
+        on_event: Callable[[AgentEvent], None] | None = None
+        if hasattr(plugin, "on_agent_output"):
+            def on_event(event: AgentEvent) -> None:
+                plugin.on_agent_output(job, event, config)
+
         resume_label = f", resume={session_id[:12]}..." if is_resume else ""
         print(
             f"[engine] running agent (plugin={plugin_name}, "
@@ -447,7 +455,9 @@ class Engine:
             file=sys.stderr, flush=True,
         )
 
-        exit_code, stdout = self._run_subprocess(cmd, config)
+        exit_code, stdout = self._run_subprocess(
+            cmd, config, on_event=on_event, provider=provider,
+        )
 
         # Retry once with a fresh session if resume failed.
         if is_resume and exit_code != 0:
@@ -461,7 +471,9 @@ class Engine:
                 provider, provider_name, job.prompt, system_prompt,
                 model, mcp_config, "",
             )
-            exit_code, stdout = self._run_subprocess(cmd, config)
+            exit_code, stdout = self._run_subprocess(
+                cmd, config, on_event=on_event, provider=provider,
+            )
 
         # Clean up MCP config.
         if mcp_config and os.path.isfile(mcp_config):
@@ -482,44 +494,127 @@ class Engine:
                     file=sys.stderr, flush=True,
                 )
 
-        # Providers that don't support MCP (everything except Claude)
-        # need the response extracted from stdout for delivery.
-        response = ""
-        if provider_name != "claude" and stdout:
-            response = _extract_response(stdout)
+        response = _extract_response(stdout) if stdout else ""
 
         result = AgentResult(exit_code=exit_code, response=response)
         plugin.on_job_finished(job, result, config)
         return result
 
     def _run_subprocess(
-        self, cmd: list[str], config: PluginConfig,
+        self,
+        cmd: list[str],
+        config: PluginConfig,
+        on_event: Callable[[AgentEvent], None] | None = None,
+        provider: Any = None,
     ) -> tuple[int, str]:
-        """Run an agent subprocess, returning (exit_code, stdout)."""
+        """Run an agent subprocess with streaming, returning (exit_code, stdout).
+
+        Reads stdout line-by-line in a background thread.  Each line is
+        passed to provider.parse_event(); if that returns an AgentEvent
+        and on_event is set, the callback is invoked.  Stderr is
+        collected in a separate thread to prevent pipe buffer deadlock.
+        """
+        timeout = int(config.get("AGENT_TIMEOUT_SECONDS", "1800"))
+
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=int(config.get("AGENT_TIMEOUT_SECONDS", "1800")),
             )
-            print(
-                f"[engine] agent exit={proc.returncode} "
-                f"stdout={len(proc.stdout)} stderr={len(proc.stderr)}",
-                file=sys.stderr, flush=True,
-            )
-            if proc.stderr:
-                print(
-                    f"[engine] stderr: {proc.stderr[:500]}",
-                    file=sys.stderr, flush=True,
-                )
-            return (proc.returncode, proc.stdout)
-        except subprocess.TimeoutExpired:
-            print("[engine] agent timed out", file=sys.stderr, flush=True)
-            return (124, "")
         except Exception as exc:
             print(f"[engine] agent failed: {exc}", file=sys.stderr, flush=True)
             return (1, "")
+
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        event_queue: queue.Queue[Any] | None = None
+        event_sentinel = object()
+        event_thread: threading.Thread | None = None
+
+        if on_event is not None:
+            event_queue = queue.Queue()
+
+            def _dispatch_events() -> None:
+                assert event_queue is not None
+                while True:
+                    event = event_queue.get()
+                    try:
+                        if event is event_sentinel:
+                            return
+                        on_event(event)
+                    except Exception as exc:
+                        print(
+                            f"[engine] event parse/dispatch error: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
+                    finally:
+                        event_queue.task_done()
+
+            event_thread = threading.Thread(target=_dispatch_events, daemon=True)
+            event_thread.start()
+
+        def _read_stdout() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                if provider is not None and event_queue is not None:
+                    try:
+                        event = provider.parse_event(line)
+                        if event is not None:
+                            event_queue.put(event)
+                    except Exception as exc:
+                        print(
+                            f"[engine] event parse/dispatch error: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
+
+        def _read_stderr() -> None:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        t_out = threading.Thread(target=_read_stdout, daemon=True)
+        t_err = threading.Thread(target=_read_stderr, daemon=True)
+        t_out.start()
+        t_err.start()
+
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print("[engine] agent timed out", file=sys.stderr, flush=True)
+            proc.kill()
+            proc.wait()
+            t_out.join()
+            t_err.join()
+            if event_queue is not None:
+                event_queue.put(event_sentinel)
+            if event_thread is not None:
+                event_thread.join()
+            return (124, "")
+
+        t_out.join()
+        t_err.join()
+        if event_queue is not None:
+            event_queue.put(event_sentinel)
+        if event_thread is not None:
+            event_thread.join()
+
+        stdout = "".join(stdout_lines)
+        stderr = "".join(stderr_lines)
+
+        print(
+            f"[engine] agent exit={proc.returncode} "
+            f"stdout={len(stdout)} stderr={len(stderr)}",
+            file=sys.stderr, flush=True,
+        )
+        if stderr:
+            print(
+                f"[engine] stderr: {stderr[:500]}",
+                file=sys.stderr, flush=True,
+            )
+        return (proc.returncode, stdout)
 
     @staticmethod
     def _build_provider_cmd(

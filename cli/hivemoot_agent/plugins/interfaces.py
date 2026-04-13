@@ -44,6 +44,19 @@ class Job:
 
 
 @dataclass
+class AgentEvent:
+    """A normalized streaming event from the agent subprocess.
+
+    Providers parse their raw stdout into these.  Plugins react to
+    the kind without knowing which provider emitted it.
+    """
+
+    kind: str           # "assistant_message", "tool_use", "tool_result", "system", "result"
+    text: str = ""      # Primary text content
+    tool_name: str = "" # For tool_use events
+
+
+@dataclass
 class AgentResult:
     """Result of an agent run."""
 

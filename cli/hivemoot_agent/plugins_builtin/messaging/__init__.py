@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import queue
+import sys
 import threading
+import time
 from typing import Any
 
 from hivemoot_agent.plugins.interfaces import (
+    AgentEvent,
     AgentResult,
     Job,
     Plugin,
@@ -15,15 +19,45 @@ from hivemoot_agent.plugins.interfaces import (
 from hivemoot_agent.plugins_builtin.messaging.system_prompt import SYSTEM_PROMPT
 
 
+def _format_status(text: str) -> str:
+    """Extract a short status line from agent text.
+
+    Takes the first line, strips leading markdown artifacts
+    (# headers, * bullets, - dashes), and caps at 200 chars.
+    """
+    line = text.split("\n", 1)[0].strip()
+    # Strip leading header markers (e.g., "## Heading" -> "Heading").
+    line = line.lstrip("#").strip()
+    # Strip leading list marker (e.g., "* item" or "- item" -> "item").
+    if line.startswith(("* ", "- ")):
+        line = line[2:].strip()
+    if len(line) > 200:
+        line = line[:197] + "..."
+    return line
+
+
 class MessagingPlugin:
     name = "messaging"
-    version = "0.2.0"
-    description = "Chat messaging with typing indicators and response delivery"
+    version = "0.3.0"
+    description = "Chat messaging with typing indicators, streaming progress, and response delivery"
 
     def __init__(self) -> None:
         self._platform_adapter: Any = None
         self._typing_stop: threading.Event = threading.Event()
         self._typing_thread: threading.Thread | None = None
+        # Streaming progress state.
+        self._status_msg_id: str = ""
+        self._status_chat_id: str = ""
+        self._last_status_time: float = 0.0
+        self._status_closed = True
+        self._status_epoch = 0
+        self._status_lock: threading.Lock = threading.Lock()
+        self._status_queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self._status_thread = threading.Thread(
+            target=self._status_loop,
+            daemon=True,
+        )
+        self._status_thread.start()
 
     def setup(self, config: PluginConfig) -> None:
         pass
@@ -56,7 +90,14 @@ class MessagingPlugin:
         return SYSTEM_PROMPT
 
     def on_job_started(self, job: Job, config: PluginConfig) -> None:
-        """Start typing indicator (skip for non-chat sessions)."""
+        """Start typing indicator and reset progress state."""
+        with self._status_lock:
+            self._status_epoch += 1
+            self._status_msg_id = ""
+            self._status_chat_id = ""
+            self._last_status_time = 0.0
+            self._status_closed = False
+
         chat_id = self._extract_chat_id(job.session_key)
         if not chat_id:
             return
@@ -72,11 +113,40 @@ class MessagingPlugin:
         )
         self._typing_thread.start()
 
+    def on_agent_output(
+        self, job: Job, event: AgentEvent, config: PluginConfig,
+    ) -> None:
+        """React to a streaming event from the agent subprocess.
+
+        Queue status updates for background delivery so Telegram I/O
+        never blocks stdout parsing or the final reply path.
+        """
+        if event.kind != "assistant_message":
+            return
+
+        status = _format_status(event.text)
+        if len(status) < 10:
+            return
+
+        with self._status_lock:
+            if self._status_closed:
+                return
+
+            chat_id = self._status_chat_id
+            if not chat_id:
+                chat_id = self._extract_chat_id(job.session_key)
+                if not chat_id:
+                    return
+                self._status_chat_id = chat_id
+
+            epoch = self._status_epoch
+
+        self._status_queue.put(("status", epoch, config, chat_id, status))
+
     def on_job_finished(
         self, job: Job, result: AgentResult, config: PluginConfig
     ) -> None:
-        """Stop typing.  For Claude, response was sent via MCP during
-        execution.  For other providers, send the extracted response."""
+        """Stop typing, delete status message, send final response."""
         self._typing_stop.set()
         if self._typing_thread:
             self._typing_thread.join(timeout=5)
@@ -87,8 +157,21 @@ class MessagingPlugin:
         if not chat_id or not adapter:
             return
 
+        with self._status_lock:
+            self._status_closed = True
+            status_msg_id = self._status_msg_id
+            status_chat_id = self._status_chat_id or chat_id
+            self._status_msg_id = ""
+            self._status_chat_id = ""
+            self._last_status_time = 0.0
+
+        # Best-effort cleanup should not delay the user-visible reply.
+        if status_msg_id and status_chat_id:
+            self._status_queue.put(
+                ("delete", config, status_chat_id, status_msg_id),
+            )
+
         if result.response:
-            # Non-MCP provider — send the extracted response.
             adapter.send(config, chat_id, result.response)
         elif result.exit_code != 0:
             adapter.send(config, chat_id, "Something went wrong.")
@@ -113,7 +196,7 @@ class MessagingPlugin:
         return self._platform_adapter or self._load_platform()
 
     def _extract_chat_id(self, session_key: str) -> str:
-        """Extract chat_id from session key (e.g., 'tg:12345' → '12345').
+        """Extract chat_id from session key (e.g., 'tg:12345' -> '12345').
 
         Returns empty string for non-chat sessions so lifecycle
         callbacks skip gracefully (e.g., oneshot mode).
@@ -128,6 +211,78 @@ class MessagingPlugin:
         adapter.typing(config, chat_id)
         while not self._typing_stop.wait(4):
             adapter.typing(config, chat_id)
+
+    def _status_loop(self) -> None:
+        """Deliver status updates in the background."""
+        while True:
+            item = self._status_queue.get()
+            try:
+                action = item[0]
+                if action == "status":
+                    _, epoch, config, chat_id, status = item
+                    self._deliver_status(epoch, config, chat_id, status)
+                elif action == "delete":
+                    _, config, chat_id, message_id = item
+                    self._delete_status_message(config, chat_id, message_id)
+            except Exception as exc:
+                print(
+                    f"[messaging] status worker error: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+            finally:
+                self._status_queue.task_done()
+
+    def _deliver_status(
+        self,
+        epoch: int,
+        config: PluginConfig,
+        chat_id: str,
+        status: str,
+    ) -> None:
+        """Send or edit a status message for the active job."""
+        adapter = self.get_adapter()
+        if adapter is None:
+            return
+
+        with self._status_lock:
+            if self._status_closed or epoch != self._status_epoch:
+                return
+            message_id = self._status_msg_id
+            last_status_time = self._last_status_time
+
+        now = time.monotonic()
+
+        if message_id:
+            if now - last_status_time < 1.5:
+                return
+            adapter.edit_message(config, chat_id, message_id, status)
+            with self._status_lock:
+                if not self._status_closed and epoch == self._status_epoch:
+                    self._last_status_time = now
+            return
+
+        message_id = adapter.send_and_get_id(config, chat_id, status)
+        if not message_id:
+            return
+
+        with self._status_lock:
+            closed_or_stale = self._status_closed or epoch != self._status_epoch
+            if not closed_or_stale:
+                self._status_msg_id = message_id
+                self._status_chat_id = chat_id
+                self._last_status_time = now
+
+        if closed_or_stale:
+            self._delete_status_message(config, chat_id, message_id)
+
+    def _delete_status_message(
+        self, config: PluginConfig, chat_id: str, message_id: str,
+    ) -> None:
+        """Delete a status message without affecting the final reply path."""
+        adapter = self.get_adapter()
+        if adapter is None:
+            return
+        adapter.delete_message(config, chat_id, message_id)
 
 
 def create_plugin() -> Plugin:

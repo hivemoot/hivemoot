@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 
+from hivemoot_agent.plugins.interfaces import AgentEvent
+
 name = "codex"
 supports_system_prompt_flag = False
 
@@ -38,6 +40,29 @@ def build_cmd(
             cmd += ["--model", model]
         cmd += [combined]
     return cmd
+
+
+def parse_event(line: str) -> AgentEvent | None:
+    """Parse a Codex JSONL line into a normalized event."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+    msg_type = obj.get("type", "")
+
+    if msg_type == "thread.started":
+        return AgentEvent(kind="system")
+
+    if msg_type == "item.completed":
+        item = obj.get("item", {})
+        if item.get("type") == "agent_message":
+            return AgentEvent(kind="result", text=item.get("text", ""))
+
+    return None
 
 
 def extract_session_id(output: str) -> str:

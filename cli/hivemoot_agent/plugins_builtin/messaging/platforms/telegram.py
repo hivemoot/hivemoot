@@ -69,6 +69,21 @@ def _resolve_token(config: PluginConfig) -> str:
     return ""
 
 
+def _http_error_description(exc: urllib.error.HTTPError) -> str:
+    """Extract Telegram's error description from an HTTPError body."""
+    try:
+        body = exc.read()
+    except Exception:
+        return ""
+    if not body:
+        return ""
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        return ""
+    return str(parsed.get("description", ""))
+
+
 # ── Adapter ────────────────────────────────────────────────────────
 
 
@@ -187,6 +202,130 @@ class TelegramAdapter:
             )
             return resp.get("ok", False)
         except Exception:
+            return False
+
+    def send_and_get_id(
+        self, config: PluginConfig, chat_id: str, text: str,
+    ) -> str:
+        """Send a message with Markdown->HTML formatting and return its message_id.
+
+        Returns "" on failure.  Falls back to plain text if Telegram
+        rejects the HTML.
+        """
+        from hivemoot_agent.plugins_builtin.messaging.formatter import (
+            markdown_to_telegram_html,
+        )
+
+        token = _resolve_token(config)
+        if not token:
+            return ""
+        html = markdown_to_telegram_html(text)
+        try:
+            resp = _api(
+                token, "sendMessage",
+                {"chat_id": chat_id, "text": html, "parse_mode": "HTML"},
+            )
+            if resp.get("ok"):
+                return str(resp["result"]["message_id"])
+            # Fallback to plain text.
+            resp = _api(token, "sendMessage", {"chat_id": chat_id, "text": text})
+            if resp.get("ok"):
+                return str(resp["result"]["message_id"])
+        except urllib.error.HTTPError as exc:
+            description = _http_error_description(exc)
+            if "can't parse entities" in description:
+                try:
+                    resp = _api(
+                        token, "sendMessage",
+                        {"chat_id": chat_id, "text": text},
+                    )
+                    if resp.get("ok"):
+                        return str(resp["result"]["message_id"])
+                except Exception as fallback_exc:
+                    print(
+                        f"telegram: send_and_get_id fallback error: {fallback_exc}",
+                        file=sys.stderr,
+                    )
+                    return ""
+            print(f"telegram: send_and_get_id error: {exc}", file=sys.stderr)
+        except Exception as exc:
+            print(f"telegram: send_and_get_id error: {exc}", file=sys.stderr)
+        return ""
+
+    def edit_message(
+        self, config: PluginConfig, chat_id: str, message_id: str, text: str,
+    ) -> bool:
+        """Edit a message's text with Markdown->HTML formatting.  Returns True on success."""
+        from hivemoot_agent.plugins_builtin.messaging.formatter import (
+            markdown_to_telegram_html,
+        )
+
+        token = _resolve_token(config)
+        if not token:
+            return False
+        html = markdown_to_telegram_html(text)
+        try:
+            resp = _api(
+                token, "editMessageText",
+                {"chat_id": chat_id, "message_id": message_id,
+                 "text": html, "parse_mode": "HTML"},
+            )
+            if resp.get("ok"):
+                return True
+            # Fallback to plain text.
+            resp = _api(
+                token, "editMessageText",
+                {"chat_id": chat_id, "message_id": message_id, "text": text},
+            )
+            return resp.get("ok", False)
+        except urllib.error.HTTPError as exc:
+            description = _http_error_description(exc)
+            if "message is not modified" in description:
+                return True
+            if "can't parse entities" in description:
+                try:
+                    resp = _api(
+                        token, "editMessageText",
+                        {"chat_id": chat_id, "message_id": message_id, "text": text},
+                    )
+                    return resp.get("ok", False)
+                except Exception as fallback_exc:
+                    print(
+                        f"telegram: edit_message fallback error: {fallback_exc}",
+                        file=sys.stderr,
+                    )
+                    return False
+            print(f"telegram: edit_message error: {exc}", file=sys.stderr)
+            return False
+        except Exception as exc:
+            print(f"telegram: edit_message error: {exc}", file=sys.stderr)
+            return False
+
+    def delete_message(
+        self, config: PluginConfig, chat_id: str, message_id: str,
+    ) -> bool:
+        """Delete a message.  Returns True on success."""
+        token = _resolve_token(config)
+        if not token:
+            return False
+        try:
+            resp = _api(
+                token, "deleteMessage",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            return resp.get("ok", False)
+        except urllib.error.HTTPError as exc:
+            # "message to delete not found" is fine — already gone.
+            try:
+                body = json.loads(exc.read())
+                if "message to delete not found" in body.get("description", ""):
+                    return True
+            except Exception:
+                pass
+            print(f"telegram: delete_message error: {exc}", file=sys.stderr)
+            return False
+        except Exception as exc:
+            print(f"telegram: delete_message error: {exc}", file=sys.stderr)
             return False
 
 

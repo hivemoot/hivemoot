@@ -93,7 +93,7 @@ class ToolRegistry:
 # ── Messaging tools ────────────────────────────────────────────────
 
 def _build_messaging_tools(registry: ToolRegistry, config: dict) -> None:
-    """Register messaging tools (send_message, send_file)."""
+    """Register messaging tools (send_file)."""
     import urllib.parse
     import urllib.request
     import urllib.error
@@ -161,121 +161,6 @@ def _build_messaging_tools(registry: ToolRegistry, config: dict) -> None:
         if ext in video_exts:
             return "sendVideo", "video"
         return "sendDocument", "document"
-
-    # ── Tool: send_message ─────────────────────────────────────────
-
-    def _send_html(target: str, text: str) -> dict:
-        """Send HTML message, fallback to plain text. Returns API response."""
-        from hivemoot_agent.plugins_builtin.messaging.formatter import (
-            markdown_to_telegram_html,
-        )
-        html = markdown_to_telegram_html(text)
-        try:
-            resp = _telegram_api("sendMessage", {
-                "chat_id": target,
-                "text": html,
-                "parse_mode": "HTML",
-            })
-            if resp.get("ok"):
-                return resp
-            # Fallback to plain text.
-            return _telegram_api("sendMessage", {"chat_id": target, "text": text})
-        except Exception:
-            return _telegram_api("sendMessage", {"chat_id": target, "text": text})
-
-    def handle_send_message(args: dict) -> str:
-        text = args.get("text", "")
-        target = args.get("chat_id", chat_id)
-        if not text:
-            return "Error: text is required"
-        try:
-            resp = _send_html(target, text)
-            msg_id = resp.get("result", {}).get("message_id", "")
-            return f"Message sent (message_id={msg_id})"
-        except Exception as exc:
-            return f"Error sending message: {exc}"
-
-    registry.register(
-        name="send_message",
-        description=(
-            "Send a message to the user via the messaging platform. "
-            "This is the PRIMARY way to communicate — use it for all "
-            "responses, status updates, questions, and results. "
-            "Do NOT print to console; the user only sees messages sent "
-            "through this tool. Supports Markdown: **bold**, *italic*, "
-            "`code`, ```code blocks```, [links](url). "
-            "Returns the message_id for use with edit_message."
-        ),
-        parameters={
-            "text": {
-                "type": "string",
-                "description": "Message content. Supports Markdown formatting.",
-            },
-        },
-        required=["text"],
-        annotations={"readOnlyHint": False, "idempotentHint": False},
-        handler=handle_send_message,
-    )
-
-    # ── Tool: edit_message ─────────────────────────────────────────
-
-    def handle_edit_message(args: dict) -> str:
-        message_id = args.get("message_id", "")
-        text = args.get("text", "")
-        target = args.get("chat_id", chat_id)
-        if not message_id:
-            return "Error: message_id is required"
-        if not text:
-            return "Error: text is required"
-
-        from hivemoot_agent.plugins_builtin.messaging.formatter import (
-            markdown_to_telegram_html,
-        )
-        html = markdown_to_telegram_html(text)
-
-        try:
-            resp = _telegram_api("editMessageText", {
-                "chat_id": target,
-                "message_id": message_id,
-                "text": html,
-                "parse_mode": "HTML",
-            })
-            if resp.get("ok"):
-                return "Message edited"
-            # Fallback to plain text.
-            resp = _telegram_api("editMessageText", {
-                "chat_id": target,
-                "message_id": message_id,
-                "text": text,
-            })
-            if resp.get("ok"):
-                return "Message edited (plain text fallback)"
-            return f"Error: {resp.get('description', 'unknown')}"
-        except Exception as exc:
-            return f"Error editing message: {exc}"
-
-    registry.register(
-        name="edit_message",
-        description=(
-            "Edit a previously sent message. Use the message_id returned "
-            "by send_message. Useful for updating a status message or "
-            "correcting a response. If the message_id is invalid, returns "
-            "an error."
-        ),
-        parameters={
-            "message_id": {
-                "type": "string",
-                "description": "The message_id returned by a previous send_message call.",
-            },
-            "text": {
-                "type": "string",
-                "description": "New message content (replaces the entire message). Markdown supported.",
-            },
-        },
-        required=["message_id", "text"],
-        annotations={"readOnlyHint": False, "idempotentHint": True},
-        handler=handle_edit_message,
-    )
 
     # ── Tool: send_file ────────────────────────────────────────────
 

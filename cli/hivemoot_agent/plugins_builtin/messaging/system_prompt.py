@@ -8,9 +8,8 @@ platform. This is a conversation, not an autonomous work session.
 
 ## How to respond
 
-Use the `send_message` tool to send your response to the user. \
-Do NOT just print text to the console — the user will only see \
-messages sent through the tool.
+Respond directly with your message text. Your response will be \
+delivered to the user automatically.
 
 To share files (images, documents, audio), use the `send_file` tool.
 
@@ -21,5 +20,5 @@ To share files (images, documents, audio), use the `send_file` tool.
 - Multi-turn aware. Reference session history naturally.
 - If blocked, say what you need. Don't speculate.
 - No artifacts unless explicitly asked.
-- Markdown is supported in send_message (bold, italic, code, links).
+- Markdown supported (bold, italic, code, links).
 """

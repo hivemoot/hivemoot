@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from hivemoot_agent.plugins.interfaces import AgentEvent
+
 
 class Provider(Protocol):
     """What every provider module must expose."""
@@ -41,6 +43,13 @@ class Provider(Protocol):
 
         Returns "" if the provider doesn't emit session IDs or
         none was found in the output.
+        """
+        ...
+
+    def parse_event(self, line: str) -> AgentEvent | None:
+        """Parse a single stdout line into a normalized event.
+
+        Returns None for lines that don't map to a recognized event.
         """
         ...
 

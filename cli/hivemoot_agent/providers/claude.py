@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from hivemoot_agent.plugins.interfaces import AgentEvent
+
 name = "claude"
 supports_system_prompt_flag = True
 
@@ -61,6 +63,53 @@ def build_cmd(
         cmd += ["--model", model]
     cmd += ["--", prompt]
     return cmd
+
+
+def parse_event(line: str) -> AgentEvent | None:
+    """Parse a Claude stream-json line into a normalized event.
+
+    Claude's --output-format stream-json emits JSONL with types:
+    system, assistant, result. Assistant messages can mix a short
+    text preamble with a tool_use block; when text is present we keep
+    it as an assistant_message so progress updates still surface.
+    """
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+    msg_type = obj.get("type", "")
+
+    if msg_type == "system":
+        return AgentEvent(kind="system")
+
+    if msg_type == "assistant":
+        content = obj.get("message", {}).get("content", [])
+        text = ""
+        tool_name = ""
+        for block in content:
+            block_type = block.get("type", "")
+            if block_type == "text" and not text:
+                text = block.get("text", "")
+            elif block_type == "tool_use" and not tool_name:
+                tool_name = block.get("name", "")
+        if text:
+            return AgentEvent(
+                kind="assistant_message",
+                text=text,
+                tool_name=tool_name,
+            )
+        if tool_name:
+            return AgentEvent(kind="tool_use", text=text, tool_name=tool_name)
+        return AgentEvent(kind="assistant_message")
+
+    if msg_type == "result":
+        return AgentEvent(kind="result", text=obj.get("result", ""))
+
+    return None
 
 
 def extract_session_id(output: str) -> str:

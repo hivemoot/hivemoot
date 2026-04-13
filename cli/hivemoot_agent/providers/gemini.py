@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from hivemoot_agent.plugins.interfaces import AgentEvent
+
 name = "gemini"
 supports_system_prompt_flag = False
 
@@ -24,6 +26,10 @@ def build_cmd(
     if model:
         cmd += ["-m", model]
     return cmd
+
+
+def parse_event(line: str) -> AgentEvent | None:
+    return None
 
 
 def extract_session_id(output: str) -> str:

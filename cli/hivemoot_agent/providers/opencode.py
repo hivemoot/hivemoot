@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from hivemoot_agent.plugins.interfaces import AgentEvent
+
 name = "opencode"
 supports_system_prompt_flag = False
 
@@ -26,6 +28,10 @@ def build_cmd(
         cmd += ["--model", effective_model]
     cmd += [combined]
     return cmd
+
+
+def parse_event(line: str) -> AgentEvent | None:
+    return None
 
 
 def extract_session_id(output: str) -> str:
