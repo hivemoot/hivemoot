@@ -88,10 +88,14 @@ const ENV_SUCCESS = {
   config: {
     githubAppId: "app-123",
     githubAppPrivateKey: "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----",
+    githubClientId: undefined,
+    githubClientSecret: undefined,
     redisRestUrl: "https://redis.example.com",
     redisRestToken: "token-123",
     byokActiveKeyVersion: "v1",
-    byokMasterKeysJson: null,
+    byokMasterKeysJson: undefined,
+    siteUrl: "http://localhost:3000",
+    nodeEnv: "test",
   },
 };
 
@@ -109,9 +113,9 @@ beforeEach(() => {
   vi.mocked(readRepoFile).mockResolvedValue(FILE_RESPONSE);
   vi.mocked(getDefaultBranch).mockResolvedValue("main");
   vi.mocked(getBranchSha).mockResolvedValue("base-sha-xyz");
-  vi.mocked(resetBranchToSha).mockResolvedValue("reset-ok");
+  vi.mocked(resetBranchToSha).mockResolvedValue({ ref: "refs/heads/hivemoot-role-edits", sha: "reset-sha" });
   vi.mocked(writeFileToBranch).mockResolvedValue(undefined);
-  vi.mocked(createPullRequest).mockResolvedValue({ number: 99, url: "https://github.com/hivemoot/hivemoot/pull/99" });
+  vi.mocked(createPullRequest).mockResolvedValue({ number: 99, title: "Role edit: worker", headRef: "hivemoot-drone:hivemoot-role-edits", url: "https://github.com/hivemoot/hivemoot/pull/99" });
 });
 
 // ---------------------------------------------------------------------------
@@ -133,7 +137,7 @@ describe("GET /api/repos/[owner]/[repo]/roles", () => {
 
   it("reads from the edit branch and sets source to pending-pr when a PR is open", async () => {
     vi.mocked(listOpenPRsForBranch).mockResolvedValue([
-      { number: 5, url: "https://github.com/hivemoot/hivemoot/pull/5" },
+      { number: 5, title: "Role edit: scout", headRef: "hivemoot-drone:hivemoot-role-edits", url: "https://github.com/hivemoot/hivemoot/pull/5" },
     ]);
 
     const res = await GET(makeGetRequest());
@@ -236,7 +240,7 @@ describe("PUT /api/repos/[owner]/[repo]/roles", () => {
   });
 
   it("resets the stale branch instead of creating when resetBranchToSha succeeds", async () => {
-    vi.mocked(resetBranchToSha).mockResolvedValue("reset-ok");
+    vi.mocked(resetBranchToSha).mockResolvedValue({ ref: "refs/heads/hivemoot-role-edits", sha: "reset-sha" });
 
     const res = await PUT(makePutRequest(VALID_PUT_BODY));
 
@@ -246,7 +250,7 @@ describe("PUT /api/repos/[owner]/[repo]/roles", () => {
 
   it("updates the existing PR without creating a new branch or PR", async () => {
     vi.mocked(listOpenPRsForBranch).mockResolvedValue([
-      { number: 7, url: "https://github.com/hivemoot/hivemoot/pull/7" },
+      { number: 7, title: "Role edit: worker", headRef: "hivemoot-drone:hivemoot-role-edits", url: "https://github.com/hivemoot/hivemoot/pull/7" },
     ]);
 
     const res = await PUT(makePutRequest(VALID_PUT_BODY));
