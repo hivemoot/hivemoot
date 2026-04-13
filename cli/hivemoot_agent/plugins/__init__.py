@@ -37,6 +37,10 @@ class PluginRegistry:
                 if plugin_factory is None:
                     continue
                 plugin = plugin_factory()
+                try:
+                    setattr(plugin, "__hivemoot_plugin_root__", str(entry))
+                except Exception:
+                    pass
                 self._plugins[plugin.name] = plugin
             except Exception as exc:
                 print(

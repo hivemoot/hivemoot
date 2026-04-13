@@ -35,6 +35,14 @@ class PluginConfig:
 
 
 @dataclass
+class Skill:
+    """A skill that can be registered via Claude's --plugin-dir."""
+
+    name: str
+    content: str  # Full SKILL.md content (including frontmatter)
+
+
+@dataclass
 class Job:
     """An inbound event to process."""
 
@@ -124,6 +132,7 @@ class Plugin(Protocol):
     def triggers(self) -> list[Trigger]:
         """Return triggers provided by this plugin."""
         ...
+
 
     def system_prompt(self, config: PluginConfig) -> str:
         """Persistent system context — injected into every agent run.

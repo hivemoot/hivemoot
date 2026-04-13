@@ -38,6 +38,8 @@ def build_cmd(
     model: str,
     mcp_config: str,
     session_id: str,
+    *,
+    plugin_dir: str = "",
 ) -> list[str]:
     if session_id:
         cmd = [
@@ -59,6 +61,8 @@ def build_cmd(
         cmd += ["--disallowedTools", tool]
     if mcp_config:
         cmd += ["--mcp-config", mcp_config]
+    if plugin_dir:
+        cmd += ["--plugin-dir", plugin_dir]
     if model:
         cmd += ["--model", model]
     cmd += ["--", prompt]

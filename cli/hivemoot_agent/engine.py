@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import queue
 import subprocess
 import sys
@@ -290,9 +291,12 @@ class Engine:
         )
         system_prompt = _append_agent_memory(system_prompt, repo=oneshot_repo)
 
+        # Build skills plugin dir for Claude's --plugin-dir.
+        skills_dir = self._build_skills_plugin_dir() if plugins else ""
+
         cmd = self._build_provider_cmd(
             provider, provider_name, prompt, system_prompt,
-            model, "", "",
+            model, "", "", plugin_dir=skills_dir,
         )
 
         plugin_label = ", ".join(plugins) if plugins else "none"
@@ -324,6 +328,10 @@ class Engine:
         except Exception as exc:
             print(f"[engine] oneshot failed: {exc}", file=sys.stderr, flush=True)
             exit_code = 1
+
+        # Clean up skills plugin dir.
+        if skills_dir and os.path.isdir(skills_dir):
+            shutil.rmtree(skills_dir, ignore_errors=True)
 
         # Print the agent's response to stdout so callers can capture it.
         response = ""
@@ -396,6 +404,81 @@ class Engine:
         header = "Your capabilities are provided by hivemoot agent plugins. Each <plugin> block describes one."
         return header + "\n\n" + "\n\n".join(parts)
 
+    def _build_skills_plugin_dir(self) -> str:
+        """Collect skills from all enabled plugins and generate a plugin dir.
+
+        Scans each plugin's ``skills/`` subdirectory for SKILL.md files.
+        Deduplicates by name (first plugin wins).
+
+        Returns the temp directory path (caller must clean up), or ""
+        if no plugins provide skills.
+        """
+        import inspect
+        from pathlib import Path
+
+        from hivemoot_agent.plugins.interfaces import Skill
+        from hivemoot_agent.plugins.skills import generate_plugin_dir, load_skills_from_dir
+
+        seen: dict[str, Skill] = {}
+        for _name, p in self._plugins.items():
+            skills_dir = self._resolve_plugin_skills_dir(p)
+            if not skills_dir:
+                continue
+            for skill in load_skills_from_dir(Path(skills_dir)):
+                if skill.name not in seen:
+                    seen[skill.name] = skill
+
+        if not seen:
+            return ""
+
+        result = generate_plugin_dir(list(seen.values()))
+        print(
+            f"[engine] skills plugin-dir: {len(seen)} skill(s) "
+            f"({', '.join(seen)})",
+            file=sys.stderr, flush=True,
+        )
+        return result
+
+    @staticmethod
+    def _resolve_plugin_skills_dir(plugin: Any) -> str:
+        """Resolve the on-disk ``skills/`` directory for a plugin instance.
+
+        Plugins discovered by the built-in registry carry an explicit
+        ``__hivemoot_plugin_root__`` hint. For manually registered plugins,
+        fall back to scanning the loaded module/package chain so classes
+        defined in nested modules still resolve skills from the package root.
+        """
+        import inspect
+        from pathlib import Path
+
+        root_hint = getattr(plugin, "__hivemoot_plugin_root__", "")
+        if root_hint:
+            skills_dir = Path(root_hint) / "skills"
+            return str(skills_dir) if skills_dir.is_dir() else ""
+
+        module_parts = type(plugin).__module__.split(".")
+        seen: set[Path] = set()
+        for idx in range(len(module_parts), 0, -1):
+            module_name = ".".join(module_parts[:idx])
+            module = sys.modules.get(module_name)
+            module_file = getattr(module, "__file__", "") if module else ""
+            if not module_file:
+                continue
+            candidate_dir = Path(module_file).parent
+            if candidate_dir in seen:
+                continue
+            seen.add(candidate_dir)
+            skills_dir = candidate_dir / "skills"
+            if skills_dir.is_dir():
+                return str(skills_dir)
+
+        try:
+            candidate_dir = Path(inspect.getfile(type(plugin))).parent
+        except (TypeError, OSError):
+            return ""
+        skills_dir = candidate_dir / "skills"
+        return str(skills_dir) if skills_dir.is_dir() else ""
+
     def run_agent(
         self,
         plugin: Any,
@@ -412,6 +495,9 @@ class Engine:
 
         # Build MCP config so the agent can call plugin tools.
         mcp_config = self._build_mcp_config(plugin_name, job, config)
+
+        # Build skills plugin dir for Claude's --plugin-dir.
+        skills_dir = self._build_skills_plugin_dir()
 
         # Session lookup — check persistent store with resume policy.
         self._init_session_store(config)
@@ -436,7 +522,7 @@ class Engine:
 
         cmd = self._build_provider_cmd(
             provider, provider_name, effective_prompt, system_prompt,
-            model, mcp_config, session_id,
+            model, mcp_config, session_id, plugin_dir=skills_dir,
         )
 
         plugin.on_job_started(job, config)
@@ -469,15 +555,17 @@ class Engine:
             prior_record = None
             cmd = self._build_provider_cmd(
                 provider, provider_name, job.prompt, system_prompt,
-                model, mcp_config, "",
+                model, mcp_config, "", plugin_dir=skills_dir,
             )
             exit_code, stdout = self._run_subprocess(
                 cmd, config, on_event=on_event, provider=provider,
             )
 
-        # Clean up MCP config.
+        # Clean up MCP config and skills plugin dir.
         if mcp_config and os.path.isfile(mcp_config):
             os.unlink(mcp_config)
+        if skills_dir and os.path.isdir(skills_dir):
+            shutil.rmtree(skills_dir, ignore_errors=True)
 
         # Persist session on success.
         if exit_code == 0 and stdout and provider:
@@ -625,6 +713,8 @@ class Engine:
         model: str,
         mcp_config: str,
         session_id: str,
+        *,
+        plugin_dir: str = "",
     ) -> list[str]:
         """Delegate command building to the provider module."""
         if provider is not None:
@@ -634,6 +724,7 @@ class Engine:
                 model=model,
                 mcp_config=mcp_config,
                 session_id=session_id,
+                plugin_dir=plugin_dir,
             )
         # Unknown provider — best-effort generic invocation.
         print(

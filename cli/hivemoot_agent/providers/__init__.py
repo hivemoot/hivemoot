@@ -34,6 +34,7 @@ class Provider(Protocol):
         model: str,
         mcp_config: str,
         session_id: str,
+        **kwargs: str,
     ) -> list[str]:
         """Build the CLI command to run this provider."""
         ...

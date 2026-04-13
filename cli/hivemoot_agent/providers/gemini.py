@@ -16,6 +16,7 @@ def build_cmd(
     model: str,
     mcp_config: str,
     session_id: str,
+    **kwargs: str,
 ) -> list[str]:
     combined = f"{system_prompt}\n\n{prompt}"
     # In task mode use plain text output (the log IS the answer);

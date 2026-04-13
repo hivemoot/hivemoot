@@ -17,6 +17,7 @@ def build_cmd(
     model: str,
     mcp_config: str,
     session_id: str,
+    **kwargs: str,
 ) -> list[str]:
     # --json is required for JSONL output so we can extract thread_id
     # for session persistence and item.completed for responses.

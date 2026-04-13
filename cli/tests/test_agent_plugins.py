@@ -1,7 +1,11 @@
 """Tests for AGENT_PLUGINS explicit plugin selection in the engine."""
 
+import importlib
 import os
+import shutil
 import sys
+import tempfile
+import uuid
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -52,6 +56,41 @@ def _setup_registry(*plugins):
     registry._configs.clear()
     for p in plugins:
         registry.register(p)
+
+
+def _write_file(path: str, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def _load_temp_plugin(
+    package_name: str,
+    module_name: str,
+    class_name: str,
+    files: dict[str, str],
+) -> tuple[str, object]:
+    tmpdir = tempfile.mkdtemp(prefix="hm-skill-plugin-")
+    for relpath, content in files.items():
+        _write_file(os.path.join(tmpdir, relpath), content)
+
+    sys.path.insert(0, tmpdir)
+    importlib.invalidate_caches()
+    module = importlib.import_module(module_name)
+    plugin = getattr(module, class_name)()
+    return tmpdir, plugin
+
+
+def _cleanup_temp_plugin(tmpdir: str, package_name: str) -> None:
+    try:
+        sys.path.remove(tmpdir)
+    except ValueError:
+        pass
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(f"{package_name}."):
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ── AGENT_PLUGINS selection tests ────────────────────────────────
@@ -157,6 +196,70 @@ def test_autodiscover_none_valid():
         result = engine._resolve_plugins()
 
     assert result is None
+
+
+def test_build_skills_plugin_dir_flat_package_layout():
+    package_name = f"skillpkg_flat_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="FlatPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class FlatPlugin:\n"
+                "    name = 'flat'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/alpha/SKILL.md": "# Alpha\n",
+        },
+    )
+
+    skills_dir = ""
+    try:
+        engine = Engine()
+        engine._plugins = {"flat": plugin}
+        skills_dir = engine._build_skills_plugin_dir()
+        assert skills_dir
+        assert os.path.isfile(
+            os.path.join(skills_dir, "skills", "alpha", "SKILL.md")
+        )
+    finally:
+        if skills_dir:
+            shutil.rmtree(skills_dir, ignore_errors=True)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_build_skills_plugin_dir_nested_package_layout():
+    package_name = f"skillpkg_nested_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=f"{package_name}.core.impl",
+        class_name="NestedPlugin",
+        files={
+            f"{package_name}/__init__.py": "",
+            f"{package_name}/core/__init__.py": "",
+            f"{package_name}/core/impl.py": (
+                "class NestedPlugin:\n"
+                "    name = 'nested'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/beta/SKILL.md": "# Beta\n",
+        },
+    )
+
+    skills_dir = ""
+    try:
+        engine = Engine()
+        engine._plugins = {"nested": plugin}
+        skills_dir = engine._build_skills_plugin_dir()
+        assert skills_dir
+        assert os.path.isfile(
+            os.path.join(skills_dir, "skills", "beta", "SKILL.md")
+        )
+    finally:
+        if skills_dir:
+            shutil.rmtree(skills_dir, ignore_errors=True)
+        _cleanup_temp_plugin(tmpdir, package_name)
 
 
 # ── Oneshot with AGENT_PLUGINS ───────────────────────────────────
