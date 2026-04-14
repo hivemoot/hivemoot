@@ -86,6 +86,92 @@ def test_blockquote():
     assert "<blockquote>quoted text</blockquote>" in result
 
 
+def test_multiline_blockquote_grouped():
+    md = "> Why I say that:\n> - first line\n> - second line"
+    result = markdown_to_telegram_html(md)
+    assert result.count("<blockquote>") == 1
+    assert result.count("</blockquote>") == 1
+    assert (
+        "<blockquote>Why I say that:\n- first line\n- second line</blockquote>"
+        in result
+    )
+
+
+def test_markdown_table_converted_to_preformatted_block():
+    md = (
+        "| Column A | Column B |\n"
+        "|---|---|\n"
+        "| Row 1 | Value 1 |\n"
+        "| Row 2 | Value 2 |"
+    )
+    result = markdown_to_telegram_html(md)
+    assert result.startswith("<pre>")
+    assert result.endswith("</pre>")
+    assert "Column A | Column B" in result
+    assert "---------+---------" in result
+    assert "Row 1    | Value 1 " in result
+    assert "|---|---|" not in result
+
+
+def test_markdown_table_preserves_surrounding_text():
+    md = (
+        "Before\n\n"
+        "| A | B |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n\n"
+        "After"
+    )
+    result = markdown_to_telegram_html(md)
+    assert result.startswith("Before\n\n<pre>")
+    assert "</pre>\n\nAfter" in result
+
+
+def test_markdown_table_without_outer_pipes():
+    md = "Name | Value\n--- | ---\nAlpha | 1"
+    result = markdown_to_telegram_html(md)
+    assert result.startswith("<pre>")
+    assert "Name  | Value" in result
+    assert "Alpha | 1" in result
+
+
+def test_markdown_table_escapes_html_in_cells():
+    md = "| Expr | Meaning |\n|---|---|\n| a < b | x & y |"
+    result = markdown_to_telegram_html(md)
+    assert "&lt;" in result
+    assert "&amp;" in result
+    assert result.startswith("<pre>")
+
+
+def test_markdown_table_with_inline_code_pipe_still_renders_as_table():
+    md = "| Expr | Value |\n|---|---|\n| `a | b` | yes |"
+    result = markdown_to_telegram_html(md)
+    assert result.startswith("<pre>")
+    assert result.endswith("</pre>")
+    assert "`a | b`" in result
+    assert "|---|---|" not in result
+
+
+def test_inline_code_line_is_not_mistaken_for_table_header():
+    md = "`a | b`\n--- | ---\nc | d\n"
+    result = markdown_to_telegram_html(md)
+    assert "<pre>" not in result
+    assert result == "<code>a | b</code>\n--- | ---\nc | d\n"
+
+
+def test_markdown_table_with_escaped_pipe_keeps_single_cell():
+    md = "| Expr | Value |\n|---|---|\n| a \\| b | yes |"
+    result = markdown_to_telegram_html(md)
+    assert result.startswith("<pre>")
+    assert "a | b | yes" in result
+
+
+def test_pipe_text_without_separator_is_not_treated_as_table():
+    md = "| not | a table |\n| still | text |"
+    result = markdown_to_telegram_html(md)
+    assert "<pre>" not in result
+    assert result == md
+
+
 def test_strikethrough():
     assert markdown_to_telegram_html("~~deleted~~") == "<s>deleted</s>"
 
