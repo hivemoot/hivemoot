@@ -222,6 +222,11 @@ _send_health_report() {
   local url="$1"
   local payload="$2"
   local token_input="${3:-}"
+
+  if ! validate_url_scheme "$url" "HEALTH_REPORT_URL"; then
+    return 1
+  fi
+
   local max_retries="${HEALTH_REPORT_MAX_RETRIES}"
   local timeout="${HEALTH_REPORT_TIMEOUT_SECS}"
   local attempt=0

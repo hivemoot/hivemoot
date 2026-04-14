@@ -520,6 +520,18 @@ validate_task_id() {
   fi
 }
 
+validate_url_scheme() {
+  local url="$1"
+  local name="${2:-URL}"
+  case "$url" in
+    https://*|http://*) return 0 ;;
+    *)
+      echo "${name} must begin with https:// or http://, got: ${url}" >&2
+      return 1
+      ;;
+  esac
+}
+
 require_non_negative_integer() {
   local name="$1"
   local value="$2"

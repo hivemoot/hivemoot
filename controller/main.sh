@@ -256,8 +256,14 @@ if [ "$watch_tasks" = "1" ]; then
     echo "AGENT_TASK_CLAIM_URL is required when WATCH_TASKS=1." >&2
     exit 1
   fi
+  if ! validate_url_scheme "$task_claim_url" "AGENT_TASK_CLAIM_URL"; then
+    exit 1
+  fi
   if [ -z "$task_execute_base_url" ]; then
     task_execute_base_url="${task_claim_url%/claim}"
+  fi
+  if ! validate_url_scheme "$task_execute_base_url" "AGENT_TASK_EXECUTE_BASE_URL"; then
+    exit 1
   fi
 fi
 
