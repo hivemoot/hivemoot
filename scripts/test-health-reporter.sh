@@ -261,6 +261,132 @@ test_payload_omits_empty_run_summary() {
   pass "payload omits empty run_summary"
 }
 
+# ── error_detail field tests ───────────────────────────────────────
+
+test_payload_includes_error_detail() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "failure" "10" "1" "1" "run_failed" "" "" "" "" "fatal: permission denied")"
+  local has_detail
+  has_detail="$(printf '%s' "$payload" | jq 'has("error_detail")')"
+  [ "$has_detail" = "true" ] || fail "expected error_detail field when provided"
+  local detail_val
+  detail_val="$(printf '%s' "$payload" | jq -r '.error_detail')"
+  [ "$detail_val" = "fatal: permission denied" ] || fail "expected error_detail='fatal: permission denied', got '${detail_val}'"
+  pass "payload includes error_detail when provided"
+}
+
+test_payload_omits_empty_error_detail() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0")"
+  local has_detail
+  has_detail="$(printf '%s' "$payload" | jq 'has("error_detail")')"
+  [ "$has_detail" = "false" ] || fail "expected error_detail absent when not provided"
+  pass "payload omits error_detail when empty"
+}
+
+test_extract_error_detail_from_log() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-log.txt"
+  printf 'line1\nline2\nline3\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "line1
+line2
+line3" ] || fail "expected full log content, got '${result}'"
+  pass "extracts log tail from file"
+}
+
+test_extract_error_detail_tail_20() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-log-30.txt"
+  local i content=""
+  for i in $(seq 1 30); do
+    content="${content}line${i}"$'\n'
+  done
+  printf '%s' "$content" > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  local first_line
+  first_line="$(printf '%s' "$result" | head -1)"
+  [ "$first_line" = "line11" ] || fail "expected tail to start at line11, got '${first_line}'"
+  local line_count
+  line_count="$(printf '%s' "$result" | grep -c '')"
+  [ "$line_count" = "20" ] || fail "expected 20 lines, got ${line_count}"
+  pass "extracts last 20 lines from log"
+}
+
+test_extract_error_detail_strips_ansi() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-ansi.txt"
+  printf $'\x1b[31mError:\x1b[0m something failed\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "Error: something failed" ] || fail "expected ANSI-stripped output, got '${result}'"
+  pass "strips ANSI CSI escape sequences from log"
+}
+
+test_extract_error_detail_strips_osc_bel() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-osc-bel.txt"
+  printf $'\x1b]8;;https://example.com\x07link text\x1b]8;;\x07\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "link text" ] || fail "expected OSC+BEL stripped to 'link text', got '${result}'"
+  pass "strips OSC sequences terminated with BEL"
+}
+
+test_extract_error_detail_strips_osc_st() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-osc-st.txt"
+  printf $'\x1b]8;;https://example.com\x1b\\link text\x1b]8;;\x1b\\\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "link text" ] || fail "expected OSC+ST stripped to 'link text', got '${result}'"
+  pass "strips OSC sequences terminated with ST"
+}
+
+test_extract_error_detail_strips_nonprintable() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-nonprint.txt"
+  printf 'before\x00\x01\x02after\n' > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ "$result" = "beforeafter" ] || fail "expected non-printable chars stripped, got '${result}'"
+  pass "strips residual non-printable characters"
+}
+
+test_extract_error_detail_caps_at_2048() {
+  source_reporter
+  local log_file="${TEST_TMP}/test-long.txt"
+  local long_line
+  long_line="$(printf 'x%.0s' $(seq 1 3000))"
+  printf '%s\n' "$long_line" > "$log_file"
+  local result
+  result="$(_extract_error_detail_from_log "$log_file")"
+  [ ${#result} -le 2048 ] || fail "expected result capped at 2048 chars, got ${#result}"
+  pass "caps error_detail at 2048 chars"
+}
+
+test_extract_error_detail_missing_file() {
+  source_reporter
+  if _extract_error_detail_from_log "/nonexistent/file.log" 2>/dev/null; then
+    fail "should return non-zero for missing file"
+  fi
+  pass "returns non-zero for missing file"
+}
+
+test_validates_error_detail_passes() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "failure" "10" "1" "1" "error" "" "" "" "" "some log tail")"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid payload with error_detail should pass validation"
+  fi
+  pass "error_detail passes validation"
+}
+
 # ── validation tests ─────────────────────────────────────────────
 
 test_validates_missing_agent_id() {
@@ -1161,6 +1287,17 @@ run_test test_payload_includes_token_usage
 run_test test_payload_omits_token_usage_when_empty
 run_test test_payload_optional_run_summary
 run_test test_payload_omits_empty_run_summary
+run_test test_payload_includes_error_detail
+run_test test_payload_omits_empty_error_detail
+run_test test_extract_error_detail_from_log
+run_test test_extract_error_detail_tail_20
+run_test test_extract_error_detail_strips_ansi
+run_test test_extract_error_detail_strips_osc_bel
+run_test test_extract_error_detail_strips_osc_st
+run_test test_extract_error_detail_strips_nonprintable
+run_test test_extract_error_detail_caps_at_2048
+run_test test_extract_error_detail_missing_file
+run_test test_validates_error_detail_passes
 echo ""
 
 echo "  Validation — required fields:"

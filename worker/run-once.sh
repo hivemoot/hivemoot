@@ -1169,11 +1169,26 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
     _run_summary="$(extract_run_summary_from_log "$provider" "$last_command_log")" || true
   fi
 
+  # Extract error_detail (sanitized log tail) on failure/timeout for diagnostics.
+  # Gated by HEALTH_REPORT_ERROR_DETAIL=1 (default off) to avoid 400s during the
+  # backend migration window.  Uses the per-attempt log when available, falls back
+  # to the overall run log.
+  _error_detail=""
+  if [ "${HEALTH_REPORT_ERROR_DETAIL:-0}" = "1" ] && [ "$_run_outcome" != "success" ]; then
+    _error_detail_log="${last_command_log:-}"
+    if [ ! -f "${_error_detail_log:-}" ]; then
+      _error_detail_log="${log_file:-}"
+    fi
+    if [ -f "${_error_detail_log}" ]; then
+      _error_detail="$(_extract_error_detail_from_log "$_error_detail_log")" || true
+    fi
+  fi
+
   report_health_to_backend \
     "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
     "$exit_code" "${_run_error:-}" "$_next_run_at" \
-    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" "$_run_summary" || true
+    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" "$_run_summary" "$_error_detail" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

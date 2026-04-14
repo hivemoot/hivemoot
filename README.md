@@ -306,6 +306,7 @@ HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
 | `HEALTH_REPORT_MAX_RETRIES` | `2` | Retry attempts for 5xx/network errors |
 | `HEARTBEAT_INTERVAL_SECS` | `1800` | Controller periodic heartbeat cadence in seconds (`0` disables); default 30 min |
 | `HEALTH_REPORT_RUN_SUMMARY` | `0` | Include agent run summary in health payloads (`0`=off, `1`=on). Enable only after the backend schema accepts `run_summary`. |
+| `HEALTH_REPORT_ERROR_DETAIL` | `0` | Include sanitized log-tail details for failed or timed-out runs (`0`=off, `1`=on). Enable only after the backend schema accepts `error_detail`. |
 
 **Failure behavior:**
 
