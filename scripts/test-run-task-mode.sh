@@ -85,6 +85,9 @@ write_format=""
 url=""
 data_payload=""
 headers=""
+response_body=""
+read_headers_from_stdin=0
+header_source="argv"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -101,19 +104,23 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -H)
-      if [ -n "$headers" ]; then
-        headers="${headers}|$2"
+      if [ "${2:-}" = "@-" ]; then
+        read_headers_from_stdin=1
+        header_source="stdin"
       else
-        headers="$2"
+        if [ -n "$headers" ]; then
+          headers="${headers}|$2"
+        else
+          headers="$2"
+        fi
       fi
       shift 2
       ;;
-    -X|-s|-S)
-      if [ "$1" = "-X" ]; then
-        shift 2
-      else
-        shift
-      fi
+    -X)
+      shift 2
+      ;;
+    -s|-S|-sS)
+      shift
       ;;
     *)
       url="$1"
@@ -122,10 +129,28 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-printf 'URL=%s DATA=%s HEADERS=%s\n' "$url" "$data_payload" "$headers" >> "${MOCK_CURL_CALLS:?}"
+if [ "$read_headers_from_stdin" -eq 1 ]; then
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ -z "$line" ] && continue
+    if [ -n "$headers" ]; then
+      headers="${headers}|${line}"
+    else
+      headers="${line}"
+    fi
+  done
+fi
+
+printf 'URL=%s DATA=%s HEADERS=%s HEADER_SOURCE=%s\n' \
+  "$url" "$data_payload" "$headers" "$header_source" >> "${MOCK_CURL_CALLS:?}"
+
+response_body="${MOCK_CURL_BODY-}"
+if [ -z "$response_body" ]; then
+  response_body='{}'
+fi
 
 if [ -n "$output_file" ]; then
-  printf '%s' "${MOCK_CURL_BODY:-{}}" > "$output_file"
+  printf '%s' "$response_body" > "$output_file"
 fi
 
 printf '%s' "${MOCK_CURL_STATUS:-200}"
@@ -145,6 +170,18 @@ log() {
 . "$repo_root/controller/triggers/common.sh"
 # shellcheck source=controller/triggers/hivemoot-task.sh
 . "$repo_root/controller/triggers/hivemoot-task.sh"
+
+if ! command -v task_id_is_valid >/dev/null 2>&1; then
+  task_id_is_valid() {
+    return 0
+  }
+fi
+
+if ! command -v repo_name_is_valid >/dev/null 2>&1; then
+  repo_name_is_valid() {
+    return 0
+  }
+fi
 
 reset_task_globals() {
   controller_reset_trigger_job_context
@@ -262,6 +299,38 @@ run_conversation_context_case() {
   echo "PASS: task prepare_job renders conversation context into the extra prompt"
 }
 
+run_task_claim_header_source_case() {
+  local case_dir="${tmp_root}/claim-task"
+  export MOCK_CURL_CALLS="${case_dir}/curl.log"
+  mkdir -p "$case_dir"
+  : > "$MOCK_CURL_CALLS"
+
+  reset_task_globals
+  task_claim_url="https://api.example.com/api/tasks/claim"
+  MOCK_CURL_BODY="$(
+    jq -cn \
+      --arg task_id "task-claim-direct" \
+      --arg prompt "Inspect queue behavior" \
+      --arg repo "owner/repo" \
+      --arg claim_token "claim-token-direct" \
+      '{task: {task_id: $task_id, prompt: $prompt, repos: [$repo]}, claim_token: $claim_token, messages: []}'
+  )"
+  export MOCK_CURL_BODY
+
+  if ! claim_next_task; then
+    fail "expected claim_next_task to succeed"
+  fi
+
+  assert_eq "task-claim-direct" "$claimed_task_id" "claim_next_task captures task id"
+  assert_eq "claim-token-direct" "$claimed_task_claim_token" "claim_next_task captures claim token"
+  assert_eq "owner/repo" "$claimed_task_repo" "claim_next_task captures repo"
+  assert_file_contains "$MOCK_CURL_CALLS" "URL=https://api.example.com/api/tasks/claim"
+  assert_file_contains "$MOCK_CURL_CALLS" 'Authorization: Bearer shared-token'
+  assert_file_contains "$MOCK_CURL_CALLS" 'HEADER_SOURCE=stdin'
+
+  echo "PASS: task claims send auth headers through stdin"
+}
+
 run_claim_token_header_case() {
   local case_dir="${tmp_root}/claim-token"
   export MOCK_CURL_CALLS="${case_dir}/curl.log"
@@ -275,6 +344,7 @@ run_claim_token_header_case() {
   assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"progress","progress":"Working"}'
   assert_file_contains "$MOCK_CURL_CALLS" 'Authorization: Bearer shared-token'
   assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-123'
+  assert_file_contains "$MOCK_CURL_CALLS" 'HEADER_SOURCE=stdin'
 
   echo "PASS: task updates forward X-Task-Claim-Token to the execute endpoint"
 }
@@ -295,6 +365,7 @@ run_heartbeat_lifecycle_case() {
   assert_file_contains "$MOCK_CURL_CALLS" 'URL=https://api.example.com/api/tasks/task-heartbeat/execute'
   assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"heartbeat"}'
   assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-heartbeat'
+  assert_file_contains "$MOCK_CURL_CALLS" 'HEADER_SOURCE=stdin'
 
   echo "PASS: task heartbeat loop emits authenticated heartbeat updates"
 }
@@ -360,6 +431,7 @@ LOG
   assert_file_contains "$MOCK_CURL_CALLS" 'DATA={"action":"fail","error":"Provider authentication failed: invalid_api_key"}'
   assert_file_contains "$MOCK_CURL_CALLS" 'X-Task-Claim-Token: claim-token-auth'
   assert_file_contains "$MOCK_CURL_CALLS" 'URL=https://api.example.com/api/tasks/task-codex-auth/execute'
+  assert_file_contains "$MOCK_CURL_CALLS" 'HEADER_SOURCE=stdin'
   assert_file_not_contains "$MOCK_CURL_CALLS" '"action":"complete"'
 
   echo "PASS: codex auth errors are promoted from success logs into task failures"
@@ -368,6 +440,7 @@ LOG
 run_entrypoint_task_workload_case
 run_prepare_job_session_key_case
 run_conversation_context_case
+run_task_claim_header_source_case
 run_claim_token_header_case
 run_heartbeat_lifecycle_case
 run_codex_auth_detection_case

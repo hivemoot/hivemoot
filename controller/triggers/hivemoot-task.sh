@@ -172,6 +172,15 @@ build_task_execute_url() {
   printf '%s/%s/execute\n' "${task_execute_base_url%/}" "$task_id"
 }
 
+write_task_request_headers() {
+  local task_claim_token="${1:-}"
+
+  printf 'Authorization: Bearer %s\n' "$task_executor_token"
+  if [ -n "$task_claim_token" ]; then
+    printf 'X-Task-Claim-Token: %s\n' "$task_claim_token"
+  fi
+}
+
 post_task_update_from_controller() {
   local task_id="$1"
   local task_claim_token="$2"
@@ -215,14 +224,11 @@ post_task_update_from_controller() {
     -o "$response_file"
     -w '%{http_code}'
     -X POST
-    -H "Authorization: Bearer ${task_executor_token}"
     -H "Content-Type: application/json"
+    -d "$payload"
+    "$url"
   )
-  if [ -n "$task_claim_token" ]; then
-    curl_args+=( -H "X-Task-Claim-Token: ${task_claim_token}" )
-  fi
-  curl_args+=( -d "$payload" "$url" )
-  status="$(curl "${curl_args[@]}")"
+  status="$(write_task_request_headers "$task_claim_token" | curl "${curl_args[@]}" -H @-)"
 
   if [ "$status" != "200" ]; then
     log "Task update failed: task_id=${task_id} action=${action} status=${status}"
@@ -632,10 +638,10 @@ claim_next_task() {
   claimed_task_messages_json=""
 
   response_file="$(mktemp)"
-  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
+  status="$(write_task_request_headers | curl -sS -o "$response_file" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${task_executor_token}" \
     -H 'Content-Type: application/json' \
+    -H @- \
     "$task_claim_url")"
 
   if [ "$status" = "204" ]; then

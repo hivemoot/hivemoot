@@ -370,9 +370,11 @@ mkdir -p "$state_dir"
 output_file=""
 write_format=""
 auth_header=""
+claim_header=""
 url=""
 data=""
 read_header_from_stdin=0
+header_source="argv"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -387,8 +389,11 @@ while [ "$#" -gt 0 ]; do
     -H)
       if [ "${2:-}" != "" ] && [[ "${2:-}" == Authorization:* ]]; then
         auth_header="${2:-}"
+      elif [ "${2:-}" != "" ] && [[ "${2:-}" == X-Task-Claim-Token:* ]]; then
+        claim_header="${2:-}"
       elif [ "${2:-}" = "@-" ]; then
         read_header_from_stdin=1
+        header_source="stdin"
       fi
       shift 2
       ;;
@@ -416,10 +421,22 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$read_header_from_stdin" -eq 1 ]; then
-  auth_header="$(tr -d '\r\n' <&0)"
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ -z "$line" ] && continue
+    case "$line" in
+      Authorization:*)
+        auth_header="$line"
+        ;;
+      X-Task-Claim-Token:*)
+        claim_header="$line"
+        ;;
+    esac
+  done
 fi
 
-printf 'URL=%s AUTH=%s DATA=%s\n' "$url" "$auth_header" "$data" >> "${state_dir}/curl.log"
+printf 'URL=%s AUTH=%s CLAIM=%s DATA=%s SOURCE=%s\n' \
+  "$url" "$auth_header" "$claim_header" "$data" "$header_source" >> "${state_dir}/curl.log"
 
 status="200"
   body='{"task":{"task_id":"task-claim-1","prompt":"Inspect queue behavior","repos":["owner/claimed"]},"claim_token":"claim-token-1","messages":[{"role":"user","content":"Initial context","created_at":"2026-03-05T03:00:00.000Z"},{"role":"system","content":"Task reopened","created_at":"2026-03-05T03:05:00.000Z"}]}'
