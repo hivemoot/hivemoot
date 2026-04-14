@@ -2,6 +2,12 @@
 # Must be at global scope (before first FROM) to be usable in FROM directives.
 # Values: all | codex | gemini | kilo | opencode | claude
 ARG PROVIDER=all
+ARG GH_VERSION=2.89.0
+
+FROM golang:1.26.2-bookworm AS gh-builder
+
+ARG GH_VERSION
+RUN GOBIN=/tmp/gh-bin go install github.com/cli/cli/v2/cmd/gh@v${GH_VERSION}
 
 FROM node:24-slim AS base
 
@@ -9,15 +15,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG NPM_VERSION=11.11.1
 ARG HIVEMOOT_CLI_VERSION=latest
 
-# Install system dependencies. gh is installed from GitHub's official apt repo
-# because the Debian-packaged version is too old (2.23 vs 2.80+).
+# Install system dependencies. Build gh from source with a patched Go toolchain
+# until the upstream apt package stops shipping a vulnerable Go stdlib.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
   ca-certificates \
   curl \
   git \
-  gpg \
   jq \
   less \
   openssh-client \
@@ -25,13 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3 \
   ripgrep \
   tini \
-  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update && apt-get install -y --no-install-recommends gh \
-  && apt-get purge -y gpg && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*
+COPY --from=gh-builder /tmp/gh-bin/gh /usr/local/bin/gh
 
 # Keep the base npm installation patched before switching to a custom global
 # prefix; this removes vulnerable tar transitive dependencies from npm itself.
