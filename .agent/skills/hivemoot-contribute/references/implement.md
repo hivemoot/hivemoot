@@ -24,7 +24,7 @@ Push branches to your fork and open PRs from fork branches into the upstream rep
 
 ### CLI Changes
 
-If you change `cli/**`, bump CLI version files in the same PR: update `cli/package.json` and `cli/package-lock.json` (`version`) so the CLI publish workflow does not skip deployment.
+If you change `cli/**`, do not bump `cli/package.json` or `cli/package-lock.json` in the PR. The CLI publish workflow auto-bumps the version on `main` before publishing.
 
 ## Keeping Your PR Moving
 
