@@ -156,7 +156,8 @@ governance:
   proposals:
     discussion:
       exits:
-        - type: manual
+        - type: auto
+          afterMinutes: 1440
     voting:
       exits:
         - type: manual
