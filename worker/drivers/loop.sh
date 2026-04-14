@@ -140,7 +140,7 @@ preflight_check() {
   log "Pre-flight: validating configuration"
 
   if ! command -v "$provider" >/dev/null 2>&1; then
-    echo "Pre-flight: ${provider} CLI is not installed." >&2
+    echo "Pre-flight: ${provider} CLI is not installed in the container." >&2
     failures=$((failures + 1))
   fi
 
@@ -151,11 +151,11 @@ preflight_check() {
   failures=$((failures + auth_failures))
 
   if [ "$failures" -gt 0 ]; then
-    echo "Pre-flight: ${failures} check(s) failed." >&2
+    echo "Pre-flight: ${failures} check(s) failed. Fix the above errors and retry." >&2
     exit 1
   fi
 
-  log "Pre-flight: all checks passed (agent=${agent_id} repo=${target_repo})"
+  log "Pre-flight: all checks passed (provider=${provider} auth=${effective_auth_mode} agent=${agent_id} repo=${target_repo})"
 }
 
 calculate_backoff_delay() {
