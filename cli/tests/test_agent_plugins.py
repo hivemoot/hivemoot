@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -13,6 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from hivemoot_agent.engine import Engine
 from hivemoot_agent.plugins import registry
 from hivemoot_agent.plugins.interfaces import PluginConfig
+from hivemoot_agent.providers import claude, codex
+
+
+class _PromptOnlyProvider:
+    native_skill_backend = ""
 
 
 class _FakePlugin:
@@ -259,6 +265,207 @@ def test_build_skills_plugin_dir_nested_package_layout():
     finally:
         if skills_dir:
             shutil.rmtree(skills_dir, ignore_errors=True)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_resolve_skill_runtime_stages_workspace_agents_skills_for_codex():
+    package_name = f"skillruntime_codex_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="CodexSkillPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class CodexSkillPlugin:\n"
+                "    name = 'codex-skillpack'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/security-reviewer/SKILL.md": (
+                "---\n"
+                "name: security-reviewer\n"
+                "---\n"
+                "## Security Reviewer\n"
+                "Look for secrets.\n"
+            ),
+            f"{package_name}/skills/security-reviewer/reference.md": "# Checklist\n",
+        },
+    )
+
+    workspace = tempfile.mkdtemp(prefix="hm-skill-workspace-")
+    runtime = None
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(workspace)
+        engine = Engine()
+        engine._plugins = {"codex-skillpack": plugin}
+        config = PluginConfig(
+            name="oneshot",
+            settings={"AGENT_SKILLS": "security-reviewer"},
+        )
+
+        runtime = engine._resolve_skill_runtime(
+            config, "codex", codex,
+        )
+
+        skill_link = Path(workspace) / ".agents" / "skills" / "security-reviewer"
+        assert runtime is not None
+        assert runtime.prompt_skills == ""
+        assert runtime.plugin_dir == ""
+        assert skill_link.is_symlink()
+        assert (skill_link / "SKILL.md").is_file()
+        assert (skill_link / "reference.md").is_file()
+        assert '"selected":["security-reviewer"]' in runtime.scope_json
+    finally:
+        if runtime is not None:
+            engine._cleanup_skill_runtime(runtime)
+        os.chdir(original_cwd)
+        shutil.rmtree(workspace, ignore_errors=True)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_resolve_skill_runtime_rolls_back_workspace_state_on_collision():
+    package_name = f"skillruntime_collision_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="CollisionSkillPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class CollisionSkillPlugin:\n"
+                "    name = 'collision-skillpack'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/alpha/SKILL.md": "# Alpha\n",
+            f"{package_name}/skills/beta/SKILL.md": "# Beta\n",
+        },
+    )
+
+    workspace = tempfile.mkdtemp(prefix="hm-skill-collision-")
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(workspace)
+        existing = Path(workspace) / ".agents" / "skills" / "beta"
+        existing.mkdir(parents=True)
+
+        engine = Engine()
+        engine._plugins = {"collision-skillpack": plugin}
+        config = PluginConfig(
+            name="oneshot",
+            settings={"AGENT_SKILLS": "alpha,beta"},
+        )
+
+        try:
+            engine._resolve_skill_runtime(config, "codex", codex)
+            assert False, "Expected workspace skill collision"
+        except ValueError as exc:
+            assert "workspace skill collision" in str(exc)
+
+        assert not (Path(workspace) / ".agents" / "skills" / "alpha").exists()
+        assert not (Path(workspace) / ".agents" / ".hivemoot-skill-locks").exists()
+    finally:
+        os.chdir(original_cwd)
+        shutil.rmtree(workspace, ignore_errors=True)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_resolve_skill_runtime_uses_native_plugin_dir_for_claude():
+    package_name = f"skillruntime_claude_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="ClaudeSkillPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class ClaudeSkillPlugin:\n"
+                "    name = 'claude-skillpack'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/security-reviewer/SKILL.md": "# Security Reviewer\n",
+            f"{package_name}/skills/security-reviewer/scripts/check.sh": "#!/usr/bin/env bash\n",
+            f"{package_name}/skills/test-advocate/SKILL.md": "# Test Advocate\n",
+        },
+    )
+
+    runtime = None
+    try:
+        engine = Engine()
+        engine._plugins = {"claude-skillpack": plugin}
+        config = PluginConfig(
+            name="oneshot",
+            settings={
+                "AGENT_SKILLS": "security-reviewer",
+                "AGENT_AVAILABLE_SKILLS": "test-advocate",
+            },
+        )
+
+        runtime = engine._resolve_skill_runtime(
+            config, "claude", claude,
+        )
+
+        assert runtime is not None
+        assert runtime.prompt_skills == ""
+        assert runtime.plugin_dir
+        assert os.path.isfile(
+            os.path.join(runtime.plugin_dir, "skills", "security-reviewer", "SKILL.md")
+        )
+        assert os.path.isfile(
+            os.path.join(runtime.plugin_dir, "skills", "test-advocate", "SKILL.md")
+        )
+        assert os.path.isfile(
+            os.path.join(
+                runtime.plugin_dir,
+                "skills",
+                "security-reviewer",
+                "scripts",
+                "check.sh",
+            )
+        )
+    finally:
+        if runtime is not None:
+            engine._cleanup_skill_runtime(runtime)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_resolve_skill_runtime_renders_prompt_skills_for_prompt_only_provider():
+    package_name = f"skillruntime_prompt_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="PromptSkillPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class PromptSkillPlugin:\n"
+                "    name = 'prompt-skillpack'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/security-reviewer/SKILL.md": (
+                "---\n"
+                "name: security-reviewer\n"
+                "---\n"
+                "## Security Reviewer\n"
+                "Look for secrets.\n"
+            ),
+        },
+    )
+
+    try:
+        engine = Engine()
+        engine._plugins = {"prompt-skillpack": plugin}
+        config = PluginConfig(
+            name="oneshot",
+            settings={"AGENT_SKILLS": "security-reviewer"},
+        )
+
+        runtime = engine._resolve_skill_runtime(
+            config, "prompt-only", _PromptOnlyProvider(),
+        )
+
+        assert runtime.plugin_dir == ""
+        assert "<skills>" in runtime.prompt_skills
+        assert '<skill name="security-reviewer">' in runtime.prompt_skills
+        assert "## Security Reviewer" in runtime.prompt_skills
+        assert "name: security-reviewer" not in runtime.prompt_skills
+    finally:
         _cleanup_temp_plugin(tmpdir, package_name)
 
 

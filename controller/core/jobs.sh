@@ -23,6 +23,8 @@ spawn_worker() {
   local job_agent_skills=""
   local worker_trigger=""
   local worker_workload=""
+  local worker_plugins=""
+  local worker_github_repos=""
   local worker_driver="once"
   local health_kind=""
   local extra_prompt_host_path=""
@@ -115,7 +117,6 @@ spawn_worker() {
   fi
 
   docker_run_args+=(
-    -e "AGENT_WORKLOAD=${worker_workload}"
     -e "AGENT_DRIVER=${worker_driver}"
     -e TARGET_REPO="${repo}"
     -e WORKSPACE_ROOT=/workspace
@@ -125,6 +126,15 @@ spawn_worker() {
     -e HIVEMOOT_CLI_UPDATE=skip
     -e RUN_TRIGGER_TYPE="${health_kind}"
   )
+
+  if [ -n "$worker_workload" ]; then
+    docker_run_args+=( -e "AGENT_WORKLOAD=${worker_workload}" )
+  else
+    worker_plugins="${AGENT_PLUGINS:-github,hivemoot-github}"
+    worker_github_repos="${GITHUB_REPOS:-${repo}}"
+    docker_run_args+=( -e "AGENT_PLUGINS=${worker_plugins}" )
+    docker_run_args+=( -e "GITHUB_REPOS=${worker_github_repos}" )
+  fi
 
   if [ -n "$extra_prompt" ]; then
     extra_prompt_host_path="${job_workspace}/job-input/extra-prompt.md"
@@ -169,6 +179,11 @@ spawn_worker() {
   append_env_if_set AGENT_TIMEOUT_SECONDS
   append_env_if_set AGENT_TOOL_OPTIONS_JSON
   append_env_if_set GIT_CLONE_DEPTH
+  append_env_if_set GITHUB_CLONE_DEPTH
+  append_env_if_set GITHUB_WORKSPACE
+  append_env_if_set GITHUB_GIT_NAME
+  append_env_if_set GITHUB_GIT_EMAIL
+  append_env_if_set HIVEMOOT_BUZZ_ROLE
   append_env_if_set SHARED_CLONE_CACHE
   append_env_if_set SESSION_RESUME
   append_env_if_set SESSION_RESUME_MAX_IDLE_HOURS

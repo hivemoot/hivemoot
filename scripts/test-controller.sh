@@ -571,6 +571,7 @@ run_success_case() {
     CODEX_AUTH_FILE="${codex_auth_source}" \
     GEMINI_AUTH_DIR="${gemini_auth_dir}" \
     GIT_CLONE_DEPTH="1" \
+    HIVEMOOT_BUZZ_ROLE="reviewer" \
     SHARED_CLONE_CACHE="0" \
     PERIODIC_INTERVAL_SECS="60" \
     PERIODIC_JITTER_SECS="0" \
@@ -588,11 +589,14 @@ run_success_case() {
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
-  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=hivemoot"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-github"
   assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
   assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e RUN_TRIGGER_TYPE=scheduled"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
+  assert_file_contains "$run_log" "-e GITHUB_REPOS=owner/repo"
+  assert_file_contains "$run_log" "-e HIVEMOOT_BUZZ_ROLE=reviewer"
+  assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD=hivemoot"
   assert_file_contains "$run_log" "-e JOB_ID="
   assert_file_contains "$run_log" "-e HIVEMOOT_CLI_UPDATE=skip"
   assert_file_contains "$run_log" "-e GIT_CLONE_DEPTH=1"

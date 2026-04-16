@@ -16,6 +16,10 @@ KERNEL_DIR="${KERNEL_DIR:-${WORKER_DIR}}"
 . "${SHARED_DIR}/lib.sh"
 
 load_provider_secrets
+if prepare_plugin_engine_dispatch; then
+  log "Dispatching plugin engine: mode=oneshot plugins=${AGENT_PLUGINS}"
+  exec hivemoot-agent oneshot
+fi
 load_identity_plugin
 load_workload_plugin
 load_workload_integration_preflight

@@ -31,7 +31,7 @@ assert_fails_with() {
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-workload_env="AGENT_IDENTITY=hivemoot-agent IDENTITY_DIR=${repo_root}/identities/hivemoot-agent AGENT_WORKLOAD=hivemoot WORKLOAD_DIR=${repo_root}/workloads/hivemoot INTEGRATION_DIR=${repo_root}/integrations KERNEL_DIR=${repo_root}/scripts RUNNER_DIR=${repo_root}/runners"
+workload_env="AGENT_IDENTITY=hivemoot-agent IDENTITY_DIR=${repo_root}/identities/hivemoot-agent AGENT_WORKLOAD=hivemoot-task WORKLOAD_DIR=${repo_root}/workloads/hivemoot-task INTEGRATION_DIR=${repo_root}/integrations KERNEL_DIR=${repo_root}/scripts RUNNER_DIR=${repo_root}/runners"
 
 echo "Running TARGET_REPO validation checks"
 

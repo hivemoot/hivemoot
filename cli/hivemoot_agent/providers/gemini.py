@@ -8,6 +8,7 @@ from hivemoot_agent.plugins.interfaces import AgentEvent
 
 name = "gemini"
 supports_system_prompt_flag = False
+native_skill_backend = "workspace_agents_dir"
 
 
 def build_cmd(

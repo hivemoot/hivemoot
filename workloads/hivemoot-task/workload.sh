@@ -10,10 +10,11 @@
 #   workload_preflight       — validate prompt files
 #   workload_build_prompt    — task-focused system instructions
 #   workload_user_message    — default user instruction
-#   workload_skills_dir      — same skills as hivemoot
+#   workload_skills_dir      — shared Hivemoot skill pack
 # ──────────────────────────────────────────────────────────────────
 
 WORKLOAD_TASK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_HIVEMOOT_GITHUB_DIR="$(cd "${WORKLOAD_TASK_DIR}/../../cli/hivemoot_agent/plugins_builtin/hivemoot_github" && pwd)"
 INTEGRATION_DIR="${INTEGRATION_DIR:-/opt/hivemoot-agent/integrations}"
 
 # Integration: GitHub auth + clone (tasks also operate on GitHub repos)
@@ -55,5 +56,5 @@ workload_user_message() {
 }
 
 workload_skills_dir() {
-  printf '%s' "${WORKLOAD_TASK_DIR}/../hivemoot/skills"
+  printf '%s' "${PLUGIN_HIVEMOOT_GITHUB_DIR}/skills"
 }

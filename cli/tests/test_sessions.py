@@ -246,6 +246,7 @@ def test_build_scoped_key_format():
     assert "key=tg:12345" in key
     assert "repo=_" in key
     assert "toolopts=" in key
+    assert "skills=" in key
 
 
 def test_build_scoped_key_with_repo_and_tools():
@@ -270,6 +271,12 @@ def test_build_scoped_key_empty_tool_options_normalized():
     key_empty = build_scoped_key("tg:1", "claude", tool_options_json="")
     key_braces = build_scoped_key("tg:1", "claude", tool_options_json="{}")
     assert key_empty == key_braces
+
+
+def test_build_scoped_key_skill_options_affect_scope():
+    key1 = build_scoped_key("tg:1", "claude", skill_options_json='{"selected":["a"]}')
+    key2 = build_scoped_key("tg:1", "claude", skill_options_json='{"selected":["b"]}')
+    assert key1 != key2
 
 
 def test_build_scoped_key_default_model():

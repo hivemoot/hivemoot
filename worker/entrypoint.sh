@@ -5,43 +5,6 @@ log() {
   printf '[entrypoint %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-bridge_plugin_github_token_env() {
-  if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN_FILE:-}" ]; then
-    return 0
-  fi
-
-  if [ -n "${GH_TOKEN:-}" ]; then
-    export GITHUB_TOKEN="${GH_TOKEN}"
-    return 0
-  fi
-
-  if [ -n "${AGENT_GITHUB_TOKEN_FILE:-}" ]; then
-    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_FILE}"
-    return 0
-  fi
-  if [ -n "${AGENT_GITHUB_TOKEN:-}" ]; then
-    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN}"
-    return 0
-  fi
-
-  if [ -n "${AGENT_TOKEN_FILE:-}" ]; then
-    export GITHUB_TOKEN_FILE="${AGENT_TOKEN_FILE}"
-    return 0
-  fi
-  if [ -n "${AGENT_TOKEN:-}" ]; then
-    export GITHUB_TOKEN="${AGENT_TOKEN}"
-    return 0
-  fi
-
-  if [ -n "${AGENT_GITHUB_TOKEN_01_FILE:-}" ]; then
-    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_01_FILE}"
-    return 0
-  fi
-  if [ -n "${AGENT_GITHUB_TOKEN_01:-}" ]; then
-    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN_01}"
-  fi
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SHARED_DIR="${SHARED_DIR:-${REPO_ROOT}/shared}"
@@ -89,19 +52,18 @@ if [ "$driver" = "task" ]; then
   exit 1
 fi
 
-if [ -n "${AGENT_PLUGINS:-}" ]; then
-  bridge_plugin_github_token_env
+if prepare_plugin_engine_dispatch; then
   case "$driver" in
     once)
       log "Dispatching plugin engine: mode=oneshot plugins=${AGENT_PLUGINS}"
       exec hivemoot-agent oneshot
       ;;
     loop)
-      log "Dispatching plugin engine: mode=run plugins=${AGENT_PLUGINS}"
-      exec hivemoot-agent run
+      echo "Plugin mode does not support AGENT_DRIVER=loop. Use AGENT_DRIVER=once or controller/main.sh." >&2
+      exit 1
       ;;
     *)
-      echo "Plugin mode supports AGENT_DRIVER=once|loop." >&2
+      echo "Plugin mode supports AGENT_DRIVER=once only." >&2
       exit 1
       ;;
   esac

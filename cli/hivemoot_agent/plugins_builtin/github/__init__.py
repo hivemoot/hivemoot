@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from typing import Any
 
@@ -22,6 +23,63 @@ from hivemoot_agent.plugins_builtin.github.repo_manager import (
     resolve_github_user,
 )
 from hivemoot_agent.plugins_builtin.github.system_prompt import build_system_prompt
+
+
+def _configure_git_auth() -> None:
+    """Configure git HTTPS auth through the authenticated gh CLI."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "setup-git"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=dict(os.environ),
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("gh CLI is not installed") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("gh auth setup-git timed out") from exc
+
+    if result.returncode == 0:
+        return
+
+    detail = (result.stderr or result.stdout).strip()
+    if not detail:
+        detail = "gh auth setup-git exited without an error message"
+    raise RuntimeError(detail)
+
+
+def _validate_repo_access(repo: str, token: str) -> None:
+    """Fail fast when the configured token cannot access a repo."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}", "--jq", ".full_name"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token},
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("gh CLI is not installed") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out validating access to {repo}") from exc
+
+    if result.returncode == 0:
+        return
+
+    detail = (result.stderr or result.stdout).strip()
+    if not detail:
+        detail = f"token cannot access {repo}"
+    raise RuntimeError(f"Failed to validate access for {repo}: {detail}")
+
+
+def _resolve_workspace_root(config: PluginConfig) -> str:
+    """Honor WORKSPACE_ROOT when GITHUB_WORKSPACE is unset or empty."""
+    return (
+        config.get("GITHUB_WORKSPACE", "")
+        or config.get("WORKSPACE_ROOT", "/workspace")
+        or "/workspace"
+    )
 
 
 class GitHubPlugin:
@@ -72,10 +130,7 @@ class GitHubPlugin:
         self._setup_attempted = True
         token = config.get("GITHUB_TOKEN", "")
         repos_raw = config.get("GITHUB_REPOS", "")
-        workspace = config.get(
-            "GITHUB_WORKSPACE",
-            config.get("WORKSPACE_ROOT", "/workspace"),
-        )
+        workspace = _resolve_workspace_root(config)
         clone_depth = int(config.get("GITHUB_CLONE_DEPTH", "50"))
 
         try:
@@ -99,6 +154,16 @@ class GitHubPlugin:
         # Set GH_TOKEN so the agent's gh CLI calls are authenticated.
         os.environ["GH_TOKEN"] = token
         os.environ["GITHUB_TOKEN"] = token
+
+        try:
+            _configure_git_auth()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to configure git credential helper: {exc}"
+            ) from exc
+
+        for repo in repo_names:
+            _validate_repo_access(repo, token)
 
         # Clone/sync each repo.
         cloned: list[RepoInfo] = []
@@ -136,10 +201,7 @@ class GitHubPlugin:
 
         # Fallback: setup() hasn't run yet. Build from config.
         repos_raw = config.get("GITHUB_REPOS", "")
-        workspace = config.get(
-            "GITHUB_WORKSPACE",
-            config.get("WORKSPACE_ROOT", "/workspace"),
-        )
+        workspace = _resolve_workspace_root(config)
         try:
             repo_names = parse_repos(repos_raw)
         except ValueError:

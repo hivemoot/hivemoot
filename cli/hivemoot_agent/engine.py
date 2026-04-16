@@ -19,6 +19,8 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from hivemoot_agent.plugins import registry
@@ -35,6 +37,20 @@ _RESUME_STALENESS_NOTE = (
     "may be stale; refresh relevant information before acting."
 )
 _DEFAULT_AGENT_MEMORY_DIR = "/home/node/.hivemoot/memory"
+_EXTERNAL_SKILLS_DIR = "/opt/hivemoot-agent/skills"
+
+
+@dataclass
+class _SkillRuntime:
+    """Resolved native skill staging for one provider invocation."""
+
+    prompt_skills: str = ""
+    plugin_dir: str = ""
+    scope_json: str = "{}"
+    staged_links: list[Path] = field(default_factory=list)
+    lock_files: list[Path] = field(default_factory=list)
+    created_lock_dirs: list[Path] = field(default_factory=list)
+    created_dirs: list[Path] = field(default_factory=list)
 
 
 class Engine:
@@ -259,6 +275,7 @@ class Engine:
         provider_name = config.get("AGENT_PROVIDER", "claude")
         provider = get_provider(provider_name)
         model = config.get("AGENT_MODEL", "") or ""
+        explicit_session_key = os.environ.get("AGENT_SESSION_KEY", "").strip()
 
         # Load plugins if explicitly requested.
         requested = os.environ.get("AGENT_PLUGINS", "").strip()
@@ -269,7 +286,7 @@ class Engine:
                 return 1
 
         # One-time plugin setup (clone repos, authenticate, etc.).
-        job = Job(session_key="oneshot", prompt=prompt)
+        job = Job(session_key=explicit_session_key or "oneshot", prompt=prompt)
         if plugins:
             self._plugins = plugins
             if not self._setup_plugins(plugins):
@@ -290,23 +307,101 @@ class Engine:
             or ""
         )
         system_prompt = _append_agent_memory(system_prompt, repo=oneshot_repo)
+        try:
+            skill_runtime = self._resolve_skill_runtime(
+                config, provider_name, provider,
+            )
+        except ValueError as exc:
+            print(f"[engine] FATAL: {exc}", file=sys.stderr, flush=True)
+            return 1
+        if skill_runtime.prompt_skills:
+            system_prompt = f"{system_prompt}\n\n{skill_runtime.prompt_skills}"
 
-        # Build skills plugin dir for Claude's --plugin-dir.
-        skills_dir = self._build_skills_plugin_dir() if plugins else ""
+        scoped_key = ""
+        prior_record = None
+        session_id = ""
+        is_resume = False
+        if explicit_session_key:
+            self._init_session_store(config)
+            scoped_key = build_scoped_key(
+                base_key=explicit_session_key,
+                provider=provider_name,
+                model=model,
+                repo=oneshot_repo,
+                tool_options_json=config.get("AGENT_TOOL_OPTIONS_JSON", "") or "",
+                skill_options_json=skill_runtime.scope_json,
+            )
+            if scoped_key and self._session_store:
+                session_id, prior_record = self._session_store.lookup(scoped_key)
+                is_resume = bool(session_id)
+
+        effective_prompt = prompt
+        if is_resume:
+            effective_prompt = f"{prompt}\n\n{_RESUME_STALENESS_NOTE}"
 
         cmd = self._build_provider_cmd(
-            provider, provider_name, prompt, system_prompt,
-            model, "", "", plugin_dir=skills_dir,
+            provider, provider_name, effective_prompt, system_prompt,
+            model, "", session_id, plugin_dir=skill_runtime.plugin_dir,
         )
 
         plugin_label = ", ".join(plugins) if plugins else "none"
+        resume_label = f", resume={session_id[:12]}..." if is_resume else ""
         print(
             f"[engine] oneshot: provider={provider_name} "
-            f"plugins={plugin_label} prompt={len(prompt)} chars",
+            f"plugins={plugin_label} prompt={len(prompt)} chars{resume_label}",
             file=sys.stderr, flush=True,
         )
 
-        stdout = ""
+        exit_code, stdout = self._run_oneshot_subprocess(cmd, config)
+        if is_resume and exit_code != 0:
+            print(
+                "[engine] session resume failed; retrying oneshot with fresh session",
+                file=sys.stderr, flush=True,
+            )
+            is_resume = False
+            prior_record = None
+            cmd = self._build_provider_cmd(
+                provider, provider_name, prompt, system_prompt,
+                model, "", "", plugin_dir=skill_runtime.plugin_dir,
+            )
+            exit_code, stdout = self._run_oneshot_subprocess(cmd, config)
+
+        self._cleanup_skill_runtime(skill_runtime)
+
+        # Print the agent's response to stdout so callers can capture it.
+        response = ""
+        if exit_code == 0 and stdout:
+            new_session = provider.extract_session_id(stdout) if provider else ""
+            if new_session and scoped_key and self._session_store:
+                self._session_store.save(
+                    scoped_key, new_session,
+                    was_resume=is_resume,
+                    prior_record=prior_record,
+                )
+                print(
+                    f"[engine] session saved: {job.session_key} → "
+                    f"{new_session[:12]}...",
+                    file=sys.stderr, flush=True,
+                )
+            response = _extract_response(stdout)
+            if response:
+                print(response, flush=True)
+
+        # Run plugin teardown hooks.
+        if plugins:
+            result = AgentResult(exit_code=exit_code, response=response)
+            for name, plugin in plugins.items():
+                plugin_config = registry.config_for(name)
+                plugin.on_job_finished(job, result, plugin_config)
+
+        return exit_code
+
+    @staticmethod
+    def _run_oneshot_subprocess(
+        cmd: list[str],
+        config: PluginConfig,
+    ) -> tuple[int, str]:
+        """Run a oneshot subprocess and return (exit_code, stdout)."""
         try:
             proc = subprocess.run(
                 cmd,
@@ -322,32 +417,13 @@ class Engine:
             )
             if proc.stderr:
                 print(proc.stderr[:500], file=sys.stderr, flush=True)
+            return exit_code, stdout
         except subprocess.TimeoutExpired:
-            exit_code = 124
             print("[engine] oneshot timed out", file=sys.stderr, flush=True)
+            return 124, ""
         except Exception as exc:
             print(f"[engine] oneshot failed: {exc}", file=sys.stderr, flush=True)
-            exit_code = 1
-
-        # Clean up skills plugin dir.
-        if skills_dir and os.path.isdir(skills_dir):
-            shutil.rmtree(skills_dir, ignore_errors=True)
-
-        # Print the agent's response to stdout so callers can capture it.
-        response = ""
-        if exit_code == 0 and stdout:
-            response = _extract_response(stdout)
-            if response:
-                print(response, flush=True)
-
-        # Run plugin teardown hooks.
-        if plugins:
-            result = AgentResult(exit_code=exit_code, response=response)
-            for name, plugin in plugins.items():
-                plugin_config = registry.config_for(name)
-                plugin.on_job_finished(job, result, plugin_config)
-
-        return exit_code
+            return 1, ""
 
     def _run_trigger(
         self,
@@ -404,40 +480,244 @@ class Engine:
         header = "Your capabilities are provided by hivemoot agent plugins. Each <plugin> block describes one."
         return header + "\n\n" + "\n\n".join(parts)
 
-    def _build_skills_plugin_dir(self) -> str:
-        """Collect skills from all enabled plugins and generate a plugin dir.
+    def _resolve_skill_search_dirs(self) -> list[Path]:
+        """Resolve external and plugin-provided skill search roots."""
+        paths = [Path(_EXTERNAL_SKILLS_DIR)]
+        for _name, plugin in self._plugins.items():
+            skills_dir = self._resolve_plugin_skills_dir(plugin)
+            if skills_dir:
+                paths.append(Path(skills_dir))
 
-        Scans each plugin's ``skills/`` subdirectory for SKILL.md files.
-        Deduplicates by name (first plugin wins).
-
-        Returns the temp directory path (caller must clean up), or ""
-        if no plugins provide skills.
-        """
-        import inspect
-        from pathlib import Path
-
-        from hivemoot_agent.plugins.interfaces import Skill
-        from hivemoot_agent.plugins.skills import generate_plugin_dir, load_skills_from_dir
-
-        seen: dict[str, Skill] = {}
-        for _name, p in self._plugins.items():
-            skills_dir = self._resolve_plugin_skills_dir(p)
-            if not skills_dir:
+        seen: set[Path] = set()
+        result: list[Path] = []
+        for path in paths:
+            if path in seen:
                 continue
-            for skill in load_skills_from_dir(Path(skills_dir)):
-                if skill.name not in seen:
-                    seen[skill.name] = skill
+            seen.add(path)
+            result.append(path)
+        return result
 
-        if not seen:
+    def _resolve_named_skills(
+        self,
+        skills_list: str,
+        *,
+        context: str,
+    ) -> list[Any]:
+        """Resolve a named skill list across all plugin-engine skill roots."""
+        from hivemoot_agent.plugins.skills import load_named_skills
+
+        return load_named_skills(
+            skills_list,
+            self._resolve_skill_search_dirs(),
+            context=context,
+        )
+
+    def _build_skills_plugin_dir(self, skills: list[Any] | None = None) -> str:
+        """Generate a Claude plugin dir from explicit or discovered skills."""
+        from hivemoot_agent.plugins.skills import (
+            collect_skills_from_dirs,
+            generate_plugin_dir,
+        )
+
+        if skills is None:
+            skills = list(
+                collect_skills_from_dirs(
+                    self._resolve_skill_search_dirs(),
+                ).values()
+            )
+        if not skills:
             return ""
 
-        result = generate_plugin_dir(list(seen.values()))
+        result = generate_plugin_dir(skills)
         print(
-            f"[engine] skills plugin-dir: {len(seen)} skill(s) "
-            f"({', '.join(seen)})",
+            f"[engine] skills plugin-dir: {len(skills)} skill(s) "
+            f"({', '.join(skill.name for skill in skills)})",
             file=sys.stderr, flush=True,
         )
         return result
+
+    @staticmethod
+    def _build_skill_scope_json(
+        selected_skills: list[Any],
+        available_skills: list[Any],
+        backend: str,
+    ) -> str:
+        """Encode the effective native skill selection for session scoping."""
+        return json.dumps(
+            {
+                "backend": backend,
+                "selected": [skill.name for skill in selected_skills],
+                "available": [skill.name for skill in available_skills],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _stage_workspace_agents_skills(self, skills: list[Any]) -> _SkillRuntime:
+        """Expose selected skills through the workspace `.agents/skills` tier."""
+        if not skills:
+            return _SkillRuntime()
+
+        workspace_root = Path.cwd()
+        agents_root = workspace_root / ".agents"
+        skills_root = agents_root / "skills"
+        locks_root = agents_root / ".hivemoot-skill-locks"
+
+        planned_links: list[tuple[Path, Path]] = []
+        skill_sources: list[tuple[str, Path]] = []
+        for skill in skills:
+            source_dir = Path(skill.source_dir)
+            if not source_dir.is_dir():
+                raise ValueError(
+                    f"Skill source directory missing for native load: {skill.name}"
+                )
+
+            resolved_source = source_dir.resolve()
+            link_path = skills_root / skill.name
+            if link_path.exists() or link_path.is_symlink():
+                if not link_path.is_symlink():
+                    raise ValueError(
+                        f"workspace skill collision at {link_path} for {skill.name}"
+                    )
+                try:
+                    existing_target = link_path.resolve(strict=True)
+                except FileNotFoundError as exc:
+                    raise ValueError(
+                        f"workspace skill collision at {link_path} for {skill.name}"
+                    ) from exc
+                if existing_target != resolved_source:
+                    raise ValueError(
+                        f"workspace skill collision at {link_path} for {skill.name}"
+                    )
+            else:
+                planned_links.append((link_path, resolved_source))
+
+            skill_sources.append((skill.name, resolved_source))
+
+        runtime = _SkillRuntime()
+        created_dirs: list[Path] = []
+        for path in (agents_root, skills_root, locks_root):
+            if path.exists():
+                continue
+            path.mkdir(parents=True, exist_ok=True)
+            created_dirs.append(path)
+        runtime.created_dirs = created_dirs
+        run_id = f"{os.getpid()}-{time.time_ns()}"
+
+        try:
+            for link_path, source_dir in planned_links:
+                os.symlink(str(source_dir), str(link_path), target_is_directory=True)
+                runtime.staged_links.append(link_path)
+
+            for skill_name, _source_dir in skill_sources:
+                lock_dir = locks_root / skill_name
+                if not lock_dir.exists():
+                    lock_dir.mkdir(parents=True, exist_ok=True)
+                    runtime.created_lock_dirs.append(lock_dir)
+
+                lock_file = lock_dir / run_id
+                lock_file.write_text("")
+                runtime.lock_files.append(lock_file)
+        except Exception:
+            self._cleanup_skill_runtime(runtime)
+            raise
+
+        print(
+            f"[engine] workspace skills: {len(skills)} skill(s) "
+            f"({', '.join(skill.name for skill in skills)})",
+            file=sys.stderr, flush=True,
+        )
+        return runtime
+
+    def _resolve_skill_runtime(
+        self,
+        config: PluginConfig,
+        provider_name: str,
+        provider: Any,
+    ) -> _SkillRuntime:
+        """Resolve prompt-vs-native skill delivery for the current provider."""
+        from hivemoot_agent.plugins.skills import render_prompt_skills
+
+        selected_skills = self._resolve_named_skills(
+            config.get("AGENT_SKILLS", "") or "",
+            context="AGENT_SKILLS",
+        )
+        available_skills = self._resolve_named_skills(
+            config.get("AGENT_AVAILABLE_SKILLS", "") or "",
+            context="AGENT_AVAILABLE_SKILLS",
+        )
+
+        native_skills: list[Any] = []
+        seen: set[str] = set()
+        for skill in selected_skills + available_skills:
+            if skill.name in seen:
+                continue
+            seen.add(skill.name)
+            native_skills.append(skill)
+
+        backend = getattr(provider, "native_skill_backend", "")
+        scope_json = self._build_skill_scope_json(
+            selected_skills,
+            available_skills,
+            backend,
+        )
+
+        if backend == "claude_plugin_dir":
+            if not native_skills:
+                return _SkillRuntime(scope_json=scope_json)
+            return _SkillRuntime(
+                plugin_dir=self._build_skills_plugin_dir(native_skills),
+                scope_json=scope_json,
+            )
+
+        if backend == "workspace_agents_dir":
+            runtime = self._stage_workspace_agents_skills(native_skills)
+            runtime.scope_json = scope_json
+            return runtime
+
+        if available_skills:
+            print(
+                f"[engine] ignoring AGENT_AVAILABLE_SKILLS for provider={provider_name}",
+                file=sys.stderr, flush=True,
+            )
+        if not selected_skills:
+            return _SkillRuntime(scope_json=scope_json)
+        return _SkillRuntime(
+            prompt_skills=render_prompt_skills(selected_skills),
+            scope_json=scope_json,
+        )
+
+    @staticmethod
+    def _cleanup_skill_runtime(runtime: _SkillRuntime) -> None:
+        """Remove ephemeral native skill staging created for this run."""
+        if runtime.plugin_dir and os.path.isdir(runtime.plugin_dir):
+            shutil.rmtree(runtime.plugin_dir, ignore_errors=True)
+
+        for lock_file in runtime.lock_files:
+            try:
+                lock_file.unlink()
+            except OSError:
+                pass
+
+        for link_path in runtime.staged_links:
+            try:
+                link_path.unlink()
+            except OSError:
+                pass
+
+        for lock_dir in runtime.created_lock_dirs:
+            try:
+                if list(lock_dir.iterdir()):
+                    continue
+                lock_dir.rmdir()
+            except OSError:
+                pass
+
+        for path in sorted(runtime.created_dirs, key=lambda item: len(str(item)), reverse=True):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     @staticmethod
     def _resolve_plugin_skills_dir(plugin: Any) -> str:
@@ -492,12 +772,14 @@ class Engine:
         provider_name = config.get("AGENT_PROVIDER", "claude")
         provider = get_provider(provider_name)
         model = config.get("AGENT_MODEL", "") or ""
+        skill_runtime = self._resolve_skill_runtime(
+            config, provider_name, provider,
+        )
+        if skill_runtime.prompt_skills:
+            system_prompt = f"{system_prompt}\n\n{skill_runtime.prompt_skills}"
 
         # Build MCP config so the agent can call plugin tools.
         mcp_config = self._build_mcp_config(plugin_name, job, config)
-
-        # Build skills plugin dir for Claude's --plugin-dir.
-        skills_dir = self._build_skills_plugin_dir()
 
         # Session lookup — check persistent store with resume policy.
         self._init_session_store(config)
@@ -507,6 +789,7 @@ class Engine:
             model=model,
             repo=config.get("GITHUB_REPOS", "") or "",
             tool_options_json=config.get("AGENT_TOOL_OPTIONS_JSON", "") or "",
+            skill_options_json=skill_runtime.scope_json,
         )
         session_id = ""
         prior_record = None
@@ -522,7 +805,7 @@ class Engine:
 
         cmd = self._build_provider_cmd(
             provider, provider_name, effective_prompt, system_prompt,
-            model, mcp_config, session_id, plugin_dir=skills_dir,
+            model, mcp_config, session_id, plugin_dir=skill_runtime.plugin_dir,
         )
 
         plugin.on_job_started(job, config)
@@ -555,17 +838,16 @@ class Engine:
             prior_record = None
             cmd = self._build_provider_cmd(
                 provider, provider_name, job.prompt, system_prompt,
-                model, mcp_config, "", plugin_dir=skills_dir,
+                model, mcp_config, "", plugin_dir=skill_runtime.plugin_dir,
             )
             exit_code, stdout = self._run_subprocess(
                 cmd, config, on_event=on_event, provider=provider,
             )
 
-        # Clean up MCP config and skills plugin dir.
+        # Clean up MCP config and skill staging.
         if mcp_config and os.path.isfile(mcp_config):
             os.unlink(mcp_config)
-        if skills_dir and os.path.isdir(skills_dir):
-            shutil.rmtree(skills_dir, ignore_errors=True)
+        self._cleanup_skill_runtime(skill_runtime)
 
         # Persist session on success.
         if exit_code == 0 and stdout and provider:

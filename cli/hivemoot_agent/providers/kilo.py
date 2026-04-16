@@ -8,6 +8,7 @@ from hivemoot_agent.plugins.interfaces import AgentEvent
 
 name = "kilo"
 supports_system_prompt_flag = False
+native_skill_backend = "workspace_agents_dir"
 
 # Provider-specific model override (matches bash worker's KILO_MODEL).
 _MODEL_ENV = "KILO_MODEL"

@@ -26,6 +26,10 @@ SHARED_DIR="${SHARED_DIR:-${REPO_ROOT}/shared}"
 . "${SHARED_DIR}/lib.sh"
 
 # ── Plugins ───────────────────────────────────────────────────────
+if prepare_plugin_engine_dispatch; then
+  log "Dispatching plugin engine: mode=oneshot plugins=${AGENT_PLUGINS}"
+  exec hivemoot-agent oneshot
+fi
 load_identity_plugin
 load_workload_plugin
 # shellcheck source=shared/lib-observability.sh

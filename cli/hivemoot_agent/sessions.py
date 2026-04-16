@@ -260,12 +260,14 @@ def build_scoped_key(
     model: str = "",
     repo: str = "",
     tool_options_json: str = "",
+    skill_options_json: str = "",
 ) -> str:
     """Build a scoped session key.
 
-    Sessions are scoped by repo, provider, model, and tool options so
-    that a change in any of these dimensions starts a fresh session
-    instead of resuming with stale or incompatible context.
+    Sessions are scoped by repo, provider, model, tool options, and
+    skill selection so that a change in any of these dimensions starts
+    a fresh session instead of resuming with stale or incompatible
+    context.
 
     Note: the hash algorithm (zlib.crc32) differs from the bash
     worker's cksum, so Python-engine and bash-worker session maps are
@@ -281,12 +283,15 @@ def build_scoped_key(
     # Normalize empty tool options to "{}" to match the bash worker's
     # default (run-once.sh line 207) before hashing.
     normalized_opts = tool_options_json or "{}"
+    normalized_skills = skill_options_json or "{}"
     options_hash = str(zlib.crc32(normalized_opts.encode()) & 0xFFFFFFFF)
+    skills_hash = str(zlib.crc32(normalized_skills.encode()) & 0xFFFFFFFF)
     return (
         f"repo={resolved_repo}"
         f"|provider={provider}"
         f"|model={resolved_model}"
         f"|toolopts={options_hash}"
+        f"|skills={skills_hash}"
         f"|key={base_key}"
     )
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 soul_prompt="$repo_root/identities/hivemoot-agent/soul.md"
-autonomous_prompt="$repo_root/workloads/hivemoot/prompts/autonomous.md"
+autonomous_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md"
 task_prompt="$repo_root/workloads/hivemoot-task/prompts/task.md"
 run_once="$repo_root/worker/run-once.sh"
 github_mention="$repo_root/controller/triggers/github-mention.sh"

@@ -42,7 +42,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=hivemoot \
+      AGENT_PLUGINS=github,hivemoot-github \
       bash scripts/entrypoint.sh
 
 # Mismatch message offers .env fix first (cheaper than rebuild)
@@ -51,7 +51,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=hivemoot \
+      AGENT_PLUGINS=github,hivemoot-github \
       bash scripts/entrypoint.sh
 
 # Mismatch message also offers the rebuild path
@@ -60,7 +60,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=codex \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=hivemoot \
+      AGENT_PLUGINS=github,hivemoot-github \
       bash scripts/entrypoint.sh
 
 # Mismatch: image built for claude but agent requests gemini
@@ -69,7 +69,7 @@ assert_fails_with \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=claude \
       AGENT_PROVIDER=gemini \
-      AGENT_WORKLOAD=hivemoot \
+      AGENT_PLUGINS=github,hivemoot-github \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER=all passes through regardless of AGENT_PROVIDER

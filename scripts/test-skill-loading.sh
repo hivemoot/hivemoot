@@ -397,7 +397,7 @@ test_shipped_skills_load() {
 
   source_lib
 
-  local skills_dir="${SCRIPT_DIR}/../workloads/hivemoot/skills"
+  local skills_dir="${SCRIPT_DIR}/../cli/hivemoot_agent/plugins_builtin/hivemoot_github/skills"
   local expected_skills="security-reviewer code-reviewer test-advocate dep-auditor pr-hygiene"
 
   for skill in $expected_skills; do

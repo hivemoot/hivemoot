@@ -8,6 +8,7 @@ from hivemoot_agent.plugins.interfaces import AgentEvent
 
 name = "claude"
 supports_system_prompt_flag = True
+native_skill_backend = "claude_plugin_dir"
 
 # Deny rules block naive single-command exfiltration from prompt injection.
 # Enforced even with --dangerously-skip-permissions.  Container isolation

@@ -168,12 +168,14 @@ AGENT_GITHUB_TOKEN_02=...
 
 Each slot requires both `AGENT_ID_XX` and `AGENT_GITHUB_TOKEN_XX` (or `_FILE`). Duplicate agent IDs are rejected.
 
-## Workloads And Drivers
+## Workloads, Plugins, And Drivers
 
-The worker runtime starts from a workload plus an explicit driver:
+The worker runtime starts from either an explicit plugin stack or a shell workload,
+plus an explicit driver:
 
-- `AGENT_WORKLOAD` selects what behavior/prompt bundle to run
-- `AGENT_DRIVER` selects how the worker executes that workload inside the container
+- `AGENT_PLUGINS` selects the Python plugin stack for repo-aware runs
+- `AGENT_WORKLOAD` selects a shell workload when you are not using `AGENT_PLUGINS`
+- `AGENT_DRIVER` selects how the worker executes inside the container
 - controller triggers are a separate concern and stay in the host controller plane
 
 **Direct single run** (default) — execute one worker run, then exit:
@@ -183,7 +185,7 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 ```
 
 This path is intentionally simple:
-- one workload
+- one plugin stack
 - one driver (`once`)
 - one worker execution
 - one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`
@@ -191,22 +193,32 @@ This path is intentionally simple:
 
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
+For the default Hivemoot repo workflow, use
+`AGENT_PLUGINS=github,hivemoot-github`.
+
 **Plugin engine mode** — hand the container to the Python plugin runtime:
 
 ```env
 AGENT_DRIVER=once
-AGENT_PLUGINS=github
+AGENT_PLUGINS=github,hivemoot-github
 GITHUB_TOKEN_FILE=/run/secrets/github_token
-GITHUB_REPOS=hivemoot/hivemoot-agent,hivemoot/hivemoot
+GITHUB_REPOS=hivemoot/hivemoot-agent
+TARGET_REPO=hivemoot/hivemoot-agent
+HIVEMOOT_BUZZ_ROLE=worker
 # Optional. Defaults to WORKSPACE_ROOT when unset.
 GITHUB_WORKSPACE=
 ```
 
 In plugin mode:
 - `AGENT_DRIVER=once` runs `hivemoot-agent oneshot`
-- `AGENT_DRIVER=loop` runs `hivemoot-agent run`
+- plugin stacks support `AGENT_DRIVER=once` only
+- use `controller/main.sh` for repeated repo runs, or clear `AGENT_PLUGINS` and set `AGENT_WORKLOAD` if you need the legacy shell loop driver
 - `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
+- if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
+- use `AGENT_PLUGINS=github` for generic GitHub repo automation
+- use `AGENT_PLUGINS=github,hivemoot-github` for the Hivemoot GitHub contribution workflow
+- `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 **Legacy in-container loop** — single-agent periodic scheduling inside the container:
 
@@ -603,7 +615,7 @@ from [`identities/hivemoot-agent/soul.md`](identities/hivemoot-agent/soul.md)
 mounts a sibling `base.md` when it exists next to the host `AGENT_PROMPT_FILE`.
 
 When unset, standing agents use
-[`workloads/hivemoot/prompts/autonomous.md`](workloads/hivemoot/prompts/autonomous.md)
+[`cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md)
 and task mode uses
 [`workloads/hivemoot-task/prompts/task.md`](workloads/hivemoot-task/prompts/task.md),
 both composed with
@@ -611,10 +623,14 @@ both composed with
 
 ## Skills
 
-Use `AGENT_SKILLS` to inject a comma-separated list of skill modules from
-`/opt/hivemoot-agent/skills/<name>/SKILL.md` into the composed system prompt.
-Built-in image skills and read-only bind mounts both resolve through that same
-path.
+Use `AGENT_SKILLS` to select a comma-separated list of skill modules for the
+current run. The plugin engine resolves skill names from built-in plugin skill
+packs plus any bind-mounted `/opt/hivemoot-agent/skills/<name>/SKILL.md`
+entries. In the default Python runtime, all supported providers load these
+skills natively. Claude receives an ephemeral `--plugin-dir`; Codex, Gemini,
+OpenCode, and Kilo receive an ephemeral workspace `.agents/skills` staging
+directory. Full skill directories are preserved so bundled scripts, references,
+and assets remain available during the run.
 
 When running the host controller, `AGENT_SKILL_BIND_MOUNTS` can expose custom
 skill directories into worker containers. Each mount must use an absolute host
@@ -622,6 +638,10 @@ path and the exact read-only destination format
 `/host/path:/opt/hivemoot-agent/skills/<name>:ro`. Provide multiple mounts as
 newline-separated specs; destinations outside `/opt/hivemoot-agent/skills/` and
 any `..` segments are rejected.
+
+Use `AGENT_AVAILABLE_SKILLS` for extra native-discovery skills to expose
+alongside `AGENT_SKILLS`. It resolves against the same search roots and is
+unioned with the selected set for providers that discover skills natively.
 
 Managed multi-agent runtimes can also set `AGENT_SKILLS_01` through
 `AGENT_SKILLS_10`. The controller resolves the matching slot for each

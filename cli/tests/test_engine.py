@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -208,6 +209,157 @@ def test_oneshot_failure():
             engine = Engine()
             code = engine.oneshot(prompt="Bad task")
             assert code == 1
+
+
+class _FakeSessionStore:
+    def __init__(self, lookup_result=("", None)):
+        self.lookup_result = lookup_result
+        self.lookup_key = ""
+        self.saved: list[dict[str, object]] = []
+        self.map_file = "/tmp/fake-session-store.tsv"
+        self.resume_enabled = True
+        self.max_idle_hours = 12
+        self.max_age_hours = 24
+        self.reset_at_hour = None
+
+    def lookup(self, key: str):
+        self.lookup_key = key
+        return self.lookup_result
+
+    def save(self, key: str, session_id: str, *, was_resume: bool, prior_record):
+        self.saved.append(
+            {
+                "key": key,
+                "session_id": session_id,
+                "was_resume": was_resume,
+                "prior_record": prior_record,
+            }
+        )
+
+
+class _FakePlugin:
+    def __init__(self):
+        self.finished_job = None
+
+    def on_job_finished(self, job, result, config):
+        self.finished_job = (job, result, config)
+
+
+def test_oneshot_resumes_explicit_session_key_and_saves_new_session():
+    store = _FakeSessionStore(
+        lookup_result=("existing-session-id", {"created": 1, "last_used": 2})
+    )
+    plugin = _FakePlugin()
+    seen_cmds = []
+
+    def fake_run(cmd, **kwargs):
+        seen_cmds.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = (
+            '{"type":"thread.started","thread_id":"fresh-session-id"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}\n'
+        )
+        result.stderr = ""
+        return result
+
+    env = {
+        "AGENT_PROVIDER": "codex",
+        "AGENT_PLUGINS": "github,hivemoot-github",
+        "AGENT_SESSION_KEY": "mention-thread:123",
+        "TARGET_REPO": "owner/repo",
+        "AGENT_MEMORY_DIR": tempfile.gettempdir(),
+    }
+    with patch.dict(os.environ, env, clear=False):
+        with patch("hivemoot_agent.engine.create_session_store", return_value=store):
+            with patch.object(Engine, "_resolve_plugins", return_value={"fake": plugin}):
+                with patch.object(Engine, "_setup_plugins", return_value=True):
+                    with patch.object(Engine, "_build_system_prompt", return_value="System"):
+                        with patch.object(Engine, "_build_skills_plugin_dir", return_value=""):
+                            with patch("hivemoot_agent.engine.registry.config_for") as config_for:
+                                config_for.side_effect = (
+                                    lambda name: PluginConfig(name=name, settings=dict(os.environ))
+                                )
+                                with patch("subprocess.run", side_effect=fake_run):
+                                    engine = Engine()
+                                    code = engine.oneshot(prompt="Say hello")
+
+    assert code == 0
+    assert seen_cmds[0][:3] == ["codex", "exec", "resume"]
+    assert "existing-session-id" in seen_cmds[0]
+    assert store.lookup_key.endswith("|key=mention-thread:123")
+    assert store.saved == [
+        {
+            "key": store.lookup_key,
+            "session_id": "fresh-session-id",
+            "was_resume": True,
+            "prior_record": {"created": 1, "last_used": 2},
+        }
+    ]
+    assert plugin.finished_job is not None
+    assert plugin.finished_job[0].session_key == "mention-thread:123"
+
+
+def test_oneshot_retries_fresh_after_resume_failure():
+    store = _FakeSessionStore(
+        lookup_result=("resume-session-id", {"created": 1, "last_used": 2})
+    )
+    plugin = _FakePlugin()
+    seen_cmds = []
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        seen_cmds.append(cmd)
+        result = MagicMock()
+        if call_count == 1:
+            result.returncode = 1
+            result.stdout = ""
+            result.stderr = "resume failed"
+            return result
+        result.returncode = 0
+        result.stdout = (
+            '{"type":"thread.started","thread_id":"fresh-after-retry"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}\n'
+        )
+        result.stderr = ""
+        return result
+
+    env = {
+        "AGENT_PROVIDER": "codex",
+        "AGENT_PLUGINS": "github,hivemoot-github",
+        "AGENT_SESSION_KEY": "mention-thread:retry",
+        "TARGET_REPO": "owner/repo",
+        "AGENT_MEMORY_DIR": tempfile.gettempdir(),
+    }
+    with patch.dict(os.environ, env, clear=False):
+        with patch("hivemoot_agent.engine.create_session_store", return_value=store):
+            with patch.object(Engine, "_resolve_plugins", return_value={"fake": plugin}):
+                with patch.object(Engine, "_setup_plugins", return_value=True):
+                    with patch.object(Engine, "_build_system_prompt", return_value="System"):
+                        with patch.object(Engine, "_build_skills_plugin_dir", return_value=""):
+                            with patch("hivemoot_agent.engine.registry.config_for") as config_for:
+                                config_for.side_effect = (
+                                    lambda name: PluginConfig(name=name, settings=dict(os.environ))
+                                )
+                                with patch("subprocess.run", side_effect=fake_run):
+                                    engine = Engine()
+                                    code = engine.oneshot(prompt="Retry me")
+
+    assert code == 0
+    assert len(seen_cmds) == 2
+    assert seen_cmds[0][:3] == ["codex", "exec", "resume"]
+    assert seen_cmds[1][:2] == ["codex", "exec"]
+    assert seen_cmds[1][2] != "resume"
+    assert store.saved == [
+        {
+            "key": store.lookup_key,
+            "session_id": "fresh-after-retry",
+            "was_resume": False,
+            "prior_record": None,
+        }
+    ]
 
 
 # ── _run_subprocess streaming tests ──────────────────────────────

@@ -75,7 +75,7 @@ controller_invoke_trigger_hook() {
 }
 
 controller_trigger_worker_workload_default() {
-  printf '%s' "${AGENT_WORKLOAD:-hivemoot}"
+  printf '%s' "${AGENT_WORKLOAD:-}"
 }
 
 controller_trigger_health_kind_default() {

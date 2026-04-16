@@ -344,6 +344,63 @@ validate_target_repo() {
   fi
 }
 
+bridge_plugin_github_token_env() {
+  if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN_FILE:-}" ]; then
+    return 0
+  fi
+
+  if [ -n "${GH_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${GH_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_GITHUB_TOKEN_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_GITHUB_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_TOKEN_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_TOKEN_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_TOKEN}"
+    return 0
+  fi
+
+  if [ -n "${AGENT_GITHUB_TOKEN_01_FILE:-}" ]; then
+    export GITHUB_TOKEN_FILE="${AGENT_GITHUB_TOKEN_01_FILE}"
+    return 0
+  fi
+  if [ -n "${AGENT_GITHUB_TOKEN_01:-}" ]; then
+    export GITHUB_TOKEN="${AGENT_GITHUB_TOKEN_01}"
+  fi
+}
+
+prepare_plugin_engine_dispatch() {
+  if [ -z "${AGENT_PLUGINS:-}" ]; then
+    return 1
+  fi
+
+  if [ -n "${TARGET_REPO:-}" ]; then
+    validate_target_repo "${TARGET_REPO}"
+    if [ -z "${GITHUB_REPOS:-}" ]; then
+      export GITHUB_REPOS="${TARGET_REPO}"
+    fi
+  fi
+
+  if [ -z "${GITHUB_CLONE_DEPTH:-}" ] && [ -n "${GIT_CLONE_DEPTH:-}" ]; then
+    export GITHUB_CLONE_DEPTH="${GIT_CLONE_DEPTH}"
+  fi
+
+  bridge_plugin_github_token_env
+  return 0
+}
+
 # ── Plugin Loaders ────────────────────────────────────────────────
 # Shared functions to load identity and workload plugins. Replaces the
 # 25-line boilerplate blocks that were duplicated in every script.
@@ -372,7 +429,7 @@ load_workload_plugin() {
   local dir=""
   local file=""
   if [ -z "$name" ]; then
-    echo "AGENT_WORKLOAD is required. Set it to the workload name (e.g. hivemoot, hivemoot-task)." >&2
+    echo "AGENT_WORKLOAD is required when not using AGENT_PLUGINS. Set it to the workload name (e.g. hivemoot-task)." >&2
     exit 1
   fi
   dir="${WORKLOAD_DIR:-${WORKLOADS_BASE_DIR}/${name}}"
@@ -381,7 +438,7 @@ load_workload_plugin() {
     echo "Workload plugin not found: ${file}" >&2
     exit 1
   fi
-  # shellcheck source=workloads/hivemoot/workload.sh
+  # shellcheck source=workloads/hivemoot-task/workload.sh
   # shellcheck disable=SC1090,SC1091
   . "$file"
 }

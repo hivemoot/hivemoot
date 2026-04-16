@@ -17,6 +17,10 @@ KERNEL_DIR="${KERNEL_DIR:-${WORKER_DIR}}"
 . "${SHARED_DIR}/opencode-helpers.sh"
 
 load_provider_secrets
+if prepare_plugin_engine_dispatch; then
+  echo "Plugin mode does not support AGENT_DRIVER=loop. Use AGENT_DRIVER=once or controller/main.sh." >&2
+  exit 1
+fi
 load_identity_plugin
 load_workload_plugin
 load_workload_integration_preflight

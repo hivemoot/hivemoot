@@ -22,6 +22,12 @@ class Provider(Protocol):
 
     name: str
 
+    # Native skill loading backend for this provider, if any.
+    # Examples:
+    # - "claude_plugin_dir" for Claude's --plugin-dir
+    # - "workspace_agents_dir" for CLIs that discover .agents/skills natively
+    native_skill_backend: str
+
     # True if the provider accepts system prompt as a separate flag
     # (e.g., Claude's --append-system-prompt).  False if system prompt
     # must be concatenated with the user prompt.

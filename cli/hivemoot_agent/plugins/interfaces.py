@@ -36,10 +36,11 @@ class PluginConfig:
 
 @dataclass
 class Skill:
-    """A skill that can be registered via Claude's --plugin-dir."""
+    """A skill module loaded from a ``<name>/SKILL.md`` directory."""
 
     name: str
     content: str  # Full SKILL.md content (including frontmatter)
+    source_dir: str = ""  # Absolute on-disk skill directory for native loading
 
 
 @dataclass
