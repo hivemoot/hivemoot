@@ -115,11 +115,21 @@ class TelegramAdapter:
         return errors
 
     def poll(
-        self, config: PluginConfig, offset: int, timeout: int = 30
+        self, config: PluginConfig, offset: int, timeout: int = 30,
+        strict: bool = False,
     ) -> list[dict]:
-        """Long-poll getUpdates.  Returns normalized message dicts."""
+        """Long-poll getUpdates.  Returns normalized message dicts.
+
+        strict=False (default) swallows network/API errors and returns [],
+        which the daemon-mode trigger relies on — the in-process engine
+        restarts the trigger on its own.  strict=True re-raises, which
+        the host-side CLI uses so the shell watcher's exponential
+        backoff engages instead of silent spinning.
+        """
         token = _resolve_token(config)
         if not token:
+            if strict:
+                raise RuntimeError("messaging token is not configured")
             return []
         try:
             resp = _api(
@@ -132,9 +142,15 @@ class TelegramAdapter:
                 },
             )
         except Exception:
+            if strict:
+                raise
             return []
 
         if not resp.get("ok"):
+            if strict:
+                raise RuntimeError(
+                    f"telegram getUpdates returned not-ok: {resp.get('description', '')}"
+                )
             return []
 
         messages: list[dict] = []

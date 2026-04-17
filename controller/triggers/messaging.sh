@@ -2,22 +2,15 @@
 # shellcheck disable=SC2154,SC2034
 # Messaging trigger — listen for inbound messages and enqueue jobs.
 #
-# Platform-specific polling is delegated to the messaging integration's
-# adapter (integrations/messaging/platforms/<name>.sh).  This file
-# handles only trigger concerns: session persistence, access control,
-# enqueue, and the standard trigger hook contract.
+# Platform I/O (polling, sending, credential validation) is delegated
+# to the hivemoot-agent Python CLI.  This file owns trigger concerns:
+# session persistence, access control, enqueue, busy-ack state, and
+# the standard trigger hook contract.
 
 [ -n "${HIVEMOOT_CONTROLLER_TRIGGER_MESSAGING_LOADED:-}" ] && return 0
 HIVEMOOT_CONTROLLER_TRIGGER_MESSAGING_LOADED=1
 
 register_controller_trigger "messaging"
-
-# The integration is sourced here (host-side) for polling and acks.
-# Container-side typing indicators and response delivery are owned by
-# the Python messaging plugin (cli/hivemoot_agent/plugins_builtin/messaging/).
-INTEGRATION_DIR="${INTEGRATION_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/integrations}"
-# shellcheck source=integrations/messaging/setup.sh
-. "${INTEGRATION_DIR}/messaging/setup.sh"
 
 # ── Persistent directory resolution ────────────────────────────────
 
@@ -202,11 +195,14 @@ controller_trigger_on_duplicate_agent__messaging() {
       local dup_session_key=""
       dup_session_key="$(jq -r '.session_key // empty' "$processing_file" 2>/dev/null)"
       if [ -n "$dup_session_key" ]; then
-        local dup_chat_id=""
-        dup_chat_id="$(messaging_platform_extract_chat_id "$dup_session_key")"
-        if [ -n "$dup_chat_id" ]; then
-          messaging_platform_send "$dup_chat_id" \
-            "I'm busy with another task right now — I'll get to your message shortly."
+        # Session keys follow <platform>:<id> (e.g. "tg:55555").
+        local dup_chat_id="${dup_session_key#*:}"
+        if [ -n "$dup_chat_id" ] && [ "$dup_chat_id" != "$dup_session_key" ]; then
+          printf '%s' \
+            "I'm busy with another task right now — I'll get to your message shortly." \
+            | hivemoot-agent messaging send \
+                --platform "${MESSAGING_PLATFORM:-telegram}" \
+                --chat-id "$dup_chat_id" >/dev/null 2>&1 || true
         fi
       fi
 
@@ -226,6 +222,53 @@ controller_trigger_on_duplicate_agent__messaging() {
 
 # ── Watcher lifecycle ──────────────────────────────────────────────
 
+# Consume one poll session from `hivemoot-agent messaging watch`.
+# Each stdout line is one NDJSON message that passed the Python
+# adapter's normalization.  Access control, dedup, and enqueue stay
+# in shell — the CLI is a pure platform I/O layer.  Returns the
+# exit code of the CLI so the watcher's backoff can engage.
+_messaging_consume_watch() {
+  local platform="${MESSAGING_PLATFORM:-telegram}"
+  local poll_timeout="${MESSAGING_POLL_TIMEOUT_SECS:-${TELEGRAM_POLL_TIMEOUT_SECS:-30}}"
+  local offset_file="${watch_state_root}/messaging-${platform}-offset"
+  local agent_id="${messaging_agent_id}"
+  local trigger_repo="${messaging_target_repo:-${target_repo:-}}"
+
+  local line="" update_id="" chat_id="" username="" text=""
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+
+    update_id="$(printf '%s' "$line" | jq -r '.update_id // empty' 2>/dev/null)"
+    chat_id="$(printf '%s' "$line" | jq -r '.chat_id // empty' 2>/dev/null)"
+    username="$(printf '%s' "$line" | jq -r '.username // "unknown"' 2>/dev/null)"
+    text="$(printf '%s' "$line" | jq -r '.text // empty' 2>/dev/null)"
+
+    if [ -z "$update_id" ] || [ -z "$chat_id" ] || [ -z "$text" ]; then
+      log "messaging: malformed watch event, skipping"
+      continue
+    fi
+
+    local session_prefix=""
+    case "$platform" in
+      telegram) session_prefix="tg" ;;
+      *) session_prefix="$platform" ;;
+    esac
+
+    messaging_dispatch_update \
+      "$agent_id" "$trigger_repo" \
+      "$chat_id" "$username" "$text" \
+      "${session_prefix}:${chat_id}" "${session_prefix}-msg:${update_id}" \
+      || true
+  done < <(hivemoot-agent messaging watch \
+             --platform "$platform" \
+             --offset-file "$offset_file" \
+             --poll-timeout "$poll_timeout")
+
+  # read returns when the CLI's stdout closes (CLI exited).
+  # Return 1 so the watcher's backoff engages.
+  return 1
+}
+
 start_messaging_watcher() {
   local watcher_pid=0
 
@@ -238,17 +281,11 @@ start_messaging_watcher() {
     local max_delay=300
     local start_time=0
     local elapsed=0
-    local poll_exit=0
 
     while true; do
       start_time=$SECONDS
 
-      if messaging_platform_poll_loop; then
-        :
-      else
-        poll_exit=$?
-        log "messaging: poll loop exited (exit=${poll_exit})"
-      fi
+      _messaging_consume_watch || log "messaging: watch exited"
 
       elapsed=$((SECONDS - start_time))
       if [ "$elapsed" -gt 60 ]; then

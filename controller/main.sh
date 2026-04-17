@@ -308,13 +308,12 @@ if [ "$watch_messaging" = "1" ]; then
     echo "MESSAGING_AGENT_ID is required when WATCH_MESSAGING=1" >&2
     exit 1
   fi
-  if ! messaging_load_platform; then
-    exit 1
-  fi
-  if ! messaging_platform_check_deps; then
-    exit 1
-  fi
-  if ! messaging_platform_validate_config; then
+  # Credential + dependency validation is delegated to the Python CLI;
+  # it surfaces actionable errors on stderr and exits non-zero so the
+  # controller fails to start rather than silently polling a broken
+  # adapter.
+  if ! hivemoot-agent messaging preflight \
+       --platform "${MESSAGING_PLATFORM:-telegram}"; then
     exit 1
   fi
 fi

@@ -6,6 +6,7 @@ Commands:
     hivemoot-agent oneshot            Run agent once and exit
     hivemoot-agent plugin list        List available plugins
     hivemoot-agent plugin doctor X    Validate a plugin's config
+    hivemoot-agent messaging ...      Host-side messaging utilities
     hivemoot-agent doctor             Health check
 """
 
@@ -42,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     # plugin
     from hivemoot_agent.plugins.commands import register_plugin_commands
     register_plugin_commands(sub)
+
+    # messaging — host-side platform utilities (preflight, watch, send)
+    from hivemoot_agent.plugins_builtin.messaging.cli import (
+        register_messaging_commands,
+    )
+    register_messaging_commands(sub)
 
     # doctor
     sub.add_parser("doctor", help="Health check").set_defaults(func=_cmd_doctor)

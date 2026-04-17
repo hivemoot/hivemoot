@@ -12,10 +12,6 @@ if [ -n "${HIVEMOOT_LIB_LOADED:-}" ]; then
 fi
 HIVEMOOT_LIB_LOADED=1
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-HIVEMOOT_ROOT_DIR="${HIVEMOOT_ROOT_DIR:-$(cd "${LIB_DIR}/.." && pwd)}"
-INTEGRATIONS_BASE_DIR="${INTEGRATIONS_BASE_DIR:-${HIVEMOOT_ROOT_DIR}/integrations}"
-
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"

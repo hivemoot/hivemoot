@@ -3267,8 +3267,6 @@ run_messaging_trigger_prepare_job_case() {
   (
     set -euo pipefail
     export SHARED_DIR="${repo_root}/shared"
-    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
-    export INTEGRATION_DIR="${repo_root}/integrations"
 
     workspace_root="${case_dir}/workspace"
     messaging_homes_root="${workspace_root}/messaging-homes"
@@ -3316,8 +3314,6 @@ run_messaging_trigger_emits_plugin_stack_case() {
   (
     set -euo pipefail
     export SHARED_DIR="${repo_root}/shared"
-    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
-    export INTEGRATION_DIR="${repo_root}/integrations"
 
     . "${repo_root}/shared/lib.sh"
     TRIGGER_DIR="${repo_root}/controller/triggers"
@@ -3424,8 +3420,6 @@ run_messaging_dedup_case() {
   (
     set -euo pipefail
     export SHARED_DIR="${repo_root}/shared"
-    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
-    export INTEGRATION_DIR="${repo_root}/integrations"
 
     workspace_root="${case_dir}/workspace"
     queue_root="${workspace_root}/queue"
@@ -3468,14 +3462,37 @@ run_messaging_duplicate_agent_ack_case() {
 
   mkdir -p "$case_dir"
 
+  # Stub `hivemoot-agent messaging send` on PATH so busy-ack
+  # invocations append chat_id|body to the send log.
+  local stub_bin="${case_dir}/bin"
+  mkdir -p "$stub_bin"
+  cat > "${stub_bin}/hivemoot-agent" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "messaging" ] && [ "${2:-}" = "send" ]; then
+  local_chat_id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --chat-id) local_chat_id="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s|%s\n' "$local_chat_id" "$(cat)" >> "${SEND_LOG:?SEND_LOG not set}"
+  exit 0
+fi
+echo "stub: unhandled $*" >&2
+exit 2
+STUB
+  chmod +x "${stub_bin}/hivemoot-agent"
+
   # Verify that on_duplicate_agent sends exactly one ack across
   # multiple queue passes.  The ack flag in the JSON prevents spam.
   # shellcheck disable=SC2030,SC2031,SC2034,SC2154,SC1091,SC2317,SC2329
   (
     set -euo pipefail
     export SHARED_DIR="${repo_root}/shared"
-    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
-    export INTEGRATION_DIR="${repo_root}/integrations"
+    export PATH="${stub_bin}:${PATH}"
+    export SEND_LOG="$send_log"
 
     workspace_root="${case_dir}/workspace"
     queue_root="${workspace_root}/queue"
@@ -3489,10 +3506,6 @@ run_messaging_duplicate_agent_ack_case() {
     TRIGGER_DIR="${repo_root}/controller/triggers"
     . "${TRIGGER_DIR}/common.sh"
     . "${TRIGGER_DIR}/messaging.sh"
-
-    # Stub platform functions.
-    messaging_platform_send() { printf '%s|%s\n' "$1" "$2" >> "$send_log"; }
-    messaging_platform_extract_chat_id() { printf '%s' "${1#tg:}"; }
 
     # Simulate a .processing file (first queue pass).
     local proc_file="${queue_root}/msg-dup.processing"
