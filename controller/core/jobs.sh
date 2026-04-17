@@ -198,6 +198,7 @@ spawn_worker() {
   append_env_if_set HEALTH_REPORT_MAX_RETRIES
   append_env_if_set HEALTH_REPORT_RUN_SUMMARY
   append_env_if_set MESSAGING_PLATFORM
+  append_env_if_set MESSAGING_AGENT_ID
   append_env_if_set MESSAGING_ALLOWED_CHAT_IDS
 
   append_secret_env HIVEMOOT_AGENT_TOKEN

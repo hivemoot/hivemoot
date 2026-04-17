@@ -139,7 +139,6 @@ append_bind_mount_specs() {
         return 1
         ;;
       /*:/opt/hivemoot-agent/skills/*:ro) ;;
-      /*:/opt/hivemoot-agent/workloads/*/skills/*:ro) ;;
       *)
         echo "${var_name} contains invalid mount spec: ${mount_spec}" >&2
         return 1

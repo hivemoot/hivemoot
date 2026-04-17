@@ -13,8 +13,8 @@ HIVEMOOT_CONTROLLER_TRIGGER_MESSAGING_LOADED=1
 register_controller_trigger "messaging"
 
 # The integration is sourced here (host-side) for polling and acks.
-# The same integration is sourced by workloads/messaging/workload.sh
-# inside the container for typing indicators and response delivery.
+# Container-side typing indicators and response delivery are owned by
+# the Python messaging plugin (cli/hivemoot_agent/plugins_builtin/messaging/).
 INTEGRATION_DIR="${INTEGRATION_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/integrations}"
 # shellcheck source=integrations/messaging/setup.sh
 . "${INTEGRATION_DIR}/messaging/setup.sh"
@@ -120,8 +120,15 @@ messaging_is_allowed() {
 
 # ── Trigger hooks ──────────────────────────────────────────────────
 
+controller_trigger_worker_plugins__messaging() {
+  printf '%s' "${MESSAGING_DISPATCH_PLUGINS:-messaging}"
+}
+
+# Messaging dispatch routes exclusively through the Python plugin engine.
+# Override the default (which echoes $AGENT_WORKLOAD) so a controller-side
+# AGENT_WORKLOAD can never leak into spawn_worker's shell-workload branch.
 controller_trigger_worker_workload__messaging() {
-  printf '%s' "${MESSAGING_WORKLOAD:-messaging}"
+  printf ''
 }
 
 controller_trigger_health_kind__messaging() {

@@ -335,8 +335,8 @@ run_run_once() {
     TARGET_REPO="owner/repo" \
     AGENT_IDENTITY="hivemoot-agent" \
     IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    AGENT_WORKLOAD="messaging" \
-    WORKLOAD_DIR="${repo_root}/workloads/messaging" \
+    AGENT_WORKLOAD="github-workload" \
+    WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
     INTEGRATION_DIR="${repo_root}/integrations" \
     AGENT_PROVIDER="codex" \
     AGENT_AUTH_MODE="api_key" \
@@ -460,8 +460,8 @@ run_run_once_claude() {
     TARGET_REPO="owner/repo" \
     AGENT_IDENTITY="hivemoot-agent" \
     IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    AGENT_WORKLOAD="messaging" \
-    WORKLOAD_DIR="${repo_root}/workloads/messaging" \
+    AGENT_WORKLOAD="github-workload" \
+    WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
     INTEGRATION_DIR="${repo_root}/integrations" \
     AGENT_PROVIDER="claude" \
     AGENT_AUTH_MODE="api_key" \

@@ -3270,7 +3270,6 @@ run_messaging_trigger_prepare_job_case() {
     set -euo pipefail
     export SHARED_DIR="${repo_root}/shared"
     export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
-    export WORKLOADS_BASE_DIR="${repo_root}/workloads"
     export INTEGRATION_DIR="${repo_root}/integrations"
 
     workspace_root="${case_dir}/workspace"
@@ -3307,6 +3306,53 @@ run_messaging_trigger_prepare_job_case() {
   ) || fail "messaging prepare_job subshell failed"
 
   echo "PASS: messaging prepare_job hook sets correct context variables and creates persistent dirs"
+}
+
+run_messaging_trigger_emits_plugin_stack_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  mkdir -p "$case_dir"
+
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2154,SC1091
+  (
+    set -euo pipefail
+    export SHARED_DIR="${repo_root}/shared"
+    export INTEGRATIONS_BASE_DIR="${repo_root}/integrations"
+    export INTEGRATION_DIR="${repo_root}/integrations"
+
+    . "${repo_root}/shared/lib.sh"
+    TRIGGER_DIR="${repo_root}/controller/triggers"
+    . "${TRIGGER_DIR}/common.sh"
+    . "${TRIGGER_DIR}/messaging.sh"
+
+    local plugins=""
+    plugins="$(MESSAGING_DISPATCH_PLUGINS="" controller_trigger_worker_plugins__messaging)"
+    [ "$plugins" = "messaging" ] \
+      || { echo "FAIL: default plugin stack (got '${plugins}')" >&2; exit 1; }
+
+    plugins="$(MESSAGING_DISPATCH_PLUGINS="messaging,github,extra" controller_trigger_worker_plugins__messaging)"
+    [ "$plugins" = "messaging,github,extra" ] \
+      || { echo "FAIL: dispatch-plugins override (got '${plugins}')" >&2; exit 1; }
+
+    # Regression: the task-specific override must hard-return empty so a
+    # controller-side AGENT_WORKLOAD cannot reach the shell workload branch
+    # in spawn_worker() and hijack claimed messaging jobs.
+    local workload=""
+    workload="$(AGENT_WORKLOAD="" controller_invoke_trigger_hook worker_workload messaging)"
+    [ -z "$workload" ] \
+      || { echo "FAIL: worker_workload not empty without ambient (got '${workload}')" >&2; exit 1; }
+
+    workload="$(AGENT_WORKLOAD="hivemoot-task" controller_invoke_trigger_hook worker_workload messaging)"
+    [ -z "$workload" ] \
+      || { echo "FAIL: messaging trigger leaked ambient AGENT_WORKLOAD (got '${workload}')" >&2; exit 1; }
+
+    workload="$(AGENT_WORKLOAD="arbitrary-value" controller_invoke_trigger_hook worker_workload messaging)"
+    [ -z "$workload" ] \
+      || { echo "FAIL: messaging trigger leaked arbitrary AGENT_WORKLOAD (got '${workload}')" >&2; exit 1; }
+  ) || fail "messaging plugin-stack subshell failed"
+
+  echo "PASS: messaging trigger routes jobs through the Python plugin engine"
 }
 
 run_messaging_validation_rejection_case() {
@@ -3488,6 +3534,7 @@ run_messaging_duplicate_agent_ack_case() {
 
 run_task_oom_failure_case "$repo_root" "${tmpdir}/task-oom-failure"
 run_messaging_trigger_prepare_job_case "$repo_root" "${tmpdir}/messaging-prepare-job"
+run_messaging_trigger_emits_plugin_stack_case "$repo_root" "${tmpdir}/messaging-plugin-stack"
 run_messaging_validation_rejection_case "$repo_root" "${tmpdir}/messaging-validation"
 run_messaging_dedup_case "$repo_root" "${tmpdir}/messaging-dedup"
 run_messaging_duplicate_agent_ack_case "$repo_root" "${tmpdir}/messaging-dup-ack"
