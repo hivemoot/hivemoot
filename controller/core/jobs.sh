@@ -28,7 +28,6 @@ spawn_worker() {
   local health_kind=""
   local extra_prompt_host_path=""
   local extra_prompt_worker_path=""
-  local controller_agent_identity="${AGENT_IDENTITY:-hivemoot-agent}"
 
   worker_trigger="$(normalize_trigger_name "$trigger_type")"
   health_kind="$(controller_invoke_trigger_hook health_kind "$worker_trigger")"
@@ -161,7 +160,6 @@ spawn_worker() {
     docker_run_args+=( -e "CODEX_ANSWER_FILE=${codex_answer_file}" )
   fi
 
-  docker_run_args+=( -e "AGENT_IDENTITY=${controller_agent_identity}" )
   append_env_if_set AGENT_PROVIDER
   append_env_if_set AGENT_AUTH_MODE
   append_env_if_set AGENT_MODEL

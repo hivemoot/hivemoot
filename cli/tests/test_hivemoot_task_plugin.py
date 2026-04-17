@@ -30,7 +30,7 @@ def test_validate_requires_github_before_hivemoot_task():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "hivemoot-task,github",
+            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-task,github",
             "GITHUB_REPOS": "acme/api",
         },
     )
@@ -40,12 +40,47 @@ def test_validate_requires_github_before_hivemoot_task():
     assert any("github before hivemoot-task" in err for err in errors)
 
 
-def test_validate_requires_target_repo_for_multi_repo_config():
+def test_validate_requires_hivemoot_identity_in_stack():
     plugin = HivemootTaskPlugin()
     config = PluginConfig(
         name="hivemoot-task",
         settings={
             "AGENT_PLUGINS": "github,hivemoot-task",
+            "GITHUB_REPOS": "acme/api",
+        },
+    )
+
+    errors = plugin.validate(config)
+
+    assert any(
+        "requires AGENT_PLUGINS to include hivemoot-identity" in err
+        for err in errors
+    )
+
+
+def test_validate_requires_hivemoot_identity_before_hivemoot_task():
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "AGENT_PLUGINS": "github,hivemoot-task,hivemoot-identity",
+            "GITHUB_REPOS": "acme/api",
+        },
+    )
+
+    errors = plugin.validate(config)
+
+    assert any(
+        "hivemoot-identity before hivemoot-task" in err for err in errors
+    )
+
+
+def test_validate_requires_target_repo_for_multi_repo_config():
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
             "GITHUB_REPOS": "acme/api,acme/web",
         },
     )
@@ -60,7 +95,7 @@ def test_validate_rejects_target_repo_outside_github_repos():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
             "GITHUB_REPOS": "acme/api",
             "TARGET_REPO": "other/repo",
         },
@@ -76,7 +111,7 @@ def test_validate_single_repo_without_target_passes():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
             "GITHUB_REPOS": "acme/api",
         },
     )
@@ -92,7 +127,7 @@ def test_setup_requires_cloned_repo_path():
         config = PluginConfig(
             name="hivemoot-task",
             settings={
-                "AGENT_PLUGINS": "github,hivemoot-task",
+                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
             },
@@ -116,7 +151,7 @@ def test_system_prompt_has_task_operating_mode_and_soul():
         config = PluginConfig(
             name="hivemoot-task",
             settings={
-                "AGENT_PLUGINS": "github,hivemoot-task",
+                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
             },
@@ -125,7 +160,9 @@ def test_system_prompt_has_task_operating_mode_and_soul():
         plugin.setup(config)
         prompt = plugin.system_prompt(config)
 
-    assert "## Security Guardrails (Non-Overridable)" in prompt
+    # Soul guardrails now live in the hivemoot-identity plugin — the
+    # hivemoot-task prompt no longer embeds them.
+    assert "## Security Guardrails (Non-Overridable)" not in prompt
     assert "executing a specific delegated task" in prompt
     assert "Do not perform autonomous work beyond the task scope" in prompt
     assert "Target repository for this task: `acme/api`." in prompt
@@ -137,7 +174,7 @@ def test_system_prompt_does_not_include_autonomous_mission():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
             "GITHUB_REPOS": "acme/api",
         },
     )
@@ -154,7 +191,7 @@ def test_system_prompt_uses_workspace_root_when_github_workspace_empty():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
             "GITHUB_REPOS": "acme/api",
             "GITHUB_WORKSPACE": "",
             "WORKSPACE_ROOT": "/workspace/repo",

@@ -58,7 +58,7 @@ def test_validate_requires_github_before_plugin():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "hivemoot-github,github",
+            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-github,github",
             "GITHUB_REPOS": "acme/api",
         },
     )
@@ -72,12 +72,55 @@ def test_validate_requires_github_before_plugin():
     assert any("github before hivemoot-github" in error for error in errors)
 
 
-def test_validate_requires_target_repo_for_multi_repo_config():
+def test_validate_requires_hivemoot_identity_in_stack():
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
         settings={
             "AGENT_PLUGINS": "github,hivemoot-github",
+            "GITHUB_REPOS": "acme/api",
+        },
+    )
+
+    with patch(
+        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
+        return_value="/usr/bin/hivemoot",
+    ):
+        errors = plugin.validate(config)
+
+    assert any(
+        "requires AGENT_PLUGINS to include hivemoot-identity" in error
+        for error in errors
+    )
+
+
+def test_validate_requires_hivemoot_identity_before_plugin():
+    plugin = HivemootGitHubPlugin()
+    config = PluginConfig(
+        name="hivemoot-github",
+        settings={
+            "AGENT_PLUGINS": "github,hivemoot-github,hivemoot-identity",
+            "GITHUB_REPOS": "acme/api",
+        },
+    )
+
+    with patch(
+        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
+        return_value="/usr/bin/hivemoot",
+    ):
+        errors = plugin.validate(config)
+
+    assert any(
+        "hivemoot-identity before hivemoot-github" in error for error in errors
+    )
+
+
+def test_validate_requires_target_repo_for_multi_repo_config():
+    plugin = HivemootGitHubPlugin()
+    config = PluginConfig(
+        name="hivemoot-github",
+        settings={
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
             "GITHUB_REPOS": "acme/api,acme/web",
         },
     )
@@ -96,7 +139,7 @@ def test_validate_rejects_target_repo_outside_github_repos():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
             "GITHUB_REPOS": "acme/api",
             "TARGET_REPO": "other/repo",
         },
@@ -120,7 +163,7 @@ def test_setup_and_system_prompt_use_role_context():
         config = PluginConfig(
             name="hivemoot-github",
             settings={
-                "AGENT_PLUGINS": "github,hivemoot-github",
+                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
                 "GITHUB_CLONE_DEPTH": "7",
@@ -137,7 +180,9 @@ def test_setup_and_system_prompt_use_role_context():
         prompt = plugin.system_prompt(config)
 
     assert "Deliver at least one complete, useful contribution" in prompt
-    assert "## Security Guardrails (Non-Overridable)" in prompt
+    # Soul guardrails now live in the hivemoot-identity plugin — the
+    # hivemoot-github prompt no longer embeds them.
+    assert "## Security Guardrails (Non-Overridable)" not in prompt
     assert "Your role on this project is: worker" in prompt
     assert "Hivemoot buzz role: worker" in prompt
     assert "Treat `acme/api` as the active Hivemoot governance target" in prompt
@@ -153,7 +198,7 @@ def test_setup_continues_when_role_lookup_fails():
         config = PluginConfig(
             name="hivemoot-github",
             settings={
-                "AGENT_PLUGINS": "github,hivemoot-github",
+                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
                 "AGENT_ID": "worker",
@@ -177,7 +222,7 @@ def test_system_prompt_uses_workspace_root_when_github_workspace_empty():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
+            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
             "GITHUB_REPOS": "acme/api",
             "GITHUB_WORKSPACE": "",
             "WORKSPACE_ROOT": "/workspace/repo",

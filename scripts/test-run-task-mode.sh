@@ -392,7 +392,7 @@ run_task_trigger_emits_plugin_stack_case() {
   # Default: task trigger dispatches through the Python plugin engine
   # (github + hivemoot-task), not the legacy shell workload.
   plugins="$(TASK_DISPATCH_PLUGINS="" controller_trigger_worker_plugins__hivemoot_task)"
-  assert_eq "github,hivemoot-task" "$plugins" "task trigger defaults to plugin stack"
+  assert_eq "hivemoot-identity,github,hivemoot-task" "$plugins" "task trigger defaults to plugin stack"
 
   # Override still honored so operators can pin a custom plugin list.
   plugins="$(TASK_DISPATCH_PLUGINS="github,hivemoot-task,extra" controller_trigger_worker_plugins__hivemoot_task)"

@@ -9,7 +9,7 @@ register_controller_trigger "hivemoot-task"
 HIVEMOOT_TASK_PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/cli/hivemoot_agent/plugins_builtin/hivemoot_task"
 
 controller_trigger_worker_plugins__hivemoot_task() {
-  printf '%s' "${TASK_DISPATCH_PLUGINS:-github,hivemoot-task}"
+  printf '%s' "${TASK_DISPATCH_PLUGINS:-hivemoot-identity,github,hivemoot-task}"
 }
 
 controller_trigger_health_kind__hivemoot_task() {

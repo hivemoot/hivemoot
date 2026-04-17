@@ -197,9 +197,13 @@ def test_autodiscover_none_valid():
     _setup_registry(_FakePlugin("bad", valid=False))
     engine = Engine()
 
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("AGENT_PLUGINS", None)
-        result = engine._resolve_plugins()
+    # Stub registry.discover so our test-only registration survives — the
+    # real discovery would re-add every built-in plugin, and hivemoot-identity
+    # has no required config so it validates cleanly.
+    with patch("hivemoot_agent.plugins.registry.discover"):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_PLUGINS", None)
+            result = engine._resolve_plugins()
 
     assert result is None
 

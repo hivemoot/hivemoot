@@ -589,9 +589,8 @@ run_success_case() {
   assert_file_contains "$run_log" "--security-opt=no-new-privileges"
   assert_file_contains "$run_log" "--read-only"
   assert_file_contains "$run_log" "--tmpfs /tmp:size=2g,mode=1777"
-  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-github"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github"
   assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
-  assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e RUN_TRIGGER_TYPE=scheduled"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/repo"
   assert_file_contains "$run_log" "-e GITHUB_REPOS=owner/repo"
@@ -1272,11 +1271,10 @@ run_task_watch_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log in task-watch case"
-  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-task"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task"
   assert_file_contains "$run_log" "-e GITHUB_REPOS=owner/claimed"
   assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD="
   assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
-  assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=task:task-claim-1"
@@ -1354,7 +1352,7 @@ run_task_watch_ignores_ambient_agent_workload_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log when AGENT_WORKLOAD leaks in"
-  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-task"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task"
   assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD="
 
   echo "PASS: task-watch ignores ambient AGENT_WORKLOAD and stays on the plugin engine"
@@ -3328,7 +3326,7 @@ run_messaging_trigger_emits_plugin_stack_case() {
 
     local plugins=""
     plugins="$(MESSAGING_DISPATCH_PLUGINS="" controller_trigger_worker_plugins__messaging)"
-    [ "$plugins" = "messaging" ] \
+    [ "$plugins" = "hivemoot-identity,messaging" ] \
       || { echo "FAIL: default plugin stack (got '${plugins}')" >&2; exit 1; }
 
     plugins="$(MESSAGING_DISPATCH_PLUGINS="messaging,github,extra" controller_trigger_worker_plugins__messaging)"

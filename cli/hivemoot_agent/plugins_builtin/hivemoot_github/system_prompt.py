@@ -6,22 +6,14 @@ from functools import lru_cache
 from pathlib import Path
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _AUTONOMOUS_PROMPT_PATH = _PLUGIN_ROOT / "prompts" / "autonomous.md"
-_SOUL_PROMPT_PATH = _REPO_ROOT / "identities" / "hivemoot-agent" / "soul.md"
 
 
 @lru_cache(maxsize=1)
 def load_autonomous_prompt() -> str:
     """Load the shared autonomous Hivemoot contribution prompt."""
     return _AUTONOMOUS_PROMPT_PATH.read_text(encoding="utf-8").strip()
-
-
-@lru_cache(maxsize=1)
-def load_soul_prompt() -> str:
-    """Load the Hivemoot identity guardrails and style prompt."""
-    return _SOUL_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
 def build_system_prompt(
@@ -32,8 +24,15 @@ def build_system_prompt(
     role_name: str = "",
     role_prompt_block: str = "",
 ) -> str:
-    """Build the Hivemoot GitHub workflow prompt."""
-    parts = [load_soul_prompt(), load_autonomous_prompt()]
+    """Build the Hivemoot GitHub workflow prompt.
+
+    The Hivemoot identity / soul guardrails come from the
+    `hivemoot-identity` plugin when it's stacked ahead of this one —
+    this function only contributes the autonomous-contribution
+    operating mode, the optional role block, and the target-repo
+    framing.
+    """
+    parts = [load_autonomous_prompt()]
 
     if role_prompt_block:
         parts.append(role_prompt_block.rstrip())

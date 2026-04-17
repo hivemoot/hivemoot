@@ -177,13 +177,11 @@ WORKDIR /workspace
 
 COPY --chown=node:node worker /opt/hivemoot-agent/worker
 COPY --chown=node:node shared /opt/hivemoot-agent/shared
-COPY --chown=node:node identities /opt/hivemoot-agent/identities
 COPY --chown=node:node integrations /opt/hivemoot-agent/integrations
 COPY --chown=node:node cli /opt/hivemoot-agent/cli
 
 RUN find /opt/hivemoot-agent/worker -name '*.sh' -exec chmod +x {} + \
   && find /opt/hivemoot-agent/shared -name '*.sh' -exec chmod +x {} + \
-  && find /opt/hivemoot-agent/identities -name '*.sh' -exec chmod +x {} + \
   && find /opt/hivemoot-agent/integrations -name '*.sh' -exec chmod +x {} + \
   && chmod +x /opt/hivemoot-agent/cli/hivemoot-agent
 

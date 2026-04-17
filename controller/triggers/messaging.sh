@@ -121,7 +121,7 @@ messaging_is_allowed() {
 # ── Trigger hooks ──────────────────────────────────────────────────
 
 controller_trigger_worker_plugins__messaging() {
-  printf '%s' "${MESSAGING_DISPATCH_PLUGINS:-messaging}"
+  printf '%s' "${MESSAGING_DISPATCH_PLUGINS:-hivemoot-identity,messaging}"
 }
 
 controller_trigger_health_kind__messaging() {

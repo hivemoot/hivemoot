@@ -7,7 +7,7 @@ set -euo pipefail
 # the shell-side run-once.sh that used to wire them is gone.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-soul_prompt="$repo_root/identities/hivemoot-agent/soul.md"
+soul_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md"
 autonomous_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md"
 task_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md"
 claude_provider="$repo_root/cli/hivemoot_agent/providers/claude.py"

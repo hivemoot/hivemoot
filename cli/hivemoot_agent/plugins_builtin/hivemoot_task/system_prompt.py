@@ -23,18 +23,13 @@ def build_system_prompt(
 ) -> str:
     """Build the Hivemoot delegated-task prompt.
 
-    The soul guardrails are contributed by the shared Hivemoot identity
-    (already included via the hivemoot-github plugin when stacked, or
-    injected here). The github plugin contributes repo paths and the
-    shallow-clone note; this plugin only adds the task operating mode
-    and a narrow "this is the task target" framing so the agent knows
-    which repo is in scope for the claim, without re-stating paths.
+    Soul guardrails come from the `hivemoot-identity` plugin when it's
+    stacked ahead of this one; the github plugin contributes repo paths
+    and the shallow-clone note. This plugin only adds the task operating
+    mode and a narrow "this is the task target" framing so the agent
+    knows which repo is in scope for the claim.
     """
-    from hivemoot_agent.plugins_builtin.hivemoot_github.system_prompt import (
-        load_soul_prompt,
-    )
-
-    parts = [load_soul_prompt(), load_task_prompt()]
+    parts = [load_task_prompt()]
 
     if target_repo:
         context_lines = [

@@ -92,6 +92,16 @@ class HivemootTaskPlugin:
         errors: list[str] = []
 
         requested = _parse_requested_plugins(config.get("AGENT_PLUGINS", ""))
+        if "hivemoot-identity" not in requested:
+            errors.append(
+                "hivemoot-task requires AGENT_PLUGINS to include hivemoot-identity "
+                "so the security guardrails frame every run."
+            )
+        elif requested.index("hivemoot-identity") > requested.index(self.name):
+            errors.append(
+                "AGENT_PLUGINS must list hivemoot-identity before hivemoot-task "
+                "so the guardrails appear first in the merged system prompt."
+            )
         if "github" not in requested:
             errors.append(
                 "hivemoot-task requires AGENT_PLUGINS to include github."

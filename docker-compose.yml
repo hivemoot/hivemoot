@@ -42,7 +42,6 @@ x-agent-base: &agent-base
     - ${AGENT_MEMORY_DATA:-./data/memory/${AGENT_ID:-default}}:${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}
 
 x-agent-env: &agent-env
-  AGENT_IDENTITY: ${AGENT_IDENTITY:-hivemoot-agent}
   AGENT_ID: ${AGENT_ID:-}
   AGENT_TOKEN: ${AGENT_TOKEN:-}
   AGENT_TOKEN_FILE: ${AGENT_TOKEN_FILE:-}

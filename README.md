@@ -191,12 +191,12 @@ This path is intentionally simple:
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
 For the default Hivemoot repo workflow, use
-`AGENT_PLUGINS=github,hivemoot-github`.
+`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github`.
 
 **Minimal plugin-mode config**:
 
 ```env
-AGENT_PLUGINS=github,hivemoot-github
+AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github
 GITHUB_TOKEN_FILE=/run/secrets/github_token
 GITHUB_REPOS=hivemoot/hivemoot-agent
 TARGET_REPO=hivemoot/hivemoot-agent
@@ -212,7 +212,7 @@ Notes:
 - if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
 - use `AGENT_PLUGINS=github` for generic GitHub repo automation
-- use `AGENT_PLUGINS=github,hivemoot-github` for the Hivemoot GitHub contribution workflow
+- use `AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github` for the Hivemoot GitHub contribution workflow
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 For recurring runs and multi-agent fleets, use `controller/main.sh` —
@@ -236,7 +236,7 @@ That means:
 **Task plugin stack** — controller-dispatched delegated task execution:
 
 The controller spawns task jobs through the Python plugin engine with
-`AGENT_PLUGINS=github,hivemoot-task`:
+`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`:
 - same provider/auth selection
 - same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
 - `github` plugin clones the target repo and configures git auth
@@ -386,7 +386,7 @@ The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
 If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with
 `duty: dispatch`.
 `TASK_DISPATCH_PLUGINS` selects which plugin stack the controller launches
-for claimed tasks and defaults to `github,hivemoot-task`.
+for claimed tasks and defaults to `hivemoot-identity,github,hivemoot-task`.
 
 If the worker exits non-zero, the controller immediately POSTs `action=fail`
 to the execute endpoint as a safety net for cases where the worker itself
@@ -586,7 +586,7 @@ Custom prompts can be either:
 - a mode-specific prompt that sits beside a shared `base.md`
 
 Standalone custom prompts must preserve the non-overridable security guardrails
-from [`identities/hivemoot-agent/soul.md`](identities/hivemoot-agent/soul.md)
+from [`cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md)
 (or an equivalent section with the same protections).
 
 `controller/main.sh` also supports the two-file layout and automatically
@@ -597,7 +597,8 @@ When unset, standing agents use
 and task mode uses
 [`cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md),
 both composed with
-[`identities/hivemoot-agent/soul.md`](identities/hivemoot-agent/soul.md).
+[`cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md)
+via the `hivemoot-identity` plugin stacked ahead of the workflow plugin.
 
 ## Skills
 

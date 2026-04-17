@@ -75,7 +75,7 @@ controller_invoke_trigger_hook() {
 }
 
 controller_trigger_worker_plugins_default() {
-  printf '%s' "${AGENT_PLUGINS:-github,hivemoot-github}"
+  printf '%s' "${AGENT_PLUGINS:-hivemoot-identity,github,hivemoot-github}"
 }
 
 controller_trigger_health_kind_default() {
