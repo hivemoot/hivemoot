@@ -78,6 +78,10 @@ controller_trigger_worker_workload_default() {
   printf '%s' "${AGENT_WORKLOAD:-}"
 }
 
+controller_trigger_worker_plugins_default() {
+  printf '%s' "${AGENT_PLUGINS:-github,hivemoot-github}"
+}
+
 controller_trigger_health_kind_default() {
   printf '%s' "manual"
 }

@@ -6,12 +6,17 @@ HIVEMOOT_CONTROLLER_TRIGGER_TASK_LOADED=1
 
 register_controller_trigger "hivemoot-task"
 
-resolve_task_dispatch_workload() {
-  printf '%s' "${TASK_DISPATCH_WORKLOAD:-hivemoot-task}"
+HIVEMOOT_TASK_PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/cli/hivemoot_agent/plugins_builtin/hivemoot_task"
+
+controller_trigger_worker_plugins__hivemoot_task() {
+  printf '%s' "${TASK_DISPATCH_PLUGINS:-github,hivemoot-task}"
 }
 
+# Task dispatch routes exclusively through the Python plugin engine.
+# Override the default (which echoes $AGENT_WORKLOAD) so a controller-side
+# AGENT_WORKLOAD can never leak into spawn_worker's shell-workload branch.
 controller_trigger_worker_workload__hivemoot_task() {
-  resolve_task_dispatch_workload
+  printf ''
 }
 
 controller_trigger_health_kind__hivemoot_task() {
@@ -276,11 +281,9 @@ stop_background_loop_pid() {
 }
 
 resolve_task_prompt_template() {
-  local task_workload=""
   local template_path=""
 
-  task_workload="$(resolve_task_dispatch_workload)"
-  template_path="${AGENT_TASK_PROMPT_FILE:-${REPO_ROOT}/workloads/${task_workload}/prompts/messages/task.md}"
+  template_path="${AGENT_TASK_PROMPT_FILE:-${HIVEMOOT_TASK_PLUGIN_DIR}/prompts/messages/task.md}"
 
   if [ ! -f "$template_path" ]; then
     echo "Task prompt template not found: ${template_path}" >&2

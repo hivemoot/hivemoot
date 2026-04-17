@@ -108,8 +108,8 @@ EOF_RUN_ONCE
     TARGET_REPO="owner/repo" \
     AGENT_IDENTITY="hivemoot-agent" \
     IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    AGENT_WORKLOAD="hivemoot-task" \
-    WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+    AGENT_WORKLOAD="messaging" \
+    WORKLOAD_DIR="${repo_root}/workloads/messaging" \
     INTEGRATION_DIR="${repo_root}/integrations" \
     SHARED_DIR="${repo_root}/shared" \
     KERNEL_DIR="${repo_root}/worker" \
@@ -150,8 +150,8 @@ run_worker_rejects_controller_triggers_case() {
     TARGET_REPO="owner/repo" \
     AGENT_IDENTITY="hivemoot-agent" \
     IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    AGENT_WORKLOAD="hivemoot-task" \
-    WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+    AGENT_WORKLOAD="messaging" \
+    WORKLOAD_DIR="${repo_root}/workloads/messaging" \
     INTEGRATION_DIR="${repo_root}/integrations" \
     SHARED_DIR="${repo_root}/shared" \
     KERNEL_DIR="${repo_root}/worker" \
@@ -206,8 +206,8 @@ EOF_RUN_ONCE
     TARGET_REPO="owner/repo" \
     AGENT_IDENTITY="hivemoot-agent" \
     IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    AGENT_WORKLOAD="hivemoot-task" \
-    WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+    AGENT_WORKLOAD="messaging" \
+    WORKLOAD_DIR="${repo_root}/workloads/messaging" \
     INTEGRATION_DIR="${repo_root}/integrations" \
     SHARED_DIR="${repo_root}/shared" \
     KERNEL_DIR="${repo_root}/worker" \

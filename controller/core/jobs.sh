@@ -130,7 +130,7 @@ spawn_worker() {
   if [ -n "$worker_workload" ]; then
     docker_run_args+=( -e "AGENT_WORKLOAD=${worker_workload}" )
   else
-    worker_plugins="${AGENT_PLUGINS:-github,hivemoot-github}"
+    worker_plugins="$(controller_invoke_trigger_hook worker_plugins "$worker_trigger")"
     worker_github_repos="${GITHUB_REPOS:-${repo}}"
     docker_run_args+=( -e "AGENT_PLUGINS=${worker_plugins}" )
     docker_run_args+=( -e "GITHUB_REPOS=${worker_github_repos}" )

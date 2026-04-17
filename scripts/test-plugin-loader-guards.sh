@@ -41,9 +41,9 @@ echo "Running plugin loader and dispatch guard checks"
 assert_fails_with \
   "AGENT_TRIGGER is controller-only and is not used by the worker runtime." \
   env HOME="$tmp_home" \
-      AGENT_WORKLOAD=hivemoot-task \
+      AGENT_WORKLOAD=github-workload \
       AGENT_TRIGGER=periodic \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${repo_root}/integrations" \
       DRIVER_DIR="${compat_dir}" \
       bash scripts/entrypoint.sh
@@ -51,9 +51,9 @@ assert_fails_with \
 assert_fails_with \
   "Driver not found" \
   env HOME="$tmp_home" \
-      AGENT_WORKLOAD=hivemoot-task \
+      AGENT_WORKLOAD=github-workload \
       AGENT_DRIVER=does-not-exist \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${repo_root}/integrations" \
       DRIVER_DIR="${compat_dir}" \
       bash scripts/entrypoint.sh
@@ -61,9 +61,9 @@ assert_fails_with \
 assert_fails_with \
   "Driver 'task' has been removed. Task lifecycle is controller-owned; use AGENT_DRIVER=once for workers." \
   env HOME="$tmp_home" \
-      AGENT_WORKLOAD=hivemoot-task \
+      AGENT_WORKLOAD=github-workload \
       AGENT_DRIVER=task \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${repo_root}/integrations" \
       DRIVER_DIR="${compat_dir}" \
       bash scripts/entrypoint.sh
@@ -81,8 +81,8 @@ assert_fails_with \
 assert_fails_with \
   "AGENT_IDENTITY is required. Set it to the identity name (e.g. hivemoot-agent)." \
   env HOME="$tmp_home" \
-      AGENT_WORKLOAD=hivemoot-task \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      AGENT_WORKLOAD=github-workload \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${repo_root}/integrations" \
       RUN_ONCE_SCRIPT=/usr/bin/true \
       bash "${compat_dir}/once.sh"
@@ -94,9 +94,9 @@ assert_fails_with \
   "Integration preflight plugin not found" \
   env HOME="$tmp_home" \
       AGENT_IDENTITY=hivemoot-agent \
-      AGENT_WORKLOAD=hivemoot-task \
+      AGENT_WORKLOAD=github-workload \
       IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${tmp_home}/integrations" \
       RUN_ONCE_SCRIPT=/usr/bin/true \
       bash "${compat_dir}/once.sh"
@@ -105,8 +105,8 @@ assert_fails_with \
   "Identity plugin not found" \
   env HOME="$tmp_home" \
       AGENT_IDENTITY=does-not-exist \
-      AGENT_WORKLOAD=hivemoot-task \
-      WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
+      AGENT_WORKLOAD=github-workload \
+      WORKLOAD_DIR="${repo_root}/scripts/test-fixtures/github-workload" \
       INTEGRATION_DIR="${repo_root}/integrations" \
       RUN_ONCE_SCRIPT=/usr/bin/true \
       bash "${compat_dir}/once.sh"

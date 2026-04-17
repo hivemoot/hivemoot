@@ -193,57 +193,6 @@ reset_task_globals() {
   export MOCK_CURL_BODY='{}'
 }
 
-run_entrypoint_task_workload_case() {
-  local case_dir="${tmp_root}/entrypoint"
-  local token_file="${case_dir}/agent-token"
-  local env_snapshot="${case_dir}/env.log"
-  local mock_run_once="${case_dir}/mock-run-once.sh"
-
-  mkdir -p "$case_dir"
-  printf '%s' 'ghs_worker_token' > "$token_file"
-  chmod 600 "$token_file"
-
-  cat > "$mock_run_once" <<'RUN_ONCE'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'AGENT_GITHUB_TOKEN=%s\n' "${AGENT_GITHUB_TOKEN:-}" > "${MOCK_ENV_SNAPSHOT:?}"
-printf 'AGENT_GITHUB_TOKEN_FILE=%s\n' "${AGENT_GITHUB_TOKEN_FILE:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf 'AGENT_WORKLOAD=%s\n' "${AGENT_WORKLOAD:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf 'TARGET_REPO=%s\n' "${TARGET_REPO:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf 'AGENT_TASK_ID=%s\n' "${AGENT_TASK_ID:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-printf 'AGENT_EXTRA_PROMPT=%s\n' "${AGENT_EXTRA_PROMPT:-}" >> "${MOCK_ENV_SNAPSHOT:?}"
-RUN_ONCE
-  chmod +x "$mock_run_once"
-
-  env \
-    HOME="${case_dir}/home" \
-    AGENT_IDENTITY="hivemoot-agent" \
-    AGENT_WORKLOAD="hivemoot-task" \
-    AGENT_DRIVER="once" \
-    AGENT_PROVIDER="claude" \
-    AGENT_ID_01="worker" \
-    AGENT_GITHUB_TOKEN_01_FILE="$token_file" \
-    AGENT_TASK_ID="task-123" \
-    AGENT_EXTRA_PROMPT="Execute delegated task" \
-    TARGET_REPO="owner/repo" \
-    WORKLOAD_DIR="${repo_root}/workloads/hivemoot-task" \
-    IDENTITY_DIR="${repo_root}/identities/hivemoot-agent" \
-    INTEGRATION_DIR="${repo_root}/integrations" \
-    DRIVER_DIR="${repo_root}/drivers" \
-    KERNEL_DIR="${repo_root}/scripts" \
-    RUN_ONCE_SCRIPT="$mock_run_once" \
-    MOCK_ENV_SNAPSHOT="$env_snapshot" \
-    bash "$repo_root/scripts/entrypoint.sh"
-
-  assert_file_contains "$env_snapshot" "AGENT_GITHUB_TOKEN="
-  assert_file_contains "$env_snapshot" "AGENT_GITHUB_TOKEN_FILE=${token_file}"
-  assert_file_contains "$env_snapshot" "AGENT_WORKLOAD=hivemoot-task"
-  assert_file_contains "$env_snapshot" "TARGET_REPO=owner/repo"
-  assert_file_contains "$env_snapshot" "AGENT_TASK_ID=task-123"
-  assert_file_contains "$env_snapshot" "AGENT_EXTRA_PROMPT=Execute delegated task"
-
-  echo "PASS: single-run task workload uses explicit once driver"
-}
 
 run_prepare_job_session_key_case() {
   local case_dir="${tmp_root}/prepare-session"
@@ -437,7 +386,37 @@ LOG
   echo "PASS: codex auth errors are promoted from success logs into task failures"
 }
 
-run_entrypoint_task_workload_case
+run_task_trigger_emits_plugin_stack_case() {
+  local plugins=""
+
+  # Default: task trigger dispatches through the Python plugin engine
+  # (github + hivemoot-task), not the legacy shell workload.
+  plugins="$(TASK_DISPATCH_PLUGINS="" controller_trigger_worker_plugins__hivemoot_task)"
+  assert_eq "github,hivemoot-task" "$plugins" "task trigger defaults to plugin stack"
+
+  # Override still honored so operators can pin a custom plugin list.
+  plugins="$(TASK_DISPATCH_PLUGINS="github,hivemoot-task,extra" controller_trigger_worker_plugins__hivemoot_task)"
+  assert_eq "github,hivemoot-task,extra" "$plugins" "task trigger honors TASK_DISPATCH_PLUGINS override"
+
+  # The legacy worker_workload hook must no longer route task jobs to the
+  # shell workload — the default returns the empty AGENT_WORKLOAD env.
+  local workload=""
+  workload="$(AGENT_WORKLOAD="" controller_invoke_trigger_hook worker_workload hivemoot-task)"
+  assert_eq "" "$workload" "task trigger no longer claims the shell workload slot"
+
+  # Regression: the task-specific override must hard-return empty so a
+  # controller-side AGENT_WORKLOAD (set for other triggers or leaked from
+  # the environment) cannot reach the shell workload branch in
+  # spawn_worker() and hijack claimed task jobs.
+  workload="$(AGENT_WORKLOAD="messaging" controller_invoke_trigger_hook worker_workload hivemoot-task)"
+  assert_eq "" "$workload" "task trigger ignores ambient AGENT_WORKLOAD"
+  workload="$(AGENT_WORKLOAD="arbitrary-value" controller_invoke_trigger_hook worker_workload hivemoot-task)"
+  assert_eq "" "$workload" "task trigger ignores arbitrary AGENT_WORKLOAD overrides"
+
+  echo "PASS: task trigger routes jobs through the Python plugin engine"
+}
+
+run_task_trigger_emits_plugin_stack_case
 run_prepare_job_session_key_case
 run_conversation_context_case
 run_task_claim_header_source_case

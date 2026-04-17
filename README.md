@@ -259,13 +259,17 @@ That means:
 - `periodic`, `github-mention`, `github-review-request`, and `hivemoot-task` are controller concerns
 - worker containers do not load trigger plugins or perform trigger-specific claim/watch logic
 
-**Task workload** — controller-dispatched delegated task execution:
+**Task plugin stack** — controller-dispatched delegated task execution:
 
-The `hivemoot-task` workload remains a thin worker profile over `run-once.sh`:
+The controller spawns task jobs through the Python plugin engine with
+`AGENT_PLUGINS=github,hivemoot-task`:
 - same provider/auth selection
 - same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
-- same repo clone/logging behavior
-- task-specific prompt bundle in `workloads/hivemoot-task/`
+- `github` plugin clones the target repo and configures git auth
+- `hivemoot-task` plugin supplies the task operating mode (no autonomous
+  scope) and reuses the Hivemoot skill pack
+- override the stack with `TASK_DISPATCH_PLUGINS=<plugin,list>` when a
+  custom plugin stack is needed
 
 The controller now owns:
 - task claiming
@@ -407,8 +411,8 @@ The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
 `AGENT_ID_XX` values; only those agents are allowed to execute claimed tasks.
 If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with
 `duty: dispatch`.
-`TASK_DISPATCH_WORKLOAD` selects which workload the controller launches for
-claimed tasks and defaults to `hivemoot-task`.
+`TASK_DISPATCH_PLUGINS` selects which plugin stack the controller launches
+for claimed tasks and defaults to `github,hivemoot-task`.
 
 If the worker exits non-zero, the controller immediately POSTs `action=fail`
 to the execute endpoint as a safety net for cases where the worker itself
@@ -617,7 +621,7 @@ mounts a sibling `base.md` when it exists next to the host `AGENT_PROMPT_FILE`.
 When unset, standing agents use
 [`cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md)
 and task mode uses
-[`workloads/hivemoot-task/prompts/task.md`](workloads/hivemoot-task/prompts/task.md),
+[`cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md),
 both composed with
 [`identities/hivemoot-agent/soul.md`](identities/hivemoot-agent/soul.md).
 

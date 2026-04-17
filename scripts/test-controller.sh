@@ -1272,7 +1272,9 @@ run_task_watch_case() {
 
   run_log="${case_dir}/mock-state/docker-run.log"
   [ -f "$run_log" ] || fail "missing docker run log in task-watch case"
-  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=hivemoot-task"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-task"
+  assert_file_contains "$run_log" "-e GITHUB_REPOS=owner/claimed"
+  assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD="
   assert_file_contains "$run_log" "-e AGENT_DRIVER=once"
   assert_file_contains "$run_log" "-e AGENT_IDENTITY=hivemoot-agent"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
@@ -1314,6 +1316,50 @@ run_task_watch_case() {
   echo "PASS: task-watch mode claims and runs delegated tasks"
 }
 
+# Regression: a controller-side AGENT_WORKLOAD (set for other triggers or
+# leaked from the environment) must not route claimed task jobs to the
+# shell workload branch of spawn_worker().
+run_task_watch_ignores_ambient_agent_workload_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local run_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    AGENT_WORKLOAD="messaging" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    CONTROLLER_LOCK_DIR="${case_dir}/locks" \
+    CONTROLLER_TOKEN_TMP_ROOT="${case_dir}/token-tmp" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh"
+
+  run_log="${case_dir}/mock-state/docker-run.log"
+  [ -f "$run_log" ] || fail "missing docker run log when AGENT_WORKLOAD leaks in"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-task"
+  assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD="
+
+  echo "PASS: task-watch ignores ambient AGENT_WORKLOAD and stays on the plugin engine"
+}
+
 run_task_watch_custom_workload_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -1332,9 +1378,9 @@ run_task_watch_custom_workload_case() {
     CONTROLLER_RUN_MODE="once" \
     WATCH_TASKS="1" \
     TASK_DISPATCH_AGENT_IDS="worker" \
-    TASK_DISPATCH_WORKLOAD="custom-task-workload" \
+    TASK_DISPATCH_PLUGINS="github,hivemoot-task,custom-task-addon" \
     AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    AGENT_TASK_PROMPT_FILE="${repo_root}/workloads/hivemoot-task/prompts/messages/task.md" \
+    AGENT_TASK_PROMPT_FILE="${repo_root}/cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/messages/task.md" \
     HIVEMOOT_AGENT_TOKEN="shared-token" \
     CONTROLLER_MAX_WORKERS="1" \
     CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
@@ -1349,10 +1395,11 @@ run_task_watch_custom_workload_case() {
     bash "${repo_root}/scripts/controller.sh"
 
   run_log="${case_dir}/mock-state/docker-run.log"
-  [ -f "$run_log" ] || fail "missing docker run log in task-watch custom-workload case"
-  assert_file_contains "$run_log" "-e AGENT_WORKLOAD=custom-task-workload"
+  [ -f "$run_log" ] || fail "missing docker run log in task-watch custom-plugin-stack case"
+  assert_file_contains "$run_log" "-e AGENT_PLUGINS=github,hivemoot-task,custom-task-addon"
+  assert_file_not_contains "$run_log" "-e AGENT_WORKLOAD="
 
-  echo "PASS: task-watch mode dispatches claimed tasks to configurable workloads"
+  echo "PASS: task-watch mode dispatches claimed tasks to configurable plugin stacks"
 }
 
 run_task_watch_heartbeat_case() {
@@ -3180,6 +3227,7 @@ run_mentions_dedup_case "$repo_root" "${tmpdir}/mentions-dedup"
 run_orphan_recovery_case "$repo_root" "${tmpdir}/orphan-recovery"
 run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
+run_task_watch_ignores_ambient_agent_workload_case "$repo_root" "${tmpdir}/task-watch-ambient-workload"
 run_task_watch_custom_workload_case "$repo_root" "${tmpdir}/task-watch-custom-workload"
 run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
 run_task_watch_heartbeat_case "$repo_root" "${tmpdir}/task-watch-heartbeat"

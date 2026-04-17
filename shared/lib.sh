@@ -438,7 +438,7 @@ load_workload_plugin() {
     echo "Workload plugin not found: ${file}" >&2
     exit 1
   fi
-  # shellcheck source=workloads/hivemoot-task/workload.sh
+  # shellcheck source=workloads/messaging/workload.sh
   # shellcheck disable=SC1090,SC1091
   . "$file"
 }
