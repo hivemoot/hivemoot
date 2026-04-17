@@ -11,8 +11,6 @@ SHARED_DIR="${SHARED_DIR:-${REPO_ROOT}/shared}"
 # shellcheck source=shared/lib.sh
 . "${SHARED_DIR}/lib.sh"
 
-DRIVER_DIR="${DRIVER_DIR:-${RUNNER_DIR:-${SCRIPT_DIR}/drivers}}"
-
 load_provider_secrets
 
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
@@ -37,48 +35,20 @@ if [ "$docker_provider" != "all" ] && [ "$docker_provider" != "$agent_provider" 
   exit 1
 fi
 
-# ── Driver Dispatch ───────────────────────────────────────────────
-# AGENT_DRIVER is the public worker-plane execution selector.
-# AGENT_RUNNER remains as a temporary compatibility alias during migration.
+# ── Plugin engine dispatch ────────────────────────────────────────
+# The Python plugin engine is the sole execution path. Workers are
+# oneshot only — long-running triggers live in the controller plane.
+
 if [ -n "${AGENT_TRIGGER:-}" ]; then
   echo "AGENT_TRIGGER is controller-only and is not used by the worker runtime." >&2
-  echo "Set AGENT_DRIVER=once|loop for direct container execution, or use controller/main.sh." >&2
+  echo "Use controller/main.sh to drive trigger-based runs." >&2
   exit 1
 fi
 
-driver="${AGENT_DRIVER:-${AGENT_RUNNER:-once}}"
-if [ "$driver" = "task" ]; then
-  echo "Driver 'task' has been removed. Task lifecycle is controller-owned; use AGENT_DRIVER=once for workers." >&2
+if ! prepare_plugin_engine_dispatch; then
+  echo "AGENT_PLUGINS is required. Set it to the plugin stack (e.g. github,hivemoot-github)." >&2
   exit 1
 fi
 
-if prepare_plugin_engine_dispatch; then
-  case "$driver" in
-    once)
-      log "Dispatching plugin engine: mode=oneshot plugins=${AGENT_PLUGINS}"
-      exec hivemoot-agent oneshot
-      ;;
-    loop)
-      echo "Plugin mode does not support AGENT_DRIVER=loop. Use AGENT_DRIVER=once or controller/main.sh." >&2
-      exit 1
-      ;;
-    *)
-      echo "Plugin mode supports AGENT_DRIVER=once only." >&2
-      exit 1
-      ;;
-  esac
-fi
-
-# ── Workload ──────────────────────────────────────────────────────
-load_workload_plugin
-
-driver_file="${DRIVER_DIR}/${driver}.sh"
-
-if [ ! -f "$driver_file" ]; then
-  echo "Driver not found: ${driver_file}" >&2
-  echo "Available drivers: $(for f in "${DRIVER_DIR}"/*.sh; do [ -f "$f" ] && basename "$f" .sh; done | tr '\n' ', ' | sed 's/,$//')" >&2
-  exit 1
-fi
-
-log "Dispatching: workload=${AGENT_WORKLOAD} driver=${driver}"
-exec "$driver_file"
+log "Dispatching plugin engine: plugins=${AGENT_PLUGINS}"
+exec hivemoot-agent oneshot

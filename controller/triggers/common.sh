@@ -74,10 +74,6 @@ controller_invoke_trigger_hook() {
   return 0
 }
 
-controller_trigger_worker_workload_default() {
-  printf '%s' "${AGENT_WORKLOAD:-}"
-}
-
 controller_trigger_worker_plugins_default() {
   printf '%s' "${AGENT_PLUGINS:-github,hivemoot-github}"
 }

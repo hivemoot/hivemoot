@@ -27,27 +27,25 @@ echo "Running Claude token bootstrap checks"
 
 tmp_home="$(mktemp -d)"
 tmp_stderr="$(mktemp)"
-tmp_shared_home="$(mktemp -d)"
-tmp_agent_home="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp_home"
-  rm -rf "$tmp_shared_home"
-  rm -rf "$tmp_agent_home"
   rm -f "$tmp_stderr"
 }
 trap cleanup EXIT
 
+# Entrypoint must bootstrap the Claude OAuth token files BEFORE it rejects
+# the missing AGENT_PLUGINS — otherwise managed Claude auth could never be
+# seeded in containers that rely on the bash entrypoint for pre-checks.
 if env \
   HOME="$tmp_home" \
   CLAUDE_CODE_OAUTH_TOKEN='tok"en\slash' \
-  AGENT_WORKLOAD="nonexistent" \
   bash scripts/entrypoint.sh > /dev/null 2> "$tmp_stderr"
 then
-  fail "entrypoint unexpectedly succeeded with nonexistent workload"
+  fail "entrypoint unexpectedly succeeded without AGENT_PLUGINS"
 fi
 
-grep -Fq "Workload plugin not found" "$tmp_stderr" \
-  || fail "expected workload-not-found error"
+grep -Fq "AGENT_PLUGINS is required" "$tmp_stderr" \
+  || fail "expected AGENT_PLUGINS-required error"
 
 [ -f "$tmp_home/.claude/.credentials.json" ] || fail "missing credentials file"
 [ -f "$tmp_home/.claude.json" ] || fail "missing onboarding file"
@@ -62,26 +60,5 @@ assert_file_content_exact \
 
 assert_file_mode_600 "$tmp_home/.claude/.credentials.json"
 assert_file_mode_600 "$tmp_home/.claude.json"
-
-# Managed-mode seeding must propagate both Claude auth files.
-# shellcheck source=scripts/lib.sh
-. scripts/lib.sh
-
-mkdir -p "$tmp_shared_home/.claude"
-printf '%s' '{"claudeAiOauth":{"accessToken":"managed-token","expiresAt":4102444800000}}' \
-  > "$tmp_shared_home/.claude/.credentials.json"
-printf '%s' '{"hasCompletedOnboarding":true}' > "$tmp_shared_home/.claude.json"
-
-seed_shared_provider_state "$tmp_agent_home" "$tmp_shared_home"
-
-[ -f "$tmp_agent_home/.claude/.credentials.json" ] || fail "managed mode missing credentials file"
-[ -f "$tmp_agent_home/.claude.json" ] || fail "managed mode missing onboarding file"
-
-assert_file_content_exact \
-  "$tmp_agent_home/.claude/.credentials.json" \
-  '{"claudeAiOauth":{"accessToken":"managed-token","expiresAt":4102444800000}}'
-assert_file_content_exact \
-  "$tmp_agent_home/.claude.json" \
-  '{"hasCompletedOnboarding":true}'
 
 echo "PASS: Claude token bootstrap checks"

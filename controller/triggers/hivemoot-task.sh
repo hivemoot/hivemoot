@@ -12,13 +12,6 @@ controller_trigger_worker_plugins__hivemoot_task() {
   printf '%s' "${TASK_DISPATCH_PLUGINS:-github,hivemoot-task}"
 }
 
-# Task dispatch routes exclusively through the Python plugin engine.
-# Override the default (which echoes $AGENT_WORKLOAD) so a controller-side
-# AGENT_WORKLOAD can never leak into spawn_worker's shell-workload branch.
-controller_trigger_worker_workload__hivemoot_task() {
-  printf ''
-}
-
 controller_trigger_health_kind__hivemoot_task() {
   printf '%s' "task"
 }

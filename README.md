@@ -168,14 +168,12 @@ AGENT_GITHUB_TOKEN_02=...
 
 Each slot requires both `AGENT_ID_XX` and `AGENT_GITHUB_TOKEN_XX` (or `_FILE`). Duplicate agent IDs are rejected.
 
-## Workloads, Plugins, And Drivers
+## Plugin Engine
 
-The worker runtime starts from either an explicit plugin stack or a shell workload,
-plus an explicit driver:
+The worker runs the Python plugin engine in oneshot mode. `AGENT_PLUGINS`
+picks the plugin stack; there is no shell-workload fallback.
 
-- `AGENT_PLUGINS` selects the Python plugin stack for repo-aware runs
-- `AGENT_WORKLOAD` selects a shell workload when you are not using `AGENT_PLUGINS`
-- `AGENT_DRIVER` selects how the worker executes inside the container
+- `AGENT_PLUGINS` selects the plugin stack for the run (required)
 - controller triggers are a separate concern and stay in the host controller plane
 
 **Direct single run** (default) — execute one worker run, then exit:
@@ -186,7 +184,6 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 
 This path is intentionally simple:
 - one plugin stack
-- one driver (`once`)
 - one worker execution
 - one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`
 - persistent agent memory mounted from `AGENT_MEMORY_DATA` (default `./data/memory`)
@@ -196,10 +193,9 @@ Legacy slot `01` envs are still accepted for compatibility, but they are no long
 For the default Hivemoot repo workflow, use
 `AGENT_PLUGINS=github,hivemoot-github`.
 
-**Plugin engine mode** — hand the container to the Python plugin runtime:
+**Minimal plugin-mode config**:
 
 ```env
-AGENT_DRIVER=once
 AGENT_PLUGINS=github,hivemoot-github
 GITHUB_TOKEN_FILE=/run/secrets/github_token
 GITHUB_REPOS=hivemoot/hivemoot-agent
@@ -209,10 +205,9 @@ HIVEMOOT_BUZZ_ROLE=worker
 GITHUB_WORKSPACE=
 ```
 
-In plugin mode:
-- `AGENT_DRIVER=once` runs `hivemoot-agent oneshot`
-- plugin stacks support `AGENT_DRIVER=once` only
-- use `controller/main.sh` for repeated repo runs, or clear `AGENT_PLUGINS` and set `AGENT_WORKLOAD` if you need the legacy shell loop driver
+Notes:
+- the worker entrypoint `exec`s `hivemoot-agent oneshot`; there is no separate "driver" selection
+- use `controller/main.sh` on the host for repeated / trigger-driven runs
 - `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
 - if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
@@ -220,27 +215,9 @@ In plugin mode:
 - use `AGENT_PLUGINS=github,hivemoot-github` for the Hivemoot GitHub contribution workflow
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
-**Legacy in-container loop** — single-agent periodic scheduling inside the container:
-
-> **Deprecated:** the in-container loop runner is deprecated.
-> Migrate to the [Host Controller](#host-controller-phase-2-mvp) (`controller/main.sh`)
-> for the recommended deployment. The in-container loop mode will be removed in a future release.
-
-```bash
-AGENT_DRIVER=loop docker compose up hivemoot-agent
-```
-
-> The loop driver uses `docker compose up`, which doesn't support `-v`.
-> Add the secrets mount to `docker-compose.override.yml` instead:
->
-> ```yaml
-> services:
->   hivemoot-agent:
->     volumes:
->       - ./secrets:/run/secrets:ro
-> ```
-
-Tune loop behavior in `.env`:
+For recurring runs and multi-agent fleets, use `controller/main.sh` —
+see the [Host Controller](#host-controller-phase-2-mvp) section. The
+controller's `periodic` trigger uses these knobs in `.env`:
 - `PERIODIC_INTERVAL_SECS` — interval between runs (default: 3600s)
 - `PERIODIC_JITTER_SECS` — random variance (default: 300s)
 - `MAX_CONSECUTIVE_FAILURES` — exit after N failures (default: 5)
@@ -249,14 +226,11 @@ Tune loop behavior in `.env`:
 - `PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT` — random jitter applied to cooldowns (default: 15)
 
 The clean architecture boundary is:
-- direct worker containers use drivers
-- controller processes own triggers
-
-Backward-compatible direct-entry wrappers live under `compat/`.
-Legacy `scripts/run-*.sh`, `drivers/`, and `runners/` entry paths are compatibility shims over the worker/controller split.
+- worker containers run the Python plugin engine in oneshot mode (`hivemoot-agent oneshot`)
+- controller processes own triggers, scheduling, and job lifecycle
 
 That means:
-- `periodic`, `github-mention`, `github-review-request`, and `hivemoot-task` are controller concerns
+- `periodic`, `github-mention`, `github-review-request`, `hivemoot-task`, and `messaging` are controller concerns
 - worker containers do not load trigger plugins or perform trigger-specific claim/watch logic
 
 **Task plugin stack** — controller-dispatched delegated task execution:

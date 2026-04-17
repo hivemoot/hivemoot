@@ -124,13 +124,6 @@ controller_trigger_worker_plugins__messaging() {
   printf '%s' "${MESSAGING_DISPATCH_PLUGINS:-messaging}"
 }
 
-# Messaging dispatch routes exclusively through the Python plugin engine.
-# Override the default (which echoes $AGENT_WORKLOAD) so a controller-side
-# AGENT_WORKLOAD can never leak into spawn_worker's shell-workload branch.
-controller_trigger_worker_workload__messaging() {
-  printf ''
-}
-
 controller_trigger_health_kind__messaging() {
   printf '%s' "messaging"
 }

@@ -67,60 +67,54 @@ run_plugin_entrypoint() {
 
 echo "Running plugin engine routing checks"
 
-args_file="$tmp_dir/once.args"
-env_file="$tmp_dir/once.env"
+# Token bridging: AGENT_TOKEN → GITHUB_TOKEN fallback when no explicit
+# GitHub token is provided.
+args_file="$tmp_dir/bridge-inline.args"
+env_file="$tmp_dir/bridge-inline.env"
 run_plugin_entrypoint \
   "$args_file" \
   "$env_file" \
   AGENT_PLUGINS=github \
-  AGENT_DRIVER=once \
-  AGENT_WORKLOAD=nonexistent \
   AGENT_TOKEN=ghp_inline
 
 assert_file_contains "$args_file" "oneshot"
 assert_file_contains "$env_file" "GITHUB_TOKEN=ghp_inline"
 assert_file_contains "$env_file" "GITHUB_TOKEN_FILE="
 
+# Token bridging: AGENT_TOKEN_FILE → GITHUB_TOKEN_FILE fallback.
 token_file="$tmp_dir/token.txt"
 printf 'ghp_file' > "$token_file"
-args_file="$tmp_dir/loop.args"
-env_file="$tmp_dir/loop.env"
-stderr_file="$tmp_dir/loop.err"
-if run_plugin_entrypoint \
+args_file="$tmp_dir/bridge-file.args"
+env_file="$tmp_dir/bridge-file.env"
+run_plugin_entrypoint \
   "$args_file" \
   "$env_file" \
   AGENT_PLUGINS=github \
-  AGENT_DRIVER=loop \
-  AGENT_WORKLOAD=nonexistent \
-  AGENT_TOKEN_FILE="$token_file" \
-  > /dev/null 2> "$stderr_file"; then
-  fail "plugin loop mode succeeded unexpectedly"
-fi
-assert_file_contains \
-  "$stderr_file" \
-  "Plugin mode does not support AGENT_DRIVER=loop. Use AGENT_DRIVER=once or controller/main.sh."
+  AGENT_TOKEN_FILE="$token_file"
 
+assert_file_contains "$args_file" "oneshot"
+assert_file_contains "$env_file" "GITHUB_TOKEN_FILE=${token_file}"
+
+# Explicit GITHUB_TOKEN wins over AGENT_TOKEN fallback.
 args_file="$tmp_dir/explicit.args"
 env_file="$tmp_dir/explicit.env"
 run_plugin_entrypoint \
   "$args_file" \
   "$env_file" \
   AGENT_PLUGINS=github \
-  AGENT_DRIVER=once \
-  AGENT_WORKLOAD=nonexistent \
   GITHUB_TOKEN=ghp_explicit \
   AGENT_TOKEN=ghp_fallback
 
 assert_file_contains "$args_file" "oneshot"
 assert_file_contains "$env_file" "GITHUB_TOKEN=ghp_explicit"
 
+# Default plugin stack + TARGET_REPO → GITHUB_REPOS auto-propagation.
 args_file="$tmp_dir/default-plugin.args"
 env_file="$tmp_dir/default-plugin.env"
 run_plugin_entrypoint \
   "$args_file" \
   "$env_file" \
   AGENT_PLUGINS=github,hivemoot-github \
-  AGENT_DRIVER=once \
   TARGET_REPO=owner/repo \
   AGENT_TOKEN=ghp_alias
 
@@ -131,15 +125,28 @@ assert_file_contains "$env_file" "AGENT_PLUGINS=github,hivemoot-github"
 assert_file_contains "$env_file" "GITHUB_REPOS=owner/repo"
 assert_file_contains "$env_file" "TARGET_REPO=owner/repo"
 
+# Entrypoint requires AGENT_PLUGINS — no shell workload fallback.
+stderr_file="$tmp_dir/missing-plugins.err"
+if env \
+  PATH="${tmp_dir}/bin:${PATH}" \
+  HOME="${tmp_dir}/home" \
+  PLUGIN_ARGS_FILE="$tmp_dir/missing.args" \
+  PLUGIN_ENV_FILE="$tmp_dir/missing.env" \
+  bash scripts/entrypoint.sh > /dev/null 2> "$stderr_file"; then
+  fail "entrypoint accepted missing AGENT_PLUGINS"
+fi
+assert_file_contains \
+  "$stderr_file" \
+  "AGENT_PLUGINS is required. Set it to the plugin stack (e.g. github,hivemoot-github)."
+
+# Compose config exposes AGENT_PLUGINS with the documented default.
 compose_file="$tmp_dir/compose.out"
 env \
   AGENT_PLUGINS= \
-  AGENT_WORKLOAD=hivemoot-task \
   HIVEMOOT_BUZZ_ROLE=reviewer \
   docker compose config > "$compose_file"
 
 assert_file_contains_text "$compose_file" 'AGENT_PLUGINS: ""'
-assert_file_contains_text "$compose_file" "AGENT_WORKLOAD: hivemoot-task"
 assert_file_contains_text "$compose_file" "HIVEMOOT_BUZZ_ROLE: reviewer"
 
 echo "PASS: plugin engine routing checks"

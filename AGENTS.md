@@ -25,20 +25,17 @@ tool calls.
 
 ## Runtime Architecture
 
-- Worker entrypoint: `worker/entrypoint.sh`
-- Worker drivers: `worker/drivers/once.sh`, `worker/drivers/loop.sh`
-- Per-agent execution unit: `worker/run-once.sh`
+- Worker entrypoint: `worker/entrypoint.sh` (thin launcher)
+- Plugin engine (worker body): `cli/hivemoot_agent/` (Python)
 - Shared shell helpers: `shared/lib.sh`
 - Host controller (per-job worker containers): `controller/main.sh`
-- Backward-compatible wrappers remain under `scripts/` and `compat/`
-- Legacy `drivers/` and `runners/` paths are aliases to `compat/`
+- Compatibility shim: `scripts/entrypoint.sh` → `worker/entrypoint.sh`
 
 High-level flow:
 
 1. `controller/main.sh` owns host-side trigger handling and spawns isolated worker containers, or `worker/entrypoint.sh` is invoked directly for standalone worker execution.
-2. `worker/entrypoint.sh` loads secrets, validates the explicit worker driver, and dispatches execution.
-3. `worker/drivers/once.sh` or `worker/drivers/loop.sh` validates execution mode and launches `worker/run-once.sh`.
-4. `worker/run-once.sh` prepares isolated workspace and home paths, then runs provider CLI tasks for issue/PR/discussion work.
+2. `worker/entrypoint.sh` loads secrets, bridges GitHub tokens, validates `AGENT_PLUGINS`, and `exec`s `hivemoot-agent oneshot`.
+3. The Python plugin engine (`cli/hivemoot_agent/engine.py`) loads the requested plugin stack, runs `setup()` (clone repos, authenticate, etc.), builds the merged system prompt, and invokes the provider CLI (claude/codex/gemini/kilo/opencode) as a subprocess.
 
 ## Provider and Auth Model
 

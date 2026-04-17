@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# lib-classify.sh — run-once.sh failure classification from log files.
+# lib-classify.sh — worker-run failure classification from log files.
 #
 # Provides a single authoritative pattern table for classifying startup and
-# credential failures emitted by run-once.sh. Both the task runner (run-task.sh)
-# and the host controller (controller.sh) classify the same set of errors; this
-# module replaces the two previously independent inline copies.
+# credential failures emitted by worker containers. The host controller
+# (controller/main.sh) reads worker stderr or container log output — whether
+# from the bash entrypoint or the Python plugin engine's provider subprocess
+# — and uses this table to produce a safe, pre-defined one-line message.
 #
 # No cross-lib dependencies — sources only standard POSIX utilities.
 # Source this file in any script that needs failure classification.

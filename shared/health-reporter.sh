@@ -339,8 +339,8 @@ _sleep_with_jitter() {
   sleep "$sleep_secs"
 }
 
-# Main entry point. Best-effort — returns 0 even on failure when called
-# with || true from run-once.sh.
+# Main entry point. Best-effort — returns 0 even on failure when callers
+# invoke with `|| true`.
 #
 # Args:
 #   agent_id             — agent identifier (e.g. "forager")

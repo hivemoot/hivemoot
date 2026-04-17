@@ -72,31 +72,29 @@ assert_fails_with \
       AGENT_PLUGINS=github,hivemoot-github \
       bash scripts/entrypoint.sh
 
-# No mismatch: DOCKER_PROVIDER=all passes through regardless of AGENT_PROVIDER
-# (all-provider image supports any provider — use nonexistent workload to stop early)
+# No mismatch: DOCKER_PROVIDER=all passes through regardless of AGENT_PROVIDER.
+# (Entrypoint still requires AGENT_PLUGINS, which is how we confirm it ran
+# past the provider-mismatch guard.)
 assert_fails_with \
-  "Workload plugin not found" \
+  "AGENT_PLUGINS is required" \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=all \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER matches AGENT_PROVIDER
 assert_fails_with \
-  "Workload plugin not found" \
+  "AGENT_PLUGINS is required" \
   env HOME="$tmp_home" \
       DOCKER_PROVIDER=claude \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 # No mismatch: DOCKER_PROVIDER unset (defaults to all, passes through)
 assert_fails_with \
-  "Workload plugin not found" \
+  "AGENT_PLUGINS is required" \
   env HOME="$tmp_home" \
       AGENT_PROVIDER=claude \
-      AGENT_WORKLOAD=nonexistent \
       bash scripts/entrypoint.sh
 
 echo "PASS: provider mismatch detection checks"

@@ -2,7 +2,7 @@
 # lib-slots.sh — slot config parsing, token and skill loading, and preflight checks.
 #
 # Dependencies (must be sourced before this file):
-#   scripts/lib.sh  — provides trim(), validate_agent_id(), ensure_skill_files_exist()
+#   shared/lib.sh  — provides trim(), validate_agent_id(), repo_name_is_valid()
 #
 # Idempotency guard: re-sourcing is a no-op.
 [ -n "${HIVEMOOT_LIB_SLOTS_LOADED:-}" ] && return 0

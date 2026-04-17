@@ -22,7 +22,6 @@ spawn_worker() {
   local companion_base_prompt=""
   local job_agent_skills=""
   local worker_trigger=""
-  local worker_workload=""
   local worker_plugins=""
   local worker_github_repos=""
   local worker_driver="once"
@@ -32,7 +31,6 @@ spawn_worker() {
   local controller_agent_identity="${AGENT_IDENTITY:-hivemoot-agent}"
 
   worker_trigger="$(normalize_trigger_name "$trigger_type")"
-  worker_workload="$(controller_invoke_trigger_hook worker_workload "$worker_trigger")"
   health_kind="$(controller_invoke_trigger_hook health_kind "$worker_trigger")"
   job_agent_skills="$(resolve_agent_skill_list "$agent_id")"
 
@@ -127,14 +125,10 @@ spawn_worker() {
     -e RUN_TRIGGER_TYPE="${health_kind}"
   )
 
-  if [ -n "$worker_workload" ]; then
-    docker_run_args+=( -e "AGENT_WORKLOAD=${worker_workload}" )
-  else
-    worker_plugins="$(controller_invoke_trigger_hook worker_plugins "$worker_trigger")"
-    worker_github_repos="${GITHUB_REPOS:-${repo}}"
-    docker_run_args+=( -e "AGENT_PLUGINS=${worker_plugins}" )
-    docker_run_args+=( -e "GITHUB_REPOS=${worker_github_repos}" )
-  fi
+  worker_plugins="$(controller_invoke_trigger_hook worker_plugins "$worker_trigger")"
+  worker_github_repos="${GITHUB_REPOS:-${repo}}"
+  docker_run_args+=( -e "AGENT_PLUGINS=${worker_plugins}" )
+  docker_run_args+=( -e "GITHUB_REPOS=${worker_github_repos}" )
 
   if [ -n "$extra_prompt" ]; then
     extra_prompt_host_path="${job_workspace}/job-input/extra-prompt.md"

@@ -43,8 +43,6 @@ x-agent-base: &agent-base
 
 x-agent-env: &agent-env
   AGENT_IDENTITY: ${AGENT_IDENTITY:-hivemoot-agent}
-  AGENT_WORKLOAD: ${AGENT_WORKLOAD:-}
-  AGENT_DRIVER: ${AGENT_DRIVER:-once}
   AGENT_ID: ${AGENT_ID:-}
   AGENT_TOKEN: ${AGENT_TOKEN:-}
   AGENT_TOKEN_FILE: ${AGENT_TOKEN_FILE:-}

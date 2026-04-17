@@ -52,32 +52,22 @@ jobs:
         run: bash scripts/test-target-repo-validation.sh
       - name: Verify Claude token bootstrap behavior
         run: bash scripts/test-claude-token-bootstrap.sh
-      - name: Verify credential storage mode behavior
-        run: bash scripts/test-credential-storage-mode.sh
-      - name: Verify auto auth mode with file-based secrets
-        run: bash scripts/test-auto-auth-file-secrets.sh
       - name: Verify WORKSPACE_ROOT and AGENT_ID path validation behavior
         run: bash scripts/test-path-input-validation.sh
       - name: Verify Trivy ignore validation behavior
         run: bash scripts/test-trivyignore-check.sh
       - name: Verify prompt security guardrails
         run: bash scripts/test-prompt-guardrails.sh
-      - name: Verify session resume lifecycle behavior
-        run: bash scripts/test-session-resume-lifecycle.sh
       - name: Verify provider mismatch detection behavior
         run: bash scripts/test-provider-mismatch.sh
       - name: Verify plugin engine routing behavior
         run: bash scripts/test-plugin-engine-routing.sh
-      - name: Verify plugin loader and dispatch guard behavior
-        run: bash scripts/test-plugin-loader-guards.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
       - name: Verify run-failure classification behavior
         run: bash scripts/test-classify.sh
       - name: Verify task mode behavior
         run: bash scripts/test-run-task-mode.sh
-      - name: Verify run-loop next_run_at propagation behavior
-        run: bash scripts/test-run-loop-next-run-at.sh
       - name: Verify health reporting env wiring
         run: bash scripts/test-health-report-env-wiring.sh
       - name: Verify health reporter contract and behavior
@@ -156,13 +146,13 @@ jobs:
           stderr_file="$(mktemp)"
           trap 'rm -f "$stderr_file"' EXIT
 
-          # Verify the bash entrypoint still works (validates AGENT_WORKLOAD).
+          # Verify the bash entrypoint still works (validates AGENT_PLUGINS).
           if timeout 10 docker run --rm hivemoot-agent:ci \
             > /dev/null 2> "$stderr_file"; then
-            echo "::error::entrypoint should fail without AGENT_WORKLOAD"
+            echo "::error::entrypoint should fail without AGENT_PLUGINS"
             exit 1
           fi
-          grep -qF "AGENT_WORKLOAD" "$stderr_file"
+          grep -qF "AGENT_PLUGINS" "$stderr_file"
 
           # Verify the Python CLI is available and plugin discovery works.
           docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | grep -qF "messaging"
