@@ -92,15 +92,12 @@ x-agent-env: &agent-env
   ZAI_API_KEY_FILE: ${ZAI_API_KEY_FILE:-}
   OPENCODE_PROVIDER: ${OPENCODE_PROVIDER:-}
   OPENCODE_MODEL: ${OPENCODE_MODEL:-}
-  MAX_CONSECUTIVE_FAILURES: ${MAX_CONSECUTIVE_FAILURES:-5}
   HIVEMOOT_AGENT_TOKEN: ${HIVEMOOT_AGENT_TOKEN:-}
   HIVEMOOT_AGENT_TOKEN_FILE: ${HIVEMOOT_AGENT_TOKEN_FILE:-}
   AGENT_TASK_CLAIM_URL: ${AGENT_TASK_CLAIM_URL:-}
   AGENT_TASK_EXECUTE_BASE_URL: ${AGENT_TASK_EXECUTE_BASE_URL:-}
   AGENT_TASK_POLL_INTERVAL_SECS: ${AGENT_TASK_POLL_INTERVAL_SECS:-10}
   AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS: ${AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS:-45}
-  PERIODIC_INTERVAL_SECS: ${PERIODIC_INTERVAL_SECS:-3600}
-  PERIODIC_JITTER_SECS: ${PERIODIC_JITTER_SECS:-300}
   CRON_SCHEDULES_JSON: ${CRON_SCHEDULES_JSON:-}
   JOB_ID: ${JOB_ID:-}
 
@@ -108,11 +105,11 @@ services:
   hivemoot-agent:
     <<: *agent-base
     stop_grace_period: 5m
-    # Daemon mode is the primary deployment per ADR-002 — triggers
-    # (messaging, github, cron, hivemoot-task) all run in-process
-    # inside `hivemoot-agent run` and block on their stop events.
-    # The Dockerfile's CMD default is still ``worker`` so the legacy
-    # host-side controller path keeps firing oneshot containers.
+    # Compose-invoked services are daemon-mode: triggers (cron,
+    # messaging, github-watch, hivemoot-task) run in-process inside
+    # ``hivemoot-agent run`` and block until shutdown.  The Dockerfile
+    # CMD default stays ``worker`` so a plain ``docker run`` with no
+    # plugin config fails fast rather than entering an idle daemon.
     command: ["run"]
     environment:
       <<: *agent-env

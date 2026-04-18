@@ -62,7 +62,8 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 > [!WARNING]
 > `hivemoot-agent` is not fully production-ready yet.
 > Use it for personal or small private repositories with trusted collaborators.
-> For production deployments, use the [Host Controller](#host-controller-legacy)
+> For production deployments, run one daemon-mode container per agent role
+> (see [Recurring runs & daemon mode](#the-architecture-follows) below)
 > and apply additional hardening for credentials, runtime isolation, and permissions.
 
 ## What This Does
@@ -155,26 +156,14 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 - Logs: `./data/runs/<agent-id>/<run-id>.log`
 - Repo clones: `./data/agents/<agent-id>/repo`
 
-## Controller Agent Slots
-
-The host controller uses slots `01..10` to route jobs to named agents:
-
-```bash
-AGENT_ID_01=worker
-AGENT_GITHUB_TOKEN_01=...
-AGENT_ID_02=builder
-AGENT_GITHUB_TOKEN_02=...
-```
-
-Each slot requires both `AGENT_ID_XX` and `AGENT_GITHUB_TOKEN_XX` (or `_FILE`). Duplicate agent IDs are rejected.
-
 ## Plugin Engine
 
-The worker runs the Python plugin engine in oneshot mode. `AGENT_PLUGINS`
-picks the plugin stack; there is no shell-workload fallback.
+Each container runs one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`.
+`AGENT_PLUGINS` picks the plugin stack; there is no shell-workload fallback.
 
 - `AGENT_PLUGINS` selects the plugin stack for the run (required)
-- controller triggers are a separate concern and stay in the host controller plane
+- Triggers are owned by their plugins and run in-process inside
+  `hivemoot-agent run`
 
 **Direct single run** (default) — execute one worker run, then exit:
 
@@ -207,7 +196,6 @@ GITHUB_WORKSPACE=
 
 Notes:
 - the worker entrypoint `exec`s `hivemoot-agent oneshot`; there is no separate "driver" selection
-- use `controller/main.sh` on the host for repeated / trigger-driven runs
 - `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
 - if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
@@ -216,10 +204,12 @@ Notes:
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 For recurring runs, use the `cron` plugin — list of named tasks, each
-with its own cron expression and prompt.  Cron triggers only fire in
-daemon mode (`hivemoot-agent run`); the default `docker compose run --rm
-hivemoot-agent` invocation picks that up because the compose service
-overrides the image CMD to `run`:
+with its own cron expression and prompt.  Cron triggers fire inside
+daemon mode (`hivemoot-agent run`).  The compose service overrides
+the image CMD to `run`, so a plain `docker compose run --rm
+hivemoot-agent` enters daemon mode.  (The image itself defaults to
+`worker` / oneshot so a raw `docker run hivemoot-agent:local` fails
+fast on missing plugin config rather than idling as an empty daemon.)
 
 ```bash
 AGENT_PLUGINS=hivemoot-identity,github,cron \
@@ -242,14 +232,9 @@ Supported expression grammar: 5-field standard cron
 dispatch path), so a jittered schedule never blocks other schedules
 that became due during its delay window.
 
-Gotcha: the `worker` / oneshot path (legacy `controller/main.sh`
-spawn, or explicitly `docker run ... hivemoot-agent:local worker`)
-does **not** start trigger threads — cron schedules configured there
-will silently never fire.  Use daemon mode.
-
-For multi-agent fleets still using `controller/main.sh` during the
-transition, the legacy `PERIODIC_INTERVAL_SECS` / `PERIODIC_JITTER_SECS`
-envs on the host controller path continue to work.
+Gotcha: the `worker` oneshot subcommand (`docker run ... hivemoot-agent:local worker`)
+runs a single job and exits — it does **not** start trigger threads,
+so cron schedules configured there never fire.  Use daemon mode.
 
 The architecture follows
 [ADR-002: Plugin Architecture](docs/adr/002-plugin-architecture.md):
@@ -261,16 +246,14 @@ The architecture follows
   agent CLI subprocess boundary (each job spawns a fresh `claude -p …` /
   `codex exec …`), not by spawning a fresh container per job.
 - The host is plugin-agnostic. No `hivemoot-agent <plugin-name>` CLI
-  subcommands; no `controller/triggers/<plugin-name>.sh`; no plugin-specific
-  env wires in `controller/`.
+  subcommands; no host-side trigger scripts; no plugin-specific env
+  wires outside the plugin that owns them.
 
 Plugin-owned triggers: `messaging`, `hivemoot-task`, `github-mention`,
 `github-review-request`, and `cron` — all implement the
-`Plugin.triggers()` protocol and run inside `hivemoot-agent run`. The
-shell `controller/triggers/periodic.sh` still exists for fleets that
-have not yet switched to daemon-mode deployment; it will be removed
-together with `controller/main.sh` once the fleet migrates (ADR-002
-§Migration follow-ups).
+`Plugin.triggers()` protocol and run inside `hivemoot-agent run`.
+Every trigger in the system now lives in its plugin; there is no
+host-side supervisor to spawn containers.
 
 **Task workflow** (minimal: `AGENT_PLUGINS=hivemoot-task`; for tasks
 that operate on GitHub repos, add `github` + `hivemoot-identity`):
@@ -307,59 +290,32 @@ Backend contract:
   before the agent run; the codex provider passes `--output-last-message <path>`
   so codex writes its final markdown directly (preferred over NDJSON parsing).
 
-Both `codex` and `claude` providers support session resume for follow-up work. Mention-triggered controller jobs store one session per GitHub notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Periodic runs (no session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
+Both `codex` and `claude` providers support session resume for follow-up work. GitHub mention triggers store one session per notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Cron ticks (empty session key) always start fresh by design. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 
-## Host Controller (legacy)
+## Multi-agent deployments
 
-`controller/main.sh` is the host-side process for the only remaining
-host-owned trigger: `periodic`. For task, messaging, mention, and
-review-request workflows the daemon-mode plugin path under
-`hivemoot-agent run` is the supported entrypoint — see ADR-002
-§Migration for the planned deprecation of the remaining controller-side
-trigger.
-
-What it does today:
-- Spawns one isolated worker container per job via `spawn_worker()`.
-- Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
-- Enforces per-repo mutual exclusion with `flock` plus a controller-local worker cap (`CONTROLLER_MAX_WORKERS`, locks default under `/tmp/hivemoot-controller-locks`).
-- Optionally enforces a host-wide worker cap across multiple controller services with a shared flock semaphore (`GLOBAL_MAX_WORKERS` + `GLOBAL_SLOTS_DIR`).
-- Owns the filesystem queue under `queue/`.
-- Writes per-job artifacts:
-  - `jobs/<job-id>/job.json` (job spec)
-  - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
-- Requires Bash 4+ on the host (`declare -A` is used).
-
-Run one periodic cycle:
+One daemon-mode container per agent role × repo. Supervise them with
+whatever your host runs — systemd units, `docker compose up -d`, a
+container orchestrator. The agent process handles trigger scheduling,
+job dispatch, and lifecycle entirely in-process, so the host does not
+need to spawn per-job containers or own any scheduling state.
 
 ```bash
-TARGET_REPO=owner/repo \
-AGENT_ID_01=worker \
-AGENT_GITHUB_TOKEN_01=ghp_xxx \
-CONTROLLER_WORKSPACE_ROOT="$PWD/data/controller" \
-WORKER_IMAGE=hivemoot-agent:local \
-bash controller/main.sh
+# systemd unit fragment, one per agent role × repo
+ExecStart=/usr/bin/docker compose -f /opt/hivemoot-agent/docker-compose.yml \
+  run --rm --name hivemoot-agent-worker-acme-api hivemoot-agent
+Environment=AGENT_ID=worker
+Environment=TARGET_REPO=acme/api
+Environment=GITHUB_REPOS=acme/api
+Environment=AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github,cron
+Environment=CRON_SCHEDULES_JSON=[{"name":"autonomous",...}]
+Restart=on-failure
 ```
 
-Run continuously (loops the periodic schedule):
-
-```bash
-CONTROLLER_RUN_MODE=loop \
-bash controller/main.sh
-```
-
-Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
-
-For task, messaging, mention, or review-request workflows, do NOT use the
-controller — run the daemon directly:
-
-```bash
-docker compose run --rm \
-  -e AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task \
-  -e AGENT_TASK_CLAIM_URL=https://your-backend/api/tasks/claim \
-  -e AGENT_TASK_EXECUTE_BASE_URL=https://your-backend/api/tasks \
-  -e HIVEMOOT_AGENT_TOKEN_FILE=/run/secrets/hivemoot-agent-token \
-  hivemoot-agent hivemoot-agent run
-```
+Per-job isolation comes from the agent CLI subprocess boundary (each
+job spawns a fresh `claude -p …` or `codex exec …`), not from spawning
+a fresh container per job. Crash isolation is per-agent-container:
+a Python-level crash takes the agent down, and systemd restarts it.
 
 ## Credential Storage (Default)
 
@@ -556,8 +512,9 @@ Standalone custom prompts must preserve the non-overridable security guardrails
 from [`cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md)
 (or an equivalent section with the same protections).
 
-`controller/main.sh` also supports the two-file layout and automatically
-mounts a sibling `base.md` when it exists next to the host `AGENT_PROMPT_FILE`.
+The daemon mounts a sibling `base.md` automatically when it exists
+next to the host `AGENT_PROMPT_FILE`, so mode-specific overrides can
+stay concise while sharing the same base.
 
 When unset, standing agents use
 [`cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md)
@@ -578,21 +535,16 @@ OpenCode, and Kilo receive an ephemeral workspace `.agents/skills` staging
 directory. Full skill directories are preserved so bundled scripts, references,
 and assets remain available during the run.
 
-When running the host controller, `AGENT_SKILL_BIND_MOUNTS` can expose custom
-skill directories into worker containers. Each mount must use an absolute host
-path and the exact read-only destination format
-`/host/path:/opt/hivemoot-agent/skills/<name>:ro`. Provide multiple mounts as
-newline-separated specs; destinations outside `/opt/hivemoot-agent/skills/` and
-any `..` segments are rejected.
+`AGENT_SKILL_BIND_MOUNTS` can expose custom skill directories into the
+container. Each mount must use an absolute host path and the exact
+read-only destination format `/host/path:/opt/hivemoot-agent/skills/<name>:ro`.
+Provide multiple mounts as newline-separated specs; destinations
+outside `/opt/hivemoot-agent/skills/` and any `..` segments are
+rejected.
 
 Use `AGENT_AVAILABLE_SKILLS` for extra native-discovery skills to expose
 alongside `AGENT_SKILLS`. It resolves against the same search roots and is
 unioned with the selected set for providers that discover skills natively.
-
-Managed multi-agent runtimes can also set `AGENT_SKILLS_01` through
-`AGENT_SKILLS_10`. The controller resolves the matching slot for each
-configured `AGENT_ID_XX` and forwards only that skill list to the worker job.
-When a slot-specific value is unset, the runtime falls back to `AGENT_SKILLS`.
 
 ## Optional Override Services
 

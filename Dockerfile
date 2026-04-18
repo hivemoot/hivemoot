@@ -175,20 +175,19 @@ ENV DOCKER_PROVIDER=${PROVIDER}
 
 WORKDIR /workspace
 
-COPY --chown=node:node shared /opt/hivemoot-agent/shared
 COPY --chown=node:node cli /opt/hivemoot-agent/cli
 
-RUN find /opt/hivemoot-agent/shared -name '*.sh' -exec chmod +x {} + \
-  && chmod +x /opt/hivemoot-agent/cli/hivemoot-agent
+RUN chmod +x /opt/hivemoot-agent/cli/hivemoot-agent
 
 USER root
 RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent
 USER node
 
-# tini owns PID 1 and forwards signals to the CLI.  The subcommand
-# lives in CMD (not ENTRYPOINT) so compose / `docker run ... <cmd>`
-# can override it — e.g. docker-compose.yml sets ``command: ["run"]``
-# for daemon mode, while the legacy host controller keeps the default
-# ``worker`` (oneshot) path by omitting a command on ``docker run``.
+# tini owns PID 1 and forwards signals to the CLI.  Default CMD is
+# ``worker`` (oneshot) so a direct ``docker run hivemoot-agent:local``
+# with no plugin config fails fast with a clear error instead of
+# entering daemon mode and exiting 1 on "No triggers to run."
+# Daemon-mode fleets opt in explicitly via compose
+# (``command: ["run"]``) or an equivalent orchestrator override.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hivemoot-agent"]
 CMD ["worker"]

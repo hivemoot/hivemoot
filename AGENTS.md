@@ -32,17 +32,17 @@ changing the architecture; what follows is a summary.
 
 **Components:**
 
-- Container entrypoint: `hivemoot-agent run` (daemon mode) — loads plugins per `AGENT_PLUGINS`, starts each plugin's `Trigger`, dispatches inbound jobs in-process.
-- Worker entrypoint shim: `hivemoot-agent worker` (`cli/hivemoot_agent/worker.py`) — env validation + Claude OAuth bootstrap, then hands off to the engine. Used for one-shot worker containers spawned by the controller.
+- Container entrypoint: `hivemoot-agent run` (daemon mode) — loads plugins per `AGENT_PLUGINS`, starts each plugin's `Trigger`, dispatches inbound jobs in-process. This is the image's default CMD.
+- Oneshot entrypoint: `hivemoot-agent worker` (`cli/hivemoot_agent/worker.py`) — env validation + Claude OAuth bootstrap, then hands off to the engine's `oneshot` path. Use for single explicit runs; does **not** start trigger threads.
 - Plugin engine: `cli/hivemoot_agent/engine.py` — owns job execution, plugin loading, agent subprocess spawning.
 - Plugins live in `cli/hivemoot_agent/plugins_builtin/<name>/`. Each plugin owns its `Trigger` (data source), `Plugin` (lifecycle hooks), workload (`system_prompt`, skills), and any external API client. **Single directory, single source of truth per plugin.**
-- Host-side shell glue under `controller/`, `shared/`, `scripts/` is generic — it knows nothing about specific plugins.
+- No host-side shell supervisor. The container is long-lived; triggers run in-process threads; systemd / `docker compose` / a container orchestrator handles container supervision.
 
 **The non-negotiable rules:**
 
 1. **No `hivemoot-agent <plugin-name> ...` CLI subcommands.** The CLI surface is fixed: `run`, `oneshot`, `worker`, `plugin list`, `plugin doctor`, `doctor`. Adding a plugin must not change argparse.
-2. **No host-side `controller/triggers/<plugin-name>.sh`.** All triggers are Python `Trigger` implementations inside their plugin directory.
-3. **No host-side env wires for plugin-specific config** (`MESSAGING_*`, `AGENT_TASK_*`, etc.). The host forwards a generic set; plugins read their own env at load time.
+2. **No host-side trigger scripts.** All triggers are Python `Trigger` implementations inside their plugin directory.
+3. **No cross-plugin env snooping.** Each plugin reads its own env (`MESSAGING_*`, `AGENT_TASK_*`, `GITHUB_*`, `CRON_*`, etc.) at load time; a plugin MUST NOT read another plugin's config.
 
 Reference plugins:
 - `cli/hivemoot_agent/plugins_builtin/messaging/` (Telegram polling, typing, response delivery).
@@ -62,17 +62,19 @@ Provider secrets can be set inline or via `*_FILE` env vars and are loaded by
 
 ## Shell Conventions
 
-Shell runtime code in `controller/` and `shared/` should follow existing patterns:
+The remaining shell lives under `scripts/` and covers repo hygiene
+(trivy checks, script executable bits) plus compose-level contract
+tests that Python can't reach.  When editing these scripts:
 
 - `#!/usr/bin/env bash`
 - `set -euo pipefail`
 - Use `local` variables inside functions
 - Prefer `printf` for structured output/logging
 - Use command arrays for safe argument handling
-- Reuse shared helpers in `shared/lib.sh` instead of duplicating logic
 
-Per ADR-002, **don't add plugin-specific code to shell.** New plugin-related
-work belongs under `cli/hivemoot_agent/plugins_builtin/<name>/`.
+Per ADR-002, **agent runtime code is Python.** New plugin work, new
+triggers, and new per-plugin logic belong under
+`cli/hivemoot_agent/plugins_builtin/<name>/`.
 
 ## CI and Quality Gates
 

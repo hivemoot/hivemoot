@@ -170,15 +170,11 @@ This ADR was adopted concurrently with the consolidated cleanup PR that:
 
 Open follow-ups (separate PRs):
 
-- Retire `controller/main.sh`, `controller/core/`, the remaining shell
-  `controller/triggers/periodic.sh`, and the `shared/lib-*.sh` helpers
-  that only the host controller uses.  The host has no triggers left
-  to drive once the fleet (`apiary/`) switches deploy scripts from
-  spawning the bash controller to running `hivemoot-agent run` in a
-  long-lived container per agent × repo.  A future host-side trigger
-  for cases that genuinely need per-job container isolation (separate
-  blast radius, per-job resource caps) is explicitly out of scope for
-  this round.
+- A future host-side trigger for cases that genuinely need per-job
+  container isolation (separate blast radius, per-job resource caps)
+  remains out of scope.  If one is added, it must be a new primitive
+  designed around the plugin protocol, not a revival of the shell
+  supervisor.
 
 Completed follow-ups:
 
@@ -204,7 +200,8 @@ Completed follow-ups:
   dependency added, keeping the "no third-party Python deps at
   runtime" discipline the rest of the CLI follows.  Enable by listing
   `cron` in `AGENT_PLUGINS`.  The shell `controller/triggers/periodic.sh`
-  stays until the fleet (apiary) migrates its deploy scripts.
+  was retired with the rest of the host-side supervisor — see
+  follow-up below.
 - ✅ `hivemoot-task` decoupled from `github` — the plugin no longer
   requires `GITHUB_REPOS` / `TARGET_REPO`, no longer requires `github`
   to appear in `AGENT_PLUGINS`, and no longer bakes repo context into
@@ -217,6 +214,20 @@ Completed follow-ups:
   hivemoot-github) are loaded to access it.  Enables a pure
   `AGENT_PLUGINS=hivemoot-task` task-worker role with no repo
   plumbing.
+- ✅ Host-side shell supervisor retired.  Deleted
+  `controller/core/`, `controller/triggers/`, `shared/lib-*.sh`
+  (global slots, classify, observability, agent slots, path
+  validators), and the shell test scripts that exercised them.
+  All triggers now run in-process inside `hivemoot-agent run`;
+  container supervision (one daemon per agent role × repo) is
+  handled by systemd / docker-compose / the deployer's orchestrator,
+  not by a bash process watching docker from the host.  Compose
+  services set `command: ["run"]` for daemon mode; the Dockerfile
+  CMD default stays `["worker"]` so a raw `docker run` with no
+  plugin config fails fast instead of entering an idle daemon.
+  `controller/main.sh` and `scripts/controller.sh` remain as thin
+  deprecation stubs that exit with a clear migration message until
+  apiary's deploy scripts migrate; they can be deleted after that.
 
 ## References
 
