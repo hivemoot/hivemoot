@@ -16,3 +16,7 @@ config:
   MD033: false
   # First-line heading — prompts start with descriptive text, not headings
   MD041: false
+  # Table column style — docs use the compact ``|---|---|`` form
+  # for narrow tables; it renders fine and churning them to
+  # ``| --- | --- |`` adds no information.
+  MD060: false

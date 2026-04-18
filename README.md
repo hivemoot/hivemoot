@@ -63,7 +63,7 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 > `hivemoot-agent` is not fully production-ready yet.
 > Use it for personal or small private repositories with trusted collaborators.
 > For production deployments, run one daemon-mode container per agent role
-> (see [Recurring runs & daemon mode](#the-architecture-follows) below)
+> (see [Multi-agent deployments](#multi-agent-deployments) below)
 > and apply additional hardening for credentials, runtime isolation, and permissions.
 
 ## What This Does
