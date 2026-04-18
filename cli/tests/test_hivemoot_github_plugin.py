@@ -72,7 +72,10 @@ def test_validate_requires_github_before_plugin():
     assert any("github before hivemoot-github" in error for error in errors)
 
 
-def test_validate_requires_hivemoot_identity_in_stack():
+def test_validate_does_not_require_hivemoot_identity():
+    """hivemoot-identity is no longer a plugin (#581); security rules
+    come from the engine's always-applied root.  A fleet running only
+    github + hivemoot-github must validate cleanly."""
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
@@ -88,13 +91,15 @@ def test_validate_requires_hivemoot_identity_in_stack():
     ):
         errors = plugin.validate(config)
 
-    assert any(
-        "requires AGENT_PLUGINS to include hivemoot-identity" in error
-        for error in errors
-    )
+    assert not any(
+        "hivemoot-identity" in error for error in errors
+    ), f"hivemoot-identity no longer required; got errors: {errors}"
 
 
-def test_validate_requires_hivemoot_identity_before_plugin():
+def test_validate_warns_when_identity_shim_listed_after_plugin():
+    """The deprecation shim is still tolerated, but if a deployer lists
+    it, it must come before hivemoot-github so its prompt contribution
+    appears first in the merged system prompt."""
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
@@ -111,7 +116,7 @@ def test_validate_requires_hivemoot_identity_before_plugin():
         errors = plugin.validate(config)
 
     assert any(
-        "hivemoot-identity before hivemoot-github" in error for error in errors
+        "hivemoot-identity after hivemoot-github" in error for error in errors
     )
 
 
