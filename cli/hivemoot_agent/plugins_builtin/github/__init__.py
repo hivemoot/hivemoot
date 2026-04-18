@@ -14,6 +14,7 @@ from hivemoot_agent.plugins.interfaces import (
     PluginConfig,
     Trigger,
 )
+from hivemoot_agent.plugins_builtin.github import ack as ack_module
 from hivemoot_agent.plugins_builtin.github.repo_manager import (
     RepoInfo,
     clone_or_sync,
@@ -23,6 +24,10 @@ from hivemoot_agent.plugins_builtin.github.repo_manager import (
     resolve_github_user,
 )
 from hivemoot_agent.plugins_builtin.github.system_prompt import build_system_prompt
+from hivemoot_agent.plugins_builtin.github.trigger import (
+    GitHubMentionsTrigger,
+    GitHubReviewRequestsTrigger,
+)
 
 
 def _configure_git_auth() -> None:
@@ -82,6 +87,20 @@ def _resolve_workspace_root(config: PluginConfig) -> str:
     )
 
 
+def _bool_env(value: str) -> bool:
+    """Same truthy semantics the shell triggers used for ``WATCH_*=1``."""
+    return value.strip() in {"1", "true", "TRUE", "True", "yes", "on"}
+
+
+def _resolve_gh_token_for_ack(config: PluginConfig) -> str:
+    return (
+        config.get("GITHUB_TOKEN", "")
+        or os.environ.get("GITHUB_TOKEN", "")
+        or os.environ.get("GH_TOKEN", "")
+        or ""
+    )
+
+
 class GitHubPlugin:
     name = "github"
     version = "0.1.0"
@@ -122,8 +141,16 @@ class GitHubPlugin:
         return errors
 
     def triggers(self) -> list[Trigger]:
-        # No triggers — GitHub plugin runs via oneshot mode.
-        return []
+        # Env-gated so a fleet that only wants oneshot/dispatch behaviour
+        # can omit the watchers.  Defaults are off to preserve the
+        # opt-in semantics the shell controller had with WATCH_*=0.
+        config_env = dict(os.environ)
+        instances: list[Trigger] = []
+        if _bool_env(config_env.get("GITHUB_WATCH_MENTIONS", "0")):
+            instances.append(GitHubMentionsTrigger(self))
+        if _bool_env(config_env.get("GITHUB_WATCH_REVIEW_REQUESTS", "0")):
+            instances.append(GitHubReviewRequestsTrigger(self))
+        return instances
 
     def setup(self, config: PluginConfig) -> None:
         """Clone all configured repos and authenticate gh CLI."""
@@ -223,7 +250,28 @@ class GitHubPlugin:
     def on_job_finished(
         self, job: Job, result: AgentResult, config: PluginConfig
     ) -> None:
-        pass
+        # Watch triggers tag their jobs with ack metadata; everything
+        # else (oneshot, hivemoot-task) leaves it absent.
+        watch_meta = job.metadata.get("github_watch") if job.metadata else None
+        if not isinstance(watch_meta, dict):
+            return
+
+        # On agent failure we deliberately skip the ack — the shell
+        # controller's same path: the next watch poll re-emits the event
+        # and we retry.  Silently acking a failed run would lose the
+        # notification and the work it represented.
+        if result.exit_code != 0:
+            print(
+                f"[{watch_meta.get('trigger', 'github-watch')}] "
+                f"agent failed (exit={result.exit_code}); skipping ack",
+                file=sys.stderr, flush=True,
+            )
+            return
+
+        ack_key = str(watch_meta.get("ack_key") or "")
+        state_file = str(watch_meta.get("state_file") or "")
+        gh_token = _resolve_gh_token_for_ack(config)
+        ack_module.ack_event(ack_key, state_file, gh_token)
 
 
 def create_plugin() -> Plugin:

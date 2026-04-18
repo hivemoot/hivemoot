@@ -170,14 +170,20 @@ This ADR was adopted concurrently with the consolidated cleanup PR that:
 
 Open follow-ups (separate PRs):
 
-- Migrate `github-mention` and `github-review-request` from
-  `controller/triggers/` to plugin `Trigger` implementations under
-  `cli/hivemoot_agent/plugins_builtin/github/`.
 - Migrate `controller/triggers/periodic.sh` (the scheduling loop) to a
   plugin or to engine-level scheduling.
 - Once all triggers are plugins, retire `controller/main.sh` itself —
   what remains is container supervision, which systemd / docker-compose
   already provides directly.
+
+Completed follow-ups:
+
+- ✅ `github-mention` and `github-review-request` triggers — moved
+  to `cli/hivemoot_agent/plugins_builtin/github/{trigger,watcher,ack,prompts}.py`.
+  The plugin owns the polling loop, dispatches events as Jobs through
+  the engine, and acks notifications via `hivemoot ack` from
+  `on_job_finished` only on successful runs.  Env-gated by
+  `GITHUB_WATCH_MENTIONS=1` and `GITHUB_WATCH_REVIEW_REQUESTS=1`.
 
 ## References
 

@@ -10,18 +10,7 @@ fi
 
 normalize_trigger_name() {
   local name="${1:-}"
-
-  case "$name" in
-    mention|github-mention)
-      printf '%s' "github-mention"
-      ;;
-    review-request|github-review-request)
-      printf '%s' "github-review-request"
-      ;;
-    *)
-      printf '%s' "$name"
-      ;;
-  esac
+  printf '%s' "$name"
 }
 
 trigger_symbol_name() {
@@ -173,46 +162,3 @@ write_trigger_file() {
   mv "$temp_file" "$trigger_file"
 }
 
-queue_has_ack_key() {
-  local ack_key="$1"
-  local ack_key_marker=""
-  local existing_file=""
-  local existing_ack_key=""
-  local now=0
-  local mtime=0
-  local age_secs=0
-  local -a existing_files=()
-
-  if [ -z "$ack_key" ]; then
-    return 1
-  fi
-  ack_key_marker="\"ack_key\": \"${ack_key}\""
-
-  shopt -s nullglob
-  existing_files=("${queue_root}"/*.trigger.json "${queue_root}"/*.processing "${queue_root}"/*.done)
-  if [ "$watch_trigger_failure_backoff_secs" -gt 0 ]; then
-    existing_files+=("${queue_root}"/*.failed)
-    now="$(date +%s)"
-  fi
-  shopt -u nullglob
-
-  for existing_file in "${existing_files[@]}"; do
-    [ -f "$existing_file" ] || continue
-    if [[ "$existing_file" == *.failed ]]; then
-      mtime="$(file_mtime_epoch "$existing_file" "$now")"
-      age_secs=$((now - mtime))
-      if [ "$age_secs" -gt "$watch_trigger_failure_backoff_secs" ]; then
-        continue
-      fi
-    fi
-    if ! grep -Fq "$ack_key_marker" "$existing_file"; then
-      continue
-    fi
-    existing_ack_key="$(jq -r '.ack_key // empty' "$existing_file" 2>/dev/null || true)"
-    if [ "$existing_ack_key" = "$ack_key" ]; then
-      return 0
-    fi
-  done
-
-  return 1
-}

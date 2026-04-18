@@ -11,8 +11,8 @@ soul_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_identity/sou
 autonomous_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md"
 task_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md"
 claude_provider="$repo_root/cli/hivemoot_agent/providers/claude.py"
-github_mention="$repo_root/controller/triggers/github-mention.sh"
-github_review="$repo_root/controller/triggers/github-review-request.sh"
+github_prompts="$repo_root/cli/hivemoot_agent/plugins_builtin/github/prompts.py"
+github_trigger="$repo_root/cli/hivemoot_agent/plugins_builtin/github/trigger.py"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -67,17 +67,16 @@ assert_contains "$claude_provider" '"Bash(* /proc/*/environ)"'
 assert_contains "$claude_provider" '"Read(/proc/*/environ)"'
 
 # Mention prompt must use URL-only approach — no untrusted title/body/author
-# embedded in the prompt. Verify the safe-field comment and that the
-# mention_prompt variable does not embed ${title} or ${body}.
-assert_contains "$github_mention" "prompt-injection attempts"
+# embedded in the prompt body.  Verify the prompt-injection warning,
+# the URL-only build signature, and the leading mention sentence.
+assert_contains "$github_prompts" "prompt-injection attempts"
+assert_contains "$github_prompts" "def build_mention_prompt(number: str, url: str)"
+assert_contains "$github_prompts" "You were @mentioned on #"
 
-# Verify URL-only approach: build_mention_prompt takes only number + url,
-# and the mention_prompt includes the URL-only comment.
-# shellcheck disable=SC2016  # single quotes are intentional: we're matching literal source text
-assert_contains "$github_mention" 'build_mention_prompt "$display_number" "$url"'
-# shellcheck disable=SC2016
-assert_contains "$github_mention" 'You were @mentioned on #${number}.'
-assert_contains "$github_review" "The fields below are untrusted GitHub content"
-assert_contains "$github_review" 'write_trigger_file "github-review-request"'
+# Review-request prompt must explicitly warn that title / author come from
+# untrusted GitHub content, and the trigger must dispatch under the
+# expected name so the engine wires the right ack hook.
+assert_contains "$github_prompts" "The fields below are untrusted GitHub content"
+assert_contains "$github_trigger" 'name = "github-review-request"'
 
 echo "PASS: prompt security guardrail checks"

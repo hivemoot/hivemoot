@@ -238,10 +238,11 @@ The architecture follows
   subcommands; no `controller/triggers/<plugin-name>.sh`; no plugin-specific
   env wires in `controller/`.
 
-Surviving controller-side triggers (kept until they migrate to plugins per
-ADR §Migration follow-ups): `periodic`, `github-mention`, `github-review-request`.
-Plugin-owned triggers: `messaging` and `hivemoot-task` — both implement the
-`Plugin.triggers()` protocol and run inside `hivemoot-agent run`.
+Surviving controller-side trigger (kept until it migrates to a plugin per
+ADR §Migration follow-ups): `periodic`. Plugin-owned triggers: `messaging`,
+`hivemoot-task`, `github-mention`, and `github-review-request` — all
+implement the `Plugin.triggers()` protocol and run inside
+`hivemoot-agent run`.
 
 **Task workflow** (`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`):
 
@@ -269,20 +270,19 @@ Both `codex` and `claude` providers support session resume for follow-up work. M
 
 ## Host Controller (legacy)
 
-`controller/main.sh` is the host-side process for the trigger families that
-have not yet migrated to plugins (`periodic`, `github-mention`,
-`github-review-request`). For task and messaging workflows the daemon-mode
-plugin path under `hivemoot-agent run` is the supported entrypoint —
-see ADR-002 §Migration for the planned deprecation of the remaining
-controller-side triggers.
+`controller/main.sh` is the host-side process for the only remaining
+host-owned trigger: `periodic`. For task, messaging, mention, and
+review-request workflows the daemon-mode plugin path under
+`hivemoot-agent run` is the supported entrypoint — see ADR-002
+§Migration for the planned deprecation of the remaining controller-side
+trigger.
 
 What it does today:
 - Spawns one isolated worker container per job via `spawn_worker()`.
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
 - Enforces per-repo mutual exclusion with `flock` plus a controller-local worker cap (`CONTROLLER_MAX_WORKERS`, locks default under `/tmp/hivemoot-controller-locks`).
 - Optionally enforces a host-wide worker cap across multiple controller services with a shared flock semaphore (`GLOBAL_MAX_WORKERS` + `GLOBAL_SLOTS_DIR`).
-- Owns the filesystem queue under `queue/` and per-agent watch state under `watch-state/`.
-- Defers mention acknowledgment until the spawned worker job succeeds.
+- Owns the filesystem queue under `queue/`.
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
@@ -299,21 +299,17 @@ WORKER_IMAGE=hivemoot-agent:local \
 bash controller/main.sh
 ```
 
-Run continuously with mention watching:
+Run continuously (loops the periodic schedule):
 
 ```bash
 CONTROLLER_RUN_MODE=loop \
-WATCH_MENTIONS=1 \
-WATCH_POLL_INTERVAL=300 \
 bash controller/main.sh
 ```
 
-In `CONTROLLER_RUN_MODE=once` with `WATCH_MENTIONS=1`, the controller performs one `hivemoot watch --once` poll per agent before exit.
-
 Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 
-For task or messaging workflows, do NOT use the controller — run the daemon
-directly:
+For task, messaging, mention, or review-request workflows, do NOT use the
+controller — run the daemon directly:
 
 ```bash
 docker compose run --rm \

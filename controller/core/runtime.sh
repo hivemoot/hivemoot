@@ -28,14 +28,12 @@ handle_shutdown() {
   : > "$shutdown_flag_file"
   log "Shutdown signal received; stopping new launches"
   stop_schedulers
-  stop_watchers
   stop_controller_workers
   stop_job_subshells
 }
 
 cleanup() {
   stop_schedulers
-  stop_watchers
   stop_controller_workers
   stop_job_subshells
   cleanup_temp_tokens
@@ -45,16 +43,6 @@ run_once_mode() {
   run_queue_maintenance 1
 
   queue_periodic_cycle
-
-  if [ "$watch_mentions" = "1" ]; then
-    poll_mentions_once
-  fi
-  if [ "$watch_review_requests" = "1" ]; then
-    poll_review_requests_once
-  fi
-  if [ "$watch_mentions" = "1" ] || [ "$watch_review_requests" = "1" ]; then
-    process_queue
-  fi
 }
 
 run_loop_mode() {
@@ -62,14 +50,6 @@ run_loop_mode() {
   local offset=""
 
   run_queue_maintenance 1
-
-  if [ "$watch_mentions" = "1" ]; then
-    start_mention_watchers
-  fi
-
-  if [ "$watch_review_requests" = "1" ]; then
-    start_review_request_watchers
-  fi
 
   for agent_id in "${agent_ids[@]}"; do
     offset="$(compute_agent_offset "$target_repo" "$agent_id" "$periodic_interval")"

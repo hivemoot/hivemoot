@@ -61,12 +61,6 @@ fi
 
 # shellcheck source=controller/triggers/common.sh
 . "${TRIGGER_DIR}/common.sh"
-# shellcheck source=controller/triggers/github-common.sh
-. "${TRIGGER_DIR}/github-common.sh"
-# shellcheck source=controller/triggers/github-mention.sh
-. "${TRIGGER_DIR}/github-mention.sh"
-# shellcheck source=controller/triggers/github-review-request.sh
-. "${TRIGGER_DIR}/github-review-request.sh"
 # shellcheck source=controller/triggers/periodic.sh
 . "${TRIGGER_DIR}/periodic.sh"
 
@@ -89,13 +83,8 @@ controller_max_workers="${CONTROLLER_MAX_WORKERS:-1}"
 global_max_workers="${GLOBAL_MAX_WORKERS:-0}"
 global_slots_dir="${GLOBAL_SLOTS_DIR:-}"
 global_slot_timeout_periodic_secs="${GLOBAL_SLOT_TIMEOUT_PERIODIC_SECS:-300}"
-global_slot_timeout_mention_secs="${GLOBAL_SLOT_TIMEOUT_MENTION_SECS:-600}"
 periodic_interval="${PERIODIC_INTERVAL_SECS:-3600}"
 periodic_jitter="${PERIODIC_JITTER_SECS:-300}"
-watch_mentions="${WATCH_MENTIONS:-0}"
-watch_review_requests="${WATCH_REVIEW_REQUESTS:-0}"
-watch_poll_interval="${WATCH_POLL_INTERVAL:-300}"
-watch_trigger_failure_backoff_secs="${WATCH_TRIGGER_FAILURE_BACKOFF_SECS:-300}"
 orphan_recovery_grace_secs="${ORPHAN_RECOVERY_GRACE_SECS:-0}"
 queue_artifact_ttl_secs="${QUEUE_ARTIFACT_TTL_SECS:-604800}"
 workspace_ttl_secs="${WORKSPACE_TTL_SECS:-86400}"
@@ -109,7 +98,6 @@ runs_root="${workspace_root}/runs"
 workspaces_root="${workspace_root}/workspaces"
 homes_root="${workspace_root}/homes"
 queue_root="${workspace_root}/queue"
-watch_state_root="${workspace_root}/watch-state"
 memory_root="${workspace_root}/memory"
 lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
@@ -125,14 +113,11 @@ last_queue_maintenance_epoch=0
 
 declare -a temp_token_files=()
 declare -a running_pids=()
-declare -a watcher_pids=()
 declare -a scheduler_pids=()
 declare -A pid_to_job_id=()
 declare -A pid_to_repo=()
 declare -A pid_to_agent=()
 declare -A pid_to_trigger_type=()
-declare -A pid_to_ack_key=()
-declare -A pid_to_state_file=()
 declare -A pid_to_processing_file=()
 declare -A agent_token_files=()
 declare -A repo_lock_files=()
@@ -145,36 +130,17 @@ case "$controller_mode" in
     ;;
 esac
 
-case "$watch_mentions" in
-  0|1) ;;
-  *)
-    echo "WATCH_MENTIONS must be 0 or 1." >&2
-    exit 1
-    ;;
-esac
-case "$watch_review_requests" in
-  0|1) ;;
-  *)
-    echo "WATCH_REVIEW_REQUESTS must be 0 or 1." >&2
-    exit 1
-    ;;
-esac
 require_positive_integer CONTROLLER_MAX_WORKERS "$controller_max_workers"
 require_non_negative_integer GLOBAL_MAX_WORKERS "$global_max_workers"
 require_positive_integer AGENT_TIMEOUT_SECONDS "$agent_timeout_seconds"
 require_positive_integer CONTROLLER_SHUTDOWN_GRACE_SECS "$shutdown_grace_secs"
 require_non_negative_integer GLOBAL_SLOT_TIMEOUT_PERIODIC_SECS "$global_slot_timeout_periodic_secs"
-require_non_negative_integer GLOBAL_SLOT_TIMEOUT_MENTION_SECS "$global_slot_timeout_mention_secs"
 require_positive_integer PERIODIC_INTERVAL_SECS "$periodic_interval"
 require_non_negative_integer PERIODIC_JITTER_SECS "$periodic_jitter"
 require_non_negative_integer ORPHAN_RECOVERY_GRACE_SECS "$orphan_recovery_grace_secs"
 require_non_negative_integer QUEUE_ARTIFACT_TTL_SECS "$queue_artifact_ttl_secs"
 require_non_negative_integer WORKSPACE_TTL_SECS "$workspace_ttl_secs"
 require_non_negative_integer QUEUE_MAINTENANCE_INTERVAL_SECS "$queue_maintenance_interval_secs"
-require_non_negative_integer WATCH_TRIGGER_FAILURE_BACKOFF_SECS "$watch_trigger_failure_backoff_secs"
-if [ "$watch_mentions" = "1" ] || [ "$watch_review_requests" = "1" ]; then
-  require_positive_integer WATCH_POLL_INTERVAL "$watch_poll_interval"
-fi
 
 case "$workspace_root" in
   /*) ;;
@@ -198,14 +164,8 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "Missing required command: jq" >&2
   exit 1
 fi
-if [ "$watch_mentions" = "1" ] || [ "$watch_review_requests" = "1" ]; then
-  if ! command -v hivemoot >/dev/null 2>&1; then
-    echo "Missing required command when GitHub watch triggers are enabled: hivemoot" >&2
-    exit 1
-  fi
-fi
-mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$memory_root"
-chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" "$memory_root" 2>/dev/null || true
+mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$lock_dir" "$token_tmp_root" "$memory_root"
+chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$lock_dir" "$token_tmp_root" "$memory_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
 init_global_slots "$global_slots_dir" "$global_max_workers"
 declare -A seen_agents=()
@@ -249,16 +209,6 @@ fi
 log "Worker image: ${worker_image}"
 log "Workspace root: ${workspace_root}"
 log "This controller runs on the host. Do not mount docker.sock into a container for controller execution."
-if [ "$watch_mentions" = "1" ]; then
-  log "Mention watching enabled (poll interval: ${watch_poll_interval}s)"
-else
-  log "Mention watching disabled"
-fi
-if [ "$watch_review_requests" = "1" ]; then
-  log "Review-request watching enabled (poll interval: ${watch_poll_interval}s)"
-else
-  log "Review-request watching disabled"
-fi
 
 if [ "$controller_mode" = "loop" ]; then
   run_loop_mode
