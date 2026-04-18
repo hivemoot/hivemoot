@@ -7,6 +7,7 @@ Commands:
     hivemoot-agent plugin list        List available plugins
     hivemoot-agent plugin doctor X    Validate a plugin's config
     hivemoot-agent messaging ...      Host-side messaging utilities
+    hivemoot-agent health ...         Host-side health reporting
     hivemoot-agent doctor             Health check
 """
 
@@ -49,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
         register_messaging_commands,
     )
     register_messaging_commands(sub)
+
+    # health — host-side reporting (heartbeat)
+    from hivemoot_agent.health import register_health_commands
+    register_health_commands(sub)
 
     # doctor
     sub.add_parser("doctor", help="Health check").set_defaults(func=_cmd_doctor)

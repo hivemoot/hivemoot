@@ -14,6 +14,18 @@ SHARED_DIR="${SHARED_DIR:-${REPO_ROOT}/shared}"
 CORE_DIR="${CORE_DIR:-${SCRIPT_DIR}/core}"
 TRIGGER_DIR="${TRIGGER_DIR:-${SCRIPT_DIR}/triggers}"
 
+# Resolve the hivemoot-agent CLI path once at controller startup.
+# The controller runs on the host (not inside the container), so the
+# Dockerfile's /usr/local/bin symlink does not help.  Hosts without a
+# system-wide symlink fall back to the in-tree script.  Triggers
+# (periodic, messaging) reuse this so a missing CLI fails loudly here
+# rather than silently in each tick.
+HIVEMOOT_AGENT_CLI="${HIVEMOOT_AGENT_CLI:-$(command -v hivemoot-agent 2>/dev/null || true)}"
+if [ -z "$HIVEMOOT_AGENT_CLI" ] && [ -x "${REPO_ROOT}/cli/hivemoot-agent" ]; then
+  HIVEMOOT_AGENT_CLI="${REPO_ROOT}/cli/hivemoot-agent"
+fi
+export HIVEMOOT_AGENT_CLI
+
 # shellcheck source=shared/lib.sh
 . "${SHARED_DIR}/lib.sh"
 # shellcheck source=shared/lib-global-slots.sh
@@ -22,8 +34,6 @@ TRIGGER_DIR="${TRIGGER_DIR:-${SCRIPT_DIR}/triggers}"
 . "${SHARED_DIR}/lib-slots.sh"
 # shellcheck source=shared/lib-classify.sh
 . "${SHARED_DIR}/lib-classify.sh"
-# shellcheck source=shared/health-reporter.sh
-. "${SHARED_DIR}/health-reporter.sh"
 
 bash_major="${BASH_VERSINFO[0]:-0}"
 print_bash_upgrade_hint() {
@@ -303,6 +313,11 @@ if [ "$watch_messaging" = "1" ] && [ "$watch_tasks" = "1" ]; then
   echo "WATCH_MESSAGING=1 and WATCH_TASKS=1 cannot be used together (task-watch returns before messaging starts)." >&2
   exit 1
 fi
+if [ -z "$HIVEMOOT_AGENT_CLI" ] || [ ! -x "$HIVEMOOT_AGENT_CLI" ]; then
+  echo "Cannot find hivemoot-agent CLI on PATH or at \${REPO_ROOT}/cli/hivemoot-agent." >&2
+  echo "  Set HIVEMOOT_AGENT_CLI to an absolute path, or symlink the CLI into PATH." >&2
+  exit 1
+fi
 if [ "$watch_messaging" = "1" ]; then
   if [ -z "$messaging_agent_id" ]; then
     echo "MESSAGING_AGENT_ID is required when WATCH_MESSAGING=1" >&2
@@ -312,7 +327,7 @@ if [ "$watch_messaging" = "1" ]; then
   # it surfaces actionable errors on stderr and exits non-zero so the
   # controller fails to start rather than silently polling a broken
   # adapter.
-  if ! hivemoot-agent messaging preflight \
+  if ! "$HIVEMOOT_AGENT_CLI" messaging preflight \
        --platform "${MESSAGING_PLATFORM:-telegram}"; then
     exit 1
   fi

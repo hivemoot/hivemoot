@@ -186,9 +186,6 @@ spawn_worker() {
   append_env_if_set OPENCODE_PROVIDER
   append_env_if_set OPENCODE_MODEL
   append_env_if_set HEALTH_REPORT_URL
-  append_env_if_set HEALTH_REPORT_TIMEOUT_SECS
-  append_env_if_set HEALTH_REPORT_MAX_RETRIES
-  append_env_if_set HEALTH_REPORT_RUN_SUMMARY
   append_env_if_set MESSAGING_PLATFORM
   append_env_if_set MESSAGING_AGENT_ID
   append_env_if_set MESSAGING_ALLOWED_CHAT_IDS

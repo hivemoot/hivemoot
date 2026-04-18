@@ -94,14 +94,31 @@ start_agent_scheduler() {
 }
 
 fire_heartbeats() {
-  local next_run_at agent_id health_token_input
+  # Token is resolved by `hivemoot-agent health heartbeat` directly
+  # from HIVEMOOT_AGENT_TOKEN_FILE / HIVEMOOT_AGENT_TOKEN env, which
+  # the controller process already exports.  HIVEMOOT_AGENT_CLI is
+  # resolved once at controller startup in controller/main.sh.
+  local next_run_at agent_id rc=0
   next_run_at="$(date -u -d "+${periodic_interval} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || date -u -v "+${periodic_interval}S" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || true)"
-  health_token_input="${HIVEMOOT_AGENT_TOKEN_FILE:-${HIVEMOOT_AGENT_TOKEN:-}}"
   for agent_id in "${agent_ids[@]}"; do
-    send_heartbeat "$agent_id" "$target_repo" "$health_token_input" "$next_run_at" || true
-    log "Heartbeat attempted: agent=${agent_id}"
+    rc=0
+    "$HIVEMOOT_AGENT_CLI" health heartbeat \
+      --agent "$agent_id" \
+      --repo "$target_repo" \
+      --next-run-at "$next_run_at" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      # argparse usage error — a regression in the controller's CLI
+      # invocation (renamed flag, missing required arg).  Operational
+      # failures are exit 0 with stderr by design, so a non-zero rc
+      # here always means we mis-invoked the CLI.
+      log "Heartbeat invocation rejected by CLI (rc=2, usage error) for agent=${agent_id}"
+    elif [ "$rc" -ne 0 ]; then
+      log "Heartbeat invocation failed (rc=${rc}) for agent=${agent_id}"
+    else
+      log "Heartbeat attempted: agent=${agent_id}"
+    fi
   done
 }
 

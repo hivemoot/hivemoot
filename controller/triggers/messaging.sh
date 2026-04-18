@@ -200,7 +200,7 @@ controller_trigger_on_duplicate_agent__messaging() {
         if [ -n "$dup_chat_id" ] && [ "$dup_chat_id" != "$dup_session_key" ]; then
           printf '%s' \
             "I'm busy with another task right now — I'll get to your message shortly." \
-            | hivemoot-agent messaging send \
+            | "$HIVEMOOT_AGENT_CLI" messaging send \
                 --platform "${MESSAGING_PLATFORM:-telegram}" \
                 --chat-id "$dup_chat_id" >/dev/null 2>&1 || true
         fi
@@ -259,7 +259,7 @@ _messaging_consume_watch() {
       "$chat_id" "$username" "$text" \
       "${session_prefix}:${chat_id}" "${session_prefix}-msg:${update_id}" \
       || true
-  done < <(hivemoot-agent messaging watch \
+  done < <("$HIVEMOOT_AGENT_CLI" messaging watch \
              --platform "$platform" \
              --offset-file "$offset_file" \
              --poll-timeout "$poll_timeout")

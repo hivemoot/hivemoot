@@ -1638,29 +1638,59 @@ run_task_watch_token_file_case() {
 }
 
 run_heartbeat_auth_case() {
+  # Verifies the controller invokes `hivemoot-agent health heartbeat`
+  # for each agent with the expected env propagation.  The actual HTTP
+  # auth header / payload assembly is covered by cli/tests/test_health_cli.py.
   local repo_root="$1"
   local case_dir="$2"
-  local expected_auth="$3"
+  local expected_log_line="$3"
   shift 3
   local -a auth_env=("$@")
   local controller_pid=0
   local controller_log=""
-  local curl_log=""
+  local heartbeat_log=""
   local deadline=0
 
   mkdir -p "$case_dir"
   setup_mock_docker "${case_dir}/mock-bin"
-  setup_mock_curl "${case_dir}/mock-bin"
+
+  # Stub `hivemoot-agent health heartbeat` to record one line per
+  # invocation: AGENT|REPO|HEALTH_REPORT_URL|HIVEMOOT_AGENT_TOKEN|HIVEMOOT_AGENT_TOKEN_FILE.
+  heartbeat_log="${case_dir}/heartbeat.log"
+  cat > "${case_dir}/mock-bin/hivemoot-agent" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "health" ] && [ "${2:-}" = "heartbeat" ]; then
+  shift 2
+  agent="" repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent) agent="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s|%s|%s|%s|%s\n' \
+    "$agent" "$repo" \
+    "${HEALTH_REPORT_URL:-}" \
+    "${HIVEMOOT_AGENT_TOKEN:-}" \
+    "${HIVEMOOT_AGENT_TOKEN_FILE:-}" \
+    >> "${HEARTBEAT_LOG:?HEARTBEAT_LOG not set}"
+  exit 0
+fi
+echo "stub: unhandled hivemoot-agent invocation: $*" >&2
+exit 2
+STUB
+  chmod +x "${case_dir}/mock-bin/hivemoot-agent"
 
   controller_log="${case_dir}/controller.log"
-  curl_log="${case_dir}/curl-state/curl.log"
 
   env -i \
     PATH="${case_dir}/mock-bin:${PATH}" \
     HOME="${case_dir}/home" \
     MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
     MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
-    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    HEARTBEAT_LOG="$heartbeat_log" \
     TARGET_REPO="owner/repo" \
     CONTROLLER_RUN_MODE="loop" \
     CONTROLLER_MAX_WORKERS="1" \
@@ -1682,18 +1712,18 @@ run_heartbeat_auth_case() {
 
   deadline=$((SECONDS + 20))
   while true; do
-    if [ -f "$curl_log" ] && grep -Fq "AUTH=${expected_auth}" "$curl_log" 2>/dev/null; then
+    if [ -f "$heartbeat_log" ] && grep -F -x -q "$expected_log_line" "$heartbeat_log" 2>/dev/null; then
       break
     fi
     if ! kill -0 "$controller_pid" 2>/dev/null; then
       sed 's/^/  /' "$controller_log" >&2 || true
-      fail "controller exited before heartbeat auth was observed"
+      fail "controller exited before heartbeat invocation was observed"
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       kill -TERM "$controller_pid" 2>/dev/null || true
       wait "$controller_pid" 2>/dev/null || true
       sed 's/^/  /' "$controller_log" >&2 || true
-      fail "timed out waiting for heartbeat auth"
+      fail "timed out waiting for heartbeat invocation"
     fi
     sleep 0.1
   done
@@ -1701,23 +1731,32 @@ run_heartbeat_auth_case() {
   kill -TERM "$controller_pid" 2>/dev/null || true
   wait "$controller_pid" 2>/dev/null || true
 
-  [ -f "$curl_log" ] || fail "missing curl log in heartbeat auth case"
-  assert_file_contains "$curl_log" "URL=https://api.example.com/api/agent-health"
-  assert_file_contains "$curl_log" "AUTH=${expected_auth}"
-  assert_file_contains "$curl_log" '"outcome": "heartbeat"'
+  [ -f "$heartbeat_log" ] || fail "missing heartbeat log"
+  # Exact-line match catches a regression where the controller leaks
+  # both HIVEMOOT_AGENT_TOKEN and HIVEMOOT_AGENT_TOKEN_FILE simultaneously
+  # (substring grep would pass; -F -x -q requires the whole line).
+  if ! grep -F -x -q "$expected_log_line" "$heartbeat_log"; then
+    echo "FAIL: heartbeat log does not contain expected exact line:" >&2
+    echo "  expected: $expected_log_line" >&2
+    echo "  actual lines:" >&2
+    sed 's/^/    /' "$heartbeat_log" >&2
+    exit 1
+  fi
 }
 
 run_heartbeat_inline_token_case() {
   local repo_root="$1"
   local case_dir="$2"
 
+  # Exact line: agent|repo|URL|RAW_TOKEN|TOKEN_FILE_PATH
+  # File-path column must be empty (no trailing path after the last |).
   run_heartbeat_auth_case \
     "$repo_root" \
     "$case_dir" \
-    "Authorization: Bearer shared-token" \
+    "worker|owner/repo|https://api.example.com/api/agent-health|shared-token|" \
     "HIVEMOOT_AGENT_TOKEN=shared-token"
 
-  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN"
+  echo "PASS: controller propagates HIVEMOOT_AGENT_TOKEN (no file-path leak)"
 }
 
 run_heartbeat_token_file_case() {
@@ -1730,13 +1769,15 @@ run_heartbeat_token_file_case() {
   printf '%s' 'shared-token-from-file' > "$token_file"
   chmod 600 "$token_file"
 
+  # Exact line: agent|repo|URL||TOKEN_FILE_PATH
+  # Raw-token column must be empty (double || between URL and path).
   run_heartbeat_auth_case \
     "$repo_root" \
     "$case_dir" \
-    "Authorization: Bearer shared-token-from-file" \
+    "worker|owner/repo|https://api.example.com/api/agent-health||${token_file}" \
     "HIVEMOOT_AGENT_TOKEN_FILE=${token_file}"
 
-  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN_FILE"
+  echo "PASS: controller propagates HIVEMOOT_AGENT_TOKEN_FILE (no raw-token leak)"
 }
 
 run_task_watch_no_task_case() {
@@ -3493,6 +3534,9 @@ STUB
     export SHARED_DIR="${repo_root}/shared"
     export PATH="${stub_bin}:${PATH}"
     export SEND_LOG="$send_log"
+    # Messaging trigger now invokes "$HIVEMOOT_AGENT_CLI"; resolved
+    # in production at controller/main.sh startup.  Point it at our stub.
+    export HIVEMOOT_AGENT_CLI="${stub_bin}/hivemoot-agent"
 
     workspace_root="${case_dir}/workspace"
     queue_root="${workspace_root}/queue"

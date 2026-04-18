@@ -264,20 +264,24 @@ Task mode writes a local markdown artifact at
 
 ## Health Reporting
 
-When `HEALTH_REPORT_URL` is set, the agent sends a terminal health report to the
-backend after each run via `POST /api/agent-health`. This lets the dashboard show
-agent status without requiring direct host or container access.
+When `HEALTH_REPORT_URL` is set, the controller sends a periodic liveness
+heartbeat to the backend via `POST /api/agent-health`. This lets the
+dashboard show which agents are alive without requiring direct host or
+container access.
 
 **How it works:**
 
-1. After each run completes, the agent builds a per-run payload:
-   `agent_id`, `repo`, `run_id`, `outcome`, `duration_secs`, `consecutive_failures`,
-   with optional `exit_code` and `error`.
-2. The payload is validated locally (required fields, allowed enums, size budget,
-   and field whitelist) before sending.
-3. Auth uses `HIVEMOOT_AGENT_TOKEN` (`HIVEMOOT_AGENT_TOKEN_FILE` also works).
-4. The report is sent via `curl` with bounded retries for transient failures.
-5. Reporting is best-effort and never affects the run exit code.
+1. The controller's periodic loop (`controller/triggers/periodic.sh`)
+   invokes `hivemoot-agent health heartbeat --agent <id> --repo <repo>
+   [--next-run-at <iso8601>]` for each configured agent at the
+   `HEARTBEAT_INTERVAL_SECS` cadence.
+2. The CLI POSTs `{agent_id, repo, outcome: "heartbeat"[, next_run_at]}`
+   to `HEALTH_REPORT_URL` with a fixed 3-second timeout and no retries —
+   a slow or down backend must never stall the controller loop.
+3. Auth uses the bearer token from `HIVEMOOT_AGENT_TOKEN_FILE` (preferred)
+   or `HIVEMOOT_AGENT_TOKEN` if no file is configured.
+4. Reporting is best-effort: operational failures (network error, 401,
+   oversize payload) are logged on stderr but do not block the controller.
 
 **Enable it** by setting `HEALTH_REPORT_URL` in `.env`:
 
@@ -290,24 +294,9 @@ HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
 | Variable | Default | Description |
 | --- | --- | --- |
 | `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
-| `HIVEMOOT_AGENT_TOKEN` | *(empty)* | Shared bearer token used by task mode and health reporting |
+| `HIVEMOOT_AGENT_TOKEN` | *(empty)* | Shared bearer token (also used by task mode) |
 | `HIVEMOOT_AGENT_TOKEN_FILE` | *(empty)* | Optional file path for `HIVEMOOT_AGENT_TOKEN` |
-| `HEALTH_REPORT_TIMEOUT_SECS` | `10` | Per-request timeout |
-| `HEALTH_REPORT_MAX_RETRIES` | `2` | Retry attempts for 5xx/network errors |
 | `HEARTBEAT_INTERVAL_SECS` | `1800` | Controller periodic heartbeat cadence in seconds (`0` disables); default 30 min |
-| `HEALTH_REPORT_RUN_SUMMARY` | `0` | Include agent run summary in health payloads (`0`=off, `1`=on). Enable only after the backend schema accepts `run_summary`. |
-| `HEALTH_REPORT_ERROR_DETAIL` | `0` | Include sanitized log-tail details for failed or timed-out runs (`0`=off, `1`=on). Enable only after the backend schema accepts `error_detail`. |
-
-**Failure behavior:**
-
-- 200: logged as success
-- 400/413: logged with details, no retry
-- 401: logged with actionable message ("check token file and backend access")
-- 429: logged, remaining retries skipped
-- 5xx/network: retried up to `HEALTH_REPORT_MAX_RETRIES` with bounded backoff (1–4s + jitter)
-
-Persistent run/error counters are tracked in `agent-stats.json` alongside `health.json`,
-independent of whether health reporting is enabled.
 
 ## Host Controller (Phase 2 MVP)
 
@@ -752,8 +741,9 @@ When running Gemini against untrusted repositories, treat the container boundary
 | Subscription auth errors | Use `docker-compose.subscription.local.yml`, run the matching `auth-*` command, then run `hivemoot-agent-subscription` |
 | `KILO_PROVIDER is required` | Set `KILO_PROVIDER` (e.g. `openrouter`) or `KILOCODE_TOKEN` |
 | Kilo permission prompts in `--auto` mode | The `--auto` flag should bypass all prompts; check Kilo CLI version (`kilo --version`) |
-| `health-report: authentication failed (401)` | Backend rejected the token — verify `HIVEMOOT_AGENT_TOKEN`/`HIVEMOOT_AGENT_TOKEN_FILE` and backend access |
-| `health-report: rate limited (429)` | Backend rate limit hit — reduce run frequency or check `HEALTH_REPORT_URL` configuration |
+| `health: heartbeat HTTP 401 for <agent>` | Backend rejected the token — verify `HIVEMOOT_AGENT_TOKEN`/`HIVEMOOT_AGENT_TOKEN_FILE` and backend access |
+| `health: heartbeat HTTP 429 for <agent>` | Backend rate limit hit — reduce `HEARTBEAT_INTERVAL_SECS` cadence or check `HEALTH_REPORT_URL` configuration |
+| `health: heartbeat failed for <agent>: URLError` (or `TimeoutError`) | Network error reaching `HEALTH_REPORT_URL` — DNS, connectivity, or backend down. Best-effort; the next periodic tick will retry. |
 
 ## Related Repos
 

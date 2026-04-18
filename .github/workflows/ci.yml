@@ -68,18 +68,14 @@ jobs:
         run: bash scripts/test-classify.sh
       - name: Verify task mode behavior
         run: bash scripts/test-run-task-mode.sh
-      - name: Verify health reporting env wiring
-        run: bash scripts/test-health-report-env-wiring.sh
-      - name: Verify health reporter contract and behavior
-        run: bash scripts/test-health-reporter.sh
-      - name: Verify token extractor extraction behavior
-        run: bash scripts/test-token-extractor.sh
       - name: Verify plugin formatter tests
         run: python3 cli/tests/test_formatter.py
       - name: Verify engine and oneshot tests
         run: python3 cli/tests/test_engine.py
       - name: Verify messaging CLI tests
         run: python3 cli/tests/test_messaging_cli.py
+      - name: Verify health CLI tests
+        run: python3 cli/tests/test_health_cli.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
@@ -158,6 +154,9 @@ jobs:
 
           # Verify the Python CLI is available and plugin discovery works.
           docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | grep -qF "messaging"
+          # Verify the host-side health subcommand is registered (heartbeat
+          # is invoked by the controller's periodic loop).
+          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci health heartbeat --help >/dev/null
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:

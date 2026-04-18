@@ -96,6 +96,9 @@ EOF
     set -euo pipefail
 
     export PATH="${tmp_dir}/bin:${PATH}"
+    # controller/main.sh resolves HIVEMOOT_AGENT_CLI at startup; in
+    # this test we source messaging.sh directly so we set it ourselves.
+    export HIVEMOOT_AGENT_CLI="${tmp_dir}/bin/hivemoot-agent"
     export WATCH_FIXTURE="$fixture"
 
     export SHARED_DIR="${repo_root}/shared"
@@ -176,6 +179,9 @@ run_busy_ack_via_cli_case() {
     set -euo pipefail
 
     export PATH="${tmp_dir}/bin:${PATH}"
+    # controller/main.sh resolves HIVEMOOT_AGENT_CLI at startup; in
+    # this test we source messaging.sh directly so we set it ourselves.
+    export HIVEMOOT_AGENT_CLI="${tmp_dir}/bin/hivemoot-agent"
     export SEND_LOG="$send_log"
     export SHARED_DIR="${repo_root}/shared"
 
@@ -240,6 +246,9 @@ EOF
     set -euo pipefail
 
     export PATH="${tmp_dir}/bin:${PATH}"
+    # controller/main.sh resolves HIVEMOOT_AGENT_CLI at startup; in
+    # this test we source messaging.sh directly so we set it ourselves.
+    export HIVEMOOT_AGENT_CLI="${tmp_dir}/bin/hivemoot-agent"
     export WATCH_FIXTURE="$fixture"
     export SHARED_DIR="${repo_root}/shared"
 
