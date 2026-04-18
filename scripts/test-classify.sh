@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Tests for scripts/lib-classify.sh — classify_run_failure_from_file()
+# Tests for shared/lib-classify.sh — classify_run_failure_from_file()
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-# shellcheck source=scripts/lib-classify.sh
-. "${SCRIPT_DIR}/lib-classify.sh"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=shared/lib-classify.sh
+. "${REPO_ROOT}/shared/lib-classify.sh"
 
 fail() {
   echo "FAIL: $*" >&2

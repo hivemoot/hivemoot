@@ -12,7 +12,7 @@
 
 # lib-classify.sh is a sourced library; avoid "return" errors when run directly.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
-  echo "scripts/lib-classify.sh is a library and should be sourced, not executed." >&2
+  echo "shared/lib-classify.sh is a library and should be sourced, not executed." >&2
   exit 0
 fi
 

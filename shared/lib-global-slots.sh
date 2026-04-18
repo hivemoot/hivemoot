@@ -2,7 +2,7 @@
 # lib-global-slots.sh -- host-wide flock semaphore for controller worker slots.
 #
 # Dependencies (must be sourced before this file):
-#   scripts/lib.sh -- provides trim()
+#   shared/lib.sh -- provides trim()
 #
 # Idempotency guard: re-sourcing is a no-op.
 [ -n "${HIVEMOOT_LIB_GLOBAL_SLOTS_LOADED:-}" ] && return 0

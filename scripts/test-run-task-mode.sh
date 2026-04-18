@@ -164,8 +164,8 @@ log() {
   :
 }
 
-# shellcheck source=scripts/lib-classify.sh
-. "$repo_root/scripts/lib-classify.sh"
+# shellcheck source=shared/lib-classify.sh
+. "$repo_root/shared/lib-classify.sh"
 # shellcheck source=controller/triggers/common.sh
 . "$repo_root/controller/triggers/common.sh"
 # shellcheck source=controller/triggers/hivemoot-task.sh

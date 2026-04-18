@@ -25,17 +25,16 @@ tool calls.
 
 ## Runtime Architecture
 
-- Worker entrypoint: `worker/entrypoint.sh` (thin launcher)
-- Plugin engine (worker body): `cli/hivemoot_agent/` (Python)
+- Worker entrypoint: `hivemoot-agent worker` Python subcommand (`cli/hivemoot_agent/worker.py`) — runs as PID 1 inside every job container under tini
+- Plugin engine (worker body): `cli/hivemoot_agent/engine.py`
 - Shared shell helpers: `shared/lib.sh`
 - Host controller (per-job worker containers): `controller/main.sh`
-- Compatibility shim: `scripts/entrypoint.sh` → `worker/entrypoint.sh`
 
 High-level flow:
 
-1. `controller/main.sh` owns host-side trigger handling and spawns isolated worker containers, or `worker/entrypoint.sh` is invoked directly for standalone worker execution.
-2. `worker/entrypoint.sh` loads secrets, bridges GitHub tokens, validates `AGENT_PLUGINS`, and `exec`s `hivemoot-agent oneshot`.
-3. The Python plugin engine (`cli/hivemoot_agent/engine.py`) loads the requested plugin stack, runs `setup()` (clone repos, authenticate, etc.), builds the merged system prompt, and invokes the provider CLI (claude/codex/gemini/kilo/opencode) as a subprocess.
+1. `controller/main.sh` owns host-side trigger handling and spawns isolated worker containers, each of which runs `hivemoot-agent worker` as its entrypoint.
+2. `hivemoot-agent worker` bootstraps Claude OAuth credentials, promotes provider `*_FILE` secrets into bare env vars, rejects controller-only env (`AGENT_TRIGGER`), checks the worker image's baked provider matches `AGENT_PROVIDER`, validates `AGENT_PLUGINS`, bridges GitHub-token aliases into `GITHUB_TOKEN[_FILE]`, then hands off to `Engine().oneshot()` in-process.
+3. The Python plugin engine loads the requested plugin stack, runs `setup()` (clone repos, authenticate, etc.), builds the merged system prompt, and invokes the provider CLI (claude/codex/gemini/kilo/opencode) as a subprocess.
 
 ## Provider and Auth Model
 
@@ -45,14 +44,13 @@ Auth modes:
 
 - `api_key`
 - `subscription`
-- `auto` (resolved per provider via `resolve_effective_auth_mode` in `shared/lib.sh`)
 
-Provider secrets can be set inline or via `*_FILE` env vars and are loaded through
-`load_provider_secrets` in `shared/lib.sh`.
+Provider secrets can be set inline or via `*_FILE` env vars and are loaded by
+`_load_provider_secrets` in `cli/hivemoot_agent/worker.py`.
 
 ## Shell Conventions
 
-Shell runtime code in `controller/`, `worker/`, and `shared/` should follow existing patterns:
+Shell runtime code in `controller/` and `shared/` should follow existing patterns:
 
 - `#!/usr/bin/env bash`
 - `set -euo pipefail`

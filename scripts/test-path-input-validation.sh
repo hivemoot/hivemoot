@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Unit checks for the path/ID validators in shared/lib.sh. Production
-# callers live in controller/main.sh (host-side) and worker/entrypoint.sh
-# (container-side); this script exercises the helpers directly.
+# callers live in controller/main.sh; this script exercises the helpers
+# directly.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1090

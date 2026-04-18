@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Run ShellCheck
-        run: find controller worker shared scripts -name '*.sh' -print0 | xargs -0 shellcheck
+        run: find controller shared scripts -name '*.sh' -print0 | xargs -0 shellcheck
 
   script-validation:
     name: Script Validation
@@ -48,17 +48,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Verify TARGET_REPO validation behavior
         run: bash scripts/test-target-repo-validation.sh
-      - name: Verify Claude token bootstrap behavior
-        run: bash scripts/test-claude-token-bootstrap.sh
       - name: Verify WORKSPACE_ROOT and AGENT_ID path validation behavior
         run: bash scripts/test-path-input-validation.sh
       - name: Verify Trivy ignore validation behavior
         run: bash scripts/test-trivyignore-check.sh
       - name: Verify prompt security guardrails
         run: bash scripts/test-prompt-guardrails.sh
-      - name: Verify provider mismatch detection behavior
-        run: bash scripts/test-provider-mismatch.sh
-      - name: Verify plugin engine routing behavior
+      - name: Verify plugin engine compose-config check
         run: bash scripts/test-plugin-engine-routing.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
@@ -76,6 +72,8 @@ jobs:
         run: python3 cli/tests/test_messaging_cli.py
       - name: Verify health CLI tests
         run: python3 cli/tests/test_health_cli.py
+      - name: Verify worker entrypoint tests
+        run: python3 cli/tests/test_worker_cli.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
@@ -144,7 +142,8 @@ jobs:
           stderr_file="$(mktemp)"
           trap 'rm -f "$stderr_file"' EXIT
 
-          # Verify the bash entrypoint still works (validates AGENT_PLUGINS).
+          # Verify the Python worker entrypoint runs and rejects a
+          # missing AGENT_PLUGINS with the expected error message.
           if timeout 10 docker run --rm hivemoot-agent:ci \
             > /dev/null 2> "$stderr_file"; then
             echo "::error::entrypoint should fail without AGENT_PLUGINS"

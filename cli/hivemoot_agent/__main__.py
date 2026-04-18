@@ -2,6 +2,7 @@
 """hivemoot-agent CLI.
 
 Commands:
+    hivemoot-agent worker             Container entrypoint (PID 1 under tini)
     hivemoot-agent run                Daemon mode (triggers poll continuously)
     hivemoot-agent oneshot            Run agent once and exit
     hivemoot-agent plugin list        List available plugins
@@ -25,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub = parser.add_subparsers(dest="command")
+
+    # worker — container entrypoint (replaces worker/entrypoint.sh)
+    from hivemoot_agent.worker import register_worker_commands
+    register_worker_commands(sub)
 
     # run — daemon mode
     sub.add_parser(
