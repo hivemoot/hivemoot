@@ -405,7 +405,7 @@ class CmdWorkerTests(_EnvIsolated):
             self.assertEqual(worker_cli.cmd_worker(_make_args()), 1)
         out = captured.getvalue()
         self.assertIn("AGENT_TRIGGER is controller-only", out)
-        self.assertIn("Use controller/main.sh", out)
+        self.assertIn("Use hivemoot-agent run", out)
 
     def test_missing_plugins_fails(self) -> None:
         os.environ["HOME"] = tempfile.gettempdir()

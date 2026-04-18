@@ -225,9 +225,8 @@ Completed follow-ups:
   services set `command: ["run"]` for daemon mode; the Dockerfile
   CMD default stays `["worker"]` so a raw `docker run` with no
   plugin config fails fast instead of entering an idle daemon.
-  `controller/main.sh` and `scripts/controller.sh` remain as thin
-  deprecation stubs that exit with a clear migration message until
-  apiary's deploy scripts migrate; they can be deleted after that.
+  `controller/main.sh` and `scripts/controller.sh` deprecation stubs
+  were deleted once apiary finished migrating its deploy scripts.
 - ✅ Three-layer system prompt: root + identity + plugins.  The
   engine now assembles system prompts in three distinct, tagged
   layers instead of merging everything through plugin composition.
@@ -238,14 +237,13 @@ Completed follow-ups:
   `AGENT_IDENTITY_FILE` — per-agent content (role, voice, mission,
   domain conventions) that isn't baked into this repo.  `<plugin>`
   blocks remain for capability content only.  The `hivemoot-identity`
-  plugin is demoted to a transitional deprecation shim that emits a
-  warning and still contributes the legacy voice/commit content so
-  unmigrated fleets don't regress mid-rollout; once deployers mount
-  their own identity files, the shim gets deleted.  This fixes two
-  problems with the old approach: security rules are now always
-  applied regardless of `AGENT_PLUGINS` (can't be accidentally
-  omitted), and identity is a first-class deployer input instead of
-  a singleton-disguised-as-plugin.
+  plugin shim was deleted once apiary's fleet mounted its own
+  `identity.md` file and dropped `hivemoot-identity` from
+  `AGENT_PLUGINS`.  This fixes two problems with the old approach:
+  security rules are now always applied regardless of
+  `AGENT_PLUGINS` (can't be accidentally omitted), and identity is
+  a first-class deployer input instead of a
+  singleton-disguised-as-plugin.
 
 ## References
 

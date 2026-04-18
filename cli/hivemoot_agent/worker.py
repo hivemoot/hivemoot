@@ -354,7 +354,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         print(
-            "Use controller/main.sh to drive trigger-based runs.",
+            "Use hivemoot-agent run to drive trigger-based runs.",
             file=sys.stderr,
         )
         return 1

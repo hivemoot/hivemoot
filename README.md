@@ -180,12 +180,12 @@ This path is intentionally simple:
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
 For the default Hivemoot repo workflow, use
-`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github`.
+`AGENT_PLUGINS=github,hivemoot-github`.
 
 **Minimal plugin-mode config**:
 
 ```env
-AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github
+AGENT_PLUGINS=github,hivemoot-github
 GITHUB_TOKEN_FILE=/run/secrets/github_token
 GITHUB_REPOS=hivemoot/hivemoot-agent
 TARGET_REPO=hivemoot/hivemoot-agent
@@ -200,7 +200,7 @@ Notes:
 - if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
 - use `AGENT_PLUGINS=github` for generic GitHub repo automation
-- use `AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github` for the Hivemoot GitHub contribution workflow
+- use `AGENT_PLUGINS=github,hivemoot-github` for the Hivemoot GitHub contribution workflow
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 For recurring runs, use the `cron` plugin — list of named tasks, each
@@ -212,7 +212,7 @@ hivemoot-agent` enters daemon mode.  (The image itself defaults to
 fast on missing plugin config rather than idling as an empty daemon.)
 
 ```bash
-AGENT_PLUGINS=hivemoot-identity,github,cron \
+AGENT_PLUGINS=github,cron \
 CRON_SCHEDULES_JSON='[
   {"name":"autonomous","schedule":"@every 1h","jitter_secs":300,
    "prompt":"Make meaningful contributions to the repository."},
@@ -360,7 +360,7 @@ ExecStart=/usr/bin/docker compose -f /opt/hivemoot-agent/docker-compose.yml \
 Environment=AGENT_ID=worker
 Environment=TARGET_REPO=acme/api
 Environment=GITHUB_REPOS=acme/api
-Environment=AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github,cron
+Environment=AGENT_PLUGINS=github,hivemoot-github,cron
 Environment=CRON_SCHEDULES_JSON=[{"name":"autonomous",...}]
 Restart=on-failure
 ```
@@ -572,10 +572,11 @@ stay concise while sharing the same base.
 When unset, standing agents use
 [`cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md)
 and task mode uses
-[`cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md),
-both composed with
-[`cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md)
-via the `hivemoot-identity` plugin stacked ahead of the workflow plugin.
+[`cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md).
+Both compose under the runtime's always-applied root baseline
+([`cli/hivemoot_agent/root_system_prompt.md`](cli/hivemoot_agent/root_system_prompt.md))
+and, when set, the deployer-supplied `AGENT_IDENTITY_FILE` — see
+[Prompt layers](#prompt-layers-root--identity--plugins).
 
 ## Skills
 

@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Run ShellCheck
-        run: find controller scripts -name '*.sh' -print0 | xargs -0 shellcheck
+        run: find scripts -name '*.sh' -print0 | xargs -0 shellcheck
 
   script-validation:
     name: Script Validation
