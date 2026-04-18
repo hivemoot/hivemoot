@@ -43,10 +43,6 @@ cleanup() {
 
 run_once_mode() {
   run_queue_maintenance 1
-  if [ "$watch_tasks" = "1" ]; then
-    queue_claimed_tasks_once
-    return 0
-  fi
 
   queue_periodic_cycle
 
@@ -67,11 +63,6 @@ run_loop_mode() {
 
   run_queue_maintenance 1
 
-  if [ "$watch_tasks" = "1" ]; then
-    run_task_watch_loop
-    return 0
-  fi
-
   if [ "$watch_mentions" = "1" ]; then
     start_mention_watchers
   fi
@@ -80,16 +71,7 @@ run_loop_mode() {
     start_review_request_watchers
   fi
 
-  if [ "$watch_messaging" = "1" ]; then
-    start_messaging_watcher
-  fi
-
   for agent_id in "${agent_ids[@]}"; do
-    # Messaging agent handles interactive chat — exclude from periodic
-    # autonomous scheduling to avoid conflicts.
-    if [ "$watch_messaging" = "1" ] && [ "$agent_id" = "$messaging_agent_id" ]; then
-      continue
-    fi
     offset="$(compute_agent_offset "$target_repo" "$agent_id" "$periodic_interval")"
     start_agent_scheduler "$agent_id" "$offset"
   done
@@ -114,15 +96,6 @@ run_loop_mode() {
       shutdown_requested=1
       failed_jobs=$((failed_jobs + 1))
       break
-    fi
-
-    if [ "$heartbeat_interval_secs" -gt 0 ] && [ -n "${HEALTH_REPORT_URL:-}" ]; then
-      local now_epoch
-      now_epoch="$(date +%s)"
-      if [ $((now_epoch - last_heartbeat_epoch)) -ge "$heartbeat_interval_secs" ]; then
-        fire_heartbeats
-        last_heartbeat_epoch="$now_epoch"
-      fi
     fi
 
     sleep 1 &

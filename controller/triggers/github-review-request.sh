@@ -27,10 +27,6 @@ Then read the PR diff and linked issue, evaluate the implementation, and post a 
 EOF_REVIEW
 }
 
-controller_trigger_health_kind__github_review_request() {
-  printf '%s' "mention"
-}
-
 controller_trigger_global_slot_timeout_secs__github_review_request() {
   printf '%s' "$global_slot_timeout_mention_secs"
 }

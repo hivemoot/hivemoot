@@ -58,22 +58,22 @@ jobs:
         run: bash scripts/test-plugin-engine-routing.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
-      - name: Verify messaging trigger host-side integration
-        run: bash scripts/test-messaging-trigger.sh
       - name: Verify run-failure classification behavior
         run: bash scripts/test-classify.sh
-      - name: Verify task mode behavior
-        run: bash scripts/test-run-task-mode.sh
       - name: Verify plugin formatter tests
         run: python3 cli/tests/test_formatter.py
       - name: Verify engine and oneshot tests
         run: python3 cli/tests/test_engine.py
-      - name: Verify messaging CLI tests
-        run: python3 cli/tests/test_messaging_cli.py
-      - name: Verify health CLI tests
-        run: python3 cli/tests/test_health_cli.py
+      - name: Verify engine lifecycle contract tests
+        run: python3 cli/tests/test_engine_lifecycle.py
       - name: Verify worker entrypoint tests
         run: python3 cli/tests/test_worker_cli.py
+      - name: Verify hivemoot-task plugin API tests
+        run: python3 cli/tests/test_hivemoot_task_api.py
+      - name: Verify hivemoot-task plugin extractor tests
+        run: python3 cli/tests/test_hivemoot_task_extractor.py
+      - name: Verify hivemoot-task plugin trigger + lifecycle tests
+        run: python3 cli/tests/test_hivemoot_task_trigger.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
@@ -151,11 +151,11 @@ jobs:
           fi
           grep -qF "AGENT_PLUGINS" "$stderr_file"
 
-          # Verify the Python CLI is available and plugin discovery works.
-          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | grep -qF "messaging"
-          # Verify the host-side health subcommand is registered (heartbeat
-          # is invoked by the controller's periodic loop).
-          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci health heartbeat --help >/dev/null
+          # Verify the Python CLI is available and plugin discovery surfaces
+          # the daemon-mode plugins (messaging + hivemoot-task) per ADR-002.
+          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | tee /tmp/plugin-list
+          grep -qF "messaging" /tmp/plugin-list
+          grep -qF "hivemoot-task" /tmp/plugin-list
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:

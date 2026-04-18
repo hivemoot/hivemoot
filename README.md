@@ -62,7 +62,7 @@ docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
 > [!WARNING]
 > `hivemoot-agent` is not fully production-ready yet.
 > Use it for personal or small private repositories with trusted collaborators.
-> For production deployments, use the [Host Controller (Phase 2 MVP)](#host-controller-phase-2-mvp)
+> For production deployments, use the [Host Controller](#host-controller-legacy)
 > and apply additional hardening for credentials, runtime isolation, and permissions.
 
 ## What This Does
@@ -216,7 +216,7 @@ Notes:
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 For recurring runs and multi-agent fleets, use `controller/main.sh` —
-see the [Host Controller](#host-controller-phase-2-mvp) section. The
+see the [Host Controller](#host-controller-legacy) section. The
 controller's `periodic` trigger uses these knobs in `.env`:
 - `PERIODIC_INTERVAL_SECS` — interval between runs (default: 3600s)
 - `PERIODIC_JITTER_SECS` — random variance (default: 300s)
@@ -225,98 +225,68 @@ controller's `periodic` trigger uses these knobs in `.env`:
 - `PERIODIC_AGENT_FAILURE_BACKOFF_MAX_SECS` — max cooldown cap for repeated failures (default: 3600s)
 - `PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT` — random jitter applied to cooldowns (default: 15)
 
-The clean architecture boundary is:
-- worker containers run the Python plugin engine in oneshot mode (`hivemoot-agent oneshot`)
-- controller processes own triggers, scheduling, and job lifecycle
+The architecture follows
+[ADR-002: Plugin Architecture](docs/adr/002-plugin-architecture.md):
 
-That means:
-- `periodic`, `github-mention`, `github-review-request`, `hivemoot-task`, and `messaging` are controller concerns
-- worker containers do not load trigger plugins or perform trigger-specific claim/watch logic
+- The container entrypoint is `hivemoot-agent run` (daemon mode). It loads
+  plugins per `AGENT_PLUGINS`, calls each plugin's `Trigger.start(dispatcher)`
+  in a background thread, and routes inbound jobs to the agent in-process.
+- One container per agent role × repo. Per-job isolation is provided by the
+  agent CLI subprocess boundary (each job spawns a fresh `claude -p …` /
+  `codex exec …`), not by spawning a fresh container per job.
+- The host is plugin-agnostic. No `hivemoot-agent <plugin-name>` CLI
+  subcommands; no `controller/triggers/<plugin-name>.sh`; no plugin-specific
+  env wires in `controller/`.
 
-**Task plugin stack** — controller-dispatched delegated task execution:
+Surviving controller-side triggers (kept until they migrate to plugins per
+ADR §Migration follow-ups): `periodic`, `github-mention`, `github-review-request`.
+Plugin-owned triggers: `messaging` and `hivemoot-task` — both implement the
+`Plugin.triggers()` protocol and run inside `hivemoot-agent run`.
 
-The controller spawns task jobs through the Python plugin engine with
-`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`:
-- same provider/auth selection
-- same timeout enforcement (`AGENT_TIMEOUT_SECONDS`)
-- `github` plugin clones the target repo and configures git auth
-- `hivemoot-task` plugin supplies the task operating mode (no autonomous
-  scope) and reuses the Hivemoot skill pack
-- override the stack with `TASK_DISPATCH_PLUGINS=<plugin,list>` when a
-  custom plugin stack is needed
+**Task workflow** (`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`):
 
-The controller now owns:
-- task claiming
-- task heartbeats
-- task prompt assembly from claimed payload
-- task result extraction and completion/failure reporting
+The plugin's `HivemootTaskTrigger` polls `AGENT_TASK_CLAIM_URL` at
+`AGENT_TASK_POLL_INTERVAL_SECS` (default 10s). On a successful claim it
+renders the task prompt template (`prompts/messages/task.md`) plus the
+conversation-history block from the claim payload's `messages`, builds a
+`Job(session_key="task:<id>", metadata={task_id, claim_token, repo, messages})`,
+and dispatches it to the engine. The plugin's `on_job_started` posts the
+initial progress ping and starts a background heartbeat thread (cadence:
+`AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS`, default 45s; `0` disables).
+`on_job_finished` stops the heartbeat and posts the final outcome
+(`complete` / `fail` / `timeout`), promoting silent codex auth failures
+into reported failures via `auth_errors.detect_codex_auth_error`.
 
-Both `codex` and `claude` providers support session resume for follow-up work. Mention-triggered controller jobs store one session per GitHub notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Periodic runs (no session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
-work, disable that behavior with `SESSION_RESUME=0`.
+Backend contract:
+- `AGENT_TASK_EXECUTE_BASE_URL` — base for `${base}/${task_id}/execute`
+- Auth via `Authorization: Bearer ${HIVEMOOT_AGENT_TOKEN}` plus
+  `X-Task-Claim-Token: <claim_token>` on every update
+- Codex sidecar: when `AGENT_PROVIDER=codex` the plugin sets `CODEX_ANSWER_FILE`
+  before the agent run; the codex provider passes `--output-last-message <path>`
+  so codex writes its final markdown directly (preferred over NDJSON parsing).
 
-For backend updates:
-- `AGENT_TASK_EXECUTE_BASE_URL` posts to `${base}/${taskId}/execute`
-- `AGENT_TASK_CLAIM_TOKEN` is sent as `X-Task-Claim-Token` on execute updates
-- `AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS` sends `{"action":"heartbeat"}` at that cadence while task execution is running (`0` disables; default `45`)
+Both `codex` and `claude` providers support session resume for follow-up work. Mention-triggered controller jobs store one session per GitHub notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Periodic runs (no session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 
-Task mode writes a local markdown artifact at
-`${WORKSPACE_ROOT}/task-output/<task_id>/result.md`.
+## Host Controller (legacy)
 
-## Health Reporting
+`controller/main.sh` is the host-side process for the trigger families that
+have not yet migrated to plugins (`periodic`, `github-mention`,
+`github-review-request`). For task and messaging workflows the daemon-mode
+plugin path under `hivemoot-agent run` is the supported entrypoint —
+see ADR-002 §Migration for the planned deprecation of the remaining
+controller-side triggers.
 
-When `HEALTH_REPORT_URL` is set, the controller sends a periodic liveness
-heartbeat to the backend via `POST /api/agent-health`. This lets the
-dashboard show which agents are alive without requiring direct host or
-container access.
-
-**How it works:**
-
-1. The controller's periodic loop (`controller/triggers/periodic.sh`)
-   invokes `hivemoot-agent health heartbeat --agent <id> --repo <repo>
-   [--next-run-at <iso8601>]` for each configured agent at the
-   `HEARTBEAT_INTERVAL_SECS` cadence.
-2. The CLI POSTs `{agent_id, repo, outcome: "heartbeat"[, next_run_at]}`
-   to `HEALTH_REPORT_URL` with a fixed 3-second timeout and no retries —
-   a slow or down backend must never stall the controller loop.
-3. Auth uses the bearer token from `HIVEMOOT_AGENT_TOKEN_FILE` (preferred)
-   or `HIVEMOOT_AGENT_TOKEN` if no file is configured.
-4. Reporting is best-effort: operational failures (network error, 401,
-   oversize payload) are logged on stderr but do not block the controller.
-
-**Enable it** by setting `HEALTH_REPORT_URL` in `.env`:
-
-```bash
-HEALTH_REPORT_URL=https://your-backend.example.com/api/agent-health
-```
-
-**Configuration:**
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `HEALTH_REPORT_URL` | *(empty — disabled)* | Backend endpoint URL |
-| `HIVEMOOT_AGENT_TOKEN` | *(empty)* | Shared bearer token (also used by task mode) |
-| `HIVEMOOT_AGENT_TOKEN_FILE` | *(empty)* | Optional file path for `HIVEMOOT_AGENT_TOKEN` |
-| `HEARTBEAT_INTERVAL_SECS` | `1800` | Controller periodic heartbeat cadence in seconds (`0` disables); default 30 min |
-
-## Host Controller (Phase 2 MVP)
-
-`controller/main.sh` runs on the host and owns the public trigger layer. It spawns one isolated worker container per job, and those worker containers run only an explicit driver (`once` today for controller-spawned jobs) plus the selected workload.
-
-What it does:
-- Uses `spawn_worker()` as the container-launch seam for future backend swaps.
+What it does today:
+- Spawns one isolated worker container per job via `spawn_worker()`.
 - Applies worker hardening flags (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs mounts, resource limits).
 - Enforces per-repo mutual exclusion with `flock` plus a controller-local worker cap (`CONTROLLER_MAX_WORKERS`, locks default under `/tmp/hivemoot-controller-locks`).
 - Optionally enforces a host-wide worker cap across multiple controller services with a shared flock semaphore (`GLOBAL_MAX_WORKERS` + `GLOBAL_SLOTS_DIR`).
-- Supports trigger adapters for periodic runs, GitHub mentions, GitHub review requests, and delegated tasks.
-- Uses a filesystem queue under `queue/` and per-agent watch state under `watch-state/` for controller-owned trigger state.
-- Supports delegated task watching (`WATCH_TASKS=1`) by polling `AGENT_TASK_CLAIM_URL` and spawning `hivemoot-task` workers with claimed `task_id/prompt/repo`.
+- Owns the filesystem queue under `queue/` and per-agent watch state under `watch-state/`.
 - Defers mention acknowledgment until the spawned worker job succeeds.
-- Owns delegated-task claim, heartbeat, and completion/failure reporting so the worker image stays trigger-free.
 - Writes per-job artifacts:
   - `jobs/<job-id>/job.json` (job spec)
   - `workspaces/<job-id>/.hivemoot/status` and `summary` (completion sentinel)
-- Requires Bash 4+ on the host (`declare -A` is used). If needed, install a newer Bash with your platform package manager and run the script explicitly with that binary (for example Homebrew Bash on macOS).
-- Provider `*_FILE` values passed through the controller must be absolute host paths so Docker bind mounts succeed.
+- Requires Bash 4+ on the host (`declare -A` is used).
 
 Run one periodic cycle:
 
@@ -326,21 +296,6 @@ AGENT_ID_01=worker \
 AGENT_GITHUB_TOKEN_01=ghp_xxx \
 CONTROLLER_WORKSPACE_ROOT="$PWD/data/controller" \
 WORKER_IMAGE=hivemoot-agent:local \
-bash controller/main.sh
-```
-
-Run continuously:
-
-```bash
-CONTROLLER_RUN_MODE=loop bash controller/main.sh
-```
-
-Enable a shared fleet cap across multiple controller services on the same host:
-
-```bash
-GLOBAL_MAX_WORKERS=4 \
-GLOBAL_SLOTS_DIR=/var/lock/hivemoot-global-slots \
-CONTROLLER_RUN_MODE=loop \
 bash controller/main.sh
 ```
 
@@ -355,33 +310,19 @@ bash controller/main.sh
 
 In `CONTROLLER_RUN_MODE=once` with `WATCH_MENTIONS=1`, the controller performs one `hivemoot watch --once` poll per agent before exit.
 
-Run continuously with delegated task watching:
+Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
+
+For task or messaging workflows, do NOT use the controller — run the daemon
+directly:
 
 ```bash
-CONTROLLER_RUN_MODE=loop \
-WATCH_TASKS=1 \
-TASK_DISPATCH_AGENT_IDS=attendant \
-AGENT_TASK_CLAIM_URL=https://your-backend.example.com/api/tasks/claim \
-HIVEMOOT_AGENT_TOKEN_FILE=/run/secrets/hivemoot-agent-token \
-bash controller/main.sh
+docker compose run --rm \
+  -e AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task \
+  -e AGENT_TASK_CLAIM_URL=https://your-backend/api/tasks/claim \
+  -e AGENT_TASK_EXECUTE_BASE_URL=https://your-backend/api/tasks \
+  -e HIVEMOOT_AGENT_TOKEN_FILE=/run/secrets/hivemoot-agent-token \
+  hivemoot-agent hivemoot-agent run
 ```
-
-In task-watching mode, `TARGET_REPO` is optional because each claimed task
-already carries its target repo.
-The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
-(default: `120` seconds).
-`TASK_DISPATCH_AGENT_IDS` is required and must reference configured
-`AGENT_ID_XX` values; only those agents are allowed to execute claimed tasks.
-If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with
-`duty: dispatch`.
-`TASK_DISPATCH_PLUGINS` selects which plugin stack the controller launches
-for claimed tasks and defaults to `hivemoot-identity,github,hivemoot-task`.
-
-If the worker exits non-zero, the controller immediately POSTs `action=fail`
-to the execute endpoint as a safety net for cases where the worker itself
-crashed before self-reporting (OOM, container crash).
-
-Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 
 ## Credential Storage (Default)
 

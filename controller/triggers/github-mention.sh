@@ -17,10 +17,6 @@ React to the mention with a 👀 (eyes) reaction on #${number}, then read the fu
 EOF_MENTION
 }
 
-controller_trigger_health_kind__github_mention() {
-  printf '%s' "mention"
-}
-
 controller_trigger_global_slot_timeout_secs__github_mention() {
   printf '%s' "$global_slot_timeout_mention_secs"
 }

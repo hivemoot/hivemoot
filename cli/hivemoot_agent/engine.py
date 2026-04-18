@@ -339,62 +339,123 @@ class Engine:
         if is_resume:
             effective_prompt = f"{prompt}\n\n{_RESUME_STALENESS_NOTE}"
 
-        cmd = self._build_provider_cmd(
-            provider, provider_name, effective_prompt, system_prompt,
-            model, "", session_id, plugin_dir=skill_runtime.plugin_dir,
-        )
+        # Plugin lifecycle parity with run_agent: every plugin gets a
+        # chance to set per-job env (e.g. CODEX_ANSWER_FILE) BEFORE the
+        # provider command is built, and on_job_finished is guaranteed
+        # to fire even if the body raises.  `plugins` is None for the
+        # bare-oneshot path (no AGENT_PLUGINS); skip both lifecycle
+        # arms in that case.
+        if plugins:
+            for name, plugin in plugins.items():
+                if not hasattr(plugin, "on_job_started"):
+                    continue
+                plugin_config = registry.config_for(name)
+                try:
+                    plugin.on_job_started(job, plugin_config)
+                except Exception as exc:
+                    print(
+                        f"[engine] {name}.on_job_started raised: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
 
-        plugin_label = ", ".join(plugins) if plugins else "none"
-        resume_label = f", resume={session_id[:12]}..." if is_resume else ""
-        print(
-            f"[engine] oneshot: provider={provider_name} "
-            f"plugins={plugin_label} prompt={len(prompt)} chars{resume_label}",
-            file=sys.stderr, flush=True,
-        )
+        result = AgentResult(exit_code=1, response="")
+        try:
+            cmd = self._build_provider_cmd(
+                provider, provider_name, effective_prompt, system_prompt,
+                model, "", session_id, plugin_dir=skill_runtime.plugin_dir,
+            )
 
-        exit_code, stdout = self._run_oneshot_subprocess(cmd, config)
-        if is_resume and exit_code != 0:
+            plugin_label = ", ".join(plugins) if plugins else "none"
+            resume_label = f", resume={session_id[:12]}..." if is_resume else ""
             print(
-                "[engine] session resume failed; retrying oneshot with fresh session",
+                f"[engine] oneshot: provider={provider_name} "
+                f"plugins={plugin_label} prompt={len(prompt)} chars{resume_label}",
                 file=sys.stderr, flush=True,
             )
-            is_resume = False
-            prior_record = None
-            cmd = self._build_provider_cmd(
-                provider, provider_name, prompt, system_prompt,
-                model, "", "", plugin_dir=skill_runtime.plugin_dir,
-            )
+
             exit_code, stdout = self._run_oneshot_subprocess(cmd, config)
-
-        self._cleanup_skill_runtime(skill_runtime)
-
-        # Print the agent's response to stdout so callers can capture it.
-        response = ""
-        if exit_code == 0 and stdout:
-            new_session = provider.extract_session_id(stdout) if provider else ""
-            if new_session and scoped_key and self._session_store:
-                self._session_store.save(
-                    scoped_key, new_session,
-                    was_resume=is_resume,
-                    prior_record=prior_record,
-                )
+            if is_resume and exit_code != 0:
                 print(
-                    f"[engine] session saved: {job.session_key} → "
-                    f"{new_session[:12]}...",
+                    "[engine] session resume failed; retrying oneshot with fresh session",
                     file=sys.stderr, flush=True,
                 )
-            response = _extract_response(stdout)
-            if response:
-                print(response, flush=True)
+                is_resume = False
+                prior_record = None
+                cmd = self._build_provider_cmd(
+                    provider, provider_name, prompt, system_prompt,
+                    model, "", "", plugin_dir=skill_runtime.plugin_dir,
+                )
+                exit_code, stdout = self._run_oneshot_subprocess(cmd, config)
 
-        # Run plugin teardown hooks.
-        if plugins:
+            try:
+                self._cleanup_skill_runtime(skill_runtime)
+            except Exception:
+                pass
+
+            # Print the agent's response to stdout so callers can capture it.
+            response = ""
+            if exit_code == 0 and stdout:
+                try:
+                    new_session = (
+                        provider.extract_session_id(stdout) if provider else ""
+                    )
+                except Exception:
+                    new_session = ""
+                if new_session and scoped_key and self._session_store:
+                    try:
+                        self._session_store.save(
+                            scoped_key, new_session,
+                            was_resume=is_resume,
+                            prior_record=prior_record,
+                        )
+                        print(
+                            f"[engine] session saved: {job.session_key} → "
+                            f"{new_session[:12]}...",
+                            file=sys.stderr, flush=True,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[engine] session save failed: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
+                try:
+                    response = _extract_response(stdout)
+                except Exception:
+                    response = ""
+                if response:
+                    print(response, flush=True)
+
             result = AgentResult(exit_code=exit_code, response=response)
-            for name, plugin in plugins.items():
-                plugin_config = registry.config_for(name)
-                plugin.on_job_finished(job, result, plugin_config)
-
-        return exit_code
+            return exit_code
+        finally:
+            # Run plugin teardown hooks.  Mirror run_agent: persist the
+            # raw stdout (or clear stale path) before calling
+            # on_job_finished so plugins consume only this job's log.
+            if plugins:
+                stdout_for_log = locals().get("stdout", "")
+                log_path = self._persist_run_log(config, job, stdout_for_log)
+                if log_path:
+                    os.environ["AGENT_LAST_RUN_LOG"] = log_path
+                    config.settings["AGENT_LAST_RUN_LOG"] = log_path
+                else:
+                    os.environ.pop("AGENT_LAST_RUN_LOG", None)
+                    config.settings.pop("AGENT_LAST_RUN_LOG", None)
+                for name, plugin in plugins.items():
+                    plugin_config = registry.config_for(name)
+                    if log_path:
+                        plugin_config.settings["AGENT_LAST_RUN_LOG"] = log_path
+                    else:
+                        plugin_config.settings.pop("AGENT_LAST_RUN_LOG", None)
+                    try:
+                        plugin.on_job_finished(job, result, plugin_config)
+                    except Exception as exc:
+                        print(
+                            f"[engine] {name}.on_job_finished raised: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
 
     @staticmethod
     def _run_oneshot_subprocess(
@@ -803,72 +864,172 @@ class Engine:
         if is_resume:
             effective_prompt = f"{job.prompt}\n\n{_RESUME_STALENESS_NOTE}"
 
-        cmd = self._build_provider_cmd(
-            provider, provider_name, effective_prompt, system_prompt,
-            model, mcp_config, session_id, plugin_dir=skill_runtime.plugin_dir,
-        )
-
+        # Plugin gets first crack at per-job env *before* the provider
+        # command is built — codex/build_cmd reads CODEX_ANSWER_FILE
+        # at build time, and the hivemoot-task plugin sets it from
+        # on_job_started.  Reordering here is a contract: by the time
+        # any provider builder runs, the plugin has already configured
+        # per-job state.
         plugin.on_job_started(job, config)
 
-        # Build event callback for streaming progress.
-        on_event: Callable[[AgentEvent], None] | None = None
-        if hasattr(plugin, "on_agent_output"):
-            def on_event(event: AgentEvent) -> None:
-                plugin.on_agent_output(job, event, config)
+        # Anything between on_job_started and on_job_finished MUST run
+        # on_job_finished too — for hivemoot-task that's where the
+        # heartbeat thread is stopped and the terminal outcome posted
+        # to the backend.  Without try/finally an exception inside
+        # _build_provider_cmd / _run_subprocess / session save / etc.
+        # would orphan the heartbeat thread and leave the task stuck
+        # in 'running' on the backend forever.
+        result = AgentResult(exit_code=1, response="")
+        try:
+            cmd = self._build_provider_cmd(
+                provider, provider_name, effective_prompt, system_prompt,
+                model, mcp_config, session_id,
+                plugin_dir=skill_runtime.plugin_dir,
+            )
 
-        resume_label = f", resume={session_id[:12]}..." if is_resume else ""
-        print(
-            f"[engine] running agent (plugin={plugin_name}, "
-            f"provider={provider_name}, "
-            f"mcp={'yes' if mcp_config else 'no'}{resume_label})",
-            file=sys.stderr, flush=True,
-        )
+            # Build event callback for streaming progress.
+            on_event: Callable[[AgentEvent], None] | None = None
+            if hasattr(plugin, "on_agent_output"):
+                def on_event(event: AgentEvent) -> None:
+                    plugin.on_agent_output(job, event, config)
 
-        exit_code, stdout = self._run_subprocess(
-            cmd, config, on_event=on_event, provider=provider,
-        )
-
-        # Retry once with a fresh session if resume failed.
-        if is_resume and exit_code != 0:
+            resume_label = f", resume={session_id[:12]}..." if is_resume else ""
             print(
-                "[engine] session resume failed; retrying with fresh session",
+                f"[engine] running agent (plugin={plugin_name}, "
+                f"provider={provider_name}, "
+                f"mcp={'yes' if mcp_config else 'no'}{resume_label})",
                 file=sys.stderr, flush=True,
             )
-            is_resume = False
-            prior_record = None
-            cmd = self._build_provider_cmd(
-                provider, provider_name, job.prompt, system_prompt,
-                model, mcp_config, "", plugin_dir=skill_runtime.plugin_dir,
-            )
+
             exit_code, stdout = self._run_subprocess(
                 cmd, config, on_event=on_event, provider=provider,
             )
 
-        # Clean up MCP config and skill staging.
-        if mcp_config and os.path.isfile(mcp_config):
-            os.unlink(mcp_config)
-        self._cleanup_skill_runtime(skill_runtime)
-
-        # Persist session on success.
-        if exit_code == 0 and stdout and provider:
-            new_session = provider.extract_session_id(stdout)
-            if new_session and scoped_key and self._session_store:
-                self._session_store.save(
-                    scoped_key, new_session,
-                    was_resume=is_resume,
-                    prior_record=prior_record,
-                )
+            # Retry once with a fresh session if resume failed.
+            if is_resume and exit_code != 0:
                 print(
-                    f"[engine] session saved: {job.session_key} → "
-                    f"{new_session[:12]}...",
+                    "[engine] session resume failed; retrying with fresh session",
+                    file=sys.stderr, flush=True,
+                )
+                is_resume = False
+                prior_record = None
+                cmd = self._build_provider_cmd(
+                    provider, provider_name, job.prompt, system_prompt,
+                    model, mcp_config, "",
+                    plugin_dir=skill_runtime.plugin_dir,
+                )
+                exit_code, stdout = self._run_subprocess(
+                    cmd, config, on_event=on_event, provider=provider,
+                )
+
+            # Clean up MCP config and skill staging.  Wrapped because
+            # tmp/file races here would otherwise skip the lifecycle
+            # teardown below.
+            try:
+                if mcp_config and os.path.isfile(mcp_config):
+                    os.unlink(mcp_config)
+            except OSError:
+                pass
+            try:
+                self._cleanup_skill_runtime(skill_runtime)
+            except Exception:
+                pass
+
+            # Persist session on success.
+            if exit_code == 0 and stdout and provider:
+                try:
+                    new_session = provider.extract_session_id(stdout)
+                except Exception:
+                    new_session = ""
+                if new_session and scoped_key and self._session_store:
+                    try:
+                        self._session_store.save(
+                            scoped_key, new_session,
+                            was_resume=is_resume,
+                            prior_record=prior_record,
+                        )
+                        print(
+                            f"[engine] session saved: {job.session_key} → "
+                            f"{new_session[:12]}...",
+                            file=sys.stderr, flush=True,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[engine] session save failed: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
+
+            try:
+                response = _extract_response(stdout) if stdout else ""
+            except Exception:
+                response = ""
+
+            # Persist the provider's raw NDJSON stream so plugins can
+            # extract per-provider artifacts (final markdown, token
+            # usage, auth-error promotion) post-hoc without parsing
+            # stdout in memory.  Path is exposed via AGENT_LAST_RUN_LOG
+            # so plugins don't need to know the engine's run-directory
+            # layout.  Always either set a fresh path or clear the
+            # stale one — never let the previous job's log leak into
+            # this job's on_job_finished via the long-lived
+            # _PluginDispatcher config.
+            log_path = self._persist_run_log(config, job, stdout)
+            if log_path:
+                os.environ["AGENT_LAST_RUN_LOG"] = log_path
+                config.settings["AGENT_LAST_RUN_LOG"] = log_path
+            else:
+                os.environ.pop("AGENT_LAST_RUN_LOG", None)
+                config.settings.pop("AGENT_LAST_RUN_LOG", None)
+
+            result = AgentResult(exit_code=exit_code, response=response)
+            return result
+        finally:
+            # Final outcome MUST be reported.  on_job_finished is
+            # already wrapped in try/except inside the hivemoot-task
+            # plugin, but the engine still guards against an unhandled
+            # raise from any other plugin so a bad lifecycle hook
+            # doesn't poison the dispatcher's exception path.
+            try:
+                plugin.on_job_finished(job, result, config)
+            except Exception as exc:
+                print(
+                    f"[engine] on_job_finished raised: "
+                    f"{type(exc).__name__}: {exc}",
                     file=sys.stderr, flush=True,
                 )
 
-        response = _extract_response(stdout) if stdout else ""
+    def _persist_run_log(
+        self, config: PluginConfig, job: Job, stdout: str,
+    ) -> str:
+        """Write the agent's raw stdout to a per-job file; return path.
 
-        result = AgentResult(exit_code=exit_code, response=response)
-        plugin.on_job_finished(job, result, config)
-        return result
+        Lives under ``${WORKSPACE_ROOT}/runs/<safe-session-key>/log``.
+        Returns "" when nothing was captured (caller skips env wire).
+        """
+        if not stdout:
+            return ""
+        workspace = (
+            config.get("WORKSPACE_ROOT", "")
+            or os.environ.get("WORKSPACE_ROOT", "")
+            or "/workspace"
+        )
+        safe_key = "".join(
+            c if c.isalnum() or c in "._-" else "_"
+            for c in (job.session_key or "oneshot")
+        )
+        run_dir = os.path.join(workspace, "runs", safe_key)
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+        except OSError:
+            return ""
+        log_path = os.path.join(run_dir, "log")
+        try:
+            with open(log_path, "w") as f:
+                f.write(stdout)
+        except OSError:
+            return ""
+        return log_path
 
     def _run_subprocess(
         self,

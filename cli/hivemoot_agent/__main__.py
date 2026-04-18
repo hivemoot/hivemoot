@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """hivemoot-agent CLI.
 
+Per ADR-002 (`docs/adr/002-plugin-architecture.md`) the CLI surface is
+fixed and generic — adding a plugin must NOT add a top-level subcommand.
+
 Commands:
     hivemoot-agent worker             Container entrypoint (PID 1 under tini)
-    hivemoot-agent run                Daemon mode (triggers poll continuously)
+    hivemoot-agent run                Daemon mode (load plugins, start triggers)
     hivemoot-agent oneshot            Run agent once and exit
     hivemoot-agent plugin list        List available plugins
     hivemoot-agent plugin doctor X    Validate a plugin's config
-    hivemoot-agent messaging ...      Host-side messaging utilities
-    hivemoot-agent health ...         Host-side health reporting
-    hivemoot-agent doctor             Health check
+    hivemoot-agent doctor             Generic health check
 """
 
 import argparse
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    # worker — container entrypoint (replaces worker/entrypoint.sh)
+    # worker — container entrypoint
     from hivemoot_agent.worker import register_worker_commands
     register_worker_commands(sub)
 
@@ -46,19 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     oneshot.set_defaults(func=_cmd_oneshot)
 
-    # plugin
+    # plugin — generic plugin management (list, doctor)
     from hivemoot_agent.plugins.commands import register_plugin_commands
     register_plugin_commands(sub)
-
-    # messaging — host-side platform utilities (preflight, watch, send)
-    from hivemoot_agent.plugins_builtin.messaging.cli import (
-        register_messaging_commands,
-    )
-    register_messaging_commands(sub)
-
-    # health — host-side reporting (heartbeat)
-    from hivemoot_agent.health import register_health_commands
-    register_health_commands(sub)
 
     # doctor
     sub.add_parser("doctor", help="Health check").set_defaults(func=_cmd_doctor)

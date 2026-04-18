@@ -25,16 +25,28 @@ tool calls.
 
 ## Runtime Architecture
 
-- Worker entrypoint: `hivemoot-agent worker` Python subcommand (`cli/hivemoot_agent/worker.py`) — runs as PID 1 inside every job container under tini
-- Plugin engine (worker body): `cli/hivemoot_agent/engine.py`
-- Shared shell helpers: `shared/lib.sh`
-- Host controller (per-job worker containers): `controller/main.sh`
+The runtime follows **ADR-002: Plugin Architecture** — the host is plugin-agnostic;
+all plugin-specific behaviour lives inside the plugin. Read
+[`docs/adr/002-plugin-architecture.md`](docs/adr/002-plugin-architecture.md) before
+changing the architecture; what follows is a summary.
 
-High-level flow:
+**Components:**
 
-1. `controller/main.sh` owns host-side trigger handling and spawns isolated worker containers, each of which runs `hivemoot-agent worker` as its entrypoint.
-2. `hivemoot-agent worker` bootstraps Claude OAuth credentials, promotes provider `*_FILE` secrets into bare env vars, rejects controller-only env (`AGENT_TRIGGER`), checks the worker image's baked provider matches `AGENT_PROVIDER`, validates `AGENT_PLUGINS`, bridges GitHub-token aliases into `GITHUB_TOKEN[_FILE]`, then hands off to `Engine().oneshot()` in-process.
-3. The Python plugin engine loads the requested plugin stack, runs `setup()` (clone repos, authenticate, etc.), builds the merged system prompt, and invokes the provider CLI (claude/codex/gemini/kilo/opencode) as a subprocess.
+- Container entrypoint: `hivemoot-agent run` (daemon mode) — loads plugins per `AGENT_PLUGINS`, starts each plugin's `Trigger`, dispatches inbound jobs in-process.
+- Worker entrypoint shim: `hivemoot-agent worker` (`cli/hivemoot_agent/worker.py`) — env validation + Claude OAuth bootstrap, then hands off to the engine. Used for one-shot worker containers spawned by the controller.
+- Plugin engine: `cli/hivemoot_agent/engine.py` — owns job execution, plugin loading, agent subprocess spawning.
+- Plugins live in `cli/hivemoot_agent/plugins_builtin/<name>/`. Each plugin owns its `Trigger` (data source), `Plugin` (lifecycle hooks), workload (`system_prompt`, skills), and any external API client. **Single directory, single source of truth per plugin.**
+- Host-side shell glue under `controller/`, `shared/`, `scripts/` is generic — it knows nothing about specific plugins.
+
+**The non-negotiable rules:**
+
+1. **No `hivemoot-agent <plugin-name> ...` CLI subcommands.** The CLI surface is fixed: `run`, `oneshot`, `worker`, `plugin list`, `plugin doctor`, `doctor`. Adding a plugin must not change argparse.
+2. **No host-side `controller/triggers/<plugin-name>.sh`.** All triggers are Python `Trigger` implementations inside their plugin directory.
+3. **No host-side env wires for plugin-specific config** (`MESSAGING_*`, `AGENT_TASK_*`, etc.). The host forwards a generic set; plugins read their own env at load time.
+
+Reference plugins:
+- `cli/hivemoot_agent/plugins_builtin/messaging/` (Telegram polling, typing, response delivery).
+- `cli/hivemoot_agent/plugins_builtin/hivemoot_task/` (hivemoot.dev API polling, heartbeats, result extraction).
 
 ## Provider and Auth Model
 
@@ -59,22 +71,8 @@ Shell runtime code in `controller/` and `shared/` should follow existing pattern
 - Use command arrays for safe argument handling
 - Reuse shared helpers in `shared/lib.sh` instead of duplicating logic
 
-## Key Implementation Patterns
-
-Secret loading pattern:
-
-```bash
-load_secret_from_file VAR_NAME
-```
-
-This reads `VAR_NAME_FILE` when `VAR_NAME` is unset and exports `VAR_NAME`.
-
-Credential seeding pattern:
-
-- `seed_shared_provider_state` copies shared provider state to agent homes
-- `seed_provider_auth` copies only auth material (not session state)
-
-Both are defined in `shared/lib.sh`.
+Per ADR-002, **don't add plugin-specific code to shell.** New plugin-related
+work belongs under `cli/hivemoot_agent/plugins_builtin/<name>/`.
 
 ## CI and Quality Gates
 

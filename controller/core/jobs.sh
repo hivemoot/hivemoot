@@ -13,24 +13,17 @@ spawn_worker() {
   local token_file="$6"
   local extra_prompt="$7"
   local session_key="$8"
-  local trigger_type="$9"
-  local task_id="${10:-}"
-  local codex_answer_file="${11:-}"
 
   local container_name="${worker_name_prefix}-${job_id}"
   local prompt_file="${AGENT_PROMPT_FILE:-}"
   local companion_base_prompt=""
   local job_agent_skills=""
-  local worker_trigger=""
   local worker_plugins=""
   local worker_github_repos=""
   local worker_driver="once"
-  local health_kind=""
   local extra_prompt_host_path=""
   local extra_prompt_worker_path=""
 
-  worker_trigger="$(normalize_trigger_name "$trigger_type")"
-  health_kind="$(controller_invoke_trigger_hook health_kind "$worker_trigger")"
   job_agent_skills="$(resolve_agent_skill_list "$agent_id")"
 
   docker_run_args=(
@@ -53,30 +46,10 @@ spawn_worker() {
     -v "${token_file}:/run/secrets/agent_token:ro"
   )
 
-  # Tag messaging containers so injection logic can find them by session key.
-  # Scoped to messaging triggers to avoid labeling mention/task containers.
-  if [ -n "$session_key" ] && [ "$worker_trigger" = "messaging" ]; then
-    docker_run_args+=( --label "hivemoot.messaging.session_key=${session_key}" )
-  fi
-
-  # Mount persistent session-map directory when the trigger provides one.
-  if [ -n "${controller_trigger_prepared_persistent_session_dir:-}" ]; then
-    docker_run_args+=(
-      -v "${controller_trigger_prepared_persistent_session_dir}:/workspace/persistent-sessions"
-    )
-  fi
-
-  # Mount persistent agent memory directory.
-  # AGENT_MEMORY_MODE controls prompt injection (rw/ro/none), not filesystem access.
-  local memory_mode="${controller_trigger_prepared_memory_mode:-rw}"
-  local memory_host_dir=""
-  if [ -n "${controller_trigger_prepared_memory_host_dir:-}" ]; then
-    memory_host_dir="$controller_trigger_prepared_memory_host_dir"
-  else
-    local memory_safe_repo
-    memory_safe_repo="$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
-    memory_host_dir="${memory_root}/${memory_safe_repo}/${agent_id}"
-  fi
+  # Persistent agent memory directory.
+  local memory_safe_repo
+  memory_safe_repo="$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
+  local memory_host_dir="${memory_root}/${memory_safe_repo}/${agent_id}"
   mkdir -p "$memory_host_dir"
   chmod 700 "$memory_host_dir" 2>/dev/null || true
   if [[ "$(uname -s)" == "Linux" ]]; then
@@ -85,7 +58,7 @@ spawn_worker() {
   docker_run_args+=(
     -v "${memory_host_dir}:/home/node/.hivemoot/memory"
     -e "AGENT_MEMORY_DIR=/home/node/.hivemoot/memory"
-    -e "AGENT_MEMORY_MODE=${memory_mode}"
+    -e "AGENT_MEMORY_MODE=rw"
   )
 
   local codex_auth_file="${CODEX_AUTH_FILE:-}"
@@ -121,10 +94,9 @@ spawn_worker() {
     -e AGENT_ID="${agent_id}"
     -e AGENT_TOKEN_FILE=/run/secrets/agent_token
     -e HIVEMOOT_CLI_UPDATE=skip
-    -e RUN_TRIGGER_TYPE="${health_kind}"
   )
 
-  worker_plugins="$(controller_invoke_trigger_hook worker_plugins "$worker_trigger")"
+  worker_plugins="${AGENT_PLUGINS:-hivemoot-identity,github,hivemoot-github}"
   worker_github_repos="${GITHUB_REPOS:-${repo}}"
   docker_run_args+=( -e "AGENT_PLUGINS=${worker_plugins}" )
   docker_run_args+=( -e "GITHUB_REPOS=${worker_github_repos}" )
@@ -142,22 +114,6 @@ spawn_worker() {
   fi
   if [ -n "$session_key" ]; then
     docker_run_args+=( -e "AGENT_SESSION_KEY=${session_key}" )
-  fi
-  if [ -n "${controller_trigger_prepared_persistent_session_dir:-}" ]; then
-    docker_run_args+=( -e "PERSISTENT_SESSION_DIR=/workspace/persistent-sessions" )
-  fi
-  # Messaging jobs use the persistent HOME mounted at /home/node.  Setting
-  # REPO_DIR/LOG_DIR enables managed mode in run-once.sh, which skips
-  # per-job HOME creation and keeps HOME=/home/node.
-  if [ -n "${controller_trigger_prepared_job_home:-}" ]; then
-    docker_run_args+=( -e "REPO_DIR=/workspace/repo" )
-    docker_run_args+=( -e "LOG_DIR=/workspace/runs" )
-  fi
-  if [ -n "$task_id" ]; then
-    docker_run_args+=( -e "AGENT_TASK_ID=${task_id}" )
-  fi
-  if [ -n "$codex_answer_file" ]; then
-    docker_run_args+=( -e "CODEX_ANSWER_FILE=${codex_answer_file}" )
   fi
 
   append_env_if_set AGENT_PROVIDER
@@ -185,11 +141,11 @@ spawn_worker() {
   append_env_if_set KILO_MODEL
   append_env_if_set OPENCODE_PROVIDER
   append_env_if_set OPENCODE_MODEL
-  append_env_if_set HEALTH_REPORT_URL
-  append_env_if_set MESSAGING_PLATFORM
-  append_env_if_set MESSAGING_AGENT_ID
-  append_env_if_set MESSAGING_ALLOWED_CHAT_IDS
 
+  # Per ADR-002, the host forwards a generic set of secrets that any
+  # agent needs (provider keys + the hivemoot-agent token). Plugin-specific
+  # env (TELEGRAM_BOT_TOKEN, AGENT_TASK_*, MESSAGING_*) is read by each
+  # plugin from its own environment when it loads inside `hivemoot-agent run`.
   append_secret_env HIVEMOOT_AGENT_TOKEN
   append_secret_env OPENAI_API_KEY
   append_secret_env GOOGLE_API_KEY
@@ -197,7 +153,6 @@ spawn_worker() {
   append_secret_env ANTHROPIC_API_KEY
   append_secret_env OPENROUTER_API_KEY
   append_secret_env CLAUDE_CODE_OAUTH_TOKEN
-  append_secret_env TELEGRAM_BOT_TOKEN
   append_secret_env KILOCODE_TOKEN
   append_secret_env ZAI_API_KEY
 
@@ -402,10 +357,6 @@ run_job() {
   local trigger_type="$4"
   local extra_prompt="$5"
   local session_key="$6"
-  local task_id="${7:-}"
-  local task_prompt="${8:-}"
-  local task_claim_token="${9:-}"
-  local task_messages_json="${10:-}"
   trigger_type="$(normalize_trigger_name "$trigger_type")"
 
   local token_file="${agent_token_files[$agent_id]}"
@@ -423,58 +374,28 @@ run_job() {
   local exit_code=125
   local log_pid=0
   local log_follow_deadline=0
-  local provider_name="${AGENT_PROVIDER:-claude}"
   local global_slot_timeout_secs=0
-  local trigger_exit_output=""
   local oom_exit_code=""
   local repo_lock_fd=""
-
-  controller_reset_trigger_job_context
-  trap 'stop_background_loop_pid "${controller_trigger_background_pid:-}"' EXIT
 
   if [ -z "$repo_lock_file" ]; then
     ensure_agent_lock_file "$repo" "$agent_id"
     repo_lock_file="${repo_lock_files[$lock_key]}"
   fi
 
-  mkdir -p "$job_workspace" "$job_run_dir" "$job_spec_dir"
-  chmod 700 "$job_workspace" "$job_run_dir" "$job_spec_dir" 2>/dev/null || true
-
-  write_job_spec "$job_spec_file" "$job_id" "$repo" "$agent_id" "$trigger_type" "$agent_timeout_seconds"
-  write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "queued" "-"
-
-  if ! controller_invoke_trigger_hook prepare_job "$trigger_type" "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$provider_name" "$task_id" "$task_prompt" "$task_claim_token" "$task_messages_json" "$extra_prompt" "$session_key"; then
-    if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
-      cleanup_job_home_credentials "$job_home"
-    fi
-    write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
-    return 125
-  fi
-
-  if [ -n "$controller_trigger_prepared_extra_prompt" ]; then
-    extra_prompt="$controller_trigger_prepared_extra_prompt"
-  fi
-  if [ -n "$controller_trigger_prepared_session_key" ]; then
-    session_key="$controller_trigger_prepared_session_key"
-  fi
-  if [ -n "$controller_trigger_prepared_job_home" ]; then
-    job_home="$controller_trigger_prepared_job_home"
-  fi
-
-  # Create job_home after prepare_job has had a chance to override it
-  # (e.g. messaging trigger sets a persistent home).  Creating it before
-  # the hook would leave an orphaned transient directory.
-  mkdir -p "$job_home"
-  chmod 700 "$job_home" 2>/dev/null || true
+  mkdir -p "$job_workspace" "$job_run_dir" "$job_spec_dir" "$job_home"
+  chmod 700 "$job_workspace" "$job_run_dir" "$job_spec_dir" "$job_home" 2>/dev/null || true
   if [[ "$(uname -s)" == "Linux" ]]; then
     chown 1000:1000 "$job_workspace" "$job_home" 2>/dev/null || true
   fi
+
+  write_job_spec "$job_spec_file" "$job_id" "$repo" "$agent_id" "$trigger_type" "$agent_timeout_seconds"
+  write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "queued" "-"
 
   global_slot_timeout_secs="$(global_slot_timeout_for_trigger "$trigger_type")"
   if ! acquire_global_slot "$global_slot_timeout_secs"; then
     mark_global_slot_timeout "$job_spec_dir" "$global_slot_timeout_secs"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "$global_slot_timeout_exit_code"
-    controller_invoke_trigger_hook on_global_slot_wait_timeout "$trigger_type" "$job_id" "$repo" "$agent_id" "$global_slot_timeout_secs" "$task_id" "$task_claim_token" || true
     return "$global_slot_timeout_exit_code"
   fi
 
@@ -492,12 +413,9 @@ run_job() {
 
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
-  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key" "$trigger_type" "$task_id" "$controller_trigger_prepared_codex_answer_worker_path")"; then
-    if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
-      cleanup_job_home_credentials "$job_home"
-    fi
+  if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key")"; then
+    cleanup_job_home_credentials "$job_home"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
-    controller_invoke_trigger_hook on_spawn_failure "$trigger_type" "$job_id" "$repo" "$agent_id" "$task_id" "$task_claim_token" || true
     close_slot_fd "$repo_lock_fd"
     repo_lock_fd=""
     release_global_slot
@@ -506,8 +424,6 @@ run_job() {
 
   printf '%s\n' "$container_id" > "${job_run_dir}/container.id"
   log "Spawned worker: job=${job_id} container=${container_id} repo=${repo} agent=${agent_id}"
-
-  controller_invoke_trigger_hook after_worker_start "$trigger_type" "$job_id" "$repo" "$agent_id" "$container_id" "$task_id" "$task_claim_token" || true
 
   "$docker_cmd" logs -f "$container_id" > "$container_log_file" 2>&1 &
   log_pid=$!
@@ -530,9 +446,6 @@ run_job() {
     wait "$log_pid" 2>/dev/null || true
   fi
 
-  stop_background_loop_pid "$controller_trigger_background_pid"
-  controller_trigger_background_pid=""
-
   if [ "$wait_status" -ne 0 ]; then
     printf '%s\n' "$wait_output" > "${job_run_dir}/docker-wait-error.log"
     exit_code=125
@@ -551,16 +464,8 @@ run_job() {
     exit_code="$oom_exit_code"
   fi
 
-  if ! trigger_exit_output="$(controller_invoke_trigger_hook on_worker_exit "$trigger_type" "$job_id" "$repo" "$agent_id" "$provider_name" "$exit_code" "$container_log_file" "$job_workspace" "$task_id" "$task_claim_token" "$controller_trigger_prepared_codex_answer_host_path")"; then
-    exit_code=$?
-  elif [ -n "$trigger_exit_output" ]; then
-    exit_code="$trigger_exit_output"
-  fi
-
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
-  if [ "${controller_trigger_prepared_skip_credential_cleanup:-0}" -ne 1 ]; then
-    cleanup_job_home_credentials "$job_home"
-  fi
+  cleanup_job_home_credentials "$job_home"
   close_slot_fd "$repo_lock_fd"
   repo_lock_fd=""
   release_global_slot
@@ -584,10 +489,6 @@ launch_job() {
   local state_file="${7:-}"
   local session_key="${8:-}"
   local processing_file="${9:-}"
-  local task_id="${10:-}"
-  local task_prompt="${11:-}"
-  local task_claim_token="${12:-}"
-  local task_messages_json="${13:-}"
   trigger_type="$(normalize_trigger_name "$trigger_type")"
 
   ensure_agent_lock_file "$repo" "$agent_id"
@@ -609,7 +510,7 @@ launch_job() {
   fi
 
   (
-    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key" "$task_id" "$task_prompt" "$task_claim_token" "$task_messages_json"
+    run_job "$job_id" "$repo" "$agent_id" "$trigger_type" "$extra_prompt" "$session_key"
   ) &
 
   local pid=$!

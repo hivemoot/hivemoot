@@ -18,9 +18,6 @@ normalize_trigger_name() {
     review-request|github-review-request)
       printf '%s' "github-review-request"
       ;;
-    task|hivemoot-task)
-      printf '%s' "hivemoot-task"
-      ;;
     *)
       printf '%s' "$name"
       ;;
@@ -74,41 +71,12 @@ controller_invoke_trigger_hook() {
   return 0
 }
 
-controller_trigger_worker_plugins_default() {
-  printf '%s' "${AGENT_PLUGINS:-hivemoot-identity,github,hivemoot-github}"
-}
-
-controller_trigger_health_kind_default() {
-  printf '%s' "manual"
-}
-
 controller_trigger_global_slot_timeout_secs_default() {
   printf '0'
 }
 
 controller_trigger_validate_queue_payload_default() {
   return 0
-}
-
-controller_trigger_prepare_job_default() {
-  return 0
-}
-
-controller_trigger_on_global_slot_wait_timeout_default() {
-  return 0
-}
-
-controller_trigger_on_spawn_failure_default() {
-  return 0
-}
-
-controller_trigger_after_worker_start_default() {
-  return 0
-}
-
-controller_trigger_on_worker_exit_default() {
-  local exit_code="$5"
-  printf '%s\n' "$exit_code"
 }
 
 controller_trigger_on_duplicate_agent_default() {
@@ -143,19 +111,6 @@ controller_trigger_on_failure_default() {
     mv -f "$processing_file" "${processing_file%.processing}.failed" 2>/dev/null || true
   fi
   return 0
-}
-
-controller_reset_trigger_job_context() {
-  controller_trigger_prepared_extra_prompt=""
-  controller_trigger_prepared_session_key=""
-  controller_trigger_prepared_codex_answer_host_path=""
-  controller_trigger_prepared_codex_answer_worker_path=""
-  controller_trigger_background_pid=""
-  controller_trigger_prepared_job_home=""
-  controller_trigger_prepared_persistent_session_dir=""
-  controller_trigger_prepared_memory_host_dir=""
-  controller_trigger_prepared_memory_mode=""
-  controller_trigger_prepared_skip_credential_cleanup=0
 }
 
 requeue_processing_file() {
