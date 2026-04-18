@@ -149,9 +149,15 @@ class HivemootTaskTrigger:
                 self._stop_event.wait(poll_interval)
                 continue
 
+            # Log shape: "task <id>" always, "(repos=...)" only when
+            # the claim carried any — avoids noisy "repo=" for the
+            # generic no-repo case.
+            repo_tag = (
+                f" (repos={','.join(claimed.repos)})"
+                if claimed.repos else ""
+            )
             print(
-                f"[hivemoot-task] claimed task {claimed.task_id} "
-                f"(repo={claimed.repo})",
+                f"[hivemoot-task] claimed task {claimed.task_id}{repo_tag}",
                 file=sys.stderr, flush=True,
             )
 
@@ -168,7 +174,14 @@ class HivemootTaskTrigger:
                 metadata={
                     "task_id": claimed.task_id,
                     "claim_token": claimed.claim_token,
+                    # ``repo`` (first entry, "" if absent) is kept for
+                    # existing consumers and log output; ``repos`` is the
+                    # full backend-supplied list — may be empty or hold
+                    # multiple entries.  Neither is enforced here; both
+                    # are informational pass-through for downstream
+                    # plugins that want per-job repo context.
                     "repo": claimed.repo,
+                    "repos": claimed.repos,
                     "messages": claimed.messages,
                 },
             )

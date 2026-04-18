@@ -136,12 +136,78 @@ class ClaimNextTaskTests(unittest.TestCase):
                 task_api.claim_next_task("https://api.example/claim", "tok")
         self.assertIn("missing required fields", str(ctx.exception))
 
-    def test_200_multi_repo_raises(self) -> None:
+    def test_200_no_repos_accepted(self) -> None:
+        """A task is a unit of work, not a unit of code edit — the
+        backend can dispatch repo-less tasks ("summarize governance",
+        "draft RFC") and the plugin must not reject them."""
+        body = json.dumps({
+            "task": {
+                "task_id": "generic-1",
+                "prompt": "summarize the governance activity for 2026-04-17",
+                "repos": [],
+            },
+            "claim_token": "ctok",
+        }).encode()
+        with patch.object(
+            task_api._OPENER, "open", return_value=_fake_response(200, body),
+        ):
+            claimed = task_api.claim_next_task(
+                "https://api.example/claim", "tok",
+            )
+        assert claimed is not None
+        self.assertEqual(claimed.task_id, "generic-1")
+        self.assertEqual(claimed.repo, "")
+        self.assertEqual(claimed.repos, [])
+
+    def test_200_missing_repos_field_accepted(self) -> None:
+        """Even the ``repos`` field itself is optional — an older
+        backend that omits it entirely must not break the claim."""
+        body = json.dumps({
+            "task": {
+                "task_id": "generic-2",
+                "prompt": "draft an RFC proposal",
+            },
+            "claim_token": "ctok",
+        }).encode()
+        with patch.object(
+            task_api._OPENER, "open", return_value=_fake_response(200, body),
+        ):
+            claimed = task_api.claim_next_task(
+                "https://api.example/claim", "tok",
+            )
+        assert claimed is not None
+        self.assertEqual(claimed.repo, "")
+        self.assertEqual(claimed.repos, [])
+
+    def test_200_multi_repo_accepted(self) -> None:
+        """Multi-repo tasks dispatch with ``.repos`` holding the full
+        list; ``.repo`` is the first entry for backwards compat."""
+        body = json.dumps({
+            "task": {
+                "task_id": "cross-1",
+                "prompt": "coordinate change across both services",
+                "repos": ["acme/api", "acme/web"],
+            },
+            "claim_token": "ctok",
+        }).encode()
+        with patch.object(
+            task_api._OPENER, "open", return_value=_fake_response(200, body),
+        ):
+            claimed = task_api.claim_next_task(
+                "https://api.example/claim", "tok",
+            )
+        assert claimed is not None
+        self.assertEqual(claimed.repos, ["acme/api", "acme/web"])
+        self.assertEqual(claimed.repo, "acme/api")
+
+    def test_200_non_list_repos_field_rejected(self) -> None:
+        """``repos`` must be a list (or absent) — a bare string or
+        other type is a backend bug, surfaced immediately."""
         body = json.dumps({
             "task": {
                 "task_id": "x",
                 "prompt": "y",
-                "repos": ["o/r1", "o/r2"],
+                "repos": "owner/repo",
             },
             "claim_token": "ctok",
         }).encode()
@@ -150,7 +216,7 @@ class ClaimNextTaskTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 task_api.claim_next_task("https://api.example/claim", "tok")
-        self.assertIn("exactly one repo", str(ctx.exception))
+        self.assertIn("must be a list", str(ctx.exception))
 
     def test_invalid_task_id_rejected(self) -> None:
         # B1 regression: backend-supplied identifiers must pass the

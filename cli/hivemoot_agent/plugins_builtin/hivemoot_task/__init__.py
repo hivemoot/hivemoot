@@ -9,6 +9,15 @@ End-to-end task workflow inside the worker daemon (per ADR-002):
     (complete / fail / timeout), promoting silent codex auth failures
     into reported failures.
 
+A task is a unit of work, not a unit of code edit — the backend can
+dispatch anything from "review this RFC" to "summarize yesterday's
+governance" to "edit this file."  This plugin deliberately does NOT
+couple to the ``github`` plugin: it has no required co-plugins, no
+``GITHUB_REPOS`` / ``TARGET_REPO`` reads, and its system prompt is
+repo-agnostic.  If a particular task happens to involve a GitHub
+repo, the task body carries that context and whichever other plugins
+are loaded (github, hivemoot-github, etc.) provide the tools.
+
 The host has no knowledge of any of this — the plugin owns its full
 vertical slice.  See docs/adr/002-plugin-architecture.md.
 """
@@ -27,10 +36,6 @@ from hivemoot_agent.plugins.interfaces import (
     PluginConfig,
     Trigger,
 )
-from hivemoot_agent.plugins_builtin.github.repo_manager import (
-    parse_repos,
-    repo_checkout_path,
-)
 from hivemoot_agent.plugins_builtin.hivemoot_task import (
     api,
     auth_errors,
@@ -45,55 +50,19 @@ def _parse_requested_plugins(raw: str) -> list[str]:
     return [entry.strip() for entry in raw.split(",") if entry.strip()]
 
 
-def _resolve_target_repo(config: PluginConfig) -> tuple[str, str]:
-    target_repo = (config.get("TARGET_REPO", "") or "").strip()
-    repos_raw = config.get("GITHUB_REPOS", "") or ""
-    try:
-        repos = parse_repos(repos_raw)
-    except ValueError as exc:
-        return "", str(exc)
-
-    if target_repo:
-        try:
-            parsed_target = parse_repos(target_repo)
-        except ValueError as exc:
-            return "", str(exc)
-        target_repo = parsed_target[0]
-        if repos and target_repo not in repos:
-            return (
-                "",
-                "TARGET_REPO must match one of the repositories in GITHUB_REPOS "
-                "when hivemoot-task is enabled.",
-            )
-        return target_repo, ""
-
-    if len(repos) == 1:
-        return repos[0], ""
-    if not repos:
-        return (
-            "",
-            "hivemoot-task requires GITHUB_REPOS from the github plugin.",
-        )
-    return (
-        "",
-        "hivemoot-task requires TARGET_REPO when GITHUB_REPOS contains "
-        "multiple repositories.",
-    )
-
-
 def _resolve_workspace_root(config: PluginConfig) -> str:
+    """Where transient per-task artifacts (codex sidecar, etc.) live.
+
+    Not a repo concept — just the writable volume the engine mounts.
+    The ``GITHUB_WORKSPACE`` fallback is kept because apiary fleet
+    config still sets it on most services; ``WORKSPACE_ROOT`` is the
+    compose-defined volume mount.
+    """
     return (
         config.get("GITHUB_WORKSPACE", "")
         or config.get("WORKSPACE_ROOT", "/workspace")
         or "/workspace"
     )
-
-
-def _resolve_repo_path(config: PluginConfig, target_repo: str) -> str:
-    workspace = _resolve_workspace_root(config)
-    if not target_repo:
-        return ""
-    return repo_checkout_path(workspace, target_repo)
 
 
 # Heartbeat cadence: short enough that the backend marks the task as
@@ -121,8 +90,6 @@ class HivemootTaskPlugin:
     description = "Hivemoot delegated-task workflow (claim, run, report)"
 
     def __init__(self) -> None:
-        self._target_repo: str = ""
-        self._repo_path: str = ""
         # Per-job heartbeat state — overwritten on each on_job_started so
         # an orphan thread from a slow shutdown can never be revived by
         # the next job (its closure-captured task_id would post for the
@@ -136,35 +103,35 @@ class HivemootTaskPlugin:
     # ── Validation / setup ─────────────────────────────────────────
 
     def validate(self, config: PluginConfig) -> list[str]:
+        """Config-level validation for the task plugin.
+
+        Intentionally narrow: the plugin does not require any sibling
+        plugins (``github``, ``hivemoot-identity``, etc.) nor any repo
+        configuration.  The only hard requirements are the backend
+        wiring in ``AGENT_TASK_*`` — everything else is the task
+        backend's responsibility to route correctly.  A fleet can run
+        a "task-only" agent with ``AGENT_PLUGINS=hivemoot-task`` and
+        no repo cloning at all, and the plugin will happily dispatch
+        whatever the backend sends.
+
+        The ``hivemoot-identity`` ordering check is preserved as a
+        *recommendation*: when that plugin is listed, it should come
+        first so its security guardrails appear at the top of the
+        merged system prompt.  But it is no longer required.
+        """
         errors: list[str] = []
 
         requested = _parse_requested_plugins(config.get("AGENT_PLUGINS", ""))
-        if "hivemoot-identity" not in requested:
+        if (
+            "hivemoot-identity" in requested
+            and self.name in requested
+            and requested.index("hivemoot-identity")
+            > requested.index(self.name)
+        ):
             errors.append(
-                "hivemoot-task requires AGENT_PLUGINS to include hivemoot-identity "
-                "so the security guardrails frame every run."
-            )
-        elif requested.index("hivemoot-identity") > requested.index(self.name):
-            errors.append(
-                "AGENT_PLUGINS must list hivemoot-identity before hivemoot-task "
-                "so the guardrails appear first in the merged system prompt."
-            )
-        if "github" not in requested:
-            errors.append(
-                "hivemoot-task requires AGENT_PLUGINS to include github."
-            )
-        elif requested.index("github") > requested.index(self.name):
-            errors.append(
-                "AGENT_PLUGINS must list github before hivemoot-task so "
-                "repository setup runs first."
-            )
-
-        target_repo, target_error = _resolve_target_repo(config)
-        if target_error:
-            errors.append(target_error)
-        elif not target_repo:
-            errors.append(
-                "hivemoot-task could not determine the target repository."
+                "AGENT_PLUGINS lists hivemoot-identity after hivemoot-task; "
+                "move it earlier so its guardrails appear first in the "
+                "merged system prompt."
             )
 
         # Trigger-side validation (claim URL, execute base, auth).
@@ -182,17 +149,11 @@ class HivemootTaskPlugin:
         return errors
 
     def setup(self, config: PluginConfig) -> None:
-        target_repo, error = _resolve_target_repo(config)
-        if error:
-            raise RuntimeError(error)
-
-        self._target_repo = target_repo
-        self._repo_path = _resolve_repo_path(config, target_repo)
-        if not self._repo_path or not os.path.isdir(self._repo_path):
-            raise RuntimeError(
-                "hivemoot-task expected the github plugin to clone "
-                f"{target_repo} at {self._repo_path or '(unknown path)'}"
-            )
+        # No setup work: tasks are per-job units with no persistent
+        # plugin-level state.  If a task happens to need a repo
+        # checkout, the github plugin (when loaded) handles that
+        # independently; this plugin doesn't care.
+        pass
 
     def triggers(self) -> list[Trigger]:
         # Only register the trigger when a backend is configured.
@@ -210,14 +171,10 @@ class HivemootTaskPlugin:
         return [HivemootTaskTrigger(self)]  # type: ignore[list-item]
 
     def system_prompt(self, config: PluginConfig) -> str:
-        target_repo = self._target_repo
-        if not target_repo:
-            target_repo, _ = _resolve_target_repo(config)
-        repo_path = self._repo_path or _resolve_repo_path(config, target_repo)
-        return build_system_prompt(
-            target_repo=target_repo,
-            repo_path=repo_path,
-        )
+        # Repo-agnostic by design — see module docstring.  The per-task
+        # prompt body (rendered by the trigger) carries any specific
+        # scope the backend wants the agent to focus on.
+        return build_system_prompt()
 
     # ── Per-job lifecycle ──────────────────────────────────────────
 

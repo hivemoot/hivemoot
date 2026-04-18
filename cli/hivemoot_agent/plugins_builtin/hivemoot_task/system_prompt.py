@@ -1,4 +1,11 @@
-"""System prompt assembly for the hivemoot-task plugin."""
+"""System prompt assembly for the hivemoot-task plugin.
+
+Deliberately minimal: the task operating-mode prompt lives in
+``prompts/task.md`` and is repo-agnostic.  The plugin does not know
+(and does not want to know) what the task is about — that's the
+backend's responsibility, baked into the per-task prompt body that
+the trigger renders and passes as ``Job.prompt``.
+"""
 
 from __future__ import annotations
 
@@ -16,27 +23,12 @@ def load_task_prompt() -> str:
     return _TASK_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
-def build_system_prompt(
-    *,
-    target_repo: str = "",
-    repo_path: str = "",
-) -> str:
-    """Build the Hivemoot delegated-task prompt.
+def build_system_prompt() -> str:
+    """Return the task operating-mode prompt with no per-run context.
 
-    Soul guardrails come from the `hivemoot-identity` plugin when it's
-    stacked ahead of this one; the github plugin contributes repo paths
-    and the shallow-clone note. This plugin only adds the task operating
-    mode and a narrow "this is the task target" framing so the agent
-    knows which repo is in scope for the claim.
+    Soul guardrails come from the ``hivemoot-identity`` plugin when it's
+    stacked ahead of this one; other plugins (github, hivemoot-github)
+    contribute their own system prompts independently and the engine
+    merges them all.  This plugin only adds the task operating mode.
     """
-    parts = [load_task_prompt()]
-
-    if target_repo:
-        context_lines = [
-            f"Target repository for this task: `{target_repo}`.",
-        ]
-        if repo_path:
-            context_lines.append(f"Local repository path: `{repo_path}`.")
-        parts.append("\n".join(context_lines))
-
-    return "\n\n".join(part for part in parts if part.strip())
+    return load_task_prompt()

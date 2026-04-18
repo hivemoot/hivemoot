@@ -22,7 +22,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -77,13 +77,26 @@ _OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 @dataclass
 class ClaimedTask:
-    """Normalized form of a successful claim response."""
+    """Normalized form of a successful claim response.
+
+    ``repos`` carries the full repo list the backend sent (may be
+    empty for generic repo-less tasks — "summarize governance",
+    "draft RFC" — or contain multiple for cross-repo work).
+
+    ``repo`` is a singular convenience = the first entry (or empty
+    string).  Preserved for existing callers that stash it in
+    ``Job.metadata["repo"]`` and for log messages that print one
+    identifier.  Neither field is enforced by the plugin — the repo
+    is informational pass-through to whichever other plugins (github,
+    hivemoot-github) the fleet loads alongside.
+    """
 
     task_id: str
     prompt: str
     repo: str
     claim_token: str
     messages: list[dict]
+    repos: list[str] = field(default_factory=list)
 
 
 # ── Token resolution ───────────────────────────────────────────────
@@ -208,38 +221,58 @@ def claim_next_task(
     prompt = str(task.get("prompt", "")).strip()
     claim_token = str(parsed.get("claim_token", "")).strip()
 
-    repos = task.get("repos")
-    if not isinstance(repos, list) or len(repos) != 1:
+    # ``repos`` is optional and may be empty: a task is a unit of work,
+    # not a unit of code edit (docs/adr/002-plugin-architecture.md).
+    # Accept zero or more entries — each entry still has to pass the
+    # path-safety guards because ``repo`` can end up in filesystem
+    # paths (codex sidecar) and session keys downstream.
+    repos_raw = task.get("repos")
+    if repos_raw is None:
+        repos: list[str] = []
+    elif not isinstance(repos_raw, list):
         raise RuntimeError(
-            f"claim response must contain exactly one repo, got "
-            f"{repos!r}"
+            f"claim response ``repos`` must be a list (or absent), got "
+            f"{repos_raw!r}"
         )
-    repo = str(repos[0]).strip()
+    else:
+        repos = [str(r).strip() for r in repos_raw]
 
     messages = parsed.get("messages") or []
     if not isinstance(messages, list):
         messages = []
 
-    if not task_id or not prompt or not repo or not claim_token:
+    if not task_id or not prompt or not claim_token:
         raise RuntimeError(
             "claim response missing required fields "
-            "(task_id/prompt/repo/claim_token)"
+            "(task_id/prompt/claim_token)"
         )
 
     # Path-safety guards on backend-supplied identifiers — these end
     # up in filesystem paths (sidecar, runs/<task_id>) and session
-    # keys.  Reject obvious traversal attempts at the boundary.
+    # keys.  Reject obvious traversal attempts at the boundary.  Every
+    # repo string (when present) must match the strict owner/name
+    # shape; a single malformed entry fails the whole claim rather
+    # than silently dropping it.
     if not _is_valid_task_id(task_id):
         raise RuntimeError(f"claim returned invalid task_id format: {task_id!r}")
-    if not _is_valid_repo(repo):
-        raise RuntimeError(f"claim returned invalid repo format: {repo!r}")
+    for entry in repos:
+        if not _is_valid_repo(entry):
+            raise RuntimeError(
+                f"claim returned invalid repo format: {entry!r}"
+            )
+
+    # Singular ``.repo`` stays as a convenience for existing callers
+    # (Job.metadata["repo"], log lines).  Empty when the task isn't
+    # tied to any repo.
+    primary_repo = repos[0] if repos else ""
 
     return ClaimedTask(
         task_id=task_id,
         prompt=prompt,
-        repo=repo,
+        repo=primary_repo,
         claim_token=claim_token,
         messages=messages,
+        repos=repos,
     )
 
 

@@ -272,19 +272,32 @@ have not yet switched to daemon-mode deployment; it will be removed
 together with `controller/main.sh` once the fleet migrates (ADR-002
 §Migration follow-ups).
 
-**Task workflow** (`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`):
+**Task workflow** (minimal: `AGENT_PLUGINS=hivemoot-task`; for tasks
+that operate on GitHub repos, add `github` + `hivemoot-identity`):
+
+A task is a generic unit of work dispatched by the hivemoot.dev
+backend — it can be "review this RFC," "summarize yesterday's
+governance," "edit this file in repo X," or anything else. The
+plugin is deliberately **not** coupled to `github`: it has no
+required sibling plugins, no `GITHUB_REPOS` / `TARGET_REPO` reads,
+and its system prompt carries no repo-specific context. If a task
+happens to involve a repo, that scope is in the task body itself,
+and whichever other plugins are loaded (github, hivemoot-github,
+etc.) provide the tools the agent uses.
 
 The plugin's `HivemootTaskTrigger` polls `AGENT_TASK_CLAIM_URL` at
 `AGENT_TASK_POLL_INTERVAL_SECS` (default 10s). On a successful claim it
 renders the task prompt template (`prompts/messages/task.md`) plus the
 conversation-history block from the claim payload's `messages`, builds a
 `Job(session_key="task:<id>", metadata={task_id, claim_token, repo, messages})`,
-and dispatches it to the engine. The plugin's `on_job_started` posts the
-initial progress ping and starts a background heartbeat thread (cadence:
-`AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS`, default 45s; `0` disables).
-`on_job_finished` stops the heartbeat and posts the final outcome
-(`complete` / `fail` / `timeout`), promoting silent codex auth failures
-into reported failures via `auth_errors.detect_codex_auth_error`.
+and dispatches it to the engine. `Job.metadata["repo"]` is kept as
+informational context for plugins that want it; the task plugin itself
+does not enforce any repo contract. The plugin's `on_job_started` posts
+the initial progress ping and starts a background heartbeat thread
+(cadence: `AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS`, default 45s; `0`
+disables). `on_job_finished` stops the heartbeat and posts the final
+outcome (`complete` / `fail` / `timeout`), promoting silent codex auth
+failures into reported failures via `auth_errors.detect_codex_auth_error`.
 
 Backend contract:
 - `AGENT_TASK_EXECUTE_BASE_URL` — base for `${base}/${task_id}/execute`

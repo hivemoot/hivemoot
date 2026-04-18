@@ -92,6 +92,7 @@ class TriggerDispatchTests(unittest.TestCase):
             repo="o/r",
             claim_token="ctok",
             messages=[{"role": "user", "content": "hi"}],
+            repos=["o/r"],
         )
 
         # First call returns the task, second call returns None which
@@ -122,6 +123,42 @@ class TriggerDispatchTests(unittest.TestCase):
         self.assertEqual(job.metadata["task_id"], "t-1")
         self.assertEqual(job.metadata["claim_token"], "ctok")
         self.assertEqual(job.metadata["repo"], "o/r")
+        self.assertEqual(job.metadata["repos"], ["o/r"])
+
+    def test_dispatches_repo_less_task(self) -> None:
+        """Regression: a task with no repos must dispatch successfully.
+        Job.metadata carries ``repo=""`` and ``repos=[]`` as
+        informational; no plugin-level enforcement."""
+        trig = HivemootTaskTrigger(MagicMock())
+        dispatcher = MagicMock()
+        dispatcher.dispatch.return_value = True
+
+        claimed = task_api.ClaimedTask(
+            task_id="generic-1",
+            prompt="draft an RFC",
+            repo="",
+            claim_token="ctok",
+            messages=[],
+            repos=[],
+        )
+
+        calls = {"n": 0}
+
+        def fake_claim(url, bearer, timeout=10):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return claimed
+            trig.stop()
+            return None
+
+        with patch.object(task_api, "claim_next_task", fake_claim):
+            trig.start(self._config(), dispatcher)
+
+        dispatcher.dispatch.assert_called_once()
+        job = dispatcher.dispatch.call_args[0][0]
+        self.assertEqual(job.session_key, "task:generic-1")
+        self.assertEqual(job.metadata["repo"], "")
+        self.assertEqual(job.metadata["repos"], [])
 
     def test_no_task_loops_then_stops(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())

@@ -205,6 +205,18 @@ Completed follow-ups:
   runtime" discipline the rest of the CLI follows.  Enable by listing
   `cron` in `AGENT_PLUGINS`.  The shell `controller/triggers/periodic.sh`
   stays until the fleet (apiary) migrates its deploy scripts.
+- ✅ `hivemoot-task` decoupled from `github` — the plugin no longer
+  requires `GITHUB_REPOS` / `TARGET_REPO`, no longer requires `github`
+  to appear in `AGENT_PLUGINS`, and no longer bakes repo context into
+  its system prompt.  A task is a generic unit of work; the backend
+  can dispatch anything ("review this RFC," "summarize yesterday's
+  governance," "edit file X in repo Y") and the plugin dispatches it
+  without enforcing a repo contract.  `Job.metadata["repo"]` is kept
+  as informational pass-through for plugins that want it, and tasks
+  that happen to involve a repo use whatever other plugins (github,
+  hivemoot-github) are loaded to access it.  Enables a pure
+  `AGENT_PLUGINS=hivemoot-task` task-worker role with no repo
+  plumbing.
 
 ## References
 

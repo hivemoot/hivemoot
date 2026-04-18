@@ -1,4 +1,10 @@
-"""Tests for the hivemoot-task plugin."""
+"""Tests for the hivemoot-task plugin.
+
+Post-decoupling: the plugin does not require ``github``, has no
+``TARGET_REPO`` / ``GITHUB_REPOS`` dependency, and its system prompt
+is repo-agnostic.  The tests here pin those contracts explicitly so
+a future regression that re-introduces coupling fails loudly.
+"""
 
 import os
 import sys
@@ -10,202 +16,210 @@ from hivemoot_agent.plugins.interfaces import PluginConfig
 from hivemoot_agent.plugins_builtin.hivemoot_task import HivemootTaskPlugin
 
 
-def test_validate_requires_github_in_plugins():
+# ── validate() — decoupled from github ────────────────────────────
+
+
+def test_validate_empty_config_ok():
+    """A plugin loaded without any backend wiring must validate cleanly.
+    Fleet templates list the plugin by default and only configure
+    AGENT_TASK_* on services that should actually run tasks."""
+    plugin = HivemootTaskPlugin()
+    errors = plugin.validate(PluginConfig(name="hivemoot-task", settings={}))
+    assert errors == []
+
+
+def test_validate_task_only_fleet_ok():
+    """AGENT_PLUGINS=hivemoot-task (no github, no identity, no repos)
+    must be a valid configuration for a pure task worker."""
     plugin = HivemootTaskPlugin()
     config = PluginConfig(
         name="hivemoot-task",
         settings={
             "AGENT_PLUGINS": "hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
+            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
+            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
+            "HIVEMOOT_AGENT_TOKEN": "tok",
         },
     )
-
     errors = plugin.validate(config)
-
-    assert any("requires AGENT_PLUGINS to include github" in err for err in errors)
-
-
-def test_validate_requires_github_before_hivemoot_task():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-task,github",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    errors = plugin.validate(config)
-
-    assert any("github before hivemoot-task" in err for err in errors)
-
-
-def test_validate_requires_hivemoot_identity_in_stack():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    errors = plugin.validate(config)
-
-    assert any(
-        "requires AGENT_PLUGINS to include hivemoot-identity" in err
-        for err in errors
-    )
-
-
-def test_validate_requires_hivemoot_identity_before_hivemoot_task():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-task,hivemoot-identity",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    errors = plugin.validate(config)
-
-    assert any(
-        "hivemoot-identity before hivemoot-task" in err for err in errors
-    )
-
-
-def test_validate_requires_target_repo_for_multi_repo_config():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api,acme/web",
-        },
-    )
-
-    errors = plugin.validate(config)
-
-    assert any("requires TARGET_REPO" in err for err in errors)
-
-
-def test_validate_rejects_target_repo_outside_github_repos():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
-            "TARGET_REPO": "other/repo",
-        },
-    )
-
-    errors = plugin.validate(config)
-
-    assert any("must match one of the repositories" in err for err in errors)
-
-
-def test_validate_single_repo_without_target_passes():
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    errors = plugin.validate(config)
-
     assert errors == []
 
 
-def test_setup_requires_cloned_repo_path():
+def test_validate_does_not_require_github():
+    """Regression: older versions required AGENT_PLUGINS to include
+    github and TARGET_REPO/GITHUB_REPOS to be set.  The decoupled
+    version MUST NOT complain about any of those being absent."""
     plugin = HivemootTaskPlugin()
-    with tempfile.TemporaryDirectory(prefix="hm-task-missing-") as tmpdir:
-        config = PluginConfig(
-            name="hivemoot-task",
-            settings={
-                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-                "GITHUB_REPOS": "acme/api",
-                "GITHUB_WORKSPACE": tmpdir,
-            },
-        )
-        try:
-            plugin.setup(config)
-            raised = False
-        except RuntimeError as exc:
-            raised = True
-            message = str(exc)
-        assert raised, "setup should fail when github plugin has not cloned the repo"
-        assert "expected the github plugin to clone" in message
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-task",
+            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
+            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
+            "HIVEMOOT_AGENT_TOKEN": "tok",
+        },
+    )
+    errors = plugin.validate(config)
+    assert errors == [], (
+        f"plugin must not require github or repos; got errors: {errors}"
+    )
 
 
-def test_system_prompt_has_task_operating_mode_and_soul():
-    plugin = HivemootTaskPlugin()
-    with tempfile.TemporaryDirectory(prefix="hm-task-") as tmpdir:
-        repo_path = os.path.join(tmpdir, "acme", "api")
-        os.makedirs(repo_path)
-
-        config = PluginConfig(
-            name="hivemoot-task",
-            settings={
-                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-                "GITHUB_REPOS": "acme/api",
-                "GITHUB_WORKSPACE": tmpdir,
-            },
-        )
-
-        plugin.setup(config)
-        prompt = plugin.system_prompt(config)
-
-    # Soul guardrails now live in the hivemoot-identity plugin — the
-    # hivemoot-task prompt no longer embeds them.
-    assert "## Security Guardrails (Non-Overridable)" not in prompt
-    assert "executing a specific delegated task" in prompt
-    assert "Do not perform autonomous work beyond the task scope" in prompt
-    assert "Target repository for this task: `acme/api`." in prompt
-    assert repo_path in prompt
-
-
-def test_system_prompt_does_not_include_autonomous_mission():
+def test_validate_ignores_multi_repo_github_config():
+    """If the fleet happens to configure multiple repos (for github
+    plugin's sake), hivemoot-task must not care about that."""
     plugin = HivemootTaskPlugin()
     config = PluginConfig(
         name="hivemoot-task",
         settings={
             "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
+            "GITHUB_REPOS": "acme/api,acme/web,acme/mobile",
         },
     )
+    errors = plugin.validate(config)
+    # No TARGET_REPO complaint, no "requires a single repo" complaint,
+    # nothing.  The plugin is indifferent to GITHUB_REPOS cardinality.
+    assert errors == []
 
+
+def test_validate_warns_when_identity_listed_after_task():
+    """Soft ordering check: if hivemoot-identity IS in the plugin
+    list, it should be before hivemoot-task so its guardrails appear
+    first in the merged system prompt."""
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "AGENT_PLUGINS": "hivemoot-task,hivemoot-identity",
+        },
+    )
+    errors = plugin.validate(config)
+    assert any(
+        "lists hivemoot-identity after hivemoot-task" in err for err in errors
+    )
+
+
+def test_validate_does_not_require_identity():
+    """hivemoot-identity is no longer mandatory — a fleet can run
+    task-only agents without it.  (Ordering check still applies when
+    identity is present, tested above.)"""
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={"AGENT_PLUGINS": "hivemoot-task"},
+    )
+    errors = plugin.validate(config)
+    assert errors == []
+
+
+def test_validate_checks_trigger_config_when_claim_url_set():
+    """When backend wiring is partial, errors should surface at
+    validate time from the trigger's own config check."""
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
+            # Missing AGENT_TASK_EXECUTE_BASE_URL and HIVEMOOT_AGENT_TOKEN.
+        },
+    )
+    errors = plugin.validate(config)
+    assert errors, "trigger-side validation must fire when claim URL is set"
+
+
+# ── setup() — no repo work ────────────────────────────────────────
+
+
+def test_setup_is_noop():
+    """setup() is a no-op: no repo cloning to verify, no state to set up."""
+    plugin = HivemootTaskPlugin()
+    # With or without GITHUB_* config — either way, no error.
+    for settings in [
+        {},
+        {"GITHUB_REPOS": "acme/api"},
+        {"GITHUB_REPOS": "acme/api,acme/web"},
+    ]:
+        plugin.setup(PluginConfig(name="hivemoot-task", settings=settings))
+
+
+def test_setup_never_raises_on_missing_repo():
+    """Regression: the old setup() verified a cloned-repo path and
+    raised if absent.  The decoupled version does no such check."""
+    plugin = HivemootTaskPlugin()
+    with tempfile.TemporaryDirectory(prefix="hm-task-nope-") as tmpdir:
+        config = PluginConfig(
+            name="hivemoot-task",
+            settings={
+                "GITHUB_REPOS": "acme/api",
+                "GITHUB_WORKSPACE": tmpdir,  # nothing cloned inside
+            },
+        )
+        plugin.setup(config)  # must not raise
+
+
+# ── system_prompt() — repo-agnostic ────────────────────────────────
+
+
+def test_system_prompt_has_task_operating_mode():
+    plugin = HivemootTaskPlugin()
+    prompt = plugin.system_prompt(PluginConfig(name="hivemoot-task", settings={}))
+    assert "executing a specific delegated task" in prompt
+    assert "Do not perform autonomous work beyond the task scope" in prompt
+
+
+def test_system_prompt_has_no_repo_context():
+    """Regression: the old prompt baked in 'Target repository for this
+    task: `owner/repo`' and the local repo path.  Post-decoupling, the
+    system prompt must not reference any specific repo — repo scope
+    (if any) lives in the per-task Job.prompt body that the trigger
+    renders."""
+    plugin = HivemootTaskPlugin()
+    config = PluginConfig(
+        name="hivemoot-task",
+        settings={
+            "GITHUB_REPOS": "acme/api",
+            "TARGET_REPO": "acme/api",
+            "GITHUB_WORKSPACE": "/workspace",
+        },
+    )
     prompt = plugin.system_prompt(config)
 
-    # The autonomous/hivemoot-github prompt uses these phrases; task mode must not.
+    assert "acme/api" not in prompt, (
+        "system prompt must not embed a specific repo"
+    )
+    assert "Target repository" not in prompt
+    assert "Local repository path" not in prompt
+
+
+def test_system_prompt_omits_soul_guardrails():
+    """Soul guardrails come from the hivemoot-identity plugin; the
+    hivemoot-task prompt must not duplicate them."""
+    plugin = HivemootTaskPlugin()
+    prompt = plugin.system_prompt(PluginConfig(name="hivemoot-task", settings={}))
+    assert "## Security Guardrails (Non-Overridable)" not in prompt
+
+
+def test_system_prompt_does_not_include_autonomous_mission():
+    """The autonomous/hivemoot-github prompt uses these phrases;
+    task mode must not."""
+    plugin = HivemootTaskPlugin()
+    prompt = plugin.system_prompt(PluginConfig(name="hivemoot-task", settings={}))
     assert "Deliver at least one complete, useful contribution" not in prompt
     assert "Triage notifications" not in prompt
 
 
-def test_system_prompt_uses_workspace_root_when_github_workspace_empty():
+# ── triggers() and skills ─────────────────────────────────────────
+
+
+def test_triggers_empty_without_claim_url():
     plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api",
-            "GITHUB_WORKSPACE": "",
-            "WORKSPACE_ROOT": "/workspace/repo",
-        },
-    )
-
-    prompt = plugin.system_prompt(config)
-
-    assert "/workspace/repo/acme/api" in prompt
-
-
-def test_plugin_has_no_triggers():
-    plugin = HivemootTaskPlugin()
-    assert plugin.triggers() == []
+    # Ensure AGENT_TASK_CLAIM_URL is not in env for this test.
+    saved = os.environ.pop("AGENT_TASK_CLAIM_URL", None)
+    try:
+        assert plugin.triggers() == []
+    finally:
+        if saved is not None:
+            os.environ["AGENT_TASK_CLAIM_URL"] = saved
 
 
 def test_plugin_package_contains_hivemoot_skill_pack():
