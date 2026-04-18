@@ -215,15 +215,41 @@ Notes:
 - use `AGENT_PLUGINS=hivemoot-identity,github,hivemoot-github` for the Hivemoot GitHub contribution workflow
 - `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
-For recurring runs and multi-agent fleets, use `controller/main.sh` —
-see the [Host Controller](#host-controller-legacy) section. The
-controller's `periodic` trigger uses these knobs in `.env`:
-- `PERIODIC_INTERVAL_SECS` — interval between runs (default: 3600s)
-- `PERIODIC_JITTER_SECS` — random variance (default: 300s)
-- `MAX_CONSECUTIVE_FAILURES` — exit after N failures (default: 5)
-- `PERIODIC_AGENT_FAILURE_BACKOFF_BASE_SECS` — initial cooldown for a failing agent (default: 300s)
-- `PERIODIC_AGENT_FAILURE_BACKOFF_MAX_SECS` — max cooldown cap for repeated failures (default: 3600s)
-- `PERIODIC_AGENT_FAILURE_BACKOFF_JITTER_PCT` — random jitter applied to cooldowns (default: 15)
+For recurring runs, use the `cron` plugin — list of named tasks, each
+with its own cron expression and prompt.  Cron triggers only fire in
+daemon mode (`hivemoot-agent run`); the default `docker compose run --rm
+hivemoot-agent` invocation picks that up because the compose service
+overrides the image CMD to `run`:
+
+```bash
+AGENT_PLUGINS=hivemoot-identity,github,cron \
+CRON_SCHEDULES_JSON='[
+  {"name":"autonomous","schedule":"@every 1h","jitter_secs":300,
+   "prompt":"Make meaningful contributions to the repository."},
+  {"name":"weekly-security","schedule":"0 10 * * 1",
+   "prompt":"Audit new dependencies added in the past week."}
+]' \
+docker compose run --rm hivemoot-agent
+```
+
+Supported expression grammar: 5-field standard cron
+(`minute hour day-of-month month day-of-week`) with `*`, `,`, `-`,
+`*/N`, plus `@every Nh/Nm/Ns/Nd`.  All times UTC.  Each schedule's
+`resume: true` opt-in switches the provider session to a stable
+`cron:<name>` key so a weekly task can carry context across firings.
+`jitter_secs` anti-thundering-herd: each fire is shifted by a random
+0–N second offset, applied to the stored fire time (not to the
+dispatch path), so a jittered schedule never blocks other schedules
+that became due during its delay window.
+
+Gotcha: the `worker` / oneshot path (legacy `controller/main.sh`
+spawn, or explicitly `docker run ... hivemoot-agent:local worker`)
+does **not** start trigger threads — cron schedules configured there
+will silently never fire.  Use daemon mode.
+
+For multi-agent fleets still using `controller/main.sh` during the
+transition, the legacy `PERIODIC_INTERVAL_SECS` / `PERIODIC_JITTER_SECS`
+envs on the host controller path continue to work.
 
 The architecture follows
 [ADR-002: Plugin Architecture](docs/adr/002-plugin-architecture.md):
@@ -238,11 +264,13 @@ The architecture follows
   subcommands; no `controller/triggers/<plugin-name>.sh`; no plugin-specific
   env wires in `controller/`.
 
-Surviving controller-side trigger (kept until it migrates to a plugin per
-ADR §Migration follow-ups): `periodic`. Plugin-owned triggers: `messaging`,
-`hivemoot-task`, `github-mention`, and `github-review-request` — all
-implement the `Plugin.triggers()` protocol and run inside
-`hivemoot-agent run`.
+Plugin-owned triggers: `messaging`, `hivemoot-task`, `github-mention`,
+`github-review-request`, and `cron` — all implement the
+`Plugin.triggers()` protocol and run inside `hivemoot-agent run`. The
+shell `controller/triggers/periodic.sh` still exists for fleets that
+have not yet switched to daemon-mode deployment; it will be removed
+together with `controller/main.sh` once the fleet migrates (ADR-002
+§Migration follow-ups).
 
 **Task workflow** (`AGENT_PLUGINS=hivemoot-identity,github,hivemoot-task`):
 

@@ -185,6 +185,10 @@ USER root
 RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent
 USER node
 
-# Worker entrypoint is the Python `worker` subcommand (replaced
-# worker/entrypoint.sh); tini owns PID 1 and forwards signals to it.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hivemoot-agent", "worker"]
+# tini owns PID 1 and forwards signals to the CLI.  The subcommand
+# lives in CMD (not ENTRYPOINT) so compose / `docker run ... <cmd>`
+# can override it — e.g. docker-compose.yml sets ``command: ["run"]``
+# for daemon mode, while the legacy host controller keeps the default
+# ``worker`` (oneshot) path by omitting a command on ``docker run``.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hivemoot-agent"]
+CMD ["worker"]

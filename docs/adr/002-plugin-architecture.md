@@ -170,11 +170,15 @@ This ADR was adopted concurrently with the consolidated cleanup PR that:
 
 Open follow-ups (separate PRs):
 
-- Migrate `controller/triggers/periodic.sh` (the scheduling loop) to a
-  plugin or to engine-level scheduling.
-- Once all triggers are plugins, retire `controller/main.sh` itself —
-  what remains is container supervision, which systemd / docker-compose
-  already provides directly.
+- Retire `controller/main.sh`, `controller/core/`, the remaining shell
+  `controller/triggers/periodic.sh`, and the `shared/lib-*.sh` helpers
+  that only the host controller uses.  The host has no triggers left
+  to drive once the fleet (`apiary/`) switches deploy scripts from
+  spawning the bash controller to running `hivemoot-agent run` in a
+  long-lived container per agent × repo.  A future host-side trigger
+  for cases that genuinely need per-job container isolation (separate
+  blast radius, per-job resource caps) is explicitly out of scope for
+  this round.
 
 Completed follow-ups:
 
@@ -184,6 +188,23 @@ Completed follow-ups:
   the engine, and acks notifications via `hivemoot ack` from
   `on_job_finished` only on successful runs.  Env-gated by
   `GITHUB_WATCH_MENTIONS=1` and `GITHUB_WATCH_REVIEW_REQUESTS=1`.
+- ✅ `cron` plugin — added
+  `cli/hivemoot_agent/plugins_builtin/cron/` with `CronPlugin`,
+  `CronTrigger`, a stdlib-only 5-field cron expression parser
+  (`expression.py`), an `@every Nh/Nm/Ns/Nd` shorthand, and a
+  `Schedule` config object (`schedule.py`).  Replaces the retired
+  host-side `controller/triggers/periodic.sh` with strictly-better
+  semantics: each schedule entry has its own cron expression, prompt
+  body, optional jitter, and optional session resume.  A fleet that
+  wants the old "wake up every hour with the role prompt" behaviour
+  writes one entry; a fleet that wants "triage at 9am weekdays,
+  security audit on Mondays, autonomous work every 2h" writes three.
+  All times UTC to sidestep DST.  Config lives in
+  `CRON_SCHEDULES_JSON` env var.  Stdlib-only — no cron parser
+  dependency added, keeping the "no third-party Python deps at
+  runtime" discipline the rest of the CLI follows.  Enable by listing
+  `cron` in `AGENT_PLUGINS`.  The shell `controller/triggers/periodic.sh`
+  stays until the fleet (apiary) migrates its deploy scripts.
 
 ## References
 
