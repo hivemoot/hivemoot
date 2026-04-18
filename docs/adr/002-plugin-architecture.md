@@ -228,6 +228,24 @@ Completed follow-ups:
   `controller/main.sh` and `scripts/controller.sh` remain as thin
   deprecation stubs that exit with a clear migration message until
   apiary's deploy scripts migrate; they can be deleted after that.
+- ✅ Three-layer system prompt: root + identity + plugins.  The
+  engine now assembles system prompts in three distinct, tagged
+  layers instead of merging everything through plugin composition.
+  `<root>` is the runtime's universal baseline (security posture,
+  honesty, reasoning discipline), shipped in-repo at
+  `cli/hivemoot_agent/root_system_prompt.md` and always applied.
+  `<identity>` is deployer-supplied at container-setup time via
+  `AGENT_IDENTITY_FILE` — per-agent content (role, voice, mission,
+  domain conventions) that isn't baked into this repo.  `<plugin>`
+  blocks remain for capability content only.  The `hivemoot-identity`
+  plugin is demoted to a transitional deprecation shim that emits a
+  warning and still contributes the legacy voice/commit content so
+  unmigrated fleets don't regress mid-rollout; once deployers mount
+  their own identity files, the shim gets deleted.  This fixes two
+  problems with the old approach: security rules are now always
+  applied regardless of `AGENT_PLUGINS` (can't be accidentally
+  omitted), and identity is a first-class deployer input instead of
+  a singleton-disguised-as-plugin.
 
 ## References
 

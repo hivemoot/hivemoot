@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,6 +39,61 @@ _RESUME_STALENESS_NOTE = (
 )
 _DEFAULT_AGENT_MEMORY_DIR = "/home/node/.hivemoot/memory"
 _EXTERNAL_SKILLS_DIR = "/opt/hivemoot-agent/skills"
+
+# Root system prompt lives next to this module so it ships inside the
+# runtime image and is always available regardless of deployer config.
+_ROOT_SYSTEM_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "root_system_prompt.md"
+)
+
+
+@lru_cache(maxsize=1)
+def _load_root_system_prompt() -> str:
+    """Return the runtime's universal baseline system prompt.
+
+    The root applies to every agent built on this runtime — universal
+    rules about security posture, honesty, and reasoning discipline
+    that hold regardless of identity or capability composition.  The
+    file is bundled with the code so it can't be silently replaced at
+    runtime; changes go through image rebuild + review.
+    """
+    try:
+        return _ROOT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(
+            f"[engine] WARN: could not read root system prompt at "
+            f"{_ROOT_SYSTEM_PROMPT_PATH}: {exc}",
+            file=sys.stderr, flush=True,
+        )
+        return ""
+
+
+def _load_identity() -> str:
+    """Return the deployer-supplied identity, if any.
+
+    Identity is per-agent content that defines *who* this specific
+    agent is — role, voice, mission, domain conventions.  It's brought
+    in by the deployer at container-setup time via
+    ``AGENT_IDENTITY_FILE``, not baked into this repo.  Unset / missing
+    / empty file is valid: the agent runs with just root + plugins, a
+    "generic agent" with universal rules but no specific character.
+
+    Read uncached because the file lives outside the runtime image and
+    may legitimately change between restarts (operator swap, secret
+    rotation).  One read per job is cheap.
+    """
+    path = (os.environ.get("AGENT_IDENTITY_FILE") or "").strip()
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(
+            f"[engine] WARN: AGENT_IDENTITY_FILE={path!r} not readable: "
+            f"{exc}; running without identity",
+            file=sys.stderr, flush=True,
+        )
+        return ""
 
 
 @dataclass
@@ -520,13 +576,31 @@ class Engine:
             backoff = min(backoff * 2, max_backoff)
 
     def _build_system_prompt(self) -> str:
-        """Merge system prompts from all enabled plugins.
+        """Assemble the three-layer system prompt: root + identity + plugins.
 
-        Each plugin's prompt is wrapped in a <plugin> tag so the agent
-        knows which capabilities come from which plugin.  Collected
-        from ALL enabled plugins, not just the triggering one.
+        Layers, in order:
+          * ``<root>`` — runtime baseline from ``root_system_prompt.md``.
+            Always present.  Security, honesty, reasoning discipline.
+            The ``@lru_cache`` keeps this to one disk read per process.
+          * ``<identity>`` — deployer-supplied from ``AGENT_IDENTITY_FILE``.
+            Optional.  Who this specific agent is: role, voice, mission.
+          * ``<plugin name="...">`` — one per enabled plugin, in
+            ``AGENT_PLUGINS`` order.  Capability-level content only.
+
+        The distinct tag names matter: the model can reason about which
+        layer a rule came from, and identity content can't accidentally
+        override root rules by appearing earlier in a merge.
         """
         parts: list[str] = []
+
+        root = _load_root_system_prompt()
+        if root:
+            parts.append(f"<root>\n{root}\n</root>")
+
+        identity = _load_identity()
+        if identity:
+            parts.append(f"<identity>\n{identity}\n</identity>")
+
         for name, p in self._plugins.items():
             p_config = registry.config_for(name)
             sp = p.system_prompt(p_config)
@@ -536,9 +610,18 @@ class Engine:
                     f"{sp}\n"
                     f"</plugin>"
                 )
+
         if not parts:
             return ""
-        header = "Your capabilities are provided by hivemoot agent plugins. Each <plugin> block describes one."
+
+        header = (
+            "The sections below frame every action you take.\n"
+            "<root> is this runtime's non-negotiable baseline. "
+            "<identity>, when present, is the specific agent you are "
+            "(supplied by the deployer). Each <plugin> block is a "
+            "capability available to you. When layers conflict, <root> "
+            "wins, then <identity>, then plugins."
+        )
         return header + "\n\n" + "\n\n".join(parts)
 
     def _resolve_skill_search_dirs(self) -> list[Path]:

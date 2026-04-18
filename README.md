@@ -255,8 +255,61 @@ Plugin-owned triggers: `messaging`, `hivemoot-task`, `github-mention`,
 Every trigger in the system now lives in its plugin; there is no
 host-side supervisor to spawn containers.
 
+## Prompt layers: root + identity + plugins
+
+The engine assembles every agent's system prompt from three layers,
+each wrapped in its own tag so the model can reason about where a
+rule came from:
+
+- **`<root>`** — always applied, loaded from
+  [`cli/hivemoot_agent/root_system_prompt.md`](cli/hivemoot_agent/root_system_prompt.md).
+  Universal baseline: security posture, honesty, reasoning discipline.
+  Lives in this repo, ships inside the image, changes go through
+  image rebuild + review. If this root conflicts with any other
+  instruction, the root wins.
+- **`<identity>`** — optional, loaded from the file named by
+  `AGENT_IDENTITY_FILE` at container setup. Per-agent content
+  defining who this specific agent is: role, voice, mission, domain
+  conventions. Supplied by the deployer, *not* baked into this repo.
+  An unset identity file is valid — the agent runs as a "generic
+  agent" with only the universal baseline.
+- **`<plugin name="...">`** — one per enabled plugin with non-empty
+  `system_prompt()` output, in `AGENT_PLUGINS` order. Capability-level
+  content only: "I'm the github plugin, these repos are cloned at
+  these paths." Voice / persona / mission content does NOT belong
+  here.
+
+To supply an identity (per-deployment character for the agent),
+mount a file and point `AGENT_IDENTITY_FILE` at it:
+
+```yaml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./fleet/identity.md:/run/agent/identity.md:ro
+    environment:
+      AGENT_IDENTITY_FILE: /run/agent/identity.md
+```
+
+A minimal `identity.md` for a GitHub-contributing agent might look
+like:
+
+```markdown
+## Who You Are
+You are <agent-name> — an autonomous agent contributing to
+<project-name>.
+
+## Communication Style
+Write like a teammate, not a report generator. Lead with your point.
+(...)
+
+## Commit Conventions
+- Subject line under 72 characters
+- Body explains why the change was made
+```
+
 **Task workflow** (minimal: `AGENT_PLUGINS=hivemoot-task`; for tasks
-that operate on GitHub repos, add `github` + `hivemoot-identity`):
+that operate on GitHub repos, add `github`):
 
 A task is a generic unit of work dispatched by the hivemoot.dev
 backend — it can be "review this RFC," "summarize yesterday's
