@@ -244,6 +244,25 @@ Completed follow-ups:
   `AGENT_PLUGINS` (can't be accidentally omitted), and identity is
   a first-class deployer input instead of a
   singleton-disguised-as-plugin.
+- ✅ Custom (deployer-supplied) plugins.  The plugin registry now
+  scans two locations: the built-in `plugins_builtin/` directory
+  shipped inside the runtime image, and the fixed external mount
+  point `/opt/hivemoot-agent/plugins/` populated by the deployer.
+  Both sources speak the same `Plugin` / `Trigger` protocol — no
+  second-class plugin tier.  Built-ins win on name collision (a
+  custom plugin whose `name` matches a built-in is rejected with a
+  stderr warning rather than silently shadowing runtime behaviour);
+  custom plugins should use a fleet-prefixed name (e.g.
+  `apiary-foo`) to stay collision-free.  The mount point lives
+  *outside* the Python package on purpose — bind-mounting over
+  `cli/hivemoot_agent/plugins_builtin/` would shadow image-shipped
+  plugins and couple deployer mounts to internal package layout.
+  This mirrors the existing `_EXTERNAL_SKILLS_DIR` convention for
+  skills (`engine.py:41`).  A missing external dir is silently
+  ignored and a broken external plugin logs a warning without
+  affecting other plugins or built-ins.  `hivemoot-agent plugin list`
+  surfaces the source per plugin in a `SOURCE` column so operators
+  can tell builtin from external at a glance.
 
 ## References
 

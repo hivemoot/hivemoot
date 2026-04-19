@@ -33,10 +33,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("No plugins found.")
         return 0
 
-    print(f"{'PLUGIN':<20} {'VERSION':<10} {'DESCRIPTION'}")
-    print("-" * 60)
+    print(f"{'PLUGIN':<20} {'VERSION':<10} {'SOURCE':<10} {'DESCRIPTION'}")
+    print("-" * 70)
     for name, plugin in sorted(plugins.items()):
-        print(f"{plugin.name:<20} {plugin.version:<10} {plugin.description}")
+        source = registry.source_of(name) or "?"
+        print(
+            f"{plugin.name:<20} {plugin.version:<10} {source:<10} "
+            f"{plugin.description}"
+        )
     return 0
 
 

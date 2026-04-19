@@ -255,6 +255,49 @@ Plugin-owned triggers: `messaging`, `hivemoot-task`, `github-mention`,
 Every trigger in the system now lives in its plugin; there is no
 host-side supervisor to spawn containers.
 
+### Custom (deployer-supplied) plugins
+
+The runtime loads plugins from two sources:
+
+| Source     | Location (in container)                                       | Owner    |
+|------------|---------------------------------------------------------------|----------|
+| `builtin`  | `/opt/hivemoot-agent/cli/hivemoot_agent/plugins_builtin/`     | runtime  |
+| `external` | `/opt/hivemoot-agent/plugins/`                                | deployer |
+
+Mount a host directory at `/opt/hivemoot-agent/plugins/` and each
+subdirectory containing `__init__.py` with a `create_plugin()` factory
+becomes loadable by name from `AGENT_PLUGINS`.  Same `Plugin` /
+`Trigger` protocol as built-ins (see `cli/hivemoot_agent/plugins/interfaces.py`);
+no second-class plugin tier.
+
+```yaml
+# docker-compose.yml
+services:
+  hivemoot-agent:
+    volumes:
+      - ./my-plugins:/opt/hivemoot-agent/plugins:ro
+    environment:
+      AGENT_PLUGINS: github,my-fleet-foo
+```
+
+Conventions:
+
+- **Built-ins win on name collision.** An external plugin whose `name`
+  matches a built-in is rejected with a stderr warning (so a deployer
+  can't silently shadow runtime behaviour).  Use a fleet-prefixed
+  name like `apiary-foo` to stay collision-free.
+- **Public path is fixed.** The mount point is `/opt/hivemoot-agent/plugins/`
+  on purpose — placing it outside the Python package decouples
+  deployer mounts from internal layout (parallels `_EXTERNAL_SKILLS_DIR`
+  for skills).
+- **Discovery is graceful.** A missing external dir is silently
+  ignored; a broken plugin logs a warning and is skipped without
+  affecting other plugins or built-ins.
+
+Inspect what's loaded with `hivemoot-agent plugin list` — the
+`SOURCE` column shows whether each plugin came from the image or a
+mount.
+
 ## Prompt layers: root + identity + plugins
 
 The engine assembles every agent's system prompt from three layers,

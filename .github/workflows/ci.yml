@@ -64,6 +64,8 @@ jobs:
         run: python3 cli/tests/test_hivemoot_task_extractor.py
       - name: Verify hivemoot-task plugin trigger + lifecycle tests
         run: python3 cli/tests/test_hivemoot_task_trigger.py
+      - name: Verify dual-source plugin discovery (builtin + external)
+        run: python3 cli/tests/test_plugin_discovery.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
