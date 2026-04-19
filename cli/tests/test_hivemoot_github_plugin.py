@@ -58,7 +58,7 @@ def test_validate_requires_github_before_plugin():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-github,github",
+            "AGENT_PLUGINS": "hivemoot-github,github",
             "GITHUB_REPOS": "acme/api",
         },
     )
@@ -72,60 +72,12 @@ def test_validate_requires_github_before_plugin():
     assert any("github before hivemoot-github" in error for error in errors)
 
 
-def test_validate_does_not_require_hivemoot_identity():
-    """hivemoot-identity is no longer a plugin (#581); security rules
-    come from the engine's always-applied root.  A fleet running only
-    github + hivemoot-github must validate cleanly."""
-    plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    with patch(
-        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
-        return_value="/usr/bin/hivemoot",
-    ):
-        errors = plugin.validate(config)
-
-    assert not any(
-        "hivemoot-identity" in error for error in errors
-    ), f"hivemoot-identity no longer required; got errors: {errors}"
-
-
-def test_validate_warns_when_identity_shim_listed_after_plugin():
-    """The deprecation shim is still tolerated, but if a deployer lists
-    it, it must come before hivemoot-github so its prompt contribution
-    appears first in the merged system prompt."""
-    plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-github,hivemoot-identity",
-            "GITHUB_REPOS": "acme/api",
-        },
-    )
-
-    with patch(
-        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
-        return_value="/usr/bin/hivemoot",
-    ):
-        errors = plugin.validate(config)
-
-    assert any(
-        "hivemoot-identity after hivemoot-github" in error for error in errors
-    )
-
-
 def test_validate_requires_target_repo_for_multi_repo_config():
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
+            "AGENT_PLUGINS": "github,hivemoot-github",
             "GITHUB_REPOS": "acme/api,acme/web",
         },
     )
@@ -144,7 +96,7 @@ def test_validate_rejects_target_repo_outside_github_repos():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
+            "AGENT_PLUGINS": "github,hivemoot-github",
             "GITHUB_REPOS": "acme/api",
             "TARGET_REPO": "other/repo",
         },
@@ -168,7 +120,7 @@ def test_setup_and_system_prompt_use_role_context():
         config = PluginConfig(
             name="hivemoot-github",
             settings={
-                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
+                "AGENT_PLUGINS": "github,hivemoot-github",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
                 "GITHUB_CLONE_DEPTH": "7",
@@ -185,8 +137,8 @@ def test_setup_and_system_prompt_use_role_context():
         prompt = plugin.system_prompt(config)
 
     assert "Deliver at least one complete, useful contribution" in prompt
-    # Soul guardrails now live in the hivemoot-identity plugin — the
-    # hivemoot-github prompt no longer embeds them.
+    # Security guardrails live in the engine's always-applied <root>
+    # layer; the hivemoot-github prompt no longer embeds them.
     assert "## Security Guardrails (Non-Overridable)" not in prompt
     assert "Your role on this project is: worker" in prompt
     assert "Hivemoot buzz role: worker" in prompt
@@ -203,7 +155,7 @@ def test_setup_continues_when_role_lookup_fails():
         config = PluginConfig(
             name="hivemoot-github",
             settings={
-                "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
+                "AGENT_PLUGINS": "github,hivemoot-github",
                 "GITHUB_REPOS": "acme/api",
                 "GITHUB_WORKSPACE": tmpdir,
                 "AGENT_ID": "worker",
@@ -227,7 +179,7 @@ def test_system_prompt_uses_workspace_root_when_github_workspace_empty():
     config = PluginConfig(
         name="hivemoot-github",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-github",
+            "AGENT_PLUGINS": "github,hivemoot-github",
             "GITHUB_REPOS": "acme/api",
             "GITHUB_WORKSPACE": "",
             "WORKSPACE_ROOT": "/workspace/repo",

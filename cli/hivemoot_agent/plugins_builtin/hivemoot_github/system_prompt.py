@@ -26,11 +26,11 @@ def build_system_prompt(
 ) -> str:
     """Build the Hivemoot GitHub workflow prompt.
 
-    The Hivemoot identity / soul guardrails come from the
-    `hivemoot-identity` plugin when it's stacked ahead of this one —
-    this function only contributes the autonomous-contribution
-    operating mode, the optional role block, and the target-repo
-    framing.
+    Security guardrails come from the engine's always-applied
+    ``<root>`` layer; per-agent voice / mission comes from
+    ``AGENT_IDENTITY_FILE``.  This function only contributes the
+    autonomous-contribution operating mode, the optional role block,
+    and the target-repo framing.
     """
     parts = [load_autonomous_prompt()]
 

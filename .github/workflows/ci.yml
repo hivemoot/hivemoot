@@ -24,8 +24,6 @@ jobs:
             docker:
               - 'Dockerfile'
               - '.dockerignore'
-              - 'worker/**'
-              - 'shared/**'
               - 'cli/**'
               - '.trivyignore'
               - '.github/workflows/ci.yml'

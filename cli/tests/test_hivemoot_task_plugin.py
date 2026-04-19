@@ -53,7 +53,7 @@ def test_validate_does_not_require_github():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,hivemoot-task",
+            "AGENT_PLUGINS": "hivemoot-task",
             "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
             "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
             "HIVEMOOT_AGENT_TOKEN": "tok",
@@ -72,43 +72,13 @@ def test_validate_ignores_multi_repo_github_config():
     config = PluginConfig(
         name="hivemoot-task",
         settings={
-            "AGENT_PLUGINS": "hivemoot-identity,github,hivemoot-task",
+            "AGENT_PLUGINS": "github,hivemoot-task",
             "GITHUB_REPOS": "acme/api,acme/web,acme/mobile",
         },
     )
     errors = plugin.validate(config)
     # No TARGET_REPO complaint, no "requires a single repo" complaint,
     # nothing.  The plugin is indifferent to GITHUB_REPOS cardinality.
-    assert errors == []
-
-
-def test_validate_warns_when_identity_listed_after_task():
-    """Soft ordering check: if hivemoot-identity IS in the plugin
-    list, it should be before hivemoot-task so its guardrails appear
-    first in the merged system prompt."""
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-task,hivemoot-identity",
-        },
-    )
-    errors = plugin.validate(config)
-    assert any(
-        "lists hivemoot-identity after hivemoot-task" in err for err in errors
-    )
-
-
-def test_validate_does_not_require_identity():
-    """hivemoot-identity is no longer mandatory — a fleet can run
-    task-only agents without it.  (Ordering check still applies when
-    identity is present, tested above.)"""
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={"AGENT_PLUGINS": "hivemoot-task"},
-    )
-    errors = plugin.validate(config)
     assert errors == []
 
 
@@ -192,8 +162,8 @@ def test_system_prompt_has_no_repo_context():
 
 
 def test_system_prompt_omits_soul_guardrails():
-    """Soul guardrails come from the hivemoot-identity plugin; the
-    hivemoot-task prompt must not duplicate them."""
+    """Security guardrails live in the engine's always-applied <root>
+    layer; the hivemoot-task prompt must not duplicate them."""
     plugin = HivemootTaskPlugin()
     prompt = plugin.system_prompt(PluginConfig(name="hivemoot-task", settings={}))
     assert "## Security Guardrails (Non-Overridable)" not in prompt

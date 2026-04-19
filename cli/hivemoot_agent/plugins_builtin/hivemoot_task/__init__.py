@@ -46,10 +46,6 @@ from hivemoot_agent.plugins_builtin.hivemoot_task.system_prompt import (
 )
 
 
-def _parse_requested_plugins(raw: str) -> list[str]:
-    return [entry.strip() for entry in raw.split(",") if entry.strip()]
-
-
 def _resolve_workspace_root(config: PluginConfig) -> str:
     """Where transient per-task artifacts (codex sidecar, etc.) live.
 
@@ -106,33 +102,14 @@ class HivemootTaskPlugin:
         """Config-level validation for the task plugin.
 
         Intentionally narrow: the plugin does not require any sibling
-        plugins (``github``, ``hivemoot-identity``, etc.) nor any repo
-        configuration.  The only hard requirements are the backend
-        wiring in ``AGENT_TASK_*`` — everything else is the task
-        backend's responsibility to route correctly.  A fleet can run
-        a "task-only" agent with ``AGENT_PLUGINS=hivemoot-task`` and
-        no repo cloning at all, and the plugin will happily dispatch
-        whatever the backend sends.
-
-        The ``hivemoot-identity`` ordering check is preserved as a
-        *recommendation*: when that plugin is listed, it should come
-        first so its security guardrails appear at the top of the
-        merged system prompt.  But it is no longer required.
+        plugins or repo configuration.  The only hard requirements are
+        the backend wiring in ``AGENT_TASK_*`` — everything else is
+        the task backend's responsibility to route correctly.  A fleet
+        can run a "task-only" agent with ``AGENT_PLUGINS=hivemoot-task``
+        and no repo cloning at all, and the plugin will happily
+        dispatch whatever the backend sends.
         """
         errors: list[str] = []
-
-        requested = _parse_requested_plugins(config.get("AGENT_PLUGINS", ""))
-        if (
-            "hivemoot-identity" in requested
-            and self.name in requested
-            and requested.index("hivemoot-identity")
-            > requested.index(self.name)
-        ):
-            errors.append(
-                "AGENT_PLUGINS lists hivemoot-identity after hivemoot-task; "
-                "move it earlier so its guardrails appear first in the "
-                "merged system prompt."
-            )
 
         # Trigger-side validation (claim URL, execute base, auth).
         # Only enforced when the plugin is actually wired up to a

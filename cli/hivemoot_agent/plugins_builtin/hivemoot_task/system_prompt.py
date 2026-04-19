@@ -26,8 +26,9 @@ def load_task_prompt() -> str:
 def build_system_prompt() -> str:
     """Return the task operating-mode prompt with no per-run context.
 
-    Soul guardrails come from the ``hivemoot-identity`` plugin when it's
-    stacked ahead of this one; other plugins (github, hivemoot-github)
+    Security guardrails come from the engine's always-applied
+    ``<root>`` layer; per-agent voice / mission comes from
+    ``AGENT_IDENTITY_FILE``.  Other plugins (github, hivemoot-github)
     contribute their own system prompts independently and the engine
     merges them all.  This plugin only adds the task operating mode.
     """

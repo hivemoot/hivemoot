@@ -103,23 +103,6 @@ class HivemootGitHubPlugin:
         errors: list[str] = []
 
         requested = _parse_requested_plugins(config.get("AGENT_PLUGINS", ""))
-        # hivemoot-identity is no longer a plugin (#581) — security
-        # guardrails live in the runtime's always-applied <root> layer
-        # and per-agent voice / mission comes from AGENT_IDENTITY_FILE.
-        # If a deployer still lists the deprecation shim in
-        # AGENT_PLUGINS, enforce the historical ordering; otherwise
-        # don't require its presence.
-        if (
-            "hivemoot-identity" in requested
-            and self.name in requested
-            and requested.index("hivemoot-identity")
-            > requested.index(self.name)
-        ):
-            errors.append(
-                "AGENT_PLUGINS lists hivemoot-identity after hivemoot-github; "
-                "move it earlier so its guardrails appear first in the "
-                "merged system prompt."
-            )
         if "github" not in requested:
             errors.append(
                 "hivemoot-github requires AGENT_PLUGINS to include github."
