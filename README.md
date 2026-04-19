@@ -561,9 +561,12 @@ Custom prompts can be either:
 - a standalone full system prompt file
 - a mode-specific prompt that sits beside a shared `base.md`
 
-Standalone custom prompts must preserve the non-overridable security guardrails
-from [`cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_identity/soul.md)
-(or an equivalent section with the same protections).
+Custom prompts do **not** need to duplicate the security guardrails
+— the engine always prepends
+[`cli/hivemoot_agent/root_system_prompt.md`](cli/hivemoot_agent/root_system_prompt.md)
+(the runtime's `<root>` layer) before any plugin, identity, or custom
+prompt content.  Your custom prompt can focus on the task-specific
+instructions; the baseline is already in place.
 
 The daemon mounts a sibling `base.md` automatically when it exists
 next to the host `AGENT_PROMPT_FILE`, so mode-specific overrides can
