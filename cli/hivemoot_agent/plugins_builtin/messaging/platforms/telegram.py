@@ -7,16 +7,32 @@ never placed in process argv.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from pathlib import Path
 from typing import Any
 
 from hivemoot_agent.plugins.interfaces import PluginConfig
 
 MAX_MESSAGE_LENGTH = 4096
+
+# Telegram bot file size limits (per Bot API docs).  Photo attachments
+# are auto-recompressed by Telegram and capped at 10 MB; documents
+# preserve quality and cap at 50 MB.  We surface a clear error before
+# uploading something the API will reject.
+_TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+_TELEGRAM_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024
+
+# Extensions we route to sendPhoto by default (gets inline preview in
+# Telegram clients).  Anything else goes to sendDocument (preserves
+# original filename + bytes).  --as-document overrides to always use
+# sendDocument even for images.
+_PHOTO_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
 
 # ── API ────────────────────────────────────────────────────────────
@@ -67,6 +83,66 @@ def _resolve_token(config: PluginConfig) -> str:
             return f.read().strip()
 
     return ""
+
+
+def _api_multipart(
+    token: str,
+    method: str,
+    fields: dict[str, str],
+    file_field: str,
+    filename: str,
+    content_type: str,
+    content: bytes,
+) -> dict:
+    """Call a Telegram API method that requires multipart/form-data.
+
+    Used for sendPhoto / sendDocument / sendVideo / sendAudio etc.  We
+    avoid pulling in ``requests`` for one upload code path; stdlib
+    multipart encoding is fiddly but small (~20 LOC) and zero-dep.
+    """
+    boundary = "----HivemootMessagingBoundary" + uuid.uuid4().hex
+    chunks: list[bytes] = []
+    for k, v in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(
+            f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode()
+        )
+        chunks.append(str(v).encode("utf-8"))
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}\r\n".encode())
+    # Telegram is fine with quoted ASCII filenames; we don't attempt
+    # RFC 2231 encoding for non-ASCII.  If the agent picks a Unicode
+    # filename, ASCII-encode with backslash-replacement so the upload
+    # still goes through with a slightly mangled visible name.
+    safe_filename = filename.encode("ascii", "backslashreplace").decode("ascii")
+    chunks.append(
+        f'Content-Disposition: form-data; name="{file_field}"; '
+        f'filename="{safe_filename}"\r\n'.encode()
+    )
+    chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode())
+    chunks.append(content)
+    chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+
+    body = b"".join(chunks)
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Content-Length", str(len(body)))
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            print("telegram: token invalid (HTTP 401)", file=sys.stderr)
+            raise
+        # Surface Telegram's structured error payload so the caller
+        # (CLI subcommand) can give the agent an actionable message.
+        desc = _http_error_description(exc)
+        if desc:
+            print(f"telegram: upload failed ({exc.code}): {desc}", file=sys.stderr)
+        raise
 
 
 def _http_error_description(exc: urllib.error.HTTPError) -> str:
@@ -205,6 +281,100 @@ class TelegramAdapter:
                 print(f"telegram: send error: {exc}", file=sys.stderr)
                 ok = False
         return ok
+
+    def send_file(
+        self,
+        config: PluginConfig,
+        chat_id: str,
+        file_path: str,
+        *,
+        caption: str = "",
+        as_document: bool = False,
+    ) -> dict:
+        """Upload a local file to a Telegram chat.
+
+        Auto-routes by file extension: image extensions go to
+        ``sendPhoto`` (Telegram inline-previews them); everything
+        else goes to ``sendDocument`` (preserves original filename
+        and bytes).  ``as_document=True`` forces sendDocument even
+        for images.
+
+        Returns a dict with ``{"ok": bool, ...}`` — on success the
+        Telegram API ``result`` is included; on failure the
+        ``error`` and ``message`` keys explain why.  Designed for
+        a CLI caller that prints the dict as JSON for the agent.
+        """
+        token = _resolve_token(config)
+        if not token:
+            return {"ok": False, "error": "no_token", "message": "TELEGRAM_BOT_TOKEN(_FILE) not configured"}
+
+        path = Path(file_path)
+        if not path.is_file():
+            return {"ok": False, "error": "file_not_found", "message": f"no file at {file_path}"}
+
+        ext = path.suffix.lower()
+        size = path.stat().st_size
+
+        # Route by extension unless caller forced document mode.
+        use_photo = (not as_document) and (ext in _PHOTO_EXTENSIONS)
+        method = "sendPhoto" if use_photo else "sendDocument"
+        file_field = "photo" if use_photo else "document"
+        cap = _TELEGRAM_PHOTO_MAX_BYTES if use_photo else _TELEGRAM_DOCUMENT_MAX_BYTES
+        if size > cap:
+            return {
+                "ok": False,
+                "error": "file_too_large",
+                "message": (
+                    f"{file_path} is {size} bytes; Telegram bot {method} cap is {cap}.  "
+                    "For >10MB images, retry with as_document=True (50MB cap)."
+                ),
+                "size_bytes": size,
+                "max_bytes": cap,
+            }
+
+        content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            return {"ok": False, "error": "read_failed", "message": str(exc)}
+
+        fields = {"chat_id": chat_id}
+        if caption:
+            # Telegram caps captions at 1024 chars.  Trim quietly with
+            # a single-line note rather than failing the upload.
+            if len(caption) > 1024:
+                caption = caption[:1020] + " […]"
+            fields["caption"] = caption
+
+        try:
+            resp = _api_multipart(
+                token, method, fields, file_field,
+                path.name, content_type, content,
+            )
+        except urllib.error.HTTPError as exc:
+            return {
+                "ok": False,
+                "error": "http_error",
+                "code": exc.code,
+                "message": _http_error_description(exc) or str(exc),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": "upload_error", "message": str(exc)}
+
+        if not resp.get("ok"):
+            return {
+                "ok": False,
+                "error": "telegram_rejected",
+                "message": resp.get("description", ""),
+            }
+        return {
+            "ok": True,
+            "method": method,
+            "filename": path.name,
+            "size_bytes": size,
+            "message_id": resp.get("result", {}).get("message_id"),
+        }
 
     def typing(self, config: PluginConfig, chat_id: str) -> bool:
         """Send typing indicator."""

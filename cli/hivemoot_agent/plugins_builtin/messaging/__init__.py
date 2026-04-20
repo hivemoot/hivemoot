@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from hivemoot_agent.plugins.interfaces import (
@@ -17,6 +20,13 @@ from hivemoot_agent.plugins.interfaces import (
     Trigger,
 )
 from hivemoot_agent.plugins_builtin.messaging.system_prompt import SYSTEM_PROMPT
+
+
+# Per-job context file the cli.py send-file subcommand reads to find
+# the active chat_id + platform.  Lives in tmpfs so it's per-container
+# and disappears on restart.  Written in on_job_started, removed in
+# on_job_finished so a stale context can't leak across jobs.
+_JOB_CONTEXT_PATH = Path("/tmp/.messaging-job-context.json")
 
 
 def _format_status(text: str) -> str:
@@ -105,6 +115,25 @@ class MessagingPlugin:
         if adapter is None:
             return
 
+        # Write the active job's chat context so the cli.py send-file
+        # subcommand the agent invokes can resolve the destination
+        # without the agent having to know the chat_id.  Best-effort:
+        # if /tmp isn't writable for some reason, the file ops degrade
+        # gracefully (CLI returns a clear error pointing at the
+        # missing context file).
+        platform = config.get("MESSAGING_PLATFORM", "") or ""
+        try:
+            _JOB_CONTEXT_PATH.write_text(json.dumps({
+                "chat_id": chat_id,
+                "platform": platform,
+                "session_key": job.session_key,
+            }))
+        except OSError as exc:
+            print(
+                f"[messaging] warn: could not write job context: {exc}",
+                file=sys.stderr, flush=True,
+            )
+
         self._typing_stop.clear()
         self._typing_thread = threading.Thread(
             target=self._typing_loop,
@@ -151,6 +180,14 @@ class MessagingPlugin:
         if self._typing_thread:
             self._typing_thread.join(timeout=5)
             self._typing_thread = None
+
+        # Clear the per-job context file so a stale chat_id can't leak
+        # to a future job invoked in the same container.  unlink is
+        # missing_ok=True so a missing-file race is silent.
+        try:
+            _JOB_CONTEXT_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
 
         chat_id = self._extract_chat_id(job.session_key)
         adapter = self.get_adapter()
