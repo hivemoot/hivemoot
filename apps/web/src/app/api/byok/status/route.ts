@@ -16,7 +16,14 @@ export async function GET(request: NextRequest) {
 
   const installationId = auth.session.installationId;
 
-  const envelope = await getByokEnvelope(installationId, auth.redis);
+  let envelope: Awaited<ReturnType<typeof getByokEnvelope>>;
+  try {
+    envelope = await getByokEnvelope(installationId, auth.redis);
+  } catch (err) {
+    console.error("[byok-status] Redis error reading envelope", { installationId, error: err });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Failed to read BYOK status", 500);
+  }
+
   if (!envelope) {
     return byokError(
       BYOK_ERROR.NOT_CONFIGURED,

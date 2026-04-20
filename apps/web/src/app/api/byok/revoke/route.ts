@@ -16,7 +16,14 @@ export async function POST(request: NextRequest) {
 
   const installationId = auth.session.installationId;
 
-  const existing = await getByokEnvelope(installationId, auth.redis);
+  let existing: Awaited<ReturnType<typeof getByokEnvelope>>;
+  try {
+    existing = await getByokEnvelope(installationId, auth.redis);
+  } catch (err) {
+    console.error("[byok-revoke] Redis error reading envelope", { installationId, error: err });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Failed to read BYOK configuration", 500);
+  }
+
   if (!existing) {
     return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
   }
@@ -32,7 +39,12 @@ export async function POST(request: NextRequest) {
     updatedBy: auth.session.userLogin,
   };
 
-  await setByokEnvelope(installationId, revoked, auth.redis);
+  try {
+    await setByokEnvelope(installationId, revoked, auth.redis);
+  } catch (err) {
+    console.error("[byok-revoke] Redis error storing revoked envelope", { installationId, error: err });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Failed to revoke BYOK configuration", 500);
+  }
 
   return NextResponse.json({
     status: "revoked",
