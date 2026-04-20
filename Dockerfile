@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   openssh-client \
   procps \
   python3 \
+  python3-pip \
   ripgrep \
   tini \
   && rm -rf /var/lib/apt/lists/*
@@ -46,6 +47,16 @@ ENV HOME=/home/node
 ENV PATH=/home/node/.local/bin:/usr/local/share/npm-global/bin:${PATH}
 
 USER node
+
+# Install Playwright Python lib for plugins that drive a remote browser
+# over CDP (e.g. apiary-browser).  Lib only — no Chromium binaries
+# downloaded.  Plugins call `playwright.chromium.connect_over_cdp(...)`
+# to attach to a sidecar container; the runtime image stays lean.
+# Debian 12 enforces PEP 668 (externally-managed environment); the
+# image is single-purpose so --break-system-packages is acceptable.
+ARG PLAYWRIGHT_VERSION="1.49.*"
+RUN pip3 install --user --break-system-packages --no-cache-dir \
+  "playwright==${PLAYWRIGHT_VERSION}"
 
 # Install hivemoot CLI in the base stage — needed in every provider variant.
 RUN npm install -g "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
