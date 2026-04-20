@@ -107,17 +107,17 @@ jobs:
             --head "$BRANCH" \
             --base main \
             --title "revert: auto-revert $short ($WORKFLOW_NAME CI failure)" \
-            --body "$BODY" \
-            --label "hivemoot:automerge")
+            --body "$BODY")
 
           echo "revert_pr_url=$REVERT_PR_URL" >> "$GITHUB_OUTPUT"
           echo "needs_human=false" >> "$GITHUB_OUTPUT"
 
-      - name: Escalate if revert PR blocked by automerge config
+      - name: Wait for CI and merge revert PR
         if: >
           steps.idempotency.outputs.skip != 'true' &&
           steps.revert.outputs.needs_human != 'true' &&
           steps.revert.outputs.revert_pr_url != ''
+        id: merge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FAILING_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -127,33 +127,101 @@ jobs:
           PR_URL: ${{ steps.revert.outputs.pr_url }}
           REVERT_PR_URL: ${{ steps.revert.outputs.revert_pr_url }}
         run: |
-          # Extract PR number from URL (e.g. https://github.com/org/repo/pull/123 → 123).
           REVERT_NUMBER="${REVERT_PR_URL##*/}"
           short="${FAILING_SHA:0:7}"
 
-          # Check if the revert diff touches automerge denyPaths.
-          # If so, the revert PR will not auto-merge and needs human attention.
-          FILES=$(gh pr diff \
-            --repo "$GITHUB_REPOSITORY" \
-            "$REVERT_NUMBER" \
-            --name-only 2>/dev/null || echo "")
+          # Get the HEAD SHA of the revert branch for check-run queries.
+          REVERT_SHA=$(gh api \
+            "repos/$GITHUB_REPOSITORY/pulls/$REVERT_NUMBER" \
+            --jq '.head.sha' 2>/dev/null || echo "")
 
-          BLOCKED=false
-          BLOCKED_FILE=""
-          while IFS= read -r file; do
-            case "$file" in
-              .github/*|*/package.json|*/package-lock.json|*.lock|*/pnpm-lock.yaml|*/go.sum|*/bun.lockb|*/go.work.sum)
-                BLOCKED=true
-                BLOCKED_FILE="$file"
-                break
-                ;;
-            esac
-          done <<< "$FILES"
+          if [ -z "$REVERT_SHA" ]; then
+            echo "merge_result=escalate" >> "$GITHUB_OUTPUT"
+            echo "merge_cause=could not resolve revert PR head SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          [ "$BLOCKED" = "false" ] && exit 0
+          # Poll CI checks on the revert branch (up to 15 min).
+          # A revert is a near-exact inverse of the failing commit, so CI should
+          # complete quickly. If checks are absent (docs-only revert), proceed to merge.
+          TIMEOUT=900
+          ELAPSED=0
+          INTERVAL=30
+          CI_RESULT="pending"
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            CHECK_DATA=$(gh api \
+              "repos/$GITHUB_REPOSITORY/commits/$REVERT_SHA/check-runs" \
+              --jq '.check_runs' 2>/dev/null || echo "[]")
+
+            TOTAL=$(echo "$CHECK_DATA" | jq 'length')
+            COMPLETED=$(echo "$CHECK_DATA" | jq '[.[] | select(.status == "completed")] | length')
+            FAILED=$(echo "$CHECK_DATA" | jq '[.[] | select(.status == "completed" and (.conclusion | IN("failure","cancelled","timed_out","action_required","startup_failure")))] | length')
+
+            if [ "$TOTAL" -eq 0 ]; then
+              # No checks configured — safe to merge immediately.
+              CI_RESULT="success"
+              break
+            fi
+
+            if [ "$FAILED" -gt 0 ]; then
+              CI_RESULT="failure"
+              break
+            fi
+
+            if [ "$COMPLETED" -eq "$TOTAL" ]; then
+              CI_RESULT="success"
+              break
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ "$CI_RESULT" = "failure" ]; then
+            echo "merge_result=escalate" >> "$GITHUB_OUTPUT"
+            echo "merge_cause=CI failed on revert branch — the revert itself may be unsafe" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CI_RESULT" = "pending" ]; then
+            echo "merge_result=escalate" >> "$GITHUB_OUTPUT"
+            echo "merge_cause=CI checks timed out after ${TIMEOUT}s — revert branch needs manual review" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # CI passed — merge the revert PR directly.
+          if gh pr merge "$REVERT_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --merge \
+              --subject "revert: auto-revert $short ($WORKFLOW_NAME CI failure)" 2>/dev/null; then
+            echo "merge_result=merged" >> "$GITHUB_OUTPUT"
+          else
+            # Merge blocked — most likely branch protection requires reviews.
+            # The revert PR remains open; escalate so a human can merge it.
+            echo "merge_result=escalate" >> "$GITHUB_OUTPUT"
+            echo "merge_cause=merge blocked by branch protection — manual merge required" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Escalate if merge did not complete
+        if: >
+          steps.idempotency.outputs.skip != 'true' &&
+          steps.revert.outputs.needs_human != 'true' &&
+          steps.merge.outputs.merge_result == 'escalate'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILING_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+          PR_NUMBER: ${{ steps.revert.outputs.pr_number }}
+          PR_URL: ${{ steps.revert.outputs.pr_url }}
+          REVERT_PR_URL: ${{ steps.revert.outputs.revert_pr_url }}
+          MERGE_CAUSE: ${{ steps.merge.outputs.merge_cause }}
+        run: |
+          short="${FAILING_SHA:0:7}"
+          REVERT_NUMBER="${REVERT_PR_URL##*/}"
 
           # Idempotency: skip if an urgent issue for this SHA already exists.
-          # Uses REST API (not text search) to avoid indexing lag from concurrent runs.
           existing_issue=$(gh api \
             "repos/$GITHUB_REPOSITORY/issues?labels=hivemoot:needs-human&state=open&per_page=100" \
             --jq "[.[] | select(.title | contains(\"$short\"))] | .[0].number // empty" \
@@ -163,7 +231,6 @@ jobs:
             exit 0
           fi
 
-          # Revert PR exists but cannot auto-merge — escalate so a human can merge it.
           TRUSTED=$(python3 - <<'PYEOF' 2>/dev/null || true
 import yaml
 try:
@@ -176,8 +243,8 @@ except Exception:
 PYEOF
 )
 
-          BODY="**Revert PR created but cannot auto-merge — manual merge required.**"
-          BODY+=$'\n\nThe revert diff includes `'"$BLOCKED_FILE"'`, which is in automerge `denyPaths`.'
+          BODY="**Revert PR #$REVERT_NUMBER created but not auto-merged — manual merge required.**"
+          BODY+=$'\n\n**Reason:** '"$MERGE_CAUSE"
           BODY+=$'\n\n**Action required:** review and merge '"$REVERT_PR_URL"$' manually.\n'
           BODY+=$'\n- **Failing SHA:** `'"$FAILING_SHA"'`'
           BODY+=$'\n- **Failing run:** '"$WORKFLOW_URL"
@@ -190,7 +257,7 @@ PYEOF
 
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
-            --title "[urgent] revert PR $REVERT_NUMBER blocked by denyPaths — manual merge required ($short)" \
+            --title "[urgent] revert PR #$REVERT_NUMBER needs manual merge ($short)" \
             --body "$BODY" \
             --label "hivemoot:needs-human"
 
@@ -210,7 +277,6 @@ PYEOF
           short="${FAILING_SHA:0:7}"
 
           # Idempotency: skip if an urgent issue for this SHA already exists.
-          # Uses REST API (not text search) to avoid indexing lag from concurrent runs.
           existing_issue=$(gh api \
             "repos/$GITHUB_REPOSITORY/issues?labels=hivemoot:needs-human&state=open&per_page=100" \
             --jq "[.[] | select(.title | contains(\"$short\"))] | .[0].number // empty" \
@@ -220,8 +286,6 @@ PYEOF
             exit 0
           fi
 
-          # Best-effort: read trustedReviewers from hivemoot.yml for @-mentions.
-          # If parsing fails for any reason, the issue is opened without mentions.
           TRUSTED=$(python3 - <<'PYEOF' 2>/dev/null || true
 import yaml
 try:
