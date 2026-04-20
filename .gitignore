@@ -8,3 +8,6 @@ runs/
 secrets/
 *.log
 .tmp-*/
+
+# Claude Code worktrees
+.claude/

@@ -1,6 +1,7 @@
 """Tests for AGENT_PLUGINS explicit plugin selection in the engine."""
 
 import importlib
+import io
 import os
 import shutil
 import sys
@@ -302,14 +303,11 @@ def test_resolve_skill_runtime_stages_workspace_agents_skills_for_codex():
         os.chdir(workspace)
         engine = Engine()
         engine._plugins = {"codex-skillpack": plugin}
-        config = PluginConfig(
-            name="oneshot",
-            settings={"AGENT_SKILLS": "security-reviewer"},
-        )
+        # Plugin owns its skill — auto-loaded from the plugin's
+        # skills/ subdir without any AGENT_SKILLS env-var indirection.
+        config = PluginConfig(name="oneshot", settings={})
 
-        runtime = engine._resolve_skill_runtime(
-            config, "codex", codex,
-        )
+        runtime = engine._resolve_skill_runtime(config, codex)
 
         skill_link = Path(workspace) / ".agents" / "skills" / "security-reviewer"
         assert runtime is not None
@@ -318,7 +316,7 @@ def test_resolve_skill_runtime_stages_workspace_agents_skills_for_codex():
         assert skill_link.is_symlink()
         assert (skill_link / "SKILL.md").is_file()
         assert (skill_link / "reference.md").is_file()
-        assert '"selected":["security-reviewer"]' in runtime.scope_json
+        assert '"skills":["security-reviewer"]' in runtime.scope_json
     finally:
         if runtime is not None:
             engine._cleanup_skill_runtime(runtime)
@@ -353,13 +351,12 @@ def test_resolve_skill_runtime_rolls_back_workspace_state_on_collision():
 
         engine = Engine()
         engine._plugins = {"collision-skillpack": plugin}
-        config = PluginConfig(
-            name="oneshot",
-            settings={"AGENT_SKILLS": "alpha,beta"},
-        )
+        # Plugin auto-loads BOTH alpha and beta from its skills/ subdir;
+        # the pre-existing workspace beta dir collides on staging.
+        config = PluginConfig(name="oneshot", settings={})
 
         try:
-            engine._resolve_skill_runtime(config, "codex", codex)
+            engine._resolve_skill_runtime(config, codex)
             assert False, "Expected workspace skill collision"
         except ValueError as exc:
             assert "workspace skill collision" in str(exc)
@@ -394,17 +391,11 @@ def test_resolve_skill_runtime_uses_native_plugin_dir_for_claude():
     try:
         engine = Engine()
         engine._plugins = {"claude-skillpack": plugin}
-        config = PluginConfig(
-            name="oneshot",
-            settings={
-                "AGENT_SKILLS": "security-reviewer",
-                "AGENT_AVAILABLE_SKILLS": "test-advocate",
-            },
-        )
+        # Both skills come from the plugin's skills/ subdir — no
+        # AGENT_SKILLS / AGENT_AVAILABLE_SKILLS plumbing needed.
+        config = PluginConfig(name="oneshot", settings={})
 
-        runtime = engine._resolve_skill_runtime(
-            config, "claude", claude,
-        )
+        runtime = engine._resolve_skill_runtime(config, claude)
 
         assert runtime is not None
         assert runtime.prompt_skills == ""
@@ -424,6 +415,59 @@ def test_resolve_skill_runtime_uses_native_plugin_dir_for_claude():
                 "check.sh",
             )
         )
+    finally:
+        if runtime is not None:
+            engine._cleanup_skill_runtime(runtime)
+        _cleanup_temp_plugin(tmpdir, package_name)
+
+
+def test_legacy_agent_skills_env_var_is_ignored_with_warning():
+    """Setting AGENT_SKILLS or AGENT_AVAILABLE_SKILLS no longer changes
+    behaviour — plugin activation is the single skill-exposure
+    mechanism.  The engine logs a one-line deprecation warning so
+    operators notice and remove the dead config."""
+    package_name = f"skillruntime_legacy_{uuid.uuid4().hex}"
+    tmpdir, plugin = _load_temp_plugin(
+        package_name=package_name,
+        module_name=package_name,
+        class_name="LegacySkillPlugin",
+        files={
+            f"{package_name}/__init__.py": (
+                "class LegacySkillPlugin:\n"
+                "    name = 'legacy-skillpack'\n"
+                "    version = '0.0.1'\n"
+            ),
+            f"{package_name}/skills/from-plugin/SKILL.md": "# from plugin\n",
+        },
+    )
+
+    runtime = None
+    try:
+        engine = Engine()
+        engine._plugins = {"legacy-skillpack": plugin}
+        # Both legacy env vars name skills that don't exist anywhere
+        # — confirms the engine ignores them entirely (would have
+        # raised "Skill file not found" under the old indirection).
+        config = PluginConfig(
+            name="oneshot",
+            settings={
+                "AGENT_SKILLS": "ghost-skill",
+                "AGENT_AVAILABLE_SKILLS": "another-ghost",
+            },
+        )
+
+        captured = io.StringIO()
+        with patch("sys.stderr", captured):
+            runtime = engine._resolve_skill_runtime(config, claude)
+        warnings = captured.getvalue()
+
+        assert runtime.plugin_dir
+        assert os.path.isfile(
+            os.path.join(runtime.plugin_dir, "skills", "from-plugin", "SKILL.md"),
+        ), "auto-loaded skill from plugin must be present"
+        assert "AGENT_SKILLS" in warnings and "DEPRECATED" in warnings
+        assert "AGENT_AVAILABLE_SKILLS" in warnings
+        assert '"skills":["from-plugin"]' in runtime.scope_json
     finally:
         if runtime is not None:
             engine._cleanup_skill_runtime(runtime)
@@ -455,14 +499,10 @@ def test_resolve_skill_runtime_renders_prompt_skills_for_prompt_only_provider():
     try:
         engine = Engine()
         engine._plugins = {"prompt-skillpack": plugin}
-        config = PluginConfig(
-            name="oneshot",
-            settings={"AGENT_SKILLS": "security-reviewer"},
-        )
+        # Plugin's single skill auto-loads — no env var.
+        config = PluginConfig(name="oneshot", settings={})
 
-        runtime = engine._resolve_skill_runtime(
-            config, "prompt-only", _PromptOnlyProvider(),
-        )
+        runtime = engine._resolve_skill_runtime(config, _PromptOnlyProvider())
 
         assert runtime.plugin_dir == ""
         assert "<skills>" in runtime.prompt_skills

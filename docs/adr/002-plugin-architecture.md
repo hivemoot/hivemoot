@@ -244,6 +244,24 @@ Completed follow-ups:
   `AGENT_PLUGINS` (can't be accidentally omitted), and identity is
   a first-class deployer input instead of a
   singleton-disguised-as-plugin.
+- ✅ Plugin-owned skills.  Activating a plugin auto-loads every
+  skill bundled in its `skills/<name>/SKILL.md` subdir — no
+  per-agent `AGENT_SKILLS` / `AGENT_AVAILABLE_SKILLS` env-var
+  indirection.  Plugin activation IS skill exposure.  This kills
+  three sources of friction: (a) deployers no longer need to
+  enumerate every skill name a plugin ships, (b) plugin authors
+  ship one cohesive capability bundle without a separate
+  registration step, and (c) the engine's skill resolution
+  collapses from two paths (selected vs available) to one (all
+  active-plugin skills).  Legacy env vars are accepted but ignored
+  with a one-line `[engine] DEPRECATED: ...` warning so operators
+  notice and remove the dead config.  Per-agent skill scoping
+  (e.g. apiary's "worker gets code-reviewer + pr-hygiene, guard
+  gets security-reviewer + adversarial-tester") moves to a future
+  per-agent plugin design rather than living in env-var filtering.
+  The legacy `/opt/hivemoot-agent/skills` external mount remains
+  scanned for one release for back-compat; new deployments should
+  bundle skills with their plugins instead.
 - ✅ Custom (deployer-supplied) plugins.  The plugin registry now
   scans two locations: the built-in `plugins_builtin/` directory
   shipped inside the runtime image, and the fixed external mount

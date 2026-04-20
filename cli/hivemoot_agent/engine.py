@@ -364,9 +364,7 @@ class Engine:
         )
         system_prompt = _append_agent_memory(system_prompt, repo=oneshot_repo)
         try:
-            skill_runtime = self._resolve_skill_runtime(
-                config, provider_name, provider,
-            )
+            skill_runtime = self._resolve_skill_runtime(config, provider)
         except ValueError as exc:
             print(f"[engine] FATAL: {exc}", file=sys.stderr, flush=True)
             return 1
@@ -641,21 +639,6 @@ class Engine:
             result.append(path)
         return result
 
-    def _resolve_named_skills(
-        self,
-        skills_list: str,
-        *,
-        context: str,
-    ) -> list[Any]:
-        """Resolve a named skill list across all plugin-engine skill roots."""
-        from hivemoot_agent.plugins.skills import load_named_skills
-
-        return load_named_skills(
-            skills_list,
-            self._resolve_skill_search_dirs(),
-            context=context,
-        )
-
     def _build_skills_plugin_dir(self, skills: list[Any] | None = None) -> str:
         """Generate a Claude plugin dir from explicit or discovered skills."""
         from hivemoot_agent.plugins.skills import (
@@ -682,16 +665,20 @@ class Engine:
 
     @staticmethod
     def _build_skill_scope_json(
-        selected_skills: list[Any],
-        available_skills: list[Any],
+        skills: list[Any],
         backend: str,
     ) -> str:
-        """Encode the effective native skill selection for session scoping."""
+        """Encode the effective skill set for session scoping.
+
+        Single ``skills`` list, plugin-driven — see _resolve_skill_runtime.
+        Used only for session-key derivation; if the active plugin set
+        changes between runs, the scope_json shifts and the session
+        forks rather than mixing skill states.
+        """
         return json.dumps(
             {
                 "backend": backend,
-                "selected": [skill.name for skill in selected_skills],
-                "available": [skill.name for skill in available_skills],
+                "skills": [skill.name for skill in skills],
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -776,58 +763,67 @@ class Engine:
     def _resolve_skill_runtime(
         self,
         config: PluginConfig,
-        provider_name: str,
         provider: Any,
     ) -> _SkillRuntime:
-        """Resolve prompt-vs-native skill delivery for the current provider."""
-        from hivemoot_agent.plugins.skills import render_prompt_skills
+        """Resolve skill delivery for the current provider.
 
-        selected_skills = self._resolve_named_skills(
-            config.get("AGENT_SKILLS", "") or "",
-            context="AGENT_SKILLS",
-        )
-        available_skills = self._resolve_named_skills(
-            config.get("AGENT_AVAILABLE_SKILLS", "") or "",
-            context="AGENT_AVAILABLE_SKILLS",
+        Plugin-owned model: every skill bundled in an active plugin's
+        ``skills/`` subdir (or the legacy ``/opt/hivemoot-agent/skills``
+        external mount) is auto-loaded and exposed to the agent.  No
+        per-agent env-var indirection — plugin activation IS skill
+        exposure.
+
+        The legacy ``AGENT_SKILLS`` and ``AGENT_AVAILABLE_SKILLS`` env
+        vars are deprecated.  If a deployer still sets them, log a
+        one-line warning explaining they're ignored so the operator
+        notices and removes the dead config rather than wondering
+        why nothing changes.
+        """
+        from hivemoot_agent.plugins.skills import (
+            collect_skills_from_dirs,
+            render_prompt_skills,
         )
 
-        native_skills: list[Any] = []
-        seen: set[str] = set()
-        for skill in selected_skills + available_skills:
-            if skill.name in seen:
-                continue
-            seen.add(skill.name)
-            native_skills.append(skill)
+        for legacy_var in ("AGENT_SKILLS", "AGENT_AVAILABLE_SKILLS"):
+            if (config.get(legacy_var, "") or "").strip():
+                print(
+                    f"[engine] DEPRECATED: {legacy_var} is ignored.  All "
+                    f"skills bundled with active plugins are auto-loaded; "
+                    f"drop {legacy_var} from your env.",
+                    file=sys.stderr, flush=True,
+                )
+
+        all_skills = list(
+            collect_skills_from_dirs(
+                self._resolve_skill_search_dirs(),
+            ).values()
+        )
 
         backend = getattr(provider, "native_skill_backend", "")
-        scope_json = self._build_skill_scope_json(
-            selected_skills,
-            available_skills,
-            backend,
-        )
+        scope_json = self._build_skill_scope_json(all_skills, backend)
 
         if backend == "claude_plugin_dir":
-            if not native_skills:
+            if not all_skills:
                 return _SkillRuntime(scope_json=scope_json)
             return _SkillRuntime(
-                plugin_dir=self._build_skills_plugin_dir(native_skills),
+                plugin_dir=self._build_skills_plugin_dir(all_skills),
                 scope_json=scope_json,
             )
 
         if backend == "workspace_agents_dir":
-            runtime = self._stage_workspace_agents_skills(native_skills)
+            runtime = self._stage_workspace_agents_skills(all_skills)
             runtime.scope_json = scope_json
             return runtime
 
-        if available_skills:
-            print(
-                f"[engine] ignoring AGENT_AVAILABLE_SKILLS for provider={provider_name}",
-                file=sys.stderr, flush=True,
-            )
-        if not selected_skills:
+        # Prompt-injection providers (codex, gemini, opencode, kilo):
+        # the entire skill set goes into the system prompt as the
+        # <skills> block.  No selected/available distinction at this
+        # layer — providers without a native skill backend get the
+        # full pool every turn.
+        if not all_skills:
             return _SkillRuntime(scope_json=scope_json)
         return _SkillRuntime(
-            prompt_skills=render_prompt_skills(selected_skills),
+            prompt_skills=render_prompt_skills(all_skills),
             scope_json=scope_json,
         )
 
@@ -916,9 +912,7 @@ class Engine:
         provider_name = config.get("AGENT_PROVIDER", "claude")
         provider = get_provider(provider_name)
         model = config.get("AGENT_MODEL", "") or ""
-        skill_runtime = self._resolve_skill_runtime(
-            config, provider_name, provider,
-        )
+        skill_runtime = self._resolve_skill_runtime(config, provider)
         if skill_runtime.prompt_skills:
             system_prompt = f"{system_prompt}\n\n{skill_runtime.prompt_skills}"
 

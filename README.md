@@ -626,25 +626,48 @@ and, when set, the deployer-supplied `AGENT_IDENTITY_FILE` — see
 
 ## Skills
 
-Use `AGENT_SKILLS` to select a comma-separated list of skill modules for the
-current run. The plugin engine resolves skill names from built-in plugin skill
-packs plus any bind-mounted `/opt/hivemoot-agent/skills/<name>/SKILL.md`
-entries. In the default Python runtime, all supported providers load these
-skills natively. Claude receives an ephemeral `--plugin-dir`; Codex, Gemini,
-OpenCode, and Kilo receive an ephemeral workspace `.agents/skills` staging
-directory. Full skill directories are preserved so bundled scripts, references,
-and assets remain available during the run.
+**Skills are owned by plugins.** Every skill bundled in an active
+plugin's `skills/<name>/SKILL.md` auto-loads — no `AGENT_SKILLS`
+env-var indirection. Activate the plugin (via `AGENT_PLUGINS`) and
+its skills become available to the agent.
 
-`AGENT_SKILL_BIND_MOUNTS` can expose custom skill directories into the
-container. Each mount must use an absolute host path and the exact
-read-only destination format `/host/path:/opt/hivemoot-agent/skills/<name>:ro`.
-Provide multiple mounts as newline-separated specs; destinations
-outside `/opt/hivemoot-agent/skills/` and any `..` segments are
-rejected.
+Skill discovery scans:
 
-Use `AGENT_AVAILABLE_SKILLS` for extra native-discovery skills to expose
-alongside `AGENT_SKILLS`. It resolves against the same search roots and is
-unioned with the selected set for providers that discover skills natively.
+- **Built-in plugin skills**:
+  `cli/hivemoot_agent/plugins_builtin/<plugin>/skills/<name>/SKILL.md`
+- **External (deployer-supplied) plugin skills**:
+  `/opt/hivemoot-agent/plugins/<plugin>/skills/<name>/SKILL.md`
+  (the same mount path you use for custom plugins — see
+  [Custom plugins](#custom-deployer-supplied-plugins))
+- **Legacy host-side mount** (deprecated, scanned for one release):
+  `/opt/hivemoot-agent/skills/<name>/SKILL.md`
+
+In the default Python runtime, every supported provider receives
+the full active skill set, but the delivery mechanism differs by
+provider:
+
+- **Claude** gets an ephemeral `--plugin-dir` populated with every
+  active skill.  Claude picks which to call per turn — no eager
+  context cost.
+- **Codex / Gemini / OpenCode / Kilo** get an ephemeral workspace
+  `.agents/skills/` staging directory.  Symlinks point at each
+  active skill's source dir so bundled scripts, references, and
+  assets remain available.  The provider discovers skills natively
+  via the workspace tree; the engine does **not** inject a
+  `<skills>` block into the system prompt for these providers.
+- A future provider with no `native_skill_backend` falls back to a
+  `<skills>` prompt-injection block (eager).  None of the current
+  providers exercises that path.
+
+Full skill directories are preserved across all backends so
+bundled scripts, references, and assets remain available during
+the run.
+
+> **Deprecated:** `AGENT_SKILLS` and `AGENT_AVAILABLE_SKILLS` are
+> ignored as of the plugin-owned-skills change.  Setting them
+> logs a one-line `[engine] DEPRECATED: ...` warning so you
+> notice and remove the dead config.  Drop those env vars from
+> your deploy; activate the relevant plugin instead.
 
 ## Optional Override Services
 

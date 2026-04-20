@@ -45,41 +45,6 @@ def collect_skills_from_dirs(skill_dirs: Iterable[Path]) -> dict[str, Skill]:
     return seen
 
 
-def load_named_skills(
-    skills_list: str,
-    skill_dirs: Iterable[Path],
-    *,
-    context: str,
-) -> list[Skill]:
-    """Load a validated skill list from the given search directories.
-
-    Supports comma-separated skill names plus the special value ``all``.
-    Raises ``ValueError`` on invalid names or missing files.
-    """
-    requested = (skills_list or "").strip()
-    if not requested:
-        return []
-
-    available = collect_skills_from_dirs(skill_dirs)
-    if requested == "all":
-        if not available:
-            raise ValueError(f"no skills found ({context}=all)")
-        return list(available.values())
-
-    result: list[Skill] = []
-    for raw_name in requested.split(","):
-        skill_name = raw_name.strip()
-        if not skill_name:
-            continue
-        if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in skill_name):
-            raise ValueError(f"Invalid skill name: '{skill_name}' ({context}={skills_list})")
-        skill = available.get(skill_name)
-        if skill is None:
-            raise ValueError(f"Skill file not found: {skill_name} ({context}={skills_list})")
-        result.append(skill)
-    return result
-
-
 def _strip_frontmatter(content: str) -> str:
     """Strip simple YAML frontmatter from a SKILL.md body."""
     lines = content.splitlines()
