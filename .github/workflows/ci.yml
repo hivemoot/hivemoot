@@ -66,6 +66,8 @@ jobs:
         run: python3 cli/tests/test_hivemoot_task_trigger.py
       - name: Verify dual-source plugin discovery (builtin + external)
         run: python3 cli/tests/test_plugin_discovery.py
+      - name: Verify messaging inbound media handling
+        run: python3 cli/tests/test_messaging_media.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 

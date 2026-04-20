@@ -34,6 +34,18 @@ _TELEGRAM_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024
 # sendDocument even for images.
 _PHOTO_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
+# Bot API getFile limit — files larger than this need MTProto.  We
+# detect + skip upstream with a clear message rather than silently
+# truncating.
+_TELEGRAM_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+# Order matters: we probe these media fields on each message in
+# priority order and keep the first one present.  Reflects Telegram's
+# "one attachment per message" model.  Sticker / animation / video_note
+# are intentionally left out — they're rarely interesting to an agent
+# and cost complexity for no clear use case.
+_MEDIA_FIELDS = ("photo", "document", "audio", "voice", "video")
+
 
 # ── API ────────────────────────────────────────────────────────────
 
@@ -160,6 +172,90 @@ def _http_error_description(exc: urllib.error.HTTPError) -> str:
     return str(parsed.get("description", ""))
 
 
+def _extract_attachment_hint(msg: dict) -> dict | None:
+    """Pluck the first attachment from a Telegram message dict.
+
+    Returns a dict with enough metadata for the trigger to name the
+    downloaded file sensibly, or ``None`` if the message is pure text.
+    Order of precedence matches ``_MEDIA_FIELDS``.
+
+    Telegram's schema varies by kind — photos are an array of sizes
+    (we pick the largest), documents carry a user-provided file_name,
+    voice messages have no name so we synthesize one.  The hint is
+    deliberately small; full download happens later in the trigger.
+    """
+    for kind in _MEDIA_FIELDS:
+        value = msg.get(kind)
+        if not value:
+            continue
+
+        if kind == "photo":
+            # photo is a list of size variants; take the largest
+            # (Telegram sorts smallest-first so we want the last).
+            if not isinstance(value, list) or not value:
+                continue
+            largest = max(value, key=lambda p: p.get("file_size", 0) or 0)
+            return {
+                "kind": "photo",
+                "file_id": largest.get("file_id", ""),
+                "filename": "photo.jpg",
+                "size_hint": int(largest.get("file_size", 0) or 0),
+                "mime_hint": "image/jpeg",
+                "dimensions": {
+                    "width": largest.get("width"),
+                    "height": largest.get("height"),
+                },
+            }
+
+        if kind == "document":
+            return {
+                "kind": "document",
+                "file_id": value.get("file_id", ""),
+                "filename": value.get("file_name", "document"),
+                "size_hint": int(value.get("file_size", 0) or 0),
+                "mime_hint": value.get("mime_type", "application/octet-stream"),
+            }
+
+        if kind == "audio":
+            title = value.get("title") or value.get("performer") or "audio"
+            ext = mimetypes.guess_extension(value.get("mime_type", "")) or ".mp3"
+            return {
+                "kind": "audio",
+                "file_id": value.get("file_id", ""),
+                "filename": value.get("file_name") or f"{title}{ext}",
+                "size_hint": int(value.get("file_size", 0) or 0),
+                "mime_hint": value.get("mime_type", "audio/mpeg"),
+                "duration_secs": value.get("duration", 0),
+            }
+
+        if kind == "voice":
+            return {
+                "kind": "voice",
+                "file_id": value.get("file_id", ""),
+                "filename": "voice.ogg",
+                "size_hint": int(value.get("file_size", 0) or 0),
+                "mime_hint": value.get("mime_type", "audio/ogg"),
+                "duration_secs": value.get("duration", 0),
+            }
+
+        if kind == "video":
+            ext = mimetypes.guess_extension(value.get("mime_type", "")) or ".mp4"
+            return {
+                "kind": "video",
+                "file_id": value.get("file_id", ""),
+                "filename": value.get("file_name") or f"video{ext}",
+                "size_hint": int(value.get("file_size", 0) or 0),
+                "mime_hint": value.get("mime_type", "video/mp4"),
+                "dimensions": {
+                    "width": value.get("width"),
+                    "height": value.get("height"),
+                },
+                "duration_secs": value.get("duration", 0),
+            }
+
+    return None
+
+
 # ── Adapter ────────────────────────────────────────────────────────
 
 
@@ -235,12 +331,29 @@ class TelegramAdapter:
             msg = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
             username = msg.get("from", {}).get("username", "unknown")
+            # Text + caption are both user-typed content; unify them so
+            # the trigger sees a caption on a photo the same way as a
+            # plain text message.  When both are present (rare) we
+            # concatenate with a blank line separator.
             text = msg.get("text", "")
+            caption = msg.get("caption", "")
+            if text and caption:
+                combined_text = f"{text}\n\n{caption}"
+            else:
+                combined_text = text or caption
+
+            attachment = _extract_attachment_hint(msg)
+
             messages.append({
                 "update_id": update_id,
                 "chat_id": chat_id,
                 "username": username,
-                "text": text,
+                "text": combined_text,
+                # attachment is None when the message is pure text, or a
+                # dict {kind, file_id, filename, size_hint, mime_hint}
+                # that the trigger resolves into an actual downloaded
+                # file before dispatching.
+                "attachment": attachment,
             })
         return messages
 
@@ -374,6 +487,97 @@ class TelegramAdapter:
             "filename": path.name,
             "size_bytes": size,
             "message_id": resp.get("result", {}).get("message_id"),
+        }
+
+    def download_file(
+        self,
+        config: PluginConfig,
+        file_id: str,
+        dest_path: str,
+    ) -> dict:
+        """Download a Telegram-hosted file to ``dest_path``.
+
+        Two-step: ``getFile`` resolves the file_id to a server-side
+        path + size, then HTTPS GET against
+        ``https://api.telegram.org/file/bot<TOKEN>/<file_path>``.
+        Bot API caps file size at 20MB — files larger than this need
+        MTProto and are rejected with ``file_too_large``.
+
+        Returns ``{"ok": True, "path": ..., "size_bytes": ..., "mime": ...}``
+        on success; ``{"ok": False, "error": ..., "message": ...}`` on
+        failure.  Callers use the structured shape to compose a
+        user-visible explanation when needed.
+        """
+        token = _resolve_token(config)
+        if not token:
+            return {"ok": False, "error": "no_token", "message": "TELEGRAM_BOT_TOKEN(_FILE) not configured"}
+
+        # getFile: resolve file_id → server-side file_path + expected size.
+        try:
+            resp = _api(token, "getFile", {"file_id": file_id})
+        except urllib.error.HTTPError as exc:
+            return {
+                "ok": False,
+                "error": "get_file_http",
+                "code": exc.code,
+                "message": _http_error_description(exc) or str(exc),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": "get_file_error", "message": str(exc)}
+
+        if not resp.get("ok"):
+            return {
+                "ok": False,
+                "error": "get_file_rejected",
+                "message": resp.get("description", ""),
+            }
+        result = resp.get("result", {})
+        file_path = result.get("file_path", "")
+        size = int(result.get("file_size", 0) or 0)
+        if not file_path:
+            return {"ok": False, "error": "no_file_path", "message": "Telegram response missing file_path"}
+        if size and size > _TELEGRAM_DOWNLOAD_MAX_BYTES:
+            return {
+                "ok": False,
+                "error": "file_too_large",
+                "message": (
+                    f"{size} bytes exceeds Telegram bot API's 20MB download cap.  "
+                    "Larger files need MTProto (not supported)."
+                ),
+                "size_bytes": size,
+                "max_bytes": _TELEGRAM_DOWNLOAD_MAX_BYTES,
+            }
+
+        # Stream the download to disk so we don't hold the whole file
+        # in memory for large documents / videos near the 20MB cap.
+        download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+        try:
+            Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(download_url, timeout=120) as resp_stream:
+                with open(dest_path, "wb") as fh:
+                    while True:
+                        chunk = resp_stream.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+        except urllib.error.HTTPError as exc:
+            return {
+                "ok": False,
+                "error": "download_http",
+                "code": exc.code,
+                "message": str(exc),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": "download_error", "message": str(exc)}
+
+        actual_size = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+        content_type, _ = mimetypes.guess_type(file_path)
+        return {
+            "ok": True,
+            "path": dest_path,
+            "size_bytes": actual_size,
+            "mime": content_type or "application/octet-stream",
+            "telegram_file_path": file_path,
         }
 
     def typing(self, config: PluginConfig, chat_id: str) -> bool:
