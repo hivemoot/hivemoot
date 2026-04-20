@@ -28,7 +28,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   openssh-client \
   procps \
   python3 \
-  python3-pip \
   ripgrep \
   tini \
   && rm -rf /var/lib/apt/lists/*
@@ -48,23 +47,24 @@ ENV PATH=/home/node/.local/bin:/usr/local/share/npm-global/bin:${PATH}
 
 USER node
 
-# Install Playwright Python lib for plugins that drive a remote browser
-# over CDP (e.g. apiary-browser).  Lib only — no Chromium binaries
-# downloaded.  Plugins call `playwright.chromium.connect_over_cdp(...)`
-# to attach to a sidecar container; the runtime image stays lean.
-# Debian 12 enforces PEP 668 (externally-managed environment); the
-# image is single-purpose so --break-system-packages is acceptable.
-ARG PLAYWRIGHT_VERSION="1.49.*"
-RUN pip3 install --user --break-system-packages --no-cache-dir \
-  "playwright==${PLAYWRIGHT_VERSION}"
-
 # Install hivemoot CLI in the base stage — needed in every provider variant.
 RUN npm install -g "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
   && npm cache clean --force
 
+# agent-browser (Vercel Labs) — LLM-agent-optimized browser CLI.  Plugins
+# like apiary-browser shell out to it for navigate/click/type/snapshot/
+# screenshot against a remote Chrome via --cdp.  We deliberately skip
+# `agent-browser install` (Chrome download) because all browser sessions
+# run in the hivemoot-browser sidecar and we attach via CDP — the CLI
+# acts as a client, not a browser launcher.  Keeps the image lean.
+ARG AGENT_BROWSER_VERSION=0.26.0
+RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
+  && npm cache clean --force
+
 USER root
 
-RUN ln -sf /usr/local/share/npm-global/bin/hivemoot /usr/local/bin/hivemoot
+RUN ln -sf /usr/local/share/npm-global/bin/hivemoot /usr/local/bin/hivemoot \
+  && ln -sf /usr/local/share/npm-global/bin/agent-browser /usr/local/bin/agent-browser
 
 USER node
 
