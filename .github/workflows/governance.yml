@@ -65,4 +65,4 @@ jobs:
 
 Moved to ready-to-implement by @${COMMENT_AUTHOR} via /implement command.
 
-> **Note:** Applied by GitHub Actions governance fallback — Queen bot did not process this command within the expected window. See [.github/workflows/governance.yml](.github/workflows/governance.yml)."
+> **Note:** Applied by GitHub Actions governance fallback — Queen bot did not process this command within the expected window. See [governance.yml](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/workflows/governance.yml)."
