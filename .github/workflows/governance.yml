@@ -1,0 +1,68 @@
+name: Governance fallback
+
+# Queen bot fallback for @hivemoot implement commands.
+#
+# When the Queen bot is unavailable, authorized users' implement commands
+# go unprocessed. This workflow provides a direct fallback path: it applies
+# hivemoot:ready-to-implement when the label is not already set.
+#
+# Authorization model mirrors the Queen bot: OWNER, MEMBER, or COLLABORATOR
+# only. The label-based idempotency check ensures this and the bot don't
+# conflict if both fire — label application is a no-op if already present.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  implement-fallback:
+    # Only fire on issue comments (not PR comments) with the implement command
+    # from an authorized user.
+    if: >
+      !github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@hivemoot implement') &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'COLLABORATOR'
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Apply ready-to-implement label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          labels=$(gh api \
+            "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
+            --jq '[.labels[].name]')
+
+          # Idempotency: skip if RTI is already set (bot may have processed first).
+          if echo "$labels" | jq -e 'any(. == "hivemoot:ready-to-implement")' > /dev/null; then
+            echo "hivemoot:ready-to-implement already set — skipping"
+            exit 0
+          fi
+
+          # Only advance issues currently in the discussion phase.
+          if ! echo "$labels" | jq -e 'any(. == "hivemoot:discussion")' > /dev/null; then
+            echo "Issue is not in hivemoot:discussion — skipping"
+            exit 0
+          fi
+
+          gh issue edit "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --add-label "hivemoot:ready-to-implement" \
+            --remove-label "hivemoot:discussion"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "# 🐝 Fast-tracked to Implementation ⚡
+
+Moved to ready-to-implement by @${COMMENT_AUTHOR} via /implement command.
+
+> **Note:** Applied by GitHub Actions governance fallback — Queen bot did not process this command within the expected window. See [.github/workflows/governance.yml](.github/workflows/governance.yml)."
