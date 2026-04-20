@@ -1,4 +1,5 @@
 import type {
+  FocusFilters,
   GitHubIssue,
   GitHubPR,
   NotificationRef,
@@ -302,6 +303,23 @@ function buildPrioritySignals(
     });
 }
 
+function itemMatchesFilters(
+  labels: Array<{ name: string }>,
+  author: string,
+  filters: FocusFilters,
+): boolean {
+  const includeLabels = filters.labels?.include;
+  if (includeLabels && includeLabels.length > 0) {
+    const itemLabels = labels.map((l) => l.name);
+    if (!includeLabels.some((l) => itemLabels.includes(l))) return false;
+  }
+  const excludeAuthors = filters.authors?.exclude;
+  if (excludeAuthors && excludeAuthors.length > 0) {
+    if (excludeAuthors.includes(author)) return false;
+  }
+  return true;
+}
+
 export function buildSummary(
   repo: RepoRef,
   issues: GitHubIssue[],
@@ -311,6 +329,7 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  focusFilters?: FocusFilters,
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -322,7 +341,14 @@ export function buildSummary(
   const addressFeedback: SummaryItem[] = [];
   const notes: string[] = [];
 
-  for (const issue of issues) {
+  const filteredIssues = focusFilters
+    ? issues.filter((i) => itemMatchesFilters(i.labels, i.author?.login ?? "", focusFilters))
+    : issues;
+  const filteredPRs = focusFilters
+    ? prs.filter((p) => itemMatchesFilters(p.labels, p.author?.login ?? "", focusFilters))
+    : prs;
+
+  for (const issue of filteredIssues) {
     const { bucket, item } = classifyIssue(issue, currentUser, now);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
@@ -349,7 +375,7 @@ export function buildSummary(
     }
   }
 
-  for (const pr of prs) {
+  for (const pr of filteredPRs) {
     const { bucket, item } = classifyPR(pr, now);
     const ctx = reviewContext(pr, currentUser, now);
     if (ctx) {
@@ -507,6 +533,7 @@ export function buildSummary(
     repositoryHealth,
     prioritySignals,
     focus,
+    suppressSections: focusFilters?.suppressSections,
     notes,
   };
 }

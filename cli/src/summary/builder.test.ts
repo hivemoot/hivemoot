@@ -1312,4 +1312,86 @@ describe("buildSummary()", () => {
       "Issue pipeline and implementation-gap metrics are omitted because no governance phase labels were detected.",
     );
   });
+
+  // ── focus filters (phase 2) ───────────────────────────────────────
+
+  it("filters issues by label include list when focusFilters is set", () => {
+    const bugIssue = makeIssue({ number: 1, labels: [{ name: "bug" }] });
+    const featureIssue = makeIssue({ number: 2, labels: [{ name: "enhancement" }] });
+    const rtiIssue = makeIssue({ number: 3, labels: [{ name: "phase:ready-to-implement" }, { name: "bug" }] });
+
+    const summary = buildSummary(
+      repo, [bugIssue, featureIssue, rtiIssue], [], "testuser", now,
+      new Map(), new Map(), undefined,
+      { labels: { include: ["bug"] } },
+    );
+
+    const allItems = [
+      ...summary.implement, ...summary.discuss, ...summary.voteOn,
+      ...summary.unclassified, ...summary.needsHuman,
+    ];
+    expect(allItems.some((i) => i.number === 1)).toBe(true);
+    expect(allItems.some((i) => i.number === 2)).toBe(false);
+    expect(allItems.some((i) => i.number === 3)).toBe(true);
+  });
+
+  it("filters issues by author exclude list when focusFilters is set", () => {
+    const botIssue = makeIssue({ number: 1, author: { login: "dependabot[bot]" } });
+    const humanIssue = makeIssue({ number: 2, author: { login: "alice" } });
+
+    const summary = buildSummary(
+      repo, [botIssue, humanIssue], [], "testuser", now,
+      new Map(), new Map(), undefined,
+      { authors: { exclude: ["dependabot[bot]"] } },
+    );
+
+    const allItems = [
+      ...summary.implement, ...summary.discuss, ...summary.voteOn,
+      ...summary.unclassified, ...summary.needsHuman,
+    ];
+    expect(allItems.some((i) => i.number === 1)).toBe(false);
+    expect(allItems.some((i) => i.number === 2)).toBe(true);
+  });
+
+  it("filters PRs by label and author when focusFilters is set", () => {
+    const botPR = makePR({ number: 10, author: { login: "dependabot[bot]" }, labels: [{ name: "dependencies" }] });
+    const humanPR = makePR({ number: 11, author: { login: "alice" }, labels: [] });
+
+    const summary = buildSummary(
+      repo, [], [botPR, humanPR], "testuser", now,
+      new Map(), new Map(), undefined,
+      { authors: { exclude: ["dependabot[bot]"] } },
+    );
+
+    const allPRItems = [...summary.reviewPRs, ...summary.draftPRs, ...summary.addressFeedback];
+    expect(allPRItems.some((i) => i.number === 10)).toBe(false);
+    expect(allPRItems.some((i) => i.number === 11)).toBe(true);
+  });
+
+  it("passes suppressSections through to the returned summary", () => {
+    const summary = buildSummary(
+      repo, [], [], "testuser", now,
+      new Map(), new Map(), undefined,
+      { suppressSections: ["implement", "discuss"] },
+    );
+
+    expect(summary.suppressSections).toEqual(["implement", "discuss"]);
+  });
+
+  it("leaves suppressSections undefined when focusFilters has none", () => {
+    const summary = buildSummary(
+      repo, [], [], "testuser", now,
+      new Map(), new Map(), undefined,
+      { labels: { include: ["bug"] } },
+    );
+
+    expect(summary.suppressSections).toBeUndefined();
+  });
+
+  it("passes through all items when focusFilters is undefined", () => {
+    const issue = makeIssue({ number: 1, labels: [{ name: "phase:ready-to-implement" }] });
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.implement).toHaveLength(1);
+    expect(summary.suppressSections).toBeUndefined();
+  });
 });

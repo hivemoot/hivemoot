@@ -227,6 +227,8 @@ function formatPublishReadinessSection(readiness: PublishReadiness): string {
 
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
+  const suppress = new Set(summary.suppressSections ?? []);
+  const include = (key: string) => !suppress.has(key);
   const sections: string[] = [];
 
   sections.push(
@@ -235,16 +237,16 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatNotificationsSection("UNACKED MENTIONS", summary.unackedMentions ?? [], limit),
       formatRepositoryHealth(summary),
       formatPrioritySignals(summary),
-      formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
-      formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
-      formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
-      formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
-      formatSection("DISCUSS ISSUES", summary.discuss, u, "discuss", limit),
-      formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
-      formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
-      formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
-      formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
-      formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
+      include("needsHuman") && formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
+      include("driveDiscussion") && formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
+      include("driveImplementation") && formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),
+      include("vote") && formatSection("VOTE ON ISSUES", summary.voteOn, u, "vote", limit),
+      include("discuss") && formatSection("DISCUSS ISSUES", summary.discuss, u, "discuss", limit),
+      include("implement") && formatSection("READY TO IMPLEMENT ISSUES", summary.implement, u, "implement", limit),
+      include("unclassified") && formatSection("UNCLASSIFIED ISSUES", summary.unclassified ?? [], u, "unclassified", limit),
+      include("reviewPRs") && formatSection("REVIEW PRs", summary.reviewPRs, u, "reviewPRs", limit),
+      include("draftPRs") && formatSection("DRAFT PRs", summary.draftPRs, u, "draftPRs", limit),
+      include("addressFeedback") && formatSection("ADDRESS FEEDBACK PRs", summary.addressFeedback, u, "addressFeedback", limit),
       formatRecentClosedSection(summary, limit),
       summary.publishReadiness ? formatPublishReadinessSection(summary.publishReadiness) : "",
     ].filter(Boolean),

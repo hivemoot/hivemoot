@@ -789,6 +789,121 @@ team:
     expect(config.focus).toBe("Fallback via default key.");
   });
 
+  // ── focus filters (phase 2) ───────────────────────────────────────
+
+  it("parses label include filter from focus block", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "bugfix",
+        focuses: {
+          bugfix: {
+            objective: "Fix bugs.",
+            filters: { labels: { include: ["bug", "v2-blocker"] } },
+          },
+        },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focus).toBe("Fix bugs.");
+    expect(config.focusFilters?.labels?.include).toEqual(["bug", "v2-blocker"]);
+  });
+
+  it("parses author exclude filter from focus block", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "review",
+        focuses: {
+          review: {
+            objective: "Review PRs.",
+            filters: { authors: { exclude: ["dependabot[bot]", "bot"] } },
+          },
+        },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters?.authors?.exclude).toEqual(["dependabot[bot]", "bot"]);
+  });
+
+  it("parses and normalizes suppressSections from focus block", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "review",
+        focuses: {
+          review: {
+            objective: "Review PRs.",
+            filters: { suppressSections: ["ready-to-implement", "discussion", "vote-on"] },
+          },
+        },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters?.suppressSections).toEqual(["implement", "discuss", "vote"]);
+  });
+
+  it("returns no focusFilters when focus block has no filters key", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: { default: { objective: "Work on anything." } },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters).toBeUndefined();
+  });
+
+  it("silently ignores unknown suppressSection values", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: {
+            objective: "Work.",
+            filters: { suppressSections: ["implement", "totally-unknown-section"] },
+          },
+        },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters?.suppressSections).toEqual(["implement"]);
+  });
+
+  it("returns no focusFilters when filters block is empty/invalid", async () => {
+    const focusesYaml = yaml.dump({
+      team: {
+        activeFocus: "default",
+        focuses: {
+          default: { objective: "Work.", filters: {} },
+        },
+        roles: { engineer: { description: "Engineer", instructions: "Build things." } },
+      },
+    });
+    mockedGh.mockResolvedValue(encode(focusesYaml));
+
+    const config = await loadTeamConfig(repo);
+
+    expect(config.focusFilters).toBeUndefined();
+  });
+
   it("re-throws non-404 gh errors", async () => {
     const otherError = new CliError("Rate limited", "RATE_LIMITED");
     mockedGh.mockRejectedValue(otherError);

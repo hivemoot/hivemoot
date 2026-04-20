@@ -196,6 +196,30 @@ describe("formatBuzz()", () => {
     expect(output).toContain("merged");
     expect(output).toContain("1h ago");
   });
+
+  it("suppresses sections listed in suppressSections", () => {
+    const withSuppressed: RepoSummary = {
+      ...summary,
+      suppressSections: ["implement", "vote"],
+    };
+    const output = formatBuzz("engineer", role, withSuppressed);
+    expect(output).not.toContain("READY TO IMPLEMENT");
+    expect(output).not.toContain("VOTE ON ISSUES");
+    expect(output).toContain("REVIEW PRs");
+  });
+
+  it("renders all sections when suppressSections is empty", () => {
+    const withEmpty: RepoSummary = { ...summary, suppressSections: [] };
+    const output = formatBuzz("engineer", role, withEmpty);
+    expect(output).toContain("READY TO IMPLEMENT");
+    expect(output).toContain("VOTE ON ISSUES");
+  });
+
+  it("renders all sections when suppressSections is undefined", () => {
+    const output = formatBuzz("engineer", role, { ...summary, suppressSections: undefined });
+    expect(output).toContain("READY TO IMPLEMENT");
+    expect(output).toContain("VOTE ON ISSUES");
+  });
 });
 
 describe("formatStatus()", () => {
