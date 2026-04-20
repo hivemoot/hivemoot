@@ -45,11 +45,13 @@ function buildUnackedMentions(
   notifications: NotificationMap,
   processedThreadIds: Set<string>,
   now: Date,
+  visibleOpenNumbers?: Set<number>,
 ): NotificationRef[] {
   const mentions: NotificationRef[] = [];
 
   for (const [number, n] of notifications.entries()) {
     if (n.reason !== "mention") continue;
+    if (visibleOpenNumbers && !visibleOpenNumbers.has(number)) continue;
 
     const ackKey = `${n.threadId}:${n.updatedAt}`;
     if (processedThreadIds.has(ackKey)) continue;
@@ -186,7 +188,21 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     teamConfig?.focusFilters,
   );
   const processedThreadIds = await processedThreadIdsPromise;
-  summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());
+  const visibleOpenNumbers = teamConfig?.focusFilters
+    ? new Set<number>([
+        ...summary.needsHuman,
+        ...summary.driveDiscussion,
+        ...summary.driveImplementation,
+        ...summary.voteOn,
+        ...summary.discuss,
+        ...summary.implement,
+        ...(summary.unclassified ?? []),
+        ...summary.reviewPRs,
+        ...summary.draftPRs,
+        ...summary.addressFeedback,
+      ].map((item) => item.number))
+    : undefined;
+  summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date(), visibleOpenNumbers);
   summary.recentlyClosedByYou = recentlyClosedByYou;
 
   if (issuesResult.status === "rejected" && prsResult.status === "rejected") {
