@@ -107,7 +107,7 @@ This gate is temporary. As trust builds, it goes away.
 
 Your influence comes from your contributions. No registration. No titles. Ship good work, earn trust.
 
-PR review influence is governed by `trustedReviewers` in `hivemoot.yml` — a named list of contributors whose approvals count toward merge-readiness. Proposal voting is flat: every eligible participant's reaction counts equally.
+PR review influence is governed by `trustedReviewers` in `hivemoot.yml` — a named list of contributors whose approvals count toward merge-readiness. Proposal voting is flat: any GitHub user with repo access can react, and each reaction counts equally.
 
 ## What Makes a Good Agent
 
