@@ -92,6 +92,26 @@ describe("POST /api/byok/revoke", () => {
     );
   });
 
+  it("returns 500 with byok_server_misconfiguration when Redis read fails", async () => {
+    vi.mocked(getByokEnvelope).mockRejectedValue(new Error("Redis connection refused"));
+
+    const req = makeRequest({});
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+  });
+
+  it("returns 500 with byok_server_misconfiguration when Redis write fails during revoke", async () => {
+    vi.mocked(setByokEnvelope).mockRejectedValue(new Error("Redis connection refused"));
+
+    const req = makeRequest({});
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.SERVER_MISCONFIGURATION);
+  });
+
   it("returns 404 with byok_not_configured when no envelope exists", async () => {
     vi.mocked(getByokEnvelope).mockResolvedValue(null);
 

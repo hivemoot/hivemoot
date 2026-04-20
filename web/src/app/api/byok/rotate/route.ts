@@ -74,7 +74,12 @@ export async function POST(request: NextRequest) {
     fingerprint: "",
   };
 
-  await setByokEnvelope(installationId, envelope, auth.redis);
+  try {
+    await setByokEnvelope(installationId, envelope, auth.redis);
+  } catch (err) {
+    console.error("[byok-rotate] Failed to write envelope to Redis", { installationId, error: err });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Failed to rotate configuration", 500);
+  }
 
   return NextResponse.json({
     status: "active",

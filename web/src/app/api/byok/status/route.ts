@@ -22,7 +22,13 @@ export async function GET(request: NextRequest) {
     return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
   }
 
-  const envelope = await getByokEnvelope(installationId, auth.redis);
+  let envelope;
+  try {
+    envelope = await getByokEnvelope(installationId, auth.redis);
+  } catch (err) {
+    console.error("[byok-status] Failed to read envelope from Redis", { installationId, error: err });
+    return byokError(BYOK_ERROR.SERVER_MISCONFIGURATION, "Failed to read configuration", 500);
+  }
   if (!envelope) {
     return byokError(
       BYOK_ERROR.NOT_CONFIGURED,
