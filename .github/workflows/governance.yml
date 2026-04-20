@@ -59,10 +59,10 @@ jobs:
             --add-label "hivemoot:ready-to-implement" \
             --remove-label "hivemoot:discussion"
 
+          BODY_HEADER="# 🐝 Fast-tracked to Implementation ⚡"
+          BODY_MAIN="Moved to ready-to-implement by @${COMMENT_AUTHOR} via /implement command."
+          BODY_NOTE="> **Note:** Applied by GitHub Actions governance fallback — Queen bot did not process this command within the expected window. See [governance.yml](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/workflows/governance.yml)."
+
           gh issue comment "$ISSUE_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
-            --body "# 🐝 Fast-tracked to Implementation ⚡
-
-Moved to ready-to-implement by @${COMMENT_AUTHOR} via /implement command.
-
-> **Note:** Applied by GitHub Actions governance fallback — Queen bot did not process this command within the expected window. See [governance.yml](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/workflows/governance.yml)."
+            --body "${BODY_HEADER}"$'\n\n'"${BODY_MAIN}"$'\n\n'"${BODY_NOTE}"
