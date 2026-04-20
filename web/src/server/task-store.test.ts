@@ -25,6 +25,9 @@ import {
   validateCreateTaskRequest,
   COMPLETED_TASK_TTL_SECONDS,
   FAILED_TASK_TTL_SECONDS,
+  validateTaskArtifacts,
+  addTaskArtifacts,
+  MAX_ARTIFACTS_PER_TASK,
 } from "./task-store";
 
 type SetOpts = { nx?: boolean; ex?: number };
@@ -1906,5 +1909,247 @@ describe("addUserMessage", () => {
     const userMsg = messages[messages.length - 2];
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Do more");
+  });
+});
+
+describe("validateTaskArtifacts", () => {
+  it("accepts a valid artifact array", () => {
+    const result = validateTaskArtifacts({
+      artifacts: [
+        {
+          type: "pull_request",
+          url: "https://github.com/hivemoot/hivemoot/pull/312",
+          number: 312,
+          title: "fix: resolve issue #42",
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.artifacts).toHaveLength(1);
+      expect(result.artifacts[0].type).toBe("pull_request");
+      expect(result.artifacts[0].number).toBe(312);
+    }
+  });
+
+  it("rejects non-object body", () => {
+    const result = validateTaskArtifacts("not-an-object");
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects missing artifacts field", () => {
+    const result = validateTaskArtifacts({ other: "field" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("artifacts must be an array");
+  });
+
+  it("rejects empty artifacts array", () => {
+    const result = validateTaskArtifacts({ artifacts: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("must not be empty");
+  });
+
+  it("rejects artifacts array exceeding per-request limit", () => {
+    const artifacts = Array.from({ length: MAX_ARTIFACTS_PER_TASK + 1 }, (_, i) => ({
+      type: "commit",
+      url: `https://github.com/hivemoot/hivemoot/commit/${"a".repeat(40)}${i}`,
+    }));
+    const result = validateTaskArtifacts({ artifacts });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("at most");
+  });
+
+  it("rejects invalid artifact type", () => {
+    const result = validateTaskArtifacts({
+      artifacts: [{ type: "unknown_type", url: "https://github.com/hivemoot/hivemoot/pull/1" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("type");
+  });
+
+  it("rejects non-GitHub URL", () => {
+    const result = validateTaskArtifacts({
+      artifacts: [{ type: "pull_request", url: "https://example.com/pull/1" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("url");
+  });
+
+  it("rejects non-positive integer number", () => {
+    const result = validateTaskArtifacts({
+      artifacts: [
+        {
+          type: "issue",
+          url: "https://github.com/hivemoot/hivemoot/issues/1",
+          number: 0,
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("number");
+  });
+
+  it("trims and truncates title", () => {
+    const longTitle = "x".repeat(300);
+    const result = validateTaskArtifacts({
+      artifacts: [
+        {
+          type: "issue",
+          url: "https://github.com/hivemoot/hivemoot/issues/1",
+          title: `  ${longTitle}  `,
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.artifacts[0].title!.length).toBe(200);
+    }
+  });
+
+  it("omits title when blank after trim", () => {
+    const result = validateTaskArtifacts({
+      artifacts: [
+        {
+          type: "commit",
+          url: "https://github.com/hivemoot/hivemoot/commit/abc123",
+          title: "   ",
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.artifacts[0].title).toBeUndefined();
+    }
+  });
+});
+
+describe("addTaskArtifacts", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("appends artifacts to a running task", async () => {
+    const created = await createTask(
+      "inst-1",
+      "user",
+      { prompt: "Open a PR", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [
+        {
+          type: "pull_request",
+          url: "https://github.com/hivemoot/hivemoot/pull/99",
+          number: 99,
+        },
+      ],
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.task.artifacts).toHaveLength(1);
+      expect(result.task.artifacts![0].type).toBe("pull_request");
+      expect(result.task.artifacts![0].number).toBe(99);
+    }
+  });
+
+  it("persists artifacts so subsequent getTask returns them", async () => {
+    const created = await createTask(
+      "inst-1",
+      "user",
+      { prompt: "Open a PR", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ type: "commit", url: "https://github.com/hivemoot/hivemoot/commit/abc123" }],
+      redis,
+    );
+
+    const fetched = await getTask("inst-1", created.task.task_id, redis);
+    expect(fetched?.artifacts).toHaveLength(1);
+    expect(fetched?.artifacts![0].url).toBe("https://github.com/hivemoot/hivemoot/commit/abc123");
+  });
+
+  it("returns not_found for a non-existent task", async () => {
+    const result = await addTaskArtifacts(
+      "inst-1",
+      "000000000000000000000000",
+      [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/1" }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("not_found");
+  });
+
+  it("returns invalid_url when URL is not scoped to task repos", async () => {
+    const created = await createTask(
+      "inst-1",
+      "user",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ type: "pull_request", url: "https://github.com/other-org/other-repo/pull/1" }],
+      redis,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("invalid_url");
+  });
+
+  it("returns artifact_cap_exceeded when total would exceed 20", async () => {
+    const created = await createTask(
+      "inst-1",
+      "user",
+      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    for (let i = 0; i < MAX_ARTIFACTS_PER_TASK; i++) {
+      await addTaskArtifacts(
+        "inst-1",
+        created.task.task_id,
+        [{ type: "commit", url: `https://github.com/hivemoot/hivemoot/commit/abc${i}` }],
+        redis,
+      );
+    }
+
+    const overflow = await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ type: "commit", url: "https://github.com/hivemoot/hivemoot/commit/overflow" }],
+      redis,
+    );
+
+    expect(overflow.ok).toBe(false);
+    if (!overflow.ok) expect(overflow.reason).toBe("artifact_cap_exceeded");
   });
 });

@@ -12,10 +12,22 @@ const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
 const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
+export const MAX_ARTIFACTS_PER_TASK = 20;
+const MAX_ARTIFACT_TITLE_CHARS = 200;
+const GITHUB_URL_PREFIX = "https://github.com/";
 
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
 
 export type TaskStatus = "pending" | "running" | "needs_follow_up" | "completed" | "failed" | "timed_out";
+
+export type ArtifactType = "pull_request" | "issue" | "issue_comment" | "commit";
+
+export interface TaskArtifact {
+  type: ArtifactType;
+  url: string;
+  number?: number;
+  title?: string;
+}
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "timed_out"]);
 
@@ -43,6 +55,7 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
+  artifacts?: TaskArtifact[];
 }
 
 export interface ClaimedTask {
@@ -61,6 +74,7 @@ interface StoredTaskRecord {
   started_at?: string;
   finished_at?: string;
   error?: string;
+  artifacts?: TaskArtifact[];
 }
 
 export interface CreateTaskRequest {
@@ -93,6 +107,14 @@ export type TaskDeleteResult =
   | { ok: false; reason: "not_found" | "invalid_transition" };
 
 export type TaskRetryResult = TaskMutationResult;
+
+export type AddArtifactsResult =
+  | { ok: true; task: TaskRecord }
+  | { ok: false; reason: "not_found" | "artifact_cap_exceeded" | "invalid_url" | "lock_timeout" };
+
+export type ValidateArtifactsResult =
+  | { ok: true; artifacts: TaskArtifact[] }
+  | { ok: false; message: string };
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -206,6 +228,29 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
   if (typeof obj.started_at === "string") parsed.started_at = obj.started_at;
   if (typeof obj.finished_at === "string") parsed.finished_at = obj.finished_at;
   if (typeof obj.error === "string") parsed.error = obj.error;
+
+  if (Array.isArray(obj.artifacts)) {
+    const parsedArtifacts: TaskArtifact[] = [];
+    for (const art of obj.artifacts) {
+      if (
+        art
+        && typeof art === "object"
+        && !Array.isArray(art)
+        && typeof (art as Record<string, unknown>).type === "string"
+        && typeof (art as Record<string, unknown>).url === "string"
+      ) {
+        const a = art as Record<string, unknown>;
+        const artifact: TaskArtifact = {
+          type: a.type as ArtifactType,
+          url: a.url as string,
+        };
+        if (typeof a.number === "number") artifact.number = a.number;
+        if (typeof a.title === "string") artifact.title = a.title;
+        parsedArtifacts.push(artifact);
+      }
+    }
+    if (parsedArtifacts.length > 0) parsed.artifacts = parsedArtifacts;
+  }
 
   return parsed;
 }
@@ -380,6 +425,7 @@ async function maybeTimeoutTask(
     started_at: timedOut.task.started_at,
     finished_at: timedOut.task.finished_at,
     error: timedOut.task.error,
+    ...(timedOut.task.artifacts ? { artifacts: timedOut.task.artifacts } : {}),
   };
 }
 
@@ -1379,6 +1425,124 @@ export async function addUserMessage(
         taskId,
       });
       return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Task artifacts
+// ---------------------------------------------------------------------------
+
+const VALID_ARTIFACT_TYPES = new Set<ArtifactType>([
+  "pull_request",
+  "issue",
+  "issue_comment",
+  "commit",
+]);
+
+export function validateTaskArtifacts(body: unknown): ValidateArtifactsResult {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, message: "Body must be a JSON object" };
+  }
+
+  const obj = body as Record<string, unknown>;
+  if (!Array.isArray(obj.artifacts)) {
+    return { ok: false, message: "artifacts must be an array" };
+  }
+
+  if (obj.artifacts.length === 0) {
+    return { ok: false, message: "artifacts must not be empty" };
+  }
+
+  if (obj.artifacts.length > MAX_ARTIFACTS_PER_TASK) {
+    return { ok: false, message: `artifacts must contain at most ${MAX_ARTIFACTS_PER_TASK} entries per request` };
+  }
+
+  const artifacts: TaskArtifact[] = [];
+  for (let i = 0; i < obj.artifacts.length; i++) {
+    const raw = obj.artifacts[i];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { ok: false, message: `artifacts[${i}] must be an object` };
+    }
+
+    const art = raw as Record<string, unknown>;
+
+    if (typeof art.type !== "string" || !VALID_ARTIFACT_TYPES.has(art.type as ArtifactType)) {
+      return {
+        ok: false,
+        message: `artifacts[${i}].type must be one of: ${[...VALID_ARTIFACT_TYPES].join(", ")}`,
+      };
+    }
+
+    if (typeof art.url !== "string" || !art.url.startsWith(GITHUB_URL_PREFIX)) {
+      return {
+        ok: false,
+        message: `artifacts[${i}].url must be a GitHub URL (https://github.com/...)`,
+      };
+    }
+
+    const artifact: TaskArtifact = {
+      type: art.type as ArtifactType,
+      url: art.url,
+    };
+
+    if (art.number !== undefined) {
+      if (typeof art.number !== "number" || !Number.isInteger(art.number) || art.number < 1) {
+        return { ok: false, message: `artifacts[${i}].number must be a positive integer` };
+      }
+      artifact.number = art.number;
+    }
+
+    if (art.title !== undefined) {
+      if (typeof art.title !== "string") {
+        return { ok: false, message: `artifacts[${i}].title must be a string` };
+      }
+      artifact.title = art.title.trim().slice(0, MAX_ARTIFACT_TITLE_CHARS) || undefined;
+    }
+
+    artifacts.push(artifact);
+  }
+
+  return { ok: true, artifacts };
+}
+
+export async function addTaskArtifacts(
+  installationId: string,
+  taskId: string,
+  newArtifacts: TaskArtifact[],
+  redis: Redis,
+): Promise<AddArtifactsResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      for (const artifact of newArtifacts) {
+        const scoped = stored.repos.some((repo) =>
+          artifact.url.startsWith(`${GITHUB_URL_PREFIX}${repo}/`),
+        );
+        if (!scoped) return { ok: false, reason: "invalid_url" };
+      }
+
+      const existing = stored.artifacts ?? [];
+      if (existing.length + newArtifacts.length > MAX_ARTIFACTS_PER_TASK) {
+        return { ok: false, reason: "artifact_cap_exceeded" };
+      }
+
+      const updated: StoredTaskRecord = {
+        ...stored,
+        artifacts: [...existing, ...newArtifacts],
+      };
+
+      await redis.set(taskKey(installationId, taskId), updated);
+
+      return { ok: true, task: await buildTaskRecord(installationId, updated, redis) };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      console.warn("[tasks] Add artifacts lock timeout", { installationId, taskId });
+      return { ok: false, reason: "lock_timeout" };
     }
     throw error;
   }
