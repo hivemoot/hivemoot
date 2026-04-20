@@ -2063,6 +2063,35 @@ describe("addTaskArtifacts", () => {
     }
   });
 
+  it("bumps updated_at when artifacts are added", async () => {
+    const before = new Date().toISOString();
+
+    const created = await createTask(
+      "inst-1",
+      "user",
+      { prompt: "Open a PR", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      redis,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+
+    const result = await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ type: "issue", url: "https://github.com/hivemoot/hivemoot/issues/1" }],
+      redis,
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(new Date(result.task.updated_at).getTime()).toBeGreaterThanOrEqual(
+        new Date(before).getTime(),
+      );
+    }
+  });
+
   it("persists artifacts so subsequent getTask returns them", async () => {
     const created = await createTask(
       "inst-1",

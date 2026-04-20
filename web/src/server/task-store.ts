@@ -1532,6 +1532,7 @@ export async function addTaskArtifacts(
 
       const updated: StoredTaskRecord = {
         ...stored,
+        updated_at: nowIso(),
         artifacts: [...existing, ...newArtifacts],
       };
 
