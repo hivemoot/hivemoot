@@ -115,19 +115,17 @@ describe("getOAuthStateCookieOptions", () => {
   });
 
   it("secure is false outside production", () => {
-    const prev = process.env.NODE_ENV;
-    process.env.NODE_ENV = "test";
+    vi.stubEnv("NODE_ENV", "test");
     const opts = getOAuthStateCookieOptions();
     expect(opts.secure).toBe(false);
-    process.env.NODE_ENV = prev;
+    vi.unstubAllEnvs();
   });
 
   it("secure is true in production", () => {
-    const prev = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     const opts = getOAuthStateCookieOptions();
     expect(opts.secure).toBe(true);
-    process.env.NODE_ENV = prev;
+    vi.unstubAllEnvs();
   });
 });
 
