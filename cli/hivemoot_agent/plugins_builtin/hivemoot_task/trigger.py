@@ -17,12 +17,6 @@ _TASK_TEMPLATE_PATH = os.path.join(
 )
 
 
-def _safe_int(value: str | int | None, default: int) -> int:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
-
 
 def _render_messages_block(messages: list[dict]) -> str:
     """Render the conversation history into the prompt body.
@@ -89,40 +83,42 @@ class HivemootTaskTrigger:
         self._stop_event = threading.Event()
 
     def validate(self, config: PluginConfig) -> list[str]:
+        cfg = config.typed
+        if cfg is None:
+            return [
+                "hivemoot-task trigger requires typed config (plugins."
+                "hivemoot-task in hivemoot.yaml)."
+            ]
         errors: list[str] = []
-        if not config.get("AGENT_TASK_CLAIM_URL"):
-            errors.append("AGENT_TASK_CLAIM_URL is required for hivemoot-task")
-        if not config.get("AGENT_TASK_EXECUTE_BASE_URL"):
+        if not cfg.claim_url:
             errors.append(
-                "AGENT_TASK_EXECUTE_BASE_URL is required for hivemoot-task"
+                "plugins.hivemoot-task.claim_url is required for the "
+                "polling trigger"
             )
-        if not (
-            config.get("HIVEMOOT_AGENT_TOKEN")
-            or config.get("HIVEMOOT_AGENT_TOKEN_FILE")
-        ):
+        if not cfg.execute_base_url:
             errors.append(
-                "hivemoot-task requires HIVEMOOT_AGENT_TOKEN or "
-                "HIVEMOOT_AGENT_TOKEN_FILE for backend auth"
+                "plugins.hivemoot-task.execute_base_url is required for "
+                "the polling trigger"
+            )
+        if cfg.token_file is None:
+            errors.append(
+                "plugins.hivemoot-task.token_file is required for backend "
+                "auth (typically `!secret hivemoot_agent_token`)"
             )
         return errors
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
-        claim_url = config.get("AGENT_TASK_CLAIM_URL", "")
-        if not claim_url:
+        cfg = config.typed
+        if cfg is None or not cfg.claim_url:
             print(
-                "[hivemoot-task] AGENT_TASK_CLAIM_URL not set; trigger idle",
+                "[hivemoot-task] no typed config or empty claim_url; trigger idle",
                 file=sys.stderr, flush=True,
             )
             return
 
-        # Poll cadence — short enough to feel responsive, long enough
-        # to avoid hammering the backend when no tasks are available.
-        # Matches the shell controller's TASK_POLL_INTERVAL_SECS default.
-        # Floored at 1s so a misconfigured 0 doesn't tight-loop.
-        poll_interval = max(
-            1, _safe_int(config.get("AGENT_TASK_POLL_INTERVAL_SECS", "10"), 10),
-        )
-        token_file = config.get("HIVEMOOT_AGENT_TOKEN_FILE", "")
+        claim_url = cfg.claim_url
+        poll_interval = max(1, cfg.poll_interval_secs)
+        token_file = str(cfg.token_file) if cfg.token_file else ""
         bearer = api.resolve_executor_token(token_file)
 
         self._stop_event.clear()

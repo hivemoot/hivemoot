@@ -96,50 +96,6 @@ def _load_identity() -> str:
         return ""
 
 
-def _build_legacy_settings(raw_config: dict[str, Any]) -> dict[str, str]:
-    """Build the PluginConfig.settings dict for unmigrated plugins.
-
-    Expose raw_config alongside env so plugins not yet on ``.typed``
-    can still read scalar values via ``config.get()``.  Uppercased
-    aliases cover plugins that grep for env-var-style keys
-    (e.g. ``GITHUB_REPOS``).
-
-    Precedence: YAML wins for BOTH the original-case and the
-    uppercase key.  Under ADR-003 hivemoot.yaml is the source of
-    truth; letting env override the uppercase alias but not the
-    lowercase key would give a plugin reading ``agent_id`` vs
-    ``AGENT_ID`` two different answers.
-
-    Conversion rules:
-      * bool       → "1" / "0"   (matches shell trigger truthy semantics)
-      * str/int/float → str(v)   (env-style stringification)
-      * list[scalar]  → comma-join (env convention "a,b,c")
-      * dict / list[dict] / None → skipped (no env-var analogue)
-
-    Factored out of ``Engine._resolve_plugins`` so the behaviour can
-    be unit-tested without spinning up an engine + ConfigLoader.
-    """
-    merged: dict[str, str] = dict(os.environ)
-    for k, v in raw_config.items():
-        alias_value: str | None = None
-        if isinstance(v, bool):
-            alias_value = "1" if v else "0"
-        elif isinstance(v, (str, int, float)):
-            alias_value = str(v)
-        elif isinstance(v, list) and all(
-            isinstance(x, (str, int, float, bool)) for x in v
-        ):
-            alias_value = ",".join(str(x) for x in v)
-        if alias_value is None:
-            continue
-        key_str = str(k)
-        merged[key_str] = alias_value
-        upper = key_str.upper()
-        if upper != key_str:
-            merged[upper] = alias_value
-    return merged
-
-
 @dataclass
 class _SkillRuntime:
     """Resolved native skill staging for one provider invocation."""
@@ -253,10 +209,14 @@ class Engine:
                     had_error = True
                     continue
 
-            merged_settings = _build_legacy_settings(entry.raw_config)
+            # All built-in plugins now read from .typed; settings carries
+            # only engine-level cross-cutting env (AGENT_ID,
+            # AGENT_PROVIDER, AGENT_LAST_RUN_LOG, etc.) for the handful
+            # of read sites that need it.  No more YAML→settings alias
+            # bridging — single source of truth per knob.
             config = PluginConfig(
                 name=entry.instance_name,
-                settings=merged_settings,
+                settings=dict(os.environ),
                 typed=typed,
             )
             registry.configure(entry.instance_name, config)

@@ -4,17 +4,48 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins.interfaces import PluginConfig
+from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 from hivemoot_agent.plugins_builtin.hivemoot_github import HivemootGitHubPlugin
+from hivemoot_agent.plugins_builtin.hivemoot_github.config import (
+    HivemootGithubConfig,
+)
 from hivemoot_agent.plugins_builtin.hivemoot_github.role_loader import (
     RoleLoadError,
     build_role_prompt_block,
     load_role_prompt_block,
 )
+
+
+def _stage_github(repos: list[str], workspace: str = "/workspace") -> None:
+    """Register a configured `github` plugin in the registry so
+    hivemoot-github's validate() / setup() can read repos[0] from it.
+    Tests should pair this with the snapshot/restore pattern below."""
+    from hivemoot_agent.plugins import registry
+    from pathlib import Path as _Path
+    typed = GitHubConfig(repos=repos, workspace=_Path(workspace))
+    registry._configs["github"] = PluginConfig(
+        name="github", settings={}, typed=typed,
+    )
+
+
+def _mk_hivemoot_github_config(
+    *,
+    role_name: str = "",
+    clone_depth: int = 50,
+    workspace: str = "/workspace",
+) -> PluginConfig:
+    typed = HivemootGithubConfig(
+        role_name=role_name,
+        clone_depth=clone_depth,
+        workspace=Path(workspace),
+    )
+    return PluginConfig(name="hivemoot-github", settings={}, typed=typed)
 
 
 def test_build_role_prompt_block_formats_onboarding():
@@ -61,12 +92,8 @@ def test_validate_requires_github_to_be_configured_first():
     from hivemoot_agent.plugins import registry
 
     plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={"GITHUB_REPOS": "acme/api"},
-    )
+    config = _mk_hivemoot_github_config()
 
-    # Snapshot + clear the registry so this test is hermetic.
     saved_configs = dict(registry._configs)
     registry._configs.clear()
     try:
@@ -81,8 +108,8 @@ def test_validate_requires_github_to_be_configured_first():
             for error in errors
         )
 
-        # Case 2: github configured before us → pass that ordering check.
-        registry._configs["github"] = PluginConfig(name="github", settings={})
+        # Case 2: github configured before us with a repo → pass.
+        _stage_github(["acme/api"])
         with patch(
             "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
             return_value="/usr/bin/hivemoot",
@@ -98,20 +125,16 @@ def test_validate_requires_github_to_be_configured_first():
 
 
 def test_validate_picks_first_repo_when_multiple_configured():
-    """Multi-repo configs no longer require a separate TARGET_REPO —
-    the first entry in GITHUB_REPOS is the canonical primary."""
+    """Multi-repo github configs are accepted — repos[0] is canonical."""
     from hivemoot_agent.plugins import registry
 
     plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={"GITHUB_REPOS": "acme/api,acme/web"},
-    )
+    config = _mk_hivemoot_github_config()
 
     saved_configs = dict(registry._configs)
     registry._configs.clear()
     try:
-        registry._configs["github"] = PluginConfig(name="github", settings={})
+        _stage_github(["acme/api", "acme/web"])
         with patch(
             "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
             return_value="/usr/bin/hivemoot",
@@ -124,84 +147,93 @@ def test_validate_picks_first_repo_when_multiple_configured():
 
 
 def test_setup_and_system_prompt_use_role_context():
+    from hivemoot_agent.plugins import registry
+
     plugin = HivemootGitHubPlugin()
-    with tempfile.TemporaryDirectory(prefix="hm-hivemoot-gh-") as tmpdir:
-        repo_path = os.path.join(tmpdir, "acme", "api")
-        os.makedirs(repo_path)
+    saved_configs = dict(registry._configs)
+    registry._configs.clear()
+    try:
+        with tempfile.TemporaryDirectory(prefix="hm-hivemoot-gh-") as tmpdir:
+            repo_path = os.path.join(tmpdir, "acme", "api")
+            os.makedirs(repo_path)
+            _stage_github(["acme/api"], workspace=tmpdir)
+            config = _mk_hivemoot_github_config(
+                role_name="worker",
+                clone_depth=7,
+                workspace=tmpdir,
+            )
 
-        config = PluginConfig(
-            name="hivemoot-github",
-            settings={
-                "AGENT_PLUGINS": "github,hivemoot-github",
-                "GITHUB_REPOS": "acme/api",
-                "GITHUB_WORKSPACE": tmpdir,
-                "GITHUB_CLONE_DEPTH": "7",
-                "AGENT_ID": "worker",
-            },
-        )
+            with patch(
+                "hivemoot_agent.plugins_builtin.hivemoot_github.load_role_prompt_block",
+                return_value="Your role on this project is: worker",
+            ):
+                plugin.setup(config)
 
-        with patch(
-            "hivemoot_agent.plugins_builtin.hivemoot_github.load_role_prompt_block",
-            return_value="Your role on this project is: worker",
-        ):
-            plugin.setup(config)
+            prompt = plugin.system_prompt(config)
 
-        prompt = plugin.system_prompt(config)
-
-    assert "Deliver at least one complete, useful contribution" in prompt
-    # Security guardrails live in the engine's always-applied <root>
-    # layer; the hivemoot-github prompt no longer embeds them.
-    assert "## Security Guardrails (Non-Overridable)" not in prompt
-    assert "Your role on this project is: worker" in prompt
-    assert "Hivemoot buzz role: worker" in prompt
-    assert "Treat `acme/api` as the active Hivemoot governance target" in prompt
-    assert "Shallow clone (depth 7)" in prompt
-    assert "git fetch --unshallow" in prompt
-    assert repo_path in prompt
+        assert "Deliver at least one complete, useful contribution" in prompt
+        # Security guardrails live in the engine's always-applied <root>
+        # layer; the hivemoot-github prompt no longer embeds them.
+        assert "## Security Guardrails (Non-Overridable)" not in prompt
+        assert "Your role on this project is: worker" in prompt
+        assert "Hivemoot buzz role: worker" in prompt
+        assert "Treat `acme/api` as the active Hivemoot governance target" in prompt
+        assert "Shallow clone (depth 7)" in prompt
+        assert "git fetch --unshallow" in prompt
+        assert repo_path in prompt
+    finally:
+        registry._configs.clear()
+        registry._configs.update(saved_configs)
 
 
 def test_setup_continues_when_role_lookup_fails():
-    plugin = HivemootGitHubPlugin()
-    with tempfile.TemporaryDirectory(prefix="hm-hivemoot-gh-") as tmpdir:
-        os.makedirs(os.path.join(tmpdir, "acme", "api"))
-        config = PluginConfig(
-            name="hivemoot-github",
-            settings={
-                "AGENT_PLUGINS": "github,hivemoot-github",
-                "GITHUB_REPOS": "acme/api",
-                "GITHUB_WORKSPACE": tmpdir,
-                "AGENT_ID": "worker",
-            },
-        )
+    from hivemoot_agent.plugins import registry
 
-        with patch(
-            "hivemoot_agent.plugins_builtin.hivemoot_github.load_role_prompt_block",
-            side_effect=RoleLoadError("no role"),
-        ):
-            plugin.setup(config)
+    plugin = HivemootGitHubPlugin()
+    saved_configs = dict(registry._configs)
+    registry._configs.clear()
+    try:
+        with tempfile.TemporaryDirectory(prefix="hm-hivemoot-gh-") as tmpdir:
+            os.makedirs(os.path.join(tmpdir, "acme", "api"))
+            _stage_github(["acme/api"], workspace=tmpdir)
+            config = _mk_hivemoot_github_config(
+                role_name="worker", workspace=tmpdir,
+            )
+
+            with patch(
+                "hivemoot_agent.plugins_builtin.hivemoot_github.load_role_prompt_block",
+                side_effect=RoleLoadError("no role"),
+            ):
+                plugin.setup(config)
+
+            prompt = plugin.system_prompt(config)
+
+        assert "Hivemoot buzz role: worker" in prompt
+        assert "no role" not in prompt
+    finally:
+        registry._configs.clear()
+        registry._configs.update(saved_configs)
+
+
+def test_system_prompt_uses_configured_workspace():
+    """Workspace path comes from the typed schema; no legacy fallback."""
+    from hivemoot_agent.plugins import registry
+
+    plugin = HivemootGitHubPlugin()
+    saved_configs = dict(registry._configs)
+    registry._configs.clear()
+    try:
+        _stage_github(["acme/api"], workspace="/workspace/repo")
+        config = _mk_hivemoot_github_config(
+            role_name="worker", workspace="/workspace/repo",
+        )
 
         prompt = plugin.system_prompt(config)
 
-    assert "Hivemoot buzz role: worker" in prompt
-    assert "no role" not in prompt
-
-
-def test_system_prompt_uses_workspace_root_when_github_workspace_empty():
-    plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
-            "GITHUB_REPOS": "acme/api",
-            "GITHUB_WORKSPACE": "",
-            "WORKSPACE_ROOT": "/workspace/repo",
-            "AGENT_ID": "worker",
-        },
-    )
-
-    prompt = plugin.system_prompt(config)
-
-    assert "/workspace/repo/acme/api" in prompt
+        assert "/workspace/repo/acme/api" in prompt
+    finally:
+        registry._configs.clear()
+        registry._configs.update(saved_configs)
 
 
 def test_plugin_package_contains_hivemoot_skill_pack():

@@ -21,12 +21,53 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from pathlib import Path
+
 from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
 from hivemoot_agent.plugins_builtin.hivemoot_task import api as task_api
 from hivemoot_agent.plugins_builtin.hivemoot_task import HivemootTaskPlugin
+from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+    HivemootTaskConfig,
+)
 from hivemoot_agent.plugins_builtin.hivemoot_task.trigger import (
     HivemootTaskTrigger,
 )
+
+
+_DEFAULT_TOKEN_FILE = Path("/tmp/.hivemoot-test-token")
+
+
+def _ensure_token_file() -> Path:
+    """Stage a tiny token file for tests that need .token_file populated."""
+    if not _DEFAULT_TOKEN_FILE.exists():
+        _DEFAULT_TOKEN_FILE.write_text("tok")
+    return _DEFAULT_TOKEN_FILE
+
+
+def _mk_task_config(
+    *,
+    claim_url: str = "https://api.example/api/tasks/claim",
+    execute_base_url: str = "https://api.example/api/tasks",
+    token_file: Path | None = None,
+    heartbeat_interval_secs: int = 45,
+    poll_interval_secs: int = 1,
+    workspace: str = "/workspace",
+    settings: dict | None = None,
+) -> PluginConfig:
+    """Build a PluginConfig with a typed HivemootTaskConfig populated."""
+    typed = HivemootTaskConfig(
+        claim_url=claim_url,
+        execute_base_url=execute_base_url,
+        token_file=token_file if token_file is not None else _ensure_token_file(),
+        heartbeat_interval_secs=heartbeat_interval_secs,
+        poll_interval_secs=poll_interval_secs,
+        workspace=Path(workspace),
+    )
+    return PluginConfig(
+        name="hivemoot-task",
+        settings=settings or {},
+        typed=typed,
+    )
 
 
 # ── Trigger ────────────────────────────────────────────────────────
@@ -35,51 +76,44 @@ from hivemoot_agent.plugins_builtin.hivemoot_task.trigger import (
 class TriggerValidationTests(unittest.TestCase):
     def test_missing_claim_url_rejected(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
-        config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-        })
+        config = _mk_task_config(claim_url="")
         errors = trig.validate(config)
-        self.assertTrue(any("AGENT_TASK_CLAIM_URL" in e for e in errors))
+        self.assertTrue(any("claim_url" in e for e in errors))
 
     def test_missing_execute_base_rejected(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
-        config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-        })
+        config = _mk_task_config(execute_base_url="")
         errors = trig.validate(config)
-        self.assertTrue(any("AGENT_TASK_EXECUTE_BASE_URL" in e for e in errors))
+        self.assertTrue(any("execute_base_url" in e for e in errors))
 
     def test_missing_token_rejected(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
-        config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-        })
+        config = _mk_task_config(token_file=None)
+        # When token_file=None is explicitly passed, _mk_task_config passes
+        # a default file — we want the None path here, override directly:
+        from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+            HivemootTaskConfig,
+        )
+        typed = HivemootTaskConfig(
+            claim_url="https://api.example/api/tasks/claim",
+            execute_base_url="https://api.example/api/tasks",
+            token_file=None,
+        )
+        config = PluginConfig(name="hivemoot-task", settings={}, typed=typed)
         errors = trig.validate(config)
-        self.assertTrue(any("HIVEMOOT_AGENT_TOKEN" in e for e in errors))
+        self.assertTrue(any("token_file" in e for e in errors))
 
     def test_complete_config_passes(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
-        config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-        })
+        config = _mk_task_config()
         self.assertEqual(trig.validate(config), [])
 
 
 class TriggerDispatchTests(unittest.TestCase):
     def _config(self, **overrides) -> PluginConfig:
-        settings = {
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-            "AGENT_TASK_POLL_INTERVAL_SECS": "0",  # don't sleep
-        }
-        settings.update(overrides)
-        return PluginConfig(name="hivemoot-task", settings=settings)
+        # Default to poll_interval_secs=1 (schema floor) so tests don't sleep
+        # meaningfully; override poll_interval_secs in callers if needed.
+        return _mk_task_config(poll_interval_secs=1, **overrides)
 
     def test_dispatches_job_on_claim(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
@@ -218,13 +252,11 @@ class PluginLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.workspace = self.tmp.name
-        self.config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-            "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS": "1",
-            "WORKSPACE_ROOT": self.workspace,
-            "AGENT_PROVIDER": "claude",
-        })
+        self.config = _mk_task_config(
+            heartbeat_interval_secs=1,
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -259,9 +291,12 @@ class PluginLifecycleTests(unittest.TestCase):
 
     def test_on_job_started_noop_without_backend(self) -> None:
         plugin = HivemootTaskPlugin()
-        bare_config = PluginConfig(name="hivemoot-task", settings={
-            "WORKSPACE_ROOT": self.workspace, "AGENT_PROVIDER": "claude",
-        })
+        # No execute_base_url → no backend → no progress post.
+        bare_config = _mk_task_config(
+            execute_base_url="",
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
+        )
         with patch.object(task_api, "post_progress") as progress_mock:
             plugin.on_job_started(self._job(), bare_config)
         progress_mock.assert_not_called()
@@ -297,10 +332,11 @@ class PluginLifecycleTests(unittest.TestCase):
 
     def test_on_job_finished_promotes_codex_auth_error(self) -> None:
         plugin = HivemootTaskPlugin()
-        codex_config = PluginConfig(name="hivemoot-task", settings={
-            **self.config.settings,
-            "AGENT_PROVIDER": "codex",
-        })
+        codex_config = _mk_task_config(
+            heartbeat_interval_secs=1,
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "codex"},
+        )
 
         # Codex log shows an explicit auth error AND no agent message
         # (so result extraction returns "").
@@ -351,9 +387,11 @@ class PluginLifecycleTests(unittest.TestCase):
 
     def test_on_job_finished_noop_without_backend(self) -> None:
         plugin = HivemootTaskPlugin()
-        bare_config = PluginConfig(name="hivemoot-task", settings={
-            "WORKSPACE_ROOT": self.workspace, "AGENT_PROVIDER": "claude",
-        })
+        bare_config = _mk_task_config(
+            execute_base_url="",
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
+        )
         with patch.object(task_api, "post_complete") as complete_mock:
             plugin.on_job_finished(
                 self._job(),
@@ -369,13 +407,11 @@ class HeartbeatLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.workspace = self.tmp.name
-        self.config = PluginConfig(name="hivemoot-task", settings={
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-            "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS": "1",
-            "WORKSPACE_ROOT": self.workspace,
-            "AGENT_PROVIDER": "claude",
-        })
+        self.config = _mk_task_config(
+            heartbeat_interval_secs=1,
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -393,12 +429,10 @@ class HeartbeatLifecycleTests(unittest.TestCase):
         # B2 regression: interval=0 must NOT start a thread (would
         # busy-loop on Event.wait(0)).
         plugin = HivemootTaskPlugin()
-        zero_config = PluginConfig(
-            name="hivemoot-task",
-            settings={
-                **self.config.settings,
-                "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS": "0",
-            },
+        zero_config = _mk_task_config(
+            heartbeat_interval_secs=0,
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
         )
         with patch.object(task_api, "post_progress", return_value=True), \
                 patch.object(task_api, "post_heartbeat") as hb:
@@ -409,19 +443,17 @@ class HeartbeatLifecycleTests(unittest.TestCase):
         hb.assert_not_called()
 
     def test_bad_int_env_falls_back_to_default(self) -> None:
-        # B6 regression: junk env value must not crash on_job_started.
+        # Pydantic's ge=0 constraint on heartbeat_interval_secs catches
+        # negative values at config-load time; the legacy "junk env
+        # value" pathway is gone.  The remaining contract is: when the
+        # operator omits the field, the schema default (45s) applies.
         plugin = HivemootTaskPlugin()
-        bad_config = PluginConfig(
-            name="hivemoot-task",
-            settings={
-                **self.config.settings,
-                "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS": "abc-not-a-number",
-            },
+        default_config = _mk_task_config(
+            workspace=self.workspace,
+            settings={"AGENT_PROVIDER": "claude"},
         )
         with patch.object(task_api, "post_progress", return_value=True):
-            # Should not raise.
-            plugin.on_job_started(self._job(), bad_config)
-        # Default 45s interval — thread started.
+            plugin.on_job_started(self._job(), default_config)
         self.assertIsNotNone(plugin._heartbeat_thread)
         plugin._heartbeat_stop.set()
         plugin._heartbeat_thread.join(timeout=2)
@@ -489,18 +521,19 @@ class HeartbeatLifecycleTests(unittest.TestCase):
 class TriggersMethodTests(unittest.TestCase):
     def test_returns_trigger_only_when_claim_url_set(self) -> None:
         plugin = HivemootTaskPlugin()
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("AGENT_TASK_CLAIM_URL", None)
-            self.assertEqual(plugin.triggers(), [])
+        # Without prior validate()/setup() the cached _cfg is None →
+        # no trigger registered (legitimate: triggers() called early).
+        self.assertEqual(plugin.triggers(), [])
 
-        with patch.dict(
-            os.environ,
-            {"AGENT_TASK_CLAIM_URL": "https://api.example/claim"},
-            clear=False,
-        ):
-            triggers = plugin.triggers()
+        # With typed config that has a claim_url → trigger registered.
+        plugin._cfg = _mk_task_config().typed
+        triggers = plugin.triggers()
         self.assertEqual(len(triggers), 1)
         self.assertIsInstance(triggers[0], HivemootTaskTrigger)
+
+        # Empty claim_url → no trigger.
+        plugin._cfg = _mk_task_config(claim_url="").typed
+        self.assertEqual(plugin.triggers(), [])
 
 
 if __name__ == "__main__":

@@ -19,80 +19,91 @@ from hivemoot_agent.plugins_builtin.hivemoot_task import HivemootTaskPlugin
 # ── validate() — decoupled from github ────────────────────────────
 
 
+def _empty_typed() -> PluginConfig:
+    """No-backend config: schema defaults, no claim_url."""
+    from pathlib import Path
+    from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+        HivemootTaskConfig,
+    )
+    return PluginConfig(
+        name="hivemoot-task",
+        settings={},
+        typed=HivemootTaskConfig(),
+    )
+
+
+def _backend_typed(**overrides) -> PluginConfig:
+    """Full-backend config with a real token file."""
+    from pathlib import Path
+    from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+        HivemootTaskConfig,
+    )
+    token_file = Path("/tmp/.hivemoot-task-test-tok")
+    if not token_file.exists():
+        token_file.write_text("tok")
+    fields = dict(
+        claim_url="https://api.example/api/tasks/claim",
+        execute_base_url="https://api.example/api/tasks",
+        token_file=token_file,
+    )
+    fields.update(overrides)
+    return PluginConfig(
+        name="hivemoot-task",
+        settings={},
+        typed=HivemootTaskConfig(**fields),
+    )
+
+
 def test_validate_empty_config_ok():
-    """A plugin loaded without any backend wiring must validate cleanly.
-    Fleet templates list the plugin by default and only configure
-    AGENT_TASK_* on services that should actually run tasks."""
+    """A plugin loaded without backend wiring (claim_url='') must
+    validate cleanly.  Fleet templates list the plugin by default and
+    only set claim_url on services that should actually run tasks."""
     plugin = HivemootTaskPlugin()
-    errors = plugin.validate(PluginConfig(name="hivemoot-task", settings={}))
+    errors = plugin.validate(_empty_typed())
     assert errors == []
 
 
 def test_validate_task_only_fleet_ok():
-    """AGENT_PLUGINS=hivemoot-task (no github, no identity, no repos)
-    must be a valid configuration for a pure task worker."""
+    """A pure task worker (typed config with no github co-load) must
+    validate cleanly when backend wiring is complete."""
     plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-task",
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-        },
-    )
-    errors = plugin.validate(config)
+    errors = plugin.validate(_backend_typed())
     assert errors == []
 
 
 def test_validate_does_not_require_github():
-    """Regression: older versions required AGENT_PLUGINS to include
-    github and TARGET_REPO/GITHUB_REPOS to be set.  The decoupled
-    version MUST NOT complain about any of those being absent."""
+    """Regression: older versions required github co-load.  The
+    decoupled version MUST NOT complain about github being absent."""
     plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-task",
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            "AGENT_TASK_EXECUTE_BASE_URL": "https://api.example/api/tasks",
-            "HIVEMOOT_AGENT_TOKEN": "tok",
-        },
-    )
-    errors = plugin.validate(config)
+    errors = plugin.validate(_backend_typed())
     assert errors == [], (
         f"plugin must not require github or repos; got errors: {errors}"
     )
 
 
 def test_validate_ignores_multi_repo_github_config():
-    """If the fleet happens to configure multiple repos (for github
-    plugin's sake), hivemoot-task must not care about that."""
+    """If a sibling github plugin happens to be configured with
+    multiple repos, hivemoot-task must not care."""
     plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-task",
-            "GITHUB_REPOS": "acme/api,acme/web,acme/mobile",
-        },
-    )
-    errors = plugin.validate(config)
-    # No TARGET_REPO complaint, no "requires a single repo" complaint,
-    # nothing.  The plugin is indifferent to GITHUB_REPOS cardinality.
+    errors = plugin.validate(_backend_typed())
+    # No repo-cardinality complaint anywhere.
     assert errors == []
 
 
 def test_validate_checks_trigger_config_when_claim_url_set():
-    """When backend wiring is partial, errors should surface at
-    validate time from the trigger's own config check."""
-    plugin = HivemootTaskPlugin()
-    config = PluginConfig(
-        name="hivemoot-task",
-        settings={
-            "AGENT_TASK_CLAIM_URL": "https://api.example/api/tasks/claim",
-            # Missing AGENT_TASK_EXECUTE_BASE_URL and HIVEMOOT_AGENT_TOKEN.
-        },
+    """When backend wiring is partial (claim_url set but execute_base_url
+    or token_file missing), the trigger's own validate fires."""
+    from pathlib import Path
+    from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+        HivemootTaskConfig,
     )
+    plugin = HivemootTaskPlugin()
+    typed = HivemootTaskConfig(
+        claim_url="https://api.example/api/tasks/claim",
+        execute_base_url="",  # missing
+        token_file=None,       # missing
+    )
+    config = PluginConfig(name="hivemoot-task", settings={}, typed=typed)
     errors = plugin.validate(config)
     assert errors, "trigger-side validation must fire when claim URL is set"
 

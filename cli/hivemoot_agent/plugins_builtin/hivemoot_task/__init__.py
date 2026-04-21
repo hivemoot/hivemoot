@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from typing import Any
+from typing import TYPE_CHECKING
 
 from hivemoot_agent.plugins.interfaces import (
     AgentResult,
@@ -45,44 +45,20 @@ from hivemoot_agent.plugins_builtin.hivemoot_task.system_prompt import (
     build_system_prompt,
 )
 
-
-def _resolve_workspace_root(config: PluginConfig) -> str:
-    """Where transient per-task artifacts (codex sidecar, etc.) live.
-
-    Not a repo concept — just the writable volume the engine mounts.
-    The ``GITHUB_WORKSPACE`` fallback is kept because apiary fleet
-    config still sets it on most services; ``WORKSPACE_ROOT`` is the
-    compose-defined volume mount.
-    """
-    return (
-        config.get("GITHUB_WORKSPACE", "")
-        or config.get("WORKSPACE_ROOT", "/workspace")
-        or "/workspace"
+if TYPE_CHECKING:
+    from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+        HivemootTaskConfig,
     )
 
 
-# Heartbeat cadence: short enough that the backend marks the task as
-# alive between polls, long enough to avoid traffic.  Matches the
-# shell controller's TASK_HEARTBEAT_INTERVAL_SECONDS default of 45s.
-_DEFAULT_HEARTBEAT_INTERVAL_SECS = 45
-
-
-def _safe_int(value: Any, default: int) -> int:
-    """Parse an int from env-derived config, falling back on garbage.
-
-    Operators occasionally pass ``"45s"`` or empty strings; the default
-    keeps the agent running with a sensible cadence rather than crashing
-    inside ``on_job_started`` (which would lose the claim entirely).
-    """
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
+def _cfg_of(config: PluginConfig) -> "HivemootTaskConfig | None":
+    """Return the typed HivemootTaskConfig, or None if not populated."""
+    return config.typed
 
 
 class HivemootTaskPlugin:
     name = "hivemoot-task"
-    version = "0.3.0"
+    version = "0.4.0"
     description = "Hivemoot delegated-task workflow (claim, run, report)"
 
     def __init__(self) -> None:
@@ -95,6 +71,10 @@ class HivemootTaskPlugin:
         # Codex sidecar path is resolved at job-start time and consumed
         # by on_job_finished for result extraction.  Reset per job.
         self._codex_sidecar_path: str = ""
+        # Cached typed config — populated in validate()/setup() so
+        # triggers() can decide whether to register without re-reading
+        # from the global registry.
+        self._cfg: HivemootTaskConfig | None = None
 
     # ── Validation / setup ─────────────────────────────────────────
 
@@ -103,21 +83,33 @@ class HivemootTaskPlugin:
 
         Intentionally narrow: the plugin does not require any sibling
         plugins or repo configuration.  The only hard requirements are
-        the backend wiring in ``AGENT_TASK_*`` — everything else is
-        the task backend's responsibility to route correctly.  A fleet
-        can run a "task-only" agent with ``AGENT_PLUGINS=hivemoot-task``
-        and no repo cloning at all, and the plugin will happily
-        dispatch whatever the backend sends.
+        the backend wiring (claim_url + execute_base_url + token_file)
+        — everything else is the task backend's responsibility to
+        route correctly.  A fleet can run a "task-only" agent with
+        plugins.hivemoot-task: {} (empty mapping) and no repo cloning
+        at all, and the plugin will happily dispatch whatever the
+        backend sends.
         """
+        from hivemoot_agent.plugins_builtin.hivemoot_task.config import (
+            HivemootTaskConfig,
+        )
+
+        cfg: HivemootTaskConfig | None = config.typed
+        if cfg is None:
+            return [
+                "hivemoot-task plugin requires typed config (plugins."
+                "hivemoot-task in hivemoot.yaml).  Env-var configuration "
+                "was removed in 0.4.0."
+            ]
+        self._cfg = cfg
+
         errors: list[str] = []
 
         # Trigger-side validation (claim URL, execute base, auth).
         # Only enforced when the plugin is actually wired up to a
-        # backend — empty config implies "this run is one-shot,
-        # not running the daemon trigger".
-        if config.get("AGENT_TASK_CLAIM_URL") or config.get(
-            "AGENT_TASK_EXECUTE_BASE_URL",
-        ):
+        # backend — empty claim_url implies "no daemon trigger, but
+        # we still ship the system prompt for one-shot dispatch".
+        if cfg.claim_url or cfg.execute_base_url:
             from hivemoot_agent.plugins_builtin.hivemoot_task.trigger import (
                 HivemootTaskTrigger,
             )
@@ -136,14 +128,15 @@ class HivemootTaskPlugin:
         # Only register the trigger when a backend is configured.
         # Without it, the plugin still exposes its workload (system
         # prompt, skills) for one-shot runs but no polling happens.
+        # validate()/setup() have already cached self._cfg under
+        # ADR-003; if neither has run (test harness etc.) bail out
+        # with no triggers rather than crash.
         from hivemoot_agent.plugins_builtin.hivemoot_task.trigger import (
             HivemootTaskTrigger,
         )
 
-        # Read the env directly here (not via config.get) because
-        # triggers() is called from the engine before per-job config
-        # is materialized.
-        if not os.environ.get("AGENT_TASK_CLAIM_URL"):
+        cfg = self._cfg
+        if cfg is None or not cfg.claim_url:
             return []
         return [HivemootTaskTrigger(self)]  # type: ignore[list-item]
 
@@ -173,9 +166,10 @@ class HivemootTaskPlugin:
             )
 
     def _on_job_started_inner(self, job: Job, config: PluginConfig) -> None:
+        cfg = _cfg_of(config)
         task_id = str(job.metadata.get("task_id") or "")
         claim_token = str(job.metadata.get("claim_token") or "")
-        execute_base = config.get("AGENT_TASK_EXECUTE_BASE_URL", "")
+        execute_base = cfg.execute_base_url if cfg else ""
 
         if not task_id or not claim_token or not execute_base:
             # No backend wiring — nothing to heartbeat against.
@@ -183,23 +177,19 @@ class HivemootTaskPlugin:
             return
 
         bearer = api.resolve_executor_token(
-            config.get("HIVEMOOT_AGENT_TOKEN_FILE", ""),
+            str(cfg.token_file) if cfg and cfg.token_file else "",
         )
-        interval = _safe_int(
-            config.get(
-                "AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS",
-                _DEFAULT_HEARTBEAT_INTERVAL_SECS,
-            ),
-            _DEFAULT_HEARTBEAT_INTERVAL_SECS,
-        )
+        interval = cfg.heartbeat_interval_secs if cfg else 45
 
         # Codex writes its final markdown to a sidecar when invoked
         # with --output-last-message; remember the path so
         # on_job_finished can pick it up, AND export it via
         # CODEX_ANSWER_FILE so providers/codex.py wires the flag.
+        # AGENT_PROVIDER is engine-level, not plugin config — read
+        # from settings (env) rather than the typed schema.
         provider = config.get("AGENT_PROVIDER", "claude")
         if provider == "codex":
-            workspace = _resolve_workspace_root(config)
+            workspace = str(cfg.workspace) if cfg else "/workspace"
             self._codex_sidecar_path = os.path.join(
                 workspace, "task-output", task_id, "codex-answer.md",
             )
@@ -279,15 +269,16 @@ class HivemootTaskPlugin:
         if thread is not None:
             thread.join(timeout=5)
 
+        cfg = _cfg_of(config)
         task_id = str(job.metadata.get("task_id") or "")
         claim_token = str(job.metadata.get("claim_token") or "")
-        execute_base = config.get("AGENT_TASK_EXECUTE_BASE_URL", "")
+        execute_base = cfg.execute_base_url if cfg else ""
 
         if not task_id or not claim_token or not execute_base:
             return
 
         bearer = api.resolve_executor_token(
-            config.get("HIVEMOOT_AGENT_TOKEN_FILE", ""),
+            str(cfg.token_file) if cfg and cfg.token_file else "",
         )
 
         provider = config.get("AGENT_PROVIDER", "claude")
@@ -348,14 +339,15 @@ class HivemootTaskPlugin:
         self, job: Job, config: PluginConfig, error_text: str,
     ) -> None:
         """Last-resort failure post when on_job_finished_inner raised."""
+        cfg = _cfg_of(config)
         task_id = str(job.metadata.get("task_id") or "")
         claim_token = str(job.metadata.get("claim_token") or "")
-        execute_base = config.get("AGENT_TASK_EXECUTE_BASE_URL", "")
+        execute_base = cfg.execute_base_url if cfg else ""
         if not task_id or not claim_token or not execute_base:
             return
         try:
             bearer = api.resolve_executor_token(
-                config.get("HIVEMOOT_AGENT_TOKEN_FILE", ""),
+                str(cfg.token_file) if cfg and cfg.token_file else "",
             )
             api.post_fail(
                 execute_base, task_id, bearer, claim_token,
@@ -412,13 +404,15 @@ class HivemootTaskPlugin:
         The engine's run_agent uses ``${WORKSPACE_ROOT}/runs/<run-id>/log``
         by convention; the latest run is what we just finished.  When
         the engine config doesn't expose a path, fall back to scanning
-        the workspace.
+        the workspace.  ``AGENT_LAST_RUN_LOG`` is engine-level state
+        (set per run) so it stays in env, not the plugin's typed schema.
         """
         explicit = config.get("AGENT_LAST_RUN_LOG", "")
         if explicit and os.path.isfile(explicit):
             return explicit
-        # Fall back to the conventional path under the workspace.
-        workspace = _resolve_workspace_root(config)
+        # Fall back to the conventional path under the typed workspace.
+        cfg = _cfg_of(config)
+        workspace = str(cfg.workspace) if cfg else "/workspace"
         candidate = os.path.join(workspace, "runs", "current", "log")
         return candidate if os.path.isfile(candidate) else ""
 
