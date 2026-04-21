@@ -162,7 +162,28 @@ class MessagingTrigger:
         )
 
         while not self._stop_event.is_set():
-            messages = adapter.poll(config, offset, timeout)
+            # Outer try guards against adapter/network failures that
+            # the adapter's own ``strict=False`` path doesn't catch
+            # (e.g. a bug BEFORE its internal try/except, or a future
+            # non-telegram adapter without the same swallow).  Without
+            # this guard an exception propagates up through
+            # Engine._run_trigger into the systemd restart loop with
+            # no clear "messaging is broken" log — silent outage.
+            # Pattern mirrors HivemootTaskTrigger.start's poll guard.
+            try:
+                messages = adapter.poll(config, offset, timeout)
+            except Exception as exc:
+                print(
+                    f"[trigger] poll failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                # Back off for the configured timeout (same cadence as a
+                # successful long-poll) before retrying, so a busted
+                # backend doesn't get hammered.
+                if self._stop_event.wait(timeout):
+                    return
+                continue
+
             if messages:
                 print(
                     f"[trigger] got {len(messages)} update(s)",

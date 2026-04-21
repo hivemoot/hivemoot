@@ -166,5 +166,32 @@ class DualSourceDiscoveryTests(unittest.TestCase):
             self.assertNotIn("should-not-load", reg.all())
 
 
+class RegistryConfigForTests(unittest.TestCase):
+    """config_for() fails closed; config_for_or_none() is the test path.
+
+    Pins the CLAUDE.md fail-closed invariant: a migrated plugin
+    accessing ``config.typed.<field>`` on an unconfigured plugin would
+    AttributeError deep in the plugin.  Better to fail loudly at the
+    registry with a clear "never called configure()" message.
+    """
+
+    def test_config_for_raises_on_unconfigured_plugin(self) -> None:
+        reg = PluginRegistry()
+        with self.assertRaises(KeyError) as ctx:
+            reg.config_for("definitely-not-configured")
+        self.assertIn("configure()", str(ctx.exception))
+
+    def test_config_for_or_none_returns_none_on_unconfigured(self) -> None:
+        reg = PluginRegistry()
+        self.assertIsNone(reg.config_for_or_none("definitely-not-configured"))
+
+    def test_config_for_returns_configured_value(self) -> None:
+        from hivemoot_agent.plugins.interfaces import PluginConfig
+        reg = PluginRegistry()
+        stub = PluginConfig(name="test", settings={"X": "1"})
+        reg.configure("test", stub)
+        self.assertIs(reg.config_for("test"), stub)
+
+
 if __name__ == "__main__":
     unittest.main()

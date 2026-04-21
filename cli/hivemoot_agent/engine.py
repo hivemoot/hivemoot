@@ -56,16 +56,21 @@ def _load_root_system_prompt() -> str:
     that hold regardless of identity or capability composition.  The
     file is bundled with the code so it can't be silently replaced at
     runtime; changes go through image rebuild + review.
+
+    An OSError here means the runtime image is corrupt — the file
+    ships IN the package.  Refuse to run rather than silently start
+    with empty security guardrails (the old behaviour was a
+    direct contradiction of the docstring's own guarantee).
     """
     try:
         return _ROOT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        print(
-            f"[engine] WARN: could not read root system prompt at "
-            f"{_ROOT_SYSTEM_PROMPT_PATH}: {exc}",
-            file=sys.stderr, flush=True,
-        )
-        return ""
+        raise RuntimeError(
+            f"runtime image corrupt: root system prompt at "
+            f"{_ROOT_SYSTEM_PROMPT_PATH} is unreadable ({exc}).  "
+            "Refusing to start — an agent without root guardrails is "
+            "never what the operator intended."
+        ) from exc
 
 
 def _load_identity() -> str:
@@ -219,8 +224,16 @@ class Engine:
                 settings=dict(os.environ),
                 typed=typed,
             )
-            registry.configure(entry.instance_name, config)
 
+            # Validate BEFORE registering.  If a plugin's validate
+            # fails and we've already called registry.configure(), any
+            # downstream plugin's validate (e.g. hivemoot-github
+            # reading registry.config_for("github")) sees a
+            # partially-validated sibling config and may emit a
+            # misleading second error.  Registering only after the
+            # plugin passes its own checks keeps the registry's
+            # contents honest: "configured" means "validated and
+            # ready to use."
             errors = plugin.validate(config)
             if errors:
                 print(
@@ -233,6 +246,7 @@ class Engine:
                 had_error = True
                 continue
 
+            registry.configure(entry.instance_name, config)
             selected[entry.instance_name] = plugin
 
         if had_error:
@@ -277,29 +291,32 @@ class Engine:
         _load_file_secrets()
         enabled = self._resolve_plugins()
 
-        if enabled is None or not enabled:
-            # None   = fatal config error (already logged by _resolve_plugins).
-            # empty  = no config file shipped OR an empty ``plugins:`` section.
-            # Both are treated the same in daemon mode: there's nothing to
-            # trigger, but we keep the container alive so an operator can
-            # attach and debug instead of hitting a crash-loop.
-            if enabled is None:
-                print(
-                    "[engine] fatal config error, no plugins activated. Waiting...",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    "[engine] no plugins configured (missing or empty "
-                    "plugins: section in hivemoot.yaml). Waiting...",
-                    file=sys.stderr,
-                )
-            try:
-                while self._running:
-                    time.sleep(60)
-            except KeyboardInterrupt:
-                pass
-            return 0
+        if enabled is None:
+            # Fatal config error (already logged by _resolve_plugins).
+            # Exit non-zero so systemd / docker --restart see the failure
+            # and the operator isn't fooled by a "healthy" container
+            # idling with no plugins.  The prior sleep-forever behaviour
+            # hid real deploy regressions for as long as the container
+            # ran.
+            print(
+                "[engine] fatal config error, no plugins activated; exiting 1",
+                file=sys.stderr, flush=True,
+            )
+            return 1
+
+        if not enabled:
+            # No config file OR an empty ``plugins:`` section.
+            # Still a misconfiguration in daemon mode (nothing to
+            # trigger), but distinguish it from the fatal case so the
+            # operator log can tell them apart.  Non-zero exit either
+            # way — a daemon container with zero triggers is never
+            # what the operator intended.
+            print(
+                "[engine] no plugins configured (missing or empty "
+                "plugins: section in hivemoot.yaml); exiting 1",
+                file=sys.stderr, flush=True,
+            )
+            return 1
 
         self._plugins = enabled
 

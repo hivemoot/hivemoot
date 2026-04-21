@@ -205,40 +205,52 @@ class PluginRegistry:
         return list(self._configs.keys())
 
     def config_for(self, name: str) -> PluginConfig:
-        """Return the stored config for ``name``, or a minimal default.
+        """Return the stored config for ``name``.
 
-        The default covers two niche cases:
-          * Unit tests that register a plugin without calling configure()
-          * Engine startup during oneshot/run with no plugin config YAML
-            (rare — normally the engine populates these via configure()
-            after ConfigLoader runs)
+        Under ADR-003 every activated plugin MUST have been
+        ``configure()``-d by the engine before any consumer reaches
+        here.  Returning a typed-None fallback silently produces
+        PluginConfigs that crash migrated plugins with cryptic
+        AttributeError on ``config.typed.<field>``; CLAUDE.md's
+        fail-closed-not-open guidance is explicit on this.
 
-        Under ADR-003 the fallback path produces a PluginConfig with
-        ``typed=None``, which will trip any migrated plugin that reads
-        ``config.typed.<field>``.  We log a one-line warning so the
-        failure is visible in the logs rather than surfacing as a
-        cryptic AttributeError deep inside the plugin.
+        Test harnesses that deliberately skip configure() should call
+        ``config_for_or_none`` and assert the None result, or install
+        a stub config via ``configure()``.
         """
         configured = self._configs.get(name)
         if configured is None:
-            print(
-                f"warning: registry.config_for('{name}') called without a "
-                "prior configure() — returning a settings-only PluginConfig "
-                "with typed=None.  Migrated plugins will crash on "
-                "config.typed access.  This path is for test harnesses "
-                "only; production code must go through ConfigLoader.",
-                file=sys.stderr,
+            raise KeyError(
+                f"registry.config_for('{name}') called without a prior "
+                "configure().  Migrated plugins need a typed config; "
+                "this indicates either (a) a plugin ordering bug where "
+                "a consumer runs before ConfigLoader populates the "
+                "target, or (b) a test harness that forgot to call "
+                "configure() / should use config_for_or_none() instead."
             )
-            return PluginConfig(name=name, settings=dict(os.environ))
         return configured
+
+    def config_for_or_none(self, name: str) -> PluginConfig | None:
+        """Like ``config_for`` but returns None when unconfigured.
+
+        For tests that deliberately inspect the unconfigured state
+        (plugin discovery without a YAML, registry lifecycle tests).
+        Production code should always use ``config_for``.
+        """
+        return self._configs.get(name)
 
     def validate(self, name: str) -> list[str]:
         """Validate a plugin's config.  Returns list of errors."""
         plugin = self.get(name)
         if plugin is None:
             return [f"Plugin '{name}' not found"]
-        config = self.config_for(name)
-        return plugin.validate(config)
+        configured = self._configs.get(name)
+        if configured is None:
+            return [
+                f"Plugin '{name}' has no stored config; call configure() "
+                "before validate() (engine does this automatically)."
+            ]
+        return plugin.validate(configured)
 
 
 # Global registry instance.
