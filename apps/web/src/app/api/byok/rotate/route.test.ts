@@ -146,6 +146,21 @@ describe("POST /api/byok/rotate", () => {
     expect(parsed).toHaveProperty("model", "gemini-3-flash-preview");
   });
 
+  it("returns 413 when content-length exceeds 4 KB", async () => {
+    const req = new NextRequest("https://example.com/api/byok/rotate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(4 * 1024 + 1),
+      },
+      body: JSON.stringify({ provider: "anthropic", model: "m", apiKey: "k" }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+    const body = await res.json();
+    expect(body.code).toBe(BYOK_ERROR.PAYLOAD_TOO_LARGE);
+  });
+
   it("uses installationId from session, not request body", async () => {
     const req = makeRequest({
       provider: "anthropic",

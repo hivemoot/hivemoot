@@ -17,6 +17,7 @@ export const BYOK_ERROR = {
   INSTALLATION_MISMATCH: "byok_installation_mismatch",
   INVALID_JSON: "byok_invalid_json",
   MISSING_FIELDS: "byok_missing_fields",
+  PAYLOAD_TOO_LARGE: "byok_payload_too_large",
   NOT_AUTHENTICATED: "byok_not_authenticated",
   NOT_CONFIGURED: "byok_not_configured",
   PROVIDER_INVALID: "byok_provider_invalid",

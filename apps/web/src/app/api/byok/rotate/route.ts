@@ -12,7 +12,10 @@ import { encrypt } from "@/server/crypto";
 import { setByokEnvelope } from "@/server/byok-store";
 import { validateProviderKey } from "@/server/provider-validation";
 import { BYOK_ERROR, byokError } from "@/server/byok-error";
+import { parseContentLength } from "@/server/request-utils";
 import type { ByokEnvelope } from "@/server/byok-store";
+
+const MAX_PAYLOAD_BYTES = 4 * 1024;
 
 interface RotateRequestBody {
   provider: string;
@@ -23,6 +26,11 @@ interface RotateRequestBody {
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
+
+  const contentLength = parseContentLength(request.headers.get("content-length"));
+  if (contentLength !== null && contentLength > MAX_PAYLOAD_BYTES) {
+    return byokError(BYOK_ERROR.PAYLOAD_TOO_LARGE, "Request payload too large", 413);
+  }
 
   let body: RotateRequestBody;
   try {
