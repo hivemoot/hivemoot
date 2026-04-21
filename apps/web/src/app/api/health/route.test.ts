@@ -37,7 +37,7 @@ describe("GET /api/health", () => {
     expect(response.body.timestamp).toBeDefined();
   });
 
-  it("returns 503 with missing vars in production", () => {
+  it("returns 503 with no detail in production when vars are missing", () => {
     env().NODE_ENV = "production";
     delete env().HIVEMOOT_REDIS_REST_URL;
     delete env().HIVEMOOT_REDIS_REST_TOKEN;
@@ -52,17 +52,7 @@ describe("GET /api/health", () => {
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(503);
     expect(response.body.status).toBe("error");
-    expect(response.body.missing).toEqual([
-      "HIVEMOOT_REDIS_REST_URL",
-      "HIVEMOOT_REDIS_REST_TOKEN",
-      "GITHUB_APP_ID",
-      "GITHUB_APP_PRIVATE_KEY",
-      "GITHUB_CLIENT_ID",
-      "GITHUB_CLIENT_SECRET",
-      "BYOK_ACTIVE_KEY_VERSION",
-      "BYOK_MASTER_KEYS",
-      "NEXT_PUBLIC_SITE_URL",
-    ]);
+    expect(response.body.missing).toBeUndefined();
   });
 
   it("returns 200 in production when all vars present", () => {
@@ -81,7 +71,7 @@ describe("GET /api/health", () => {
     const response = GET() as unknown as { body: Record<string, unknown>; status: number };
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("ok");
-    expect(response.body.env).toBe("production");
+    expect(response.body.env).toBeUndefined();
   });
 
 });
