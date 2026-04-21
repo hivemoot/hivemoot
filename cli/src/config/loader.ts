@@ -2,6 +2,7 @@ import yaml from "js-yaml";
 import { gh } from "../github/client.js";
 import type {
   HivemootConfig,
+  LabelMapping,
   TeamConfig,
   RepoRef,
   RoleConfig,
@@ -111,6 +112,88 @@ function resolveFocus(rawTeam: Record<string, unknown>): string | undefined {
   return parseLegacyFocus(rawTeam.focus);
 }
 
+const LABEL_MAPPING_KEYS: Array<keyof LabelMapping> = [
+  "discussion", "voting", "extendedVoting", "readyToImplement", "needsHuman",
+  "implementation", "rejected", "inconclusive", "stale", "implemented", "mergeReady",
+];
+const MAX_LABELS_PER_PHASE = 50;
+const MAX_LABEL_LENGTH = 100;
+
+function parseLabelMapping(rawGovernance: unknown): LabelMapping | undefined {
+  if (!rawGovernance || typeof rawGovernance !== "object" || Array.isArray(rawGovernance)) {
+    return undefined;
+  }
+  const gov = rawGovernance as Record<string, unknown>;
+  if (!Object.hasOwn(gov, "labelMapping")) return undefined;
+
+  const rawMapping = gov.labelMapping;
+  if (rawMapping === null || rawMapping === undefined) return undefined;
+  if (typeof rawMapping !== "object" || Array.isArray(rawMapping)) {
+    throw new CliError(
+      "Config error: governance.labelMapping must be an object",
+      "INVALID_CONFIG",
+      1,
+    );
+  }
+
+  const mapping = rawMapping as Record<string, unknown>;
+  const result: LabelMapping = {};
+  const unknownKeys = Object.keys(mapping).filter(
+    (k) => !LABEL_MAPPING_KEYS.includes(k as keyof LabelMapping),
+  );
+  if (unknownKeys.length > 0) {
+    throw new CliError(
+      `Config error: governance.labelMapping contains unknown key(s): ${unknownKeys.join(", ")}`,
+      "INVALID_CONFIG",
+      1,
+    );
+  }
+
+  for (const key of LABEL_MAPPING_KEYS) {
+    const raw = mapping[key];
+    if (raw === undefined) continue;
+    if (!Array.isArray(raw)) {
+      throw new CliError(
+        `Config error: governance.labelMapping.${key} must be an array of strings`,
+        "INVALID_CONFIG",
+        1,
+      );
+    }
+    if (raw.length > MAX_LABELS_PER_PHASE) {
+      throw new CliError(
+        `Config error: governance.labelMapping.${key} exceeds ${MAX_LABELS_PER_PHASE} entries`,
+        "INVALID_CONFIG",
+        1,
+      );
+    }
+    const labels: string[] = [];
+    for (const [i, entry] of raw.entries()) {
+      if (typeof entry !== "string") {
+        throw new CliError(
+          `Config error: governance.labelMapping.${key}[${i}] must be a string`,
+          "INVALID_CONFIG",
+          1,
+        );
+      }
+      const trimmed = entry.trim().toLowerCase();
+      if (!trimmed) continue;
+      if (trimmed.length > MAX_LABEL_LENGTH) {
+        throw new CliError(
+          `Config error: governance.labelMapping.${key}[${i}] exceeds ${MAX_LABEL_LENGTH} characters`,
+          "INVALID_CONFIG",
+          1,
+        );
+      }
+      labels.push(trimmed);
+    }
+    if (labels.length > 0) {
+      (result as Record<string, string[]>)[key] = labels;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function validateTeamConfig(raw: HivemootConfig): TeamConfig {
   if (!raw.team) {
     throw new CliError(
@@ -208,12 +291,14 @@ function validateTeamConfig(raw: HivemootConfig): TeamConfig {
   }
 
   const focus = resolveFocus(team as unknown as Record<string, unknown>);
+  const labelMapping = parseLabelMapping(raw.governance);
 
   return {
     name: typeof team.name === "string" ? team.name : undefined,
     onboarding: typeof team.onboarding === "string" ? team.onboarding : undefined,
     roles: validatedRoles,
     focus,
+    labelMapping,
   };
 }
 

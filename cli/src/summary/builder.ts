@@ -1,6 +1,7 @@
 import type {
   GitHubIssue,
   GitHubPR,
+  LabelMapping,
   NotificationRef,
   PrioritySignal,
   RepoRef,
@@ -26,7 +27,9 @@ import {
   daysSince,
   hasGovernanceLabel,
   hasGovernanceLabelName,
+  resolveLabelAliases,
 } from "./utils.js";
+import type { ResolvedLabelAliases } from "./utils.js";
 
 interface IssuePipelineCounts {
   discussion: number;
@@ -78,6 +81,7 @@ function classifyIssue(
   issue: GitHubIssue,
   currentUser: string,
   now: Date,
+  aliases: ResolvedLabelAliases,
 ): { bucket: "voteOn" | "discuss" | "implement" | "needsHuman" | "unclassified"; item: SummaryItem } {
   const age = timeAgo(issue.createdAt, now);
   const assigned =
@@ -111,21 +115,21 @@ function classifyIssue(
   }
 
   // Issues needing human attention are excluded from all actionable buckets
-  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN")) {
+  if (hasGovernanceLabel(issue.labels, "NEEDS_HUMAN", aliases)) {
     return {
       bucket: "needsHuman",
       item: { ...base, assigned },
     };
   }
 
-  // Bot governance labels (canonical + legacy aliases)
-  if (hasGovernanceLabel(issue.labels, "VOTING") || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING")) {
+  // Bot governance labels (canonical + legacy aliases + custom mapping)
+  if (hasGovernanceLabel(issue.labels, "VOTING", aliases) || hasGovernanceLabel(issue.labels, "EXTENDED_VOTING", aliases)) {
     return { bucket: "voteOn", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "DISCUSSION")) {
+  if (hasGovernanceLabel(issue.labels, "DISCUSSION", aliases)) {
     return { bucket: "discuss", item: base };
   }
-  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")) {
+  if (hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT", aliases)) {
     return { bucket: "implement", item: { ...base, assigned } };
   }
 
@@ -311,7 +315,9 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  labelMapping?: LabelMapping,
 ): RepoSummary {
+  const aliases = resolveLabelAliases(labelMapping);
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
   const discuss: SummaryItem[] = [];
@@ -323,7 +329,7 @@ export function buildSummary(
   const notes: string[] = [];
 
   for (const issue of issues) {
-    const { bucket, item } = classifyIssue(issue, currentUser, now);
+    const { bucket, item } = classifyIssue(issue, currentUser, now, aliases);
     if (bucket === "needsHuman") needsHuman.push(item);
     else if (bucket === "voteOn") voteOn.push(item);
     else if (bucket === "discuss") discuss.push(item);
@@ -377,7 +383,7 @@ export function buildSummary(
   });
 
   const filteredVoteOn = voteOn.filter((item) => {
-    if (item.author === currentUser && hasGovernanceLabelName(item.tags, "EXTENDED_VOTING")) {
+    if (item.author === currentUser && hasGovernanceLabelName(item.tags, "EXTENDED_VOTING", aliases)) {
       driveDiscussion.push(item);
       return false;
     }
@@ -473,10 +479,10 @@ export function buildSummary(
   });
 
   const hasPhaseLabels = issues.some((issue) =>
-    hasGovernanceLabel(issue.labels, "DISCUSSION") ||
-    hasGovernanceLabel(issue.labels, "VOTING") ||
-    hasGovernanceLabel(issue.labels, "EXTENDED_VOTING") ||
-    hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT")
+    hasGovernanceLabel(issue.labels, "DISCUSSION", aliases) ||
+    hasGovernanceLabel(issue.labels, "VOTING", aliases) ||
+    hasGovernanceLabel(issue.labels, "EXTENDED_VOTING", aliases) ||
+    hasGovernanceLabel(issue.labels, "READY_TO_IMPLEMENT", aliases)
   );
   const issuePipeline: IssuePipelineCounts | undefined = hasPhaseLabels
     ? {

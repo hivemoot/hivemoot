@@ -1,4 +1,19 @@
-import type { GitHubPR } from "../config/types.js";
+import type { GitHubPR, LabelMapping } from "../config/types.js";
+
+export type GovernanceLabelKey =
+  | "DISCUSSION"
+  | "VOTING"
+  | "EXTENDED_VOTING"
+  | "READY_TO_IMPLEMENT"
+  | "NEEDS_HUMAN"
+  | "IMPLEMENTATION"
+  | "REJECTED"
+  | "INCONCLUSIVE"
+  | "STALE"
+  | "IMPLEMENTED"
+  | "MERGE_READY";
+
+export type ResolvedLabelAliases = Record<GovernanceLabelKey, readonly string[]>;
 
 export const GOVERNANCE_LABEL_ALIASES = {
   DISCUSSION: ["hivemoot:discussion", "phase:discussion"],
@@ -12,24 +27,50 @@ export const GOVERNANCE_LABEL_ALIASES = {
   STALE: ["hivemoot:stale", "stale"],
   IMPLEMENTED: ["hivemoot:implemented", "implemented"],
   MERGE_READY: ["hivemoot:merge-ready", "merge-ready"],
-} as const;
+} as const satisfies ResolvedLabelAliases;
 
-export type GovernanceLabelKey = keyof typeof GOVERNANCE_LABEL_ALIASES;
+const LABEL_MAPPING_TO_KEY: Record<keyof LabelMapping, GovernanceLabelKey> = {
+  discussion: "DISCUSSION",
+  voting: "VOTING",
+  extendedVoting: "EXTENDED_VOTING",
+  readyToImplement: "READY_TO_IMPLEMENT",
+  needsHuman: "NEEDS_HUMAN",
+  implementation: "IMPLEMENTATION",
+  rejected: "REJECTED",
+  inconclusive: "INCONCLUSIVE",
+  stale: "STALE",
+  implemented: "IMPLEMENTED",
+  mergeReady: "MERGE_READY",
+};
+
+export function resolveLabelAliases(custom?: LabelMapping): ResolvedLabelAliases {
+  if (!custom) return GOVERNANCE_LABEL_ALIASES;
+
+  const result = {} as ResolvedLabelAliases;
+  for (const [mappingKey, governanceKey] of Object.entries(LABEL_MAPPING_TO_KEY) as Array<[keyof LabelMapping, GovernanceLabelKey]>) {
+    const defaults = GOVERNANCE_LABEL_ALIASES[governanceKey];
+    const overrides = custom[mappingKey];
+    result[governanceKey] = overrides ? [...defaults, ...overrides] : defaults;
+  }
+  return result;
+}
 
 export function hasGovernanceLabel(
   labels: Array<{ name: string }>,
   key: GovernanceLabelKey,
+  aliases: ResolvedLabelAliases = GOVERNANCE_LABEL_ALIASES,
 ): boolean {
-  const aliases = GOVERNANCE_LABEL_ALIASES[key];
-  return labels.some((label) => aliases.some((alias) => alias === label.name.toLowerCase()));
+  const resolved = aliases[key];
+  return labels.some((label) => resolved.some((alias) => alias === label.name.toLowerCase()));
 }
 
 export function hasGovernanceLabelName(
   labelNames: string[],
   key: GovernanceLabelKey,
+  aliases: ResolvedLabelAliases = GOVERNANCE_LABEL_ALIASES,
 ): boolean {
-  const aliases = GOVERNANCE_LABEL_ALIASES[key];
-  return labelNames.some((name) => aliases.some((alias) => alias === name.toLowerCase()));
+  const resolved = aliases[key];
+  return labelNames.some((name) => resolved.some((alias) => alias === name.toLowerCase()));
 }
 
 // ── Comment context ──────────────────────────────────────────────
@@ -66,10 +107,13 @@ export function commentContext(
  * Whether an issue is in a voting phase based on its labels.
  * Matches canonical/legacy voting labels, or the keyword "vote".
  */
-export function isVotingIssue(labels: Array<{ name: string }>): boolean {
+export function isVotingIssue(
+  labels: Array<{ name: string }>,
+  aliases: ResolvedLabelAliases = GOVERNANCE_LABEL_ALIASES,
+): boolean {
   return (
-    hasGovernanceLabel(labels, "VOTING") ||
-    hasGovernanceLabel(labels, "EXTENDED_VOTING") ||
+    hasGovernanceLabel(labels, "VOTING", aliases) ||
+    hasGovernanceLabel(labels, "EXTENDED_VOTING", aliases) ||
     hasLabel(labels, "vote")
   );
 }

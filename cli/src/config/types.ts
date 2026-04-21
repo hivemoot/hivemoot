@@ -9,11 +9,26 @@ export interface FocusBlock {
   objective: string;
 }
 
+export interface LabelMapping {
+  discussion?: string[];
+  voting?: string[];
+  extendedVoting?: string[];
+  readyToImplement?: string[];
+  needsHuman?: string[];
+  implementation?: string[];
+  rejected?: string[];
+  inconclusive?: string[];
+  stale?: string[];
+  implemented?: string[];
+  mergeReady?: string[];
+}
+
 export interface TeamConfig {
   name?: string;
   onboarding?: string;
   roles: Record<string, RoleConfig>;
   focus?: string;
+  labelMapping?: LabelMapping;
 }
 
 export interface HivemootConfig {
