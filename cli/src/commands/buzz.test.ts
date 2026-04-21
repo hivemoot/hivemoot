@@ -14,6 +14,10 @@ vi.mock("../github/issues.js", () => ({
   fetchIssues: vi.fn(),
 }));
 
+vi.mock("../github/goals.js", () => ({
+  fetchGoalIssues: vi.fn(),
+}));
+
 vi.mock("../github/pulls.js", () => ({
   fetchPulls: vi.fn(),
 }));
@@ -61,6 +65,7 @@ vi.mock("../output/json.js", () => ({
 import { loadTeamConfig } from "../config/loader.js";
 import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
 import { fetchIssues } from "../github/issues.js";
+import { fetchGoalIssues } from "../github/goals.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
@@ -77,6 +82,7 @@ const mockedResolveRepo = vi.mocked(resolveRepo);
 const mockedFetchRepoPushAccess = vi.mocked(fetchRepoPushAccess);
 const mockedLoadTeamConfig = vi.mocked(loadTeamConfig);
 const mockedFetchIssues = vi.mocked(fetchIssues);
+const mockedFetchGoalIssues = vi.mocked(fetchGoalIssues);
 const mockedFetchPulls = vi.mocked(fetchPulls);
 const mockedFetchCurrentUser = vi.mocked(fetchCurrentUser);
 const mockedFetchVotes = vi.mocked(fetchVotes);
@@ -126,6 +132,7 @@ beforeEach(() => {
   mockedRunPublishPreflight.mockResolvedValue({ command: "git push --dry-run origin HEAD", ok: true, originUrl: "https://github.com/hivemoot-guard/test.git" });
   mockedLoadTeamConfig.mockResolvedValue(testTeamConfig);
   mockedFetchIssues.mockResolvedValue([]);
+  mockedFetchGoalIssues.mockResolvedValue([]);
   mockedFetchPulls.mockResolvedValue([]);
   mockedFetchCurrentUser.mockResolvedValue("testuser");
   mockedFetchVotes.mockResolvedValue(new Map());
@@ -385,6 +392,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      [],
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
@@ -408,6 +416,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      [],
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
@@ -431,6 +440,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      [],
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
@@ -474,6 +484,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      [],
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain(
@@ -571,6 +582,7 @@ describe("buzzCommand", () => {
       voteMap,
       expect.any(Map),
       undefined,
+      [],
     );
   });
 
@@ -666,6 +678,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       notificationMap,
       undefined,
+      [],
     );
   });
 

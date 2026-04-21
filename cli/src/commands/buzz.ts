@@ -11,6 +11,7 @@ import { loadTeamConfig } from "../config/loader.js";
 import { fetchRepoPushAccess, resolveRepo } from "../github/repo.js";
 import { runPublishPreflight } from "../github/publish.js";
 import { fetchIssues } from "../github/issues.js";
+import { fetchGoalIssues } from "../github/goals.js";
 import { fetchPulls } from "../github/pulls.js";
 import { fetchCurrentUser } from "../github/user.js";
 import { fetchVotes } from "../github/votes.js";
@@ -110,13 +111,14 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
 
   // Fetch summary data in parallel with optional team config loading.
   // Focus is additive and should not delay base status data.
-  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult, publishPreflightResult] = await Promise.allSettled([
+  const [issuesResult, prsResult, userResult, notificationsResult, pushAccessResult, publishPreflightResult, goalIssuesResult] = await Promise.allSettled([
     fetchIssues(repo, fetchLimit),
     fetchPulls(repo, fetchLimit),
     fetchCurrentUser(),
     fetchNotifications(repo),
     fetchRepoPushAccess(repo),
     runPublishPreflight(),
+    fetchGoalIssues(repo),
   ]);
 
   try {
@@ -174,6 +176,8 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     }
   }
 
+  const goalIssues = goalIssuesResult.status === "fulfilled" ? goalIssuesResult.value : undefined;
+
   const summary = buildSummary(
     repo,
     issues,
@@ -183,6 +187,7 @@ export async function buzzCommand(options: BuzzOptions): Promise<void> {
     votes,
     notifications,
     teamConfig?.focus,
+    goalIssues,
   );
   const processedThreadIds = await processedThreadIdsPromise;
   summary.unackedMentions = buildUnackedMentions(notifications, processedThreadIds, new Date());

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSummary } from "./builder.js";
-import type { GitHubIssue, GitHubPR, RepoRef } from "../config/types.js";
+import type { GitHubGoalIssue, GitHubIssue, GitHubPR, RepoRef } from "../config/types.js";
 
 const repo: RepoRef = { owner: "hivemoot", repo: "colony" };
 const now = new Date("2025-06-15T12:00:00Z");
@@ -1311,5 +1311,69 @@ describe("buildSummary()", () => {
     expect(summary.notes).toContain(
       "Issue pipeline and implementation-gap metrics are omitted because no governance phase labels were detected.",
     );
+  });
+});
+
+describe("buildSummary() — Goals", () => {
+  function makeGoalIssue(overrides: Partial<GitHubGoalIssue> = {}): GitHubGoalIssue {
+    return {
+      number: 413,
+      title: "MCP Plugin System",
+      body: "- [x] hivemoot/hivemoot-agent#330 — Plugin infrastructure\n- [ ] hivemoot/apiary#25 — Fleet config support\n",
+      labels: [{ name: "hivemoot:goal" }],
+      assignees: [],
+      author: { login: "hivemoot-builder" },
+      comments: [],
+      createdAt: "2025-06-01T12:00:00Z",
+      updatedAt: "2025-06-10T12:00:00Z",
+      url: "https://github.com/hivemoot/hivemoot/issues/413",
+      ...overrides,
+    };
+  }
+
+  it("returns undefined goals when goalIssues is not provided", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now);
+    expect(summary.goals).toBeUndefined();
+  });
+
+  it("returns empty goals array when goalIssues is empty", () => {
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, []);
+    expect(summary.goals).toEqual([]);
+  });
+
+  it("maps goal issues to GoalItem with correct progress", () => {
+    const goal = makeGoalIssue();
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, [goal]);
+
+    expect(summary.goals).toHaveLength(1);
+    const g = summary.goals![0];
+    expect(g.number).toBe(413);
+    expect(g.title).toBe("MCP Plugin System");
+    expect(g.tasksTotal).toBe(2);
+    expect(g.tasksComplete).toBe(1);
+    expect(g.author).toBe("hivemoot-builder");
+    expect(g.url).toBe("https://github.com/hivemoot/hivemoot/issues/413");
+  });
+
+  it("handles goal with no task items", () => {
+    const goal = makeGoalIssue({ body: "Just a description, no checkboxes." });
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, [goal]);
+
+    expect(summary.goals![0].tasksTotal).toBe(0);
+    expect(summary.goals![0].tasksComplete).toBe(0);
+  });
+
+  it("maps multiple goal issues", () => {
+    const goals = [
+      makeGoalIssue({ number: 413, title: "Goal A", body: "- [x] done\n- [ ] pending\n" }),
+      makeGoalIssue({ number: 414, title: "Goal B", body: "- [x] done\n- [x] done2\n" }),
+    ];
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, goals);
+
+    expect(summary.goals).toHaveLength(2);
+    expect(summary.goals![0].tasksTotal).toBe(2);
+    expect(summary.goals![0].tasksComplete).toBe(1);
+    expect(summary.goals![1].tasksTotal).toBe(2);
+    expect(summary.goals![1].tasksComplete).toBe(2);
   });
 });

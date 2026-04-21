@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { NotificationRef, PublishReadiness, RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
+import type { GoalItem, NotificationRef, PublishReadiness, RepoSummary, RoleConfig, SummaryItem, TeamConfig } from "../config/types.js";
 
 const DIVIDER_WIDTH = 50;
 
@@ -225,6 +225,28 @@ function formatPublishReadinessSection(readiness: PublishReadiness): string {
   return lines.join("\n");
 }
 
+function formatGoalsSection(goals: GoalItem[], limit?: number): string {
+  if (goals.length === 0) return "";
+
+  const displayed = limit ? goals.slice(0, limit) : goals;
+  const header = sectionDivider("GOALS", goals.length);
+  const lines = displayed.map((g) => {
+    const num = chalk.cyan(`#${g.number}`);
+    const progress =
+      g.tasksTotal > 0
+        ? chalk.dim(`${g.tasksComplete}/${g.tasksTotal} tasks`)
+        : chalk.dim("no tasks");
+    const meta = `  by: ${chalk.dim(g.author)} | created: ${chalk.dim(g.age)}`;
+    return `  ${num} ${g.title}  ${progress}\n${meta}`;
+  });
+
+  const parts = [header, ...lines];
+  if (limit && goals.length > limit) {
+    parts.push(chalk.dim(`  ... and ${goals.length - limit} more`));
+  }
+  return parts.join("\n\n");
+}
+
 function formatSummaryBody(summary: RepoSummary, limit?: number): string {
   const u = summary.currentUser;
   const sections: string[] = [];
@@ -235,6 +257,7 @@ function formatSummaryBody(summary: RepoSummary, limit?: number): string {
       formatNotificationsSection("UNACKED MENTIONS", summary.unackedMentions ?? [], limit),
       formatRepositoryHealth(summary),
       formatPrioritySignals(summary),
+      formatGoalsSection(summary.goals ?? [], limit),
       formatSection("NEEDS HUMAN", summary.needsHuman, u, "needsHuman", limit),
       formatSection("DRIVE THE DISCUSSION", summary.driveDiscussion, u, "driveDiscussion", limit),
       formatSection("DRIVE THE IMPLEMENTATION", summary.driveImplementation, u, "driveImplementation", limit),

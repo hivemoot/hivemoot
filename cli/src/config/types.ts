@@ -36,6 +36,20 @@ export interface GitHubIssue {
   url: string;
 }
 
+export interface GitHubGoalIssue extends GitHubIssue {
+  body: string;
+}
+
+export interface GoalItem {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  age: string;
+  tasksTotal: number;
+  tasksComplete: number;
+}
+
 export interface StatusCheck {
   context: string;
   state: string | undefined;
@@ -181,6 +195,7 @@ export interface RepoSummary {
   currentUser: string;
   unackedMentions?: NotificationRef[];
   recentlyClosedByYou?: RecentClosedItem[];
+  goals?: GoalItem[];
   needsHuman: SummaryItem[];
   driveDiscussion: SummaryItem[];
   driveImplementation: SummaryItem[];

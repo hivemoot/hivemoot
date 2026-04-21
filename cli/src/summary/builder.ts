@@ -1,6 +1,8 @@
 import type {
+  GitHubGoalIssue,
   GitHubIssue,
   GitHubPR,
+  GoalItem,
   NotificationRef,
   PrioritySignal,
   RepoRef,
@@ -10,6 +12,7 @@ import type {
 } from "../config/types.js";
 import type { VoteMap } from "../github/votes.js";
 import type { NotificationMap } from "../github/notifications.js";
+import { parseGoalProgress } from "../github/goals.js";
 import {
   hasLabel,
   hasCIFailure,
@@ -302,6 +305,21 @@ function buildPrioritySignals(
     });
 }
 
+function buildGoalItems(goalIssues: GitHubGoalIssue[], now: Date): GoalItem[] {
+  return goalIssues.map((issue) => {
+    const { total, complete } = parseGoalProgress(issue.body);
+    return {
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      author: issue.author?.login ?? "ghost",
+      age: timeAgo(issue.createdAt, now),
+      tasksTotal: total,
+      tasksComplete: complete,
+    };
+  });
+}
+
 export function buildSummary(
   repo: RepoRef,
   issues: GitHubIssue[],
@@ -311,6 +329,7 @@ export function buildSummary(
   votes: VoteMap = new Map(),
   notifications: NotificationMap = new Map(),
   focus?: string,
+  goalIssues?: GitHubGoalIssue[],
 ): RepoSummary {
   const needsHuman: SummaryItem[] = [];
   const voteOn: SummaryItem[] = [];
@@ -493,6 +512,7 @@ export function buildSummary(
     repo,
     currentUser,
     unackedMentions: [],
+    goals: goalIssues ? buildGoalItems(goalIssues, now) : undefined,
     needsHuman,
     driveDiscussion,
     driveImplementation,
