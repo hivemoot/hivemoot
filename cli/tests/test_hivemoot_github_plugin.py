@@ -97,43 +97,30 @@ def test_validate_requires_github_to_be_configured_first():
         registry._configs.update(saved_configs)
 
 
-def test_validate_requires_target_repo_for_multi_repo_config():
+def test_validate_picks_first_repo_when_multiple_configured():
+    """Multi-repo configs no longer require a separate TARGET_REPO —
+    the first entry in GITHUB_REPOS is the canonical primary."""
+    from hivemoot_agent.plugins import registry
+
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
-            "GITHUB_REPOS": "acme/api,acme/web",
-        },
+        settings={"GITHUB_REPOS": "acme/api,acme/web"},
     )
 
-    with patch(
-        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
-        return_value="/usr/bin/hivemoot",
-    ):
-        errors = plugin.validate(config)
-
-    assert any("requires TARGET_REPO" in error for error in errors)
-
-
-def test_validate_rejects_target_repo_outside_github_repos():
-    plugin = HivemootGitHubPlugin()
-    config = PluginConfig(
-        name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "github,hivemoot-github",
-            "GITHUB_REPOS": "acme/api",
-            "TARGET_REPO": "other/repo",
-        },
-    )
-
-    with patch(
-        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
-        return_value="/usr/bin/hivemoot",
-    ):
-        errors = plugin.validate(config)
-
-    assert any("must match one of the repositories" in error for error in errors)
+    saved_configs = dict(registry._configs)
+    registry._configs.clear()
+    try:
+        registry._configs["github"] = PluginConfig(name="github", settings={})
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
+            return_value="/usr/bin/hivemoot",
+        ):
+            errors = plugin.validate(config)
+        assert errors == []
+    finally:
+        registry._configs.clear()
+        registry._configs.update(saved_configs)
 
 
 def test_setup_and_system_prompt_use_role_context():

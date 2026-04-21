@@ -25,39 +25,23 @@ from hivemoot_agent.plugins_builtin.hivemoot_github.system_prompt import build_s
 
 
 def _resolve_target_repo(config: PluginConfig) -> tuple[str, str]:
-    target_repo = (config.get("TARGET_REPO", "") or "").strip()
+    """Pick the active repo for hivemoot-github.
+
+    There's no separate ``TARGET_REPO`` knob — the first entry in
+    ``GITHUB_REPOS`` is the canonical primary.  The github plugin
+    follows the same rule (see github/trigger._resolve_target_repo).
+    """
     repos_raw = config.get("GITHUB_REPOS", "") or ""
     try:
         repos = parse_repos(repos_raw)
     except ValueError as exc:
         return "", str(exc)
-
-    if target_repo:
-        try:
-            parsed_target = parse_repos(target_repo)
-        except ValueError as exc:
-            return "", str(exc)
-        target_repo = parsed_target[0]
-        if repos and target_repo not in repos:
-            return (
-                "",
-                "TARGET_REPO must match one of the repositories in GITHUB_REPOS "
-                "when hivemoot-github is enabled.",
-            )
-        return target_repo, ""
-
-    if len(repos) == 1:
-        return repos[0], ""
     if not repos:
         return (
             "",
             "hivemoot-github requires GITHUB_REPOS from the github plugin.",
         )
-    return (
-        "",
-        "hivemoot-github requires TARGET_REPO when GITHUB_REPOS contains "
-        "multiple repositories.",
-    )
+    return repos[0], ""
 
 
 def _resolve_role_name(config: PluginConfig) -> str:

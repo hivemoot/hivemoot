@@ -139,10 +139,6 @@ class GitHubPlugin:
             errors.append(
                 f"plugins.github.token_file is empty: {cfg.token_file}"
             )
-        if len(cfg.repos) > 1 and not cfg.target_repo:
-            errors.append(
-                "plugins.github.target_repo is required when repos has >1 entry"
-            )
         return errors
 
     def triggers(self) -> list[Trigger]:

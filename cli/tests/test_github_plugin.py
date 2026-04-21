@@ -31,7 +31,6 @@ def _mk_config(
     *,
     repos: list[str] | None = None,
     token_file: Path | None = None,
-    target_repo: str = "",
     workspace: str = "/workspace",
     clone_depth: int = 50,
     watch_mentions: bool = False,
@@ -46,7 +45,6 @@ def _mk_config(
     """
     typed = GitHubConfig(
         repos=repos if repos is not None else [],
-        target_repo=target_repo,
         token_file=token_file,
         workspace=Path(workspace),
         clone_depth=clone_depth,
@@ -195,7 +193,6 @@ def test_system_prompt_before_clone():
         token_file = _mk_token_file(tmp)
         config = _mk_config(
             repos=["acme/api", "acme/web"],
-            target_repo="acme/api",
             token_file=token_file,
             workspace="/workspace",
         )

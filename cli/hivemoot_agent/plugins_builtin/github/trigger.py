@@ -42,9 +42,12 @@ def _cfg_of(config: PluginConfig) -> "GitHubConfig | None":
 
 
 def _resolve_target_repo(cfg: "GitHubConfig") -> str:
-    """Pick the repo to watch (target_repo if set, else repos[0])."""
-    if cfg.target_repo:
-        return cfg.target_repo
+    """Pick the single repo the watch triggers poll.
+
+    There's no separate ``target_repo`` knob — the first entry in
+    ``cfg.repos`` is the canonical primary.  If the operator wants
+    a different watch target, they can reorder the list.
+    """
     if cfg.repos:
         return cfg.repos[0]
     return ""

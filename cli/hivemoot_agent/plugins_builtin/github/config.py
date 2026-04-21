@@ -17,15 +17,10 @@ class GitHubConfig(StrictPluginConfig):
         description=(
             "Repositories to clone / watch, each as ``owner/repo``.  "
             "Empty list = plugin does no repo work (unusual; fleet "
-            "usually configures at least one)."
-        ),
-    )
-    target_repo: str = Field(
-        default="",
-        description=(
-            "When repos: has multiple entries, target_repo picks which "
-            "one is the 'active' repo for single-target plugin logic "
-            "(mention watcher, etc.).  Required if repos has >1 entry."
+            "usually configures at least one).  When single-target "
+            "plugin logic needs to pick one (e.g. the watch trigger "
+            "polls a single repo) it uses ``repos[0]`` — the first "
+            "entry IS the canonical 'primary'."
         ),
     )
     token_file: Path | None = Field(
