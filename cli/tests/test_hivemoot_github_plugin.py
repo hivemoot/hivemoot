@@ -53,23 +53,48 @@ def test_load_role_prompt_block_parses_cli_json():
     assert "Your role on this project is: worker" in result
 
 
-def test_validate_requires_github_before_plugin():
+def test_validate_requires_github_to_be_configured_first():
+    """Under ADR-003 the registry's configured_names() — populated as
+    the engine iterates YAML plugins in order — is the source of truth
+    for ordering.  hivemoot-github passes only when ``github`` is
+    already in that list."""
+    from hivemoot_agent.plugins import registry
+
     plugin = HivemootGitHubPlugin()
     config = PluginConfig(
         name="hivemoot-github",
-        settings={
-            "AGENT_PLUGINS": "hivemoot-github,github",
-            "GITHUB_REPOS": "acme/api",
-        },
+        settings={"GITHUB_REPOS": "acme/api"},
     )
 
-    with patch(
-        "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
-        return_value="/usr/bin/hivemoot",
-    ):
-        errors = plugin.validate(config)
+    # Snapshot + clear the registry so this test is hermetic.
+    saved_configs = dict(registry._configs)
+    registry._configs.clear()
+    try:
+        # Case 1: github not yet configured → fail.
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
+            return_value="/usr/bin/hivemoot",
+        ):
+            errors = plugin.validate(config)
+        assert any(
+            "github plugin to be activated AND listed BEFORE" in error
+            for error in errors
+        )
 
-    assert any("github before hivemoot-github" in error for error in errors)
+        # Case 2: github configured before us → pass that ordering check.
+        registry._configs["github"] = PluginConfig(name="github", settings={})
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot_github.shutil.which",
+            return_value="/usr/bin/hivemoot",
+        ):
+            errors = plugin.validate(config)
+        assert not any(
+            "github plugin to be activated AND listed BEFORE" in error
+            for error in errors
+        )
+    finally:
+        registry._configs.clear()
+        registry._configs.update(saved_configs)
 
 
 def test_validate_requires_target_repo_for_multi_repo_config():

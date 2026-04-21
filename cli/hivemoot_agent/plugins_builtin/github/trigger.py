@@ -22,66 +22,62 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from hivemoot_agent.plugins.interfaces import Job, JobDispatcher, PluginConfig
 from hivemoot_agent.plugins_builtin.github import prompts, watcher
 
+if TYPE_CHECKING:
+    from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 
-_DEFAULT_POLL_INTERVAL_SECS = 300
 
+def _cfg_of(config: PluginConfig) -> "GitHubConfig | None":
+    """Return the typed GitHubConfig, or None if the engine didn't populate it.
 
-def _resolve_target_repo(config: PluginConfig) -> str:
-    """Pick the repo to watch.
-
-    The shell trigger used ``$target_repo`` (a single value).  Plugins
-    operate on potentially-many repos via ``GITHUB_REPOS``; ``TARGET_REPO``
-    if set wins, otherwise the first entry of ``GITHUB_REPOS``.  Watching
-    multiple repos at once is out of scope here — fleet config gives
-    each agent one primary repo and a separate container per repo.
+    Kept in one place so a future per-trigger override (e.g. passing the
+    config explicitly) only needs updating here.
     """
-    target = (config.get("TARGET_REPO", "") or "").strip()
-    if target:
-        return target
-    repos_raw = (config.get("GITHUB_REPOS", "") or "").strip()
-    if not repos_raw:
-        return ""
-    first = repos_raw.split(",")[0].strip()
-    return first
+    return config.typed
 
 
-def _resolve_state_dir(config: PluginConfig) -> str:
+def _resolve_target_repo(cfg: "GitHubConfig") -> str:
+    """Pick the repo to watch (target_repo if set, else repos[0])."""
+    if cfg.target_repo:
+        return cfg.target_repo
+    if cfg.repos:
+        return cfg.repos[0]
+    return ""
+
+
+def _resolve_state_dir(cfg: "GitHubConfig") -> str:
     """Where to keep ``hivemoot watch`` state files.
 
     Default to the agent's persistent memory volume so state survives
     container restarts; otherwise the next start would re-fire every
     notification on the GitHub side that hasn't aged out.
     """
-    explicit = (config.get("GITHUB_WATCH_STATE_DIR", "") or "").strip()
-    if explicit:
-        return explicit
+    if cfg.watch_state_dir is not None:
+        return str(cfg.watch_state_dir)
     memory_dir = (
-        config.get("AGENT_MEMORY_DIR", "")
-        or os.environ.get("AGENT_MEMORY_DIR", "")
-        or "/home/node/.hivemoot/memory"
+        str(cfg.agent_memory_dir)
+        if cfg.agent_memory_dir is not None
+        else (
+            os.environ.get("AGENT_MEMORY_DIR", "")
+            or "/home/node/.hivemoot/memory"
+        )
     )
     return os.path.join(memory_dir, ".github-watch")
 
 
-def _resolve_gh_token(config: PluginConfig) -> str:
-    return (
-        config.get("GITHUB_TOKEN", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-        or os.environ.get("GH_TOKEN", "")
-        or ""
-    )
-
-
-def _safe_int(value: Any, default: int) -> int:
+def _resolve_gh_token(cfg: "GitHubConfig") -> str:
+    """Read the token from cfg.token_file (empty string on any failure)."""
+    if cfg.token_file is None:
+        return ""
     try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
+        return Path(cfg.token_file).read_text().strip()
+    except OSError:
+        return ""
 
 
 class _GitHubWatchTrigger:
@@ -113,21 +109,35 @@ class _GitHubWatchTrigger:
     # Shared lifecycle.
 
     def validate(self, config: PluginConfig) -> list[str]:
+        cfg = _cfg_of(config)
+        if cfg is None:
+            return [
+                f"{self.name} requires typed github config "
+                "(plugins.github in hivemoot.yaml)"
+            ]
         errors: list[str] = []
-        if not _resolve_target_repo(config):
+        if not _resolve_target_repo(cfg):
             errors.append(
-                f"{self.name} requires TARGET_REPO or GITHUB_REPOS to "
-                "select a repo to watch"
+                f"{self.name} requires plugins.github.target_repo or "
+                "plugins.github.repos to select a repo to watch"
             )
-        if not _resolve_gh_token(config):
+        if not _resolve_gh_token(cfg):
             errors.append(
-                f"{self.name} requires GITHUB_TOKEN for GitHub API auth"
+                f"{self.name} requires plugins.github.token_file "
+                "for GitHub API auth"
             )
         return errors
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
-        repo = _resolve_target_repo(config)
-        gh_token = _resolve_gh_token(config)
+        cfg = _cfg_of(config)
+        if cfg is None:
+            print(
+                f"[{self.name}] disabled: no typed github config",
+                file=sys.stderr, flush=True,
+            )
+            return
+        repo = _resolve_target_repo(cfg)
+        gh_token = _resolve_gh_token(cfg)
         if not repo or not gh_token:
             print(
                 f"[{self.name}] disabled: missing repo or token",
@@ -135,7 +145,7 @@ class _GitHubWatchTrigger:
             )
             return
 
-        state_dir = _resolve_state_dir(config)
+        state_dir = _resolve_state_dir(cfg)
         try:
             os.makedirs(state_dir, exist_ok=True)
         except OSError as exc:
@@ -146,13 +156,7 @@ class _GitHubWatchTrigger:
             return
         state_file = os.path.join(state_dir, self.state_file_basename)
 
-        poll_interval = max(
-            1,
-            _safe_int(
-                config.get("GITHUB_WATCH_POLL_INTERVAL", ""),
-                _DEFAULT_POLL_INTERVAL_SECS,
-            ),
-        )
+        poll_interval = max(1, cfg.watch_poll_interval_secs)
 
         self._stop_event.clear()
         print(

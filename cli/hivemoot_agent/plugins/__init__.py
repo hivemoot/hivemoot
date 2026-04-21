@@ -9,6 +9,7 @@ import sys
 import uuid
 from pathlib import Path
 
+from hivemoot_agent.config.manifest import ManifestError, PluginManifest
 from hivemoot_agent.plugins.interfaces import Plugin, PluginConfig
 
 # Fixed external mount point for deployer-supplied custom plugins.
@@ -28,6 +29,7 @@ class PluginRegistry:
         self._plugins: dict[str, Plugin] = {}
         self._configs: dict[str, PluginConfig] = {}
         self._sources: dict[str, str] = {}
+        self._manifests: dict[str, PluginManifest] = {}
 
     def discover(
         self,
@@ -122,8 +124,7 @@ class PluginRegistry:
                     file=sys.stderr,
                 )
 
-    @staticmethod
-    def _instantiate(mod: object, entry: Path) -> Plugin | None:
+    def _instantiate(self, mod: object, entry: Path) -> Plugin | None:
         plugin_factory = getattr(mod, "create_plugin", None)
         if plugin_factory is None:
             return None
@@ -132,16 +133,42 @@ class PluginRegistry:
             setattr(plugin, "__hivemoot_plugin_root__", str(entry))
         except Exception:
             pass
+        # Load plugin.yaml manifest if present.  Under ADR-003 plugins
+        # SHOULD ship a manifest, but during the incremental migration
+        # we tolerate missing manifests — such plugins fall back to the
+        # legacy env-var-based config path.  The engine's _resolve_plugins
+        # does the same dual-path handling.
+        if (entry / "plugin.yaml").is_file():
+            try:
+                manifest = PluginManifest.from_path(entry, plugin_module=mod)
+                self._manifests[plugin.name] = manifest
+            except ManifestError as exc:
+                print(
+                    f"warning: plugin '{plugin.name}' has a malformed manifest "
+                    f"and will fall back to legacy env-var config: {exc}",
+                    file=sys.stderr,
+                )
         return plugin
 
     def source_of(self, name: str) -> str:
         """Return 'builtin' or 'external' for a registered plugin name."""
         return self._sources.get(name, "")
 
-    def register(self, plugin: Plugin, source: str = "builtin") -> None:
-        """Manually register a plugin instance."""
+    def manifest_for(self, name: str) -> PluginManifest | None:
+        """Return the parsed plugin.yaml manifest for ``name``, or None."""
+        return self._manifests.get(name)
+
+    def register(
+        self,
+        plugin: Plugin,
+        source: str = "builtin",
+        manifest: PluginManifest | None = None,
+    ) -> None:
+        """Manually register a plugin instance (used by tests)."""
         self._plugins[plugin.name] = plugin
         self._sources[plugin.name] = source
+        if manifest is not None:
+            self._manifests[plugin.name] = manifest
 
     def get(self, name: str) -> Plugin | None:
         return self._plugins.get(name)
@@ -150,21 +177,60 @@ class PluginRegistry:
         return dict(self._plugins)
 
     def configure(self, name: str, config: PluginConfig) -> None:
+        """Store a fully-resolved PluginConfig for later retrieval.
+
+        Under ADR-003 the engine builds PluginConfig objects from the
+        loaded hivemoot.yaml (with typed= populated from the Pydantic
+        validated instance) and parks them here for each plugin to
+        read during setup / system_prompt / trigger.
+        """
         self._configs[name] = config
 
+    def configured_names(self) -> list[str]:
+        """Return the names of plugins that have been ``configure()``-d so far,
+        in insertion order.
+
+        Used by plugins whose validation depends on activation/setup
+        order (e.g. ``hivemoot-github`` needs ``github`` configured
+        before it so its repos are cloned by the time setup runs).
+        The engine calls ``configure()`` then ``validate()`` for each
+        YAML entry in order, so when a later plugin's validate runs it
+        can ask "was my dependency configured before me?" via this
+        method.
+
+        Replaces the pre-ADR-003 pattern of reading ``AGENT_PLUGINS``
+        env var to learn the activation list — under ADR-003 the YAML
+        order IS the activation order, full stop.
+        """
+        return list(self._configs.keys())
+
     def config_for(self, name: str) -> PluginConfig:
-        env_settings = dict(os.environ)
+        """Return the stored config for ``name``, or a minimal default.
+
+        The default covers two niche cases:
+          * Unit tests that register a plugin without calling configure()
+          * Engine startup during oneshot/run with no plugin config YAML
+            (rare — normally the engine populates these via configure()
+            after ConfigLoader runs)
+
+        Under ADR-003 the fallback path produces a PluginConfig with
+        ``typed=None``, which will trip any migrated plugin that reads
+        ``config.typed.<field>``.  We log a one-line warning so the
+        failure is visible in the logs rather than surfacing as a
+        cryptic AttributeError deep inside the plugin.
+        """
         configured = self._configs.get(name)
         if configured is None:
-            return PluginConfig(name=name, settings=env_settings)
-
-        merged_settings = dict(env_settings)
-        merged_settings.update(configured.settings)
-        return PluginConfig(
-            name=configured.name,
-            enabled=configured.enabled,
-            settings=merged_settings,
-        )
+            print(
+                f"warning: registry.config_for('{name}') called without a "
+                "prior configure() — returning a settings-only PluginConfig "
+                "with typed=None.  Migrated plugins will crash on "
+                "config.typed access.  This path is for test harnesses "
+                "only; production code must go through ConfigLoader.",
+                file=sys.stderr,
+            )
+            return PluginConfig(name=name, settings=dict(os.environ))
+        return configured
 
     def validate(self, name: str) -> list[str]:
         """Validate a plugin's config.  Returns list of errors."""

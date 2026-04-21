@@ -25,11 +25,26 @@ from typing import Any
 
 from hivemoot_agent.plugins.interfaces import Job, JobDispatcher, PluginConfig
 from hivemoot_agent.plugins_builtin.cron import expression as _expression_mod
-from hivemoot_agent.plugins_builtin.cron.schedule import (
-    Schedule,
-    ScheduleConfigError,
-    parse_schedules,
-)
+from hivemoot_agent.plugins_builtin.cron.config import CronConfig, ScheduleEntry
+from hivemoot_agent.plugins_builtin.cron.expression import parse_expression
+from hivemoot_agent.plugins_builtin.cron.schedule import Schedule
+
+
+def _entry_to_schedule(entry: ScheduleEntry) -> Schedule:
+    """Convert a Pydantic ScheduleEntry to the runtime Schedule dataclass.
+
+    Re-parses the expression — Pydantic already validated it during
+    config load, so the parse is guaranteed to succeed.  We re-parse
+    rather than storing the parsed Expression on ScheduleEntry to
+    keep the Pydantic model JSON-serializable for schema export.
+    """
+    return Schedule(
+        name=entry.name,
+        expression=parse_expression(entry.schedule),
+        prompt=entry.prompt,
+        jitter_secs=entry.jitter_secs,
+        resume=entry.resume,
+    )
 
 
 def _compute_next_fire(schedule: Schedule, input_time: datetime) -> datetime:
@@ -66,21 +81,13 @@ class CronTrigger:
         self._stop_event = threading.Event()
 
     def validate(self, config: PluginConfig) -> list[str]:
-        raw = config.get("CRON_SCHEDULES_JSON", "") or ""
-        try:
-            parse_schedules(raw)
-        except ScheduleConfigError as exc:
-            return [str(exc)]
+        # Pydantic (CronConfig) validates grammar + reachability at
+        # load time; nothing to add here.
         return []
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
-        try:
-            schedules = parse_schedules(
-                config.get("CRON_SCHEDULES_JSON", "") or ""
-            )
-        except ScheduleConfigError as exc:
-            print(f"[cron] config error: {exc}", file=sys.stderr, flush=True)
-            return
+        cfg: CronConfig = config.typed
+        schedules = [_entry_to_schedule(e) for e in cfg.schedules]
 
         if not schedules:
             print(

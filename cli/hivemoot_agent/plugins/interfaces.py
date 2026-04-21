@@ -19,11 +19,24 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass
 class PluginConfig:
-    """Resolved configuration for a plugin instance."""
+    """Resolved configuration for a plugin instance.
+
+    Under ADR-003 the primary access path is ``.typed`` — a validated
+    Pydantic model instance matching the plugin's schema_class.
+    Plugins read their fields directly off that object.
+
+    The legacy ``.settings`` dict + ``.get()`` / ``.require()`` helpers
+    are kept for the narrow set of values the engine carries outside
+    the YAML config (``AGENT_ID``, ``AGENT_PROVIDER``, plus anything
+    that arrives purely via env).  Plugins should NOT read their own
+    config values from ``.settings`` — the engine only populates it
+    for cross-cutting context.
+    """
 
     name: str
     enabled: bool = True
     settings: dict[str, Any] = field(default_factory=dict)
+    typed: Any = None  # Pydantic model; None when plugin has no schema
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.settings.get(key, default)

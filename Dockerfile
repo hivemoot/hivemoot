@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   openssh-client \
   procps \
   python3 \
+  python3-pip \
   ripgrep \
   tini \
   && rm -rf /var/lib/apt/lists/*
@@ -46,6 +47,25 @@ ENV HOME=/home/node
 ENV PATH=/home/node/.local/bin:/usr/local/share/npm-global/bin:${PATH}
 
 USER node
+
+# Python config layer — Pydantic for typed plugin config + PyYAML for
+# parsing the unified hivemoot.yaml / hivemoot.secrets.yaml format.
+# Pinned to Pydantic v2 (the Debian-packaged v1 is too old; see
+# docs/adr/003-plugin-config.md for the design rationale).  Installs
+# into /home/node/.local/ which is already on PATH (line 46).
+#
+# Both flags are required on Debian 12: ``--user`` writes into
+# /home/node/.local/ (the only path the runtime user can write), but
+# PEP 668 still rejects it because the system Python is marked
+# externally-managed.  ``--break-system-packages`` opts out of the
+# check.  We're not touching the system site-packages; this is a
+# single-purpose container and the install lands in the user prefix
+# regardless.
+ARG PYDANTIC_VERSION="2.11.*"
+ARG PYYAML_VERSION="6.0.*"
+RUN pip3 install --user --break-system-packages --no-cache-dir \
+  "pydantic==${PYDANTIC_VERSION}" \
+  "PyYAML==${PYYAML_VERSION}"
 
 # Install hivemoot CLI in the base stage — needed in every provider variant.
 RUN npm install -g "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \

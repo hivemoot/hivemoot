@@ -72,13 +72,58 @@ def _load_context() -> dict:
 
 
 def _config_from_env() -> PluginConfig:
-    """Build a PluginConfig from the current process env.
+    """Build a PluginConfig the adapter can use from the CLI process.
 
-    The platform adapter reads token / endpoint settings from this; we
-    can't import the live registry instance here because the CLI runs
-    in its own subprocess separate from the engine.
+    The CLI runs in its own subprocess separate from the engine, so
+    we can't reach the live registry.  We load hivemoot.yaml the same
+    way the engine does (via ConfigLoader) and pull the messaging
+    plugin's validated typed config.  If the config file is missing,
+    malformed, or has no ``messaging:`` section we fail loudly — the
+    adapter requires ``typed.bot_token_file`` under ADR-003 and
+    returning a settings-only PluginConfig just pushes the failure
+    deeper (every Telegram call then fails with an empty token).
     """
-    return PluginConfig(name="messaging", settings=dict(os.environ))
+    from hivemoot_agent.config import ConfigLoader, ConfigLoadError
+    from hivemoot_agent.plugins_builtin.messaging.config import MessagingConfig
+
+    try:
+        loaded = ConfigLoader().load()
+    except ConfigLoadError as exc:
+        _err({
+            "error": "config_load_failed",
+            "message": (
+                "Could not load hivemoot.yaml to resolve the Telegram token.  "
+                f"{exc}"
+            ),
+        })
+        return PluginConfig(name="messaging")  # unreachable, _err exits
+
+    for entry in loaded.plugins:
+        if entry.type_name == "messaging":
+            try:
+                typed = MessagingConfig(**entry.raw_config)
+            except Exception as exc:
+                _err({
+                    "error": "config_invalid",
+                    "message": (
+                        f"messaging plugin config in hivemoot.yaml is invalid: {exc}"
+                    ),
+                })
+                return PluginConfig(name="messaging")  # unreachable
+            return PluginConfig(
+                name="messaging",
+                settings=dict(os.environ),
+                typed=typed,
+            )
+
+    _err({
+        "error": "no_messaging_config",
+        "message": (
+            "hivemoot.yaml has no `plugins.messaging:` section; cannot "
+            "resolve the bot token for send-file."
+        ),
+    })
+    return PluginConfig(name="messaging")  # unreachable, _err exits
 
 
 def _send_file(args: argparse.Namespace) -> None:

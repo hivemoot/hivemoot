@@ -75,26 +75,24 @@ def _api(token: str, method: str, data: dict[str, Any] | None = None) -> dict:
 
 
 def _resolve_token(config: PluginConfig) -> str:
-    """Resolve bot token from config or env."""
-    token = config.get("TELEGRAM_BOT_TOKEN", "")
-    if token:
-        return token
+    """Read the Telegram bot token file named by MessagingConfig.bot_token_file.
 
-    token_file = config.get("TELEGRAM_BOT_TOKEN_FILE", "")
-    if token_file and os.path.isfile(token_file):
-        with open(token_file) as f:
-            return f.read().strip()
+    Under ADR-003 the deployer writes::
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if token:
-        return token
+        plugins:
+          messaging:
+            bot_token_file: !secret telegram_bot_token
 
-    token_file = os.environ.get("TELEGRAM_BOT_TOKEN_FILE", "")
-    if token_file and os.path.isfile(token_file):
-        with open(token_file) as f:
-            return f.read().strip()
-
-    return ""
+    and the config loader resolves the secret ref into an absolute
+    file path before we get here.  We only need to read the file.
+    """
+    from hivemoot_agent.plugins_builtin.messaging.config import MessagingConfig
+    cfg: MessagingConfig = config.typed
+    if cfg is None or cfg.bot_token_file is None:
+        return ""
+    if not cfg.bot_token_file.is_file():
+        return ""
+    return cfg.bot_token_file.read_text().strip()
 
 
 def _api_multipart(
@@ -269,7 +267,9 @@ class TelegramAdapter:
         token = _resolve_token(config)
         if not token:
             errors.append(
-                "TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN_FILE is required"
+                "plugins.messaging.bot_token_file is required and must "
+                "point at a readable file containing the Telegram bot token "
+                "(typically `!secret telegram_bot_token`)"
             )
             return errors
         try:

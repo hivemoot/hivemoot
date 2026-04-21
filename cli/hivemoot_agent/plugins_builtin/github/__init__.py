@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hivemoot_agent.plugins.interfaces import (
     AgentResult,
@@ -19,7 +20,6 @@ from hivemoot_agent.plugins_builtin.github.repo_manager import (
     RepoInfo,
     clone_or_sync,
     configure_git_user,
-    parse_repos,
     repo_checkout_path,
     resolve_github_user,
 )
@@ -28,6 +28,9 @@ from hivemoot_agent.plugins_builtin.github.trigger import (
     GitHubMentionsTrigger,
     GitHubReviewRequestsTrigger,
 )
+
+if TYPE_CHECKING:
+    from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 
 
 def _configure_git_auth() -> None:
@@ -78,32 +81,24 @@ def _validate_repo_access(repo: str, token: str) -> None:
     raise RuntimeError(f"Failed to validate access for {repo}: {detail}")
 
 
-def _resolve_workspace_root(config: PluginConfig) -> str:
-    """Honor WORKSPACE_ROOT when GITHUB_WORKSPACE is unset or empty."""
-    return (
-        config.get("GITHUB_WORKSPACE", "")
-        or config.get("WORKSPACE_ROOT", "/workspace")
-        or "/workspace"
-    )
+def _read_token(cfg: "GitHubConfig") -> str:
+    """Read the GitHub token from the configured token_file, or ''.
 
-
-def _bool_env(value: str) -> bool:
-    """Same truthy semantics the shell triggers used for ``WATCH_*=1``."""
-    return value.strip() in {"1", "true", "TRUE", "True", "yes", "on"}
-
-
-def _resolve_gh_token_for_ack(config: PluginConfig) -> str:
-    return (
-        config.get("GITHUB_TOKEN", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-        or os.environ.get("GH_TOKEN", "")
-        or ""
-    )
+    Returns empty string if no token_file is set or the file isn't
+    readable — validate() reports the error upstream.  Kept as a tiny
+    helper so setup/trigger/ack all resolve the token the same way.
+    """
+    if cfg.token_file is None:
+        return ""
+    try:
+        return Path(cfg.token_file).read_text().strip()
+    except OSError:
+        return ""
 
 
 class GitHubPlugin:
     name = "github"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "GitHub repository management and development"
 
     def __init__(self) -> None:
@@ -111,64 +106,82 @@ class GitHubPlugin:
         self._git_name: str = ""
         self._git_email: str = ""
         self._setup_attempted = False
+        # Cached typed config — captured in validate() / setup() so
+        # triggers() (which has no config parameter in the Plugin
+        # protocol) can read cfg.watch_* flags without reaching into
+        # the global registry.
+        self._cfg: GitHubConfig | None = None
 
     def validate(self, config: PluginConfig) -> list[str]:
+        from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
+
+        cfg: GitHubConfig | None = config.typed
+        if cfg is None:
+            return [
+                "github plugin requires typed config (plugins.github in "
+                "hivemoot.yaml).  Env-var configuration was removed in 0.2.0."
+            ]
+        self._cfg = cfg
+
         errors: list[str] = []
-
-        # Token — either inline or via file.
-        token = config.get("GITHUB_TOKEN", "")
-        if not token:
+        if not cfg.repos:
+            errors.append("plugins.github.repos is required (list of owner/repo)")
+        if cfg.token_file is None:
             errors.append(
-                "GITHUB_TOKEN is required "
-                "(or GITHUB_TOKEN_FILE for file-based secrets)"
+                "plugins.github.token_file is required "
+                "(typically `!secret github_token`)"
             )
-
-        # Repos list.
-        repos_raw = config.get("GITHUB_REPOS", "")
-        if not repos_raw:
+        elif not Path(cfg.token_file).is_file():
             errors.append(
-                "GITHUB_REPOS is required "
-                "(comma-separated owner/repo list)"
+                f"plugins.github.token_file does not exist: {cfg.token_file}"
             )
-        else:
-            try:
-                repos = parse_repos(repos_raw)
-                if not repos:
-                    errors.append("GITHUB_REPOS is empty")
-            except ValueError as exc:
-                errors.append(str(exc))
-
+        elif not _read_token(cfg):
+            errors.append(
+                f"plugins.github.token_file is empty: {cfg.token_file}"
+            )
+        if len(cfg.repos) > 1 and not cfg.target_repo:
+            errors.append(
+                "plugins.github.target_repo is required when repos has >1 entry"
+            )
         return errors
 
     def triggers(self) -> list[Trigger]:
-        # Env-gated so a fleet that only wants oneshot/dispatch behaviour
-        # can omit the watchers.  Defaults are off to preserve the
-        # opt-in semantics the shell controller had with WATCH_*=0.
-        config_env = dict(os.environ)
+        """Return watcher triggers per cfg.watch_* flags.
+
+        validate()/setup() have already stashed ``self._cfg``; we only
+        create trigger instances the operator actually enabled, so the
+        engine never starts a thread that immediately no-ops.
+        """
+        cfg = self._cfg
         instances: list[Trigger] = []
-        if _bool_env(config_env.get("GITHUB_WATCH_MENTIONS", "0")):
+        if cfg is None:
+            return instances
+        if cfg.watch_mentions:
             instances.append(GitHubMentionsTrigger(self))
-        if _bool_env(config_env.get("GITHUB_WATCH_REVIEW_REQUESTS", "0")):
+        if cfg.watch_review_requests:
             instances.append(GitHubReviewRequestsTrigger(self))
         return instances
 
     def setup(self, config: PluginConfig) -> None:
         """Clone all configured repos and authenticate gh CLI."""
-        self._setup_attempted = True
-        token = config.get("GITHUB_TOKEN", "")
-        repos_raw = config.get("GITHUB_REPOS", "")
-        workspace = _resolve_workspace_root(config)
-        clone_depth = int(config.get("GITHUB_CLONE_DEPTH", "50"))
+        from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 
-        try:
-            repo_names = parse_repos(repos_raw)
-        except ValueError as exc:
-            print(f"[github] invalid repos config: {exc}", file=sys.stderr)
-            return
+        self._setup_attempted = True
+        cfg: GitHubConfig | None = config.typed
+        if cfg is None:
+            raise RuntimeError(
+                "github plugin setup called without typed config"
+            )
+        self._cfg = cfg
+
+        token = _read_token(cfg)
+        workspace = str(cfg.workspace)
+        clone_depth = cfg.clone_depth
+        repo_names = list(cfg.repos)
 
         # Resolve git user from token for commit authorship.
-        git_name = config.get("GITHUB_GIT_NAME", "")
-        git_email = config.get("GITHUB_GIT_EMAIL", "")
+        git_name = cfg.git_name
+        git_email = cfg.git_email
         if not git_name:
             login, email = resolve_github_user(token)
             if login:
@@ -219,28 +232,27 @@ class GitHubPlugin:
             raise RuntimeError("; ".join(failures))
 
     def system_prompt(self, config: PluginConfig) -> str:
-        clone_depth = int(config.get("GITHUB_CLONE_DEPTH", "50"))
+        from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
+
+        cfg: GitHubConfig | None = config.typed or self._cfg
+        clone_depth = cfg.clone_depth if cfg else 50
         if self._repos or self._setup_attempted:
             return build_system_prompt(
                 self._repos, clone_depth,
                 git_user=self._git_name,
             )
 
-        # Fallback: setup() hasn't run yet. Build from config.
-        repos_raw = config.get("GITHUB_REPOS", "")
-        workspace = _resolve_workspace_root(config)
-        try:
-            repo_names = parse_repos(repos_raw)
-        except ValueError:
-            repo_names = []
-
+        # Fallback: setup() hasn't run yet.  Build from config.
+        if cfg is None:
+            return build_system_prompt([], clone_depth)
+        workspace = str(cfg.workspace)
         placeholder_repos = [
             RepoInfo(
                 repo=r,
                 path=repo_checkout_path(workspace, r),
                 default_branch="main",
             )
-            for r in repo_names
+            for r in cfg.repos
         ]
         return build_system_prompt(placeholder_repos, clone_depth)
 
@@ -270,7 +282,7 @@ class GitHubPlugin:
 
         ack_key = str(watch_meta.get("ack_key") or "")
         state_file = str(watch_meta.get("state_file") or "")
-        gh_token = _resolve_gh_token_for_ack(config)
+        gh_token = _read_token(config.typed) if config.typed else ""
         ack_module.ack_event(ack_key, state_file, gh_token)
 
 

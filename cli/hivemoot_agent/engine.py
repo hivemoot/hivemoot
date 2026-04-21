@@ -96,6 +96,50 @@ def _load_identity() -> str:
         return ""
 
 
+def _build_legacy_settings(raw_config: dict[str, Any]) -> dict[str, str]:
+    """Build the PluginConfig.settings dict for unmigrated plugins.
+
+    Expose raw_config alongside env so plugins not yet on ``.typed``
+    can still read scalar values via ``config.get()``.  Uppercased
+    aliases cover plugins that grep for env-var-style keys
+    (e.g. ``GITHUB_REPOS``).
+
+    Precedence: YAML wins for BOTH the original-case and the
+    uppercase key.  Under ADR-003 hivemoot.yaml is the source of
+    truth; letting env override the uppercase alias but not the
+    lowercase key would give a plugin reading ``agent_id`` vs
+    ``AGENT_ID`` two different answers.
+
+    Conversion rules:
+      * bool       → "1" / "0"   (matches shell trigger truthy semantics)
+      * str/int/float → str(v)   (env-style stringification)
+      * list[scalar]  → comma-join (env convention "a,b,c")
+      * dict / list[dict] / None → skipped (no env-var analogue)
+
+    Factored out of ``Engine._resolve_plugins`` so the behaviour can
+    be unit-tested without spinning up an engine + ConfigLoader.
+    """
+    merged: dict[str, str] = dict(os.environ)
+    for k, v in raw_config.items():
+        alias_value: str | None = None
+        if isinstance(v, bool):
+            alias_value = "1" if v else "0"
+        elif isinstance(v, (str, int, float)):
+            alias_value = str(v)
+        elif isinstance(v, list) and all(
+            isinstance(x, (str, int, float, bool)) for x in v
+        ):
+            alias_value = ",".join(str(x) for x in v)
+        if alias_value is None:
+            continue
+        key_str = str(k)
+        merged[key_str] = alias_value
+        upper = key_str.upper()
+        if upper != key_str:
+            merged[upper] = alias_value
+    return merged
+
+
 @dataclass
 class _SkillRuntime:
     """Resolved native skill staging for one provider invocation."""
@@ -121,83 +165,119 @@ class Engine:
         self._plugins: dict[str, Any] = {}
 
     def _resolve_plugins(self) -> dict[str, Any] | None:
-        """Discover and validate plugins.
+        """Discover + activate plugins.
 
-        When AGENT_PLUGINS is set, only the listed plugins are loaded and
-        validation failures are hard errors.  When unset, all discovered
-        plugins are loaded and those with config errors are skipped.
+        **Activation path** — single source of truth, per ADR-003:
+        the ``plugins:`` section of ``hivemoot.yaml``.  The legacy
+        ``AGENT_PLUGINS`` env var is no longer consulted; setting it
+        emits a warning so deployers notice and migrate.
 
-        Returns a dict of validated plugins, or None on fatal error.
+        Return values:
+          * ``{}`` — no config file shipped, or its ``plugins:`` section
+            is empty.  Legitimate for bare oneshot invocations (local
+            dev, smoke tests) where no plugin wiring is wanted.  Callers
+            can iterate the empty dict like any other.
+          * ``dict[str, Plugin]`` — activation succeeded.
+          * ``None`` — config file exists but is invalid OR a referenced
+            plugin type isn't installed OR a plugin's own validate()
+            returned errors.  Callers MUST bail; starting with a partial
+            plugin set is never safe.
+
+        For each plugin entry:
+          1. Look up the installed plugin by ``type_name``.
+          2. If its manifest declares a ``schema_class``, validate
+             the raw config against the Pydantic schema → typed instance.
+          3. Build a PluginConfig that carries both the typed instance
+             (for migrated plugins) AND a settings dict containing env
+             + raw-config values (for plugins still reading via
+             ``config.get()`` — migrated incrementally in later PRs).
+          4. Run the plugin's own ``validate()`` hook.
         """
+        from hivemoot_agent.config import ConfigLoader, ConfigLoadError
+
         registry.discover()
         all_plugins = registry.all()
 
-        requested = os.environ.get("AGENT_PLUGINS", "").strip()
+        if os.environ.get("AGENT_PLUGINS", "").strip():
+            print(
+                "[engine] WARNING: AGENT_PLUGINS env var is deprecated under "
+                "ADR-003 and ignored.  Plugin activation lives in the "
+                "'plugins:' section of hivemoot.yaml (default path: "
+                "/run/agent/hivemoot.yaml; override via AGENT_CONFIG_FILE).",
+                file=sys.stderr, flush=True,
+            )
 
-        if requested:
-            # Explicit mode — only activate listed plugins.
-            names = [n.strip() for n in requested.split(",") if n.strip()]
-            selected: dict[str, Any] = {}
-            had_error = False
+        # No config file → no plugins, not an error.  Oneshot / smoke
+        # callers use this path for bare agent runs without wiring.
+        config_file = Path(
+            os.environ.get("AGENT_CONFIG_FILE") or "/run/agent/hivemoot.yaml"
+        )
+        if not config_file.is_file():
+            return {}
 
-            for name in names:
-                plugin = all_plugins.get(name)
-                if plugin is None:
+        try:
+            loaded = ConfigLoader().load()
+        except ConfigLoadError as exc:
+            print(f"[engine] FATAL: config load: {exc}", file=sys.stderr, flush=True)
+            return None
+
+        if not loaded.plugins:
+            return {}
+
+        selected: dict[str, Any] = {}
+        had_error = False
+        for entry in loaded.plugins:
+            plugin = all_plugins.get(entry.type_name)
+            if plugin is None:
+                print(
+                    f"[engine] FATAL: config references plugin type "
+                    f"'{entry.type_name}' (instance '{entry.instance_name}') "
+                    f"which is not installed.  Available types: "
+                    f"{', '.join(sorted(all_plugins)) or '(none)'}",
+                    file=sys.stderr,
+                )
+                had_error = True
+                continue
+
+            manifest = registry.manifest_for(entry.type_name)
+            typed = None
+            if manifest is not None and manifest.schema_class is not None:
+                try:
+                    typed = manifest.validate_config(entry.raw_config)
+                except Exception as exc:
                     print(
-                        f"[engine] FATAL: requested plugin '{name}' not found. "
-                        f"Available: {', '.join(all_plugins) or '(none)'}",
+                        f"[engine] FATAL: plugin '{entry.instance_name}' "
+                        f"config invalid:\n  {exc}",
                         file=sys.stderr,
                     )
                     had_error = True
                     continue
 
-                config = registry.config_for(name)
-                errors = plugin.validate(config)
-                if errors:
-                    print(
-                        f"[engine] FATAL: plugin '{name}' config invalid:",
-                        file=sys.stderr,
-                    )
-                    for err in errors:
-                        print(f"  - {err}", file=sys.stderr)
-                    had_error = True
-                else:
-                    selected[name] = plugin
+            merged_settings = _build_legacy_settings(entry.raw_config)
+            config = PluginConfig(
+                name=entry.instance_name,
+                settings=merged_settings,
+                typed=typed,
+            )
+            registry.configure(entry.instance_name, config)
 
-            if had_error:
-                return None
-            return selected
-
-        # Auto-discover mode — skip plugins with config errors.
-        if not all_plugins:
-            print("No plugins found.", file=sys.stderr)
-            return None
-
-        enabled = {
-            name: p
-            for name, p in all_plugins.items()
-            if registry.config_for(name).enabled
-        }
-
-        if not enabled:
-            print("No plugins enabled.", file=sys.stderr)
-            return None
-
-        valid: dict[str, Any] = {}
-        for name, plugin in enabled.items():
-            config = registry.config_for(name)
             errors = plugin.validate(config)
             if errors:
                 print(
-                    f"[engine] skipping plugin '{name}' (config incomplete):",
+                    f"[engine] FATAL: plugin '{entry.instance_name}' "
+                    "validation failed:",
                     file=sys.stderr,
                 )
                 for err in errors:
                     print(f"  - {err}", file=sys.stderr)
-            else:
-                valid[name] = plugin
+                had_error = True
+                continue
 
-        return valid if valid else None
+            selected[entry.instance_name] = plugin
+
+        if had_error:
+            return None
+        return selected
 
     def _setup_plugins(self, plugins: dict[str, Any]) -> bool:
         """Run one-time plugin setup and fail closed on errors."""
@@ -237,9 +317,23 @@ class Engine:
         _load_file_secrets()
         enabled = self._resolve_plugins()
 
-        if enabled is None:
-            print("[engine] no plugins with valid config. Waiting...", file=sys.stderr)
-            # Don't exit — let the container stay alive for debugging.
+        if enabled is None or not enabled:
+            # None   = fatal config error (already logged by _resolve_plugins).
+            # empty  = no config file shipped OR an empty ``plugins:`` section.
+            # Both are treated the same in daemon mode: there's nothing to
+            # trigger, but we keep the container alive so an operator can
+            # attach and debug instead of hitting a crash-loop.
+            if enabled is None:
+                print(
+                    "[engine] fatal config error, no plugins activated. Waiting...",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[engine] no plugins configured (missing or empty "
+                    "plugins: section in hivemoot.yaml). Waiting...",
+                    file=sys.stderr,
+                )
             try:
                 while self._running:
                     time.sleep(60)
@@ -311,9 +405,11 @@ class Engine:
     ) -> int:
         """Run the agent once and exit.
 
-        When AGENT_PLUGINS is set, loads the specified plugins, runs
-        their setup hooks (e.g. clone repos), and uses their system
-        prompts.  When unset, runs a plain agent with no plugin support.
+        If ``hivemoot.yaml`` (or ``AGENT_CONFIG_FILE``) exists, loads
+        the plugins it declares, runs their setup hooks (clone repos,
+        authenticate, etc.), and merges their system prompts.  Without
+        a config file, runs a plain agent with no plugin support — the
+        bare oneshot path for local testing.
         """
         _load_file_secrets()
 
@@ -333,13 +429,13 @@ class Engine:
         model = config.get("AGENT_MODEL", "") or ""
         explicit_session_key = os.environ.get("AGENT_SESSION_KEY", "").strip()
 
-        # Load plugins if explicitly requested.
-        requested = os.environ.get("AGENT_PLUGINS", "").strip()
-        plugins: dict[str, Any] | None = None
-        if requested:
-            plugins = self._resolve_plugins()
-            if plugins is None:
-                return 1
+        # Plugins load from hivemoot.yaml — no env gate.
+        # ``_resolve_plugins`` returns ``{}`` when no config file is
+        # shipped (valid for bare oneshot runs) and ``None`` only on a
+        # genuine config error; we only bail on the latter.
+        plugins = self._resolve_plugins()
+        if plugins is None:
+            return 1
 
         # One-time plugin setup (clone repos, authenticate, etc.).
         job = Job(session_key=explicit_session_key or "oneshot", prompt=prompt)
@@ -396,9 +492,9 @@ class Engine:
         # Plugin lifecycle parity with run_agent: every plugin gets a
         # chance to set per-job env (e.g. CODEX_ANSWER_FILE) BEFORE the
         # provider command is built, and on_job_finished is guaranteed
-        # to fire even if the body raises.  `plugins` is None for the
-        # bare-oneshot path (no AGENT_PLUGINS); skip both lifecycle
-        # arms in that case.
+        # to fire even if the body raises.  ``plugins`` is None for the
+        # bare-oneshot path (no hivemoot.yaml present); skip both
+        # lifecycle arms in that case.
         if plugins:
             for name, plugin in plugins.items():
                 if not hasattr(plugin, "on_job_started"):

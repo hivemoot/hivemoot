@@ -19,6 +19,7 @@ from hivemoot_agent.plugins.interfaces import (
     PluginConfig,
     Trigger,
 )
+from hivemoot_agent.plugins_builtin.messaging.config import MessagingConfig
 from hivemoot_agent.plugins_builtin.messaging.system_prompt import SYSTEM_PROMPT
 
 
@@ -48,8 +49,11 @@ def _format_status(text: str) -> str:
 
 class MessagingPlugin:
     name = "messaging"
-    version = "0.3.0"
-    description = "Chat messaging with typing indicators, streaming progress, and response delivery"
+    version = "0.4.0"
+    description = (
+        "Chat messaging with typing indicators, streaming progress, response "
+        "delivery, and bidirectional media (download + send-file)."
+    )
 
     def __init__(self) -> None:
         self._platform_adapter: Any = None
@@ -73,21 +77,27 @@ class MessagingPlugin:
         pass
 
     def validate(self, config: PluginConfig) -> list[str]:
+        """Config-level validation beyond what Pydantic covers.
+
+        The Pydantic schema (MessagingConfig) already enforces types,
+        required fields, and ranges — anything that fails there raises
+        before this method runs.  This method handles the two
+        cross-cutting checks that don't fit a single field's schema:
+        platform-specific adapter validation, and runtime token
+        availability.
+        """
         errors: list[str] = []
-        platform = config.get("MESSAGING_PLATFORM", "telegram")
-
-        adapter = self._load_platform(platform)
+        cfg: MessagingConfig = config.typed
+        adapter = self._load_platform(cfg.platform)
         if adapter is None:
-            errors.append(f"Unknown platform: {platform}")
+            errors.append(f"Unknown platform: {cfg.platform}")
             return errors
-
         errors.extend(adapter.validate_config(config))
-
-        if not config.get("MESSAGING_AGENT_ID"):
-            errors.append("MESSAGING_AGENT_ID is required")
-
-        seen: set[str] = set()
-        return [e for e in errors if not (e in seen or seen.add(e))]  # type: ignore[func-returns-value]
+        # Order-preserving dedup — dict.fromkeys keeps the first
+        # occurrence of each error string, which matters when the
+        # same validation error bubbles up from multiple layers
+        # (e.g. both the plugin's own check and the adapter's).
+        return list(dict.fromkeys(errors))
 
     def triggers(self) -> list[Trigger]:
         from hivemoot_agent.plugins_builtin.messaging.trigger import (
@@ -120,19 +130,24 @@ class MessagingPlugin:
         # without the agent having to know the chat_id.  Best-effort:
         # if /tmp isn't writable for some reason, the file ops degrade
         # gracefully (CLI returns a clear error pointing at the
-        # missing context file).
-        platform = config.get("MESSAGING_PLATFORM", "") or ""
-        try:
-            _JOB_CONTEXT_PATH.write_text(json.dumps({
-                "chat_id": chat_id,
-                "platform": platform,
-                "session_key": job.session_key,
-            }))
-        except OSError as exc:
-            print(
-                f"[messaging] warn: could not write job context: {exc}",
-                file=sys.stderr, flush=True,
-            )
+        # missing context file).  Skipped when typed config isn't
+        # populated (tests that instantiate the plugin directly
+        # without going through the engine) — the context file only
+        # exists to help the send-file CLI and that CLI requires a
+        # full hivemoot.yaml anyway.
+        cfg: MessagingConfig | None = config.typed
+        if cfg is not None:
+            try:
+                _JOB_CONTEXT_PATH.write_text(json.dumps({
+                    "chat_id": chat_id,
+                    "platform": cfg.platform,
+                    "session_key": job.session_key,
+                }))
+            except OSError as exc:
+                print(
+                    f"[messaging] warn: could not write job context: {exc}",
+                    file=sys.stderr, flush=True,
+                )
 
         self._typing_stop.clear()
         self._typing_thread = threading.Thread(

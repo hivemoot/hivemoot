@@ -1,0 +1,6 @@
+name: cron
+version: 0.2.0
+description: >
+  Cron-expression-based task scheduling — fires agent jobs on a
+  named schedule with optional jitter and session resume.
+schema_class: hivemoot_agent.plugins_builtin.cron.config:CronConfig

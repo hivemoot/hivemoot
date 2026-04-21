@@ -24,10 +24,6 @@ from hivemoot_agent.plugins_builtin.hivemoot_github.role_loader import (
 from hivemoot_agent.plugins_builtin.hivemoot_github.system_prompt import build_system_prompt
 
 
-def _parse_requested_plugins(raw: str) -> list[str]:
-    return [entry.strip() for entry in raw.split(",") if entry.strip()]
-
-
 def _resolve_target_repo(config: PluginConfig) -> tuple[str, str]:
     target_repo = (config.get("TARGET_REPO", "") or "").strip()
     repos_raw = config.get("GITHUB_REPOS", "") or ""
@@ -102,15 +98,22 @@ class HivemootGitHubPlugin:
     def validate(self, config: PluginConfig) -> list[str]:
         errors: list[str] = []
 
-        requested = _parse_requested_plugins(config.get("AGENT_PLUGINS", ""))
-        if "github" not in requested:
+        # Under ADR-003 the YAML order is the activation order.  The
+        # engine calls configure() then validate() per plugin in YAML
+        # iteration order, so when our validate runs the registry's
+        # ``configured_names()`` lists every plugin that has already
+        # been configured (and will therefore be set up before us).
+        # We need ``github`` in that list — both for "did the operator
+        # activate it at all" and "did they put it before us".
+        from hivemoot_agent.plugins import registry as _registry
+        already_configured = _registry.configured_names()
+        if "github" not in already_configured:
             errors.append(
-                "hivemoot-github requires AGENT_PLUGINS to include github."
-            )
-        elif requested.index("github") > requested.index(self.name):
-            errors.append(
-                "AGENT_PLUGINS must list github before hivemoot-github so "
-                "repository setup runs first."
+                "hivemoot-github requires the github plugin to be activated "
+                "AND listed BEFORE hivemoot-github in plugins: of "
+                "hivemoot.yaml so repos are cloned before this plugin's "
+                "setup runs.  Currently configured before us: "
+                f"{already_configured or '(none)'}."
             )
 
         target_repo, target_error = _resolve_target_repo(config)

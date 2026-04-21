@@ -40,10 +40,11 @@ class MessagingTrigger:
         self._stop_event = threading.Event()
 
     def validate(self, config: PluginConfig) -> list[str]:
-        errors: list[str] = []
-        if not config.get("MESSAGING_AGENT_ID"):
-            errors.append("MESSAGING_AGENT_ID is required")
-        return errors
+        # Pydantic (MessagingConfig) already enforces agent_id / platform
+        # at load time; this method is kept for Trigger protocol
+        # compliance and future trigger-level checks that don't fit a
+        # single-field schema.
+        return []
 
     def _download_attachment(
         self,
@@ -147,12 +148,10 @@ class MessagingTrigger:
             print("[trigger] no adapter loaded", file=sys.stderr, flush=True)
             return
 
-        allowed = set()
-        allowed_raw = config.get("MESSAGING_ALLOWED_CHAT_IDS", "")
-        if allowed_raw:
-            allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
-
-        timeout = int(config.get("TELEGRAM_POLL_TIMEOUT_SECS", "30"))
+        from hivemoot_agent.plugins_builtin.messaging.config import MessagingConfig
+        cfg: MessagingConfig = config.typed
+        allowed = set(cfg.allowed_chat_ids)
+        timeout = cfg.poll_timeout_secs
         offset = 0
         self._stop_event.clear()
 

@@ -1,36 +1,26 @@
 """Cron plugin — schedule arbitrary agent tasks by cron expression.
 
-Each entry in ``CRON_SCHEDULES_JSON`` is a self-contained task:
+Config lives in ``hivemoot.yaml`` under ``plugins.cron.schedules`` as
+a native YAML list — each entry is a self-contained task with its
+own cron expression and prompt body.  Example::
 
-    [
-      {
-        "name": "autonomous-contribute",
-        "schedule": "@every 1h",
-        "jitter_secs": 300,
-        "prompt": "Make meaningful contributions to the repository."
-      },
-      {
-        "name": "weekly-security-sweep",
-        "schedule": "0 10 * * 1",
-        "prompt": "Audit new dependencies added in the past week."
-      }
-    ]
+    plugins:
+      cron:
+        schedules:
+          - name: autonomous
+            schedule: "@every 1h"
+            jitter_secs: 300
+            prompt: "Make meaningful contributions."
+          - name: weekly-security
+            schedule: "0 10 * * 1"
+            prompt: "Audit new dependencies this week."
 
-The plugin replaces the retired host-side ``controller/triggers/periodic.sh``
-and the short-lived ``periodic`` plugin that tried to do the same job
-with less expressive config.  A fleet that only wants hourly
-autonomous contributions still needs a single-entry schedule list —
-explicit config is the feature, not a burden.
-
-Enable via ``AGENT_PLUGINS=...,cron``.  The plugin is idle (but
-cooperatively blocked) if ``CRON_SCHEDULES_JSON`` is unset or empty,
-so listing the plugin without configuring it is a no-op rather than
-an error — makes it safer to enable by default in fleet templates.
+Schedules fire inside daemon mode (``hivemoot-agent run``), each at
+its own cadence.  Grammar errors and impossible expressions (Feb 31
+etc.) fail at config load time rather than silently never firing.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from hivemoot_agent.plugins.interfaces import (
     AgentResult,
@@ -39,27 +29,19 @@ from hivemoot_agent.plugins.interfaces import (
     PluginConfig,
     Trigger,
 )
-from hivemoot_agent.plugins_builtin.cron.schedule import (
-    ScheduleConfigError,
-    parse_schedules,
-)
+from hivemoot_agent.plugins_builtin.cron.config import CronConfig
 from hivemoot_agent.plugins_builtin.cron.trigger import CronTrigger
 
 
 class CronPlugin:
     name = "cron"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "Cron-expression-based task scheduling"
 
     def validate(self, config: PluginConfig) -> list[str]:
-        # Fail-closed at startup on malformed config: an operator who
-        # typo'd a cron expression should see the error immediately,
-        # not hours later when the schedule silently fails to fire.
-        raw = config.get("CRON_SCHEDULES_JSON", "") or ""
-        try:
-            parse_schedules(raw)
-        except ScheduleConfigError as exc:
-            return [str(exc)]
+        # Pydantic (CronConfig) already validates schedule grammar,
+        # reachability, name uniqueness, etc. at config load time —
+        # the engine surfaces those errors before we get here.
         return []
 
     def setup(self, config: PluginConfig) -> None:

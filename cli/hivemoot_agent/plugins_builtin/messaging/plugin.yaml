@@ -1,0 +1,6 @@
+name: messaging
+version: 0.4.0
+description: >
+  Chat messaging with typing indicators, streaming progress, response
+  delivery, and bidirectional media (inbound download + outbound send-file).
+schema_class: hivemoot_agent.plugins_builtin.messaging.config:MessagingConfig
