@@ -169,7 +169,7 @@ describe("POST /api/agent-token", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/agent-token", () => {
-  it("returns token and metadata", async () => {
+  it("returns metadata without plaintext token", async () => {
     vi.mocked(getAgentToken).mockResolvedValue({
       token: "a".repeat(64),
       fingerprint: "abcd1234",
@@ -181,8 +181,9 @@ describe("GET /api/agent-token", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.token).toBe("a".repeat(64));
+    expect(body.token).toBeUndefined();
     expect(body.fingerprint).toBe("abcd1234");
+    expect(body.createdAt).toBe("2026-02-24T00:00:00Z");
     expect(body.createdBy).toBe("alice");
   });
 

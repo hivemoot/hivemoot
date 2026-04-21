@@ -5,7 +5,7 @@
  * reports. All three methods require a valid setup session (cookie auth).
  *
  * POST   — Generate a new token (rotates if one exists).
- * GET    — Return the current token and metadata so admins can copy/recover it.
+ * GET    — Return token metadata (fingerprint, created time, creator) for display.
  * DELETE — Revoke the token.
  */
 
@@ -71,7 +71,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.json(record);
+    return NextResponse.json({
+      fingerprint: record.fingerprint,
+      createdAt: record.createdAt,
+      createdBy: record.createdBy,
+    });
   } catch (err) {
     console.error("[agent-token] Failed to retrieve token", {
       installationId: auth.session.installationId,
