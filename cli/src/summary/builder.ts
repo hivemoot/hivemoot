@@ -307,7 +307,7 @@ function buildPrioritySignals(
 
 function buildGoalItems(goalIssues: GitHubGoalIssue[], now: Date): GoalItem[] {
   return goalIssues.map((issue) => {
-    const { total, complete } = parseGoalProgress(issue.body);
+    const { total, complete } = parseGoalProgress(issue.body ?? "");
     return {
       number: issue.number,
       title: issue.title,

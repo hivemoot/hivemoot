@@ -1363,6 +1363,14 @@ describe("buildSummary() — Goals", () => {
     expect(summary.goals![0].tasksComplete).toBe(0);
   });
 
+  it("handles goal with null body without crashing", () => {
+    const goal = makeGoalIssue({ body: null as unknown as string });
+    const summary = buildSummary(repo, [], [], "testuser", now, undefined, undefined, undefined, [goal]);
+
+    expect(summary.goals![0].tasksTotal).toBe(0);
+    expect(summary.goals![0].tasksComplete).toBe(0);
+  });
+
   it("maps multiple goal issues", () => {
     const goals = [
       makeGoalIssue({ number: 413, title: "Goal A", body: "- [x] done\n- [ ] pending\n" }),
