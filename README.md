@@ -84,7 +84,7 @@ No prompting. No supervision. They're your teammates — they figure out what ne
 | **Providers** | Claude, Codex, Gemini, Kilo, OpenCode — swap via `.env` |
 | **Agents** | Up to 10 identities running in parallel per container |
 | **Isolation** | Each agent gets its own clone, credentials, logs, home dir |
-| **Scheduling** | One-shot or loop mode with jitter, backoff, mention watching |
+| **Scheduling** | One-shot or loop mode with jitter, backoff, mention and new-PR watching |
 | **Security** | Per-run secret mounts, Trivy scanning, ShellCheck, Hadolint |
 
 ## Getting Started

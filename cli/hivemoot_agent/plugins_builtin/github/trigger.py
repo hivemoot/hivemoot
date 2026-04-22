@@ -1,20 +1,19 @@
-"""GitHub mention + review-request triggers.
+"""GitHub event triggers.
 
-Both triggers wrap a ``hivemoot watch --once`` poll cycle inside the
-plugin engine (per ADR-002).  Each event becomes a Job dispatched
-synchronously; the plugin's ``on_job_finished`` hook later calls
-``hivemoot ack`` to mark the notification consumed so the next cycle
-won't re-emit it.
+Notification-backed triggers (mentions, review requests) wrap a
+``hivemoot watch --once`` poll cycle inside the plugin engine (per
+ADR-002).  Dedup is owned by the Go binary's ``--state-file`` plus our
+serial dispatch loop: only one event is in flight at a time per trigger
+and, once acked, the binary refuses to re-emit.
 
-Dedup is owned by the Go binary's ``--state-file`` plus our serial
-dispatch loop: only one event is in flight at a time per trigger, and
-once acked the binary refuses to re-emit.  No in-process bookkeeping
-needed.
+The new-PR trigger is poll-based against the GitHub REST ``/pulls``
+endpoint with a local state file — it filters by author and skips the
+existing open-PR backlog on first boot.  See ``pr_watcher`` for details.
 
 Failure semantics: if dispatch fails OR the agent run fails, ack is
-skipped — the event reappears on the next cycle and gets retried.
-That matches the shell controller's ``watch_trigger_failure_backoff``
-behaviour without the file-based scaffolding.
+skipped — the event reappears on the next cycle and gets retried.  That
+matches the shell controller's ``watch_trigger_failure_backoff`` without
+the file-based scaffolding.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hivemoot_agent.plugins.interfaces import Job, JobDispatcher, PluginConfig
-from hivemoot_agent.plugins_builtin.github import prompts, watcher
+from hivemoot_agent.plugins_builtin.github import pr_watcher, prompts, watcher
 
 if TYPE_CHECKING:
     from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
@@ -100,14 +99,45 @@ class _GitHubWatchTrigger:
         self._plugin = plugin
         self._stop_event = threading.Event()
 
-    # Subclass hooks — keep tiny so the diff between mention/review is
-    # easy to eyeball.
+    # Subclass hooks — keep tiny so the diff between mention/review/new-PR
+    # implementations is easy to eyeball.
 
-    def _build_prompt(self, event: watcher.WatchEvent) -> str:
+    def _build_prompt(self, event: Any) -> str:
         raise NotImplementedError
 
-    def _session_key(self, event: watcher.WatchEvent) -> str:
+    def _session_key(self, event: Any) -> str:
         raise NotImplementedError
+
+    def _ack_strategy(self) -> str:
+        """Which ack path ``on_job_finished`` should take after success.
+
+        ``"notification"`` — the default — routes to ``ack_module.ack_event``
+        (GitHub-notification-backed).  Poll-based subclasses override to
+        route to their own local-state ack helper.
+        """
+        return "notification"
+
+    def _poll_events(
+        self,
+        cfg: "GitHubConfig",
+        repo: str,
+        state_file: str,
+        poll_interval: int,
+        gh_token: str,
+    ) -> list[Any]:
+        """Return the events to dispatch this cycle.
+
+        Default implementation wraps ``watcher.poll_once`` for the
+        notification-backed triggers.  Poll-based subclasses override
+        with their own fetcher.
+        """
+        return watcher.poll_once(
+            repo=repo,
+            state_file=state_file,
+            interval_secs=poll_interval,
+            gh_token=gh_token,
+            reasons=self.watch_reasons or None,
+        )
 
     # Shared lifecycle.
 
@@ -170,12 +200,12 @@ class _GitHubWatchTrigger:
 
         while not self._stop_event.is_set():
             try:
-                events = watcher.poll_once(
+                events = self._poll_events(
+                    cfg=cfg,
                     repo=repo,
                     state_file=state_file,
-                    interval_secs=poll_interval,
+                    poll_interval=poll_interval,
                     gh_token=gh_token,
-                    reasons=self.watch_reasons or None,
                 )
             except (RuntimeError, ValueError) as exc:
                 print(
@@ -194,7 +224,7 @@ class _GitHubWatchTrigger:
 
     def _dispatch_event(
         self,
-        event: watcher.WatchEvent,
+        event: Any,
         state_file: str,
         dispatcher: JobDispatcher,
     ) -> None:
@@ -216,6 +246,7 @@ class _GitHubWatchTrigger:
             metadata={
                 "github_watch": {
                     "trigger": self.name,
+                    "ack_strategy": self._ack_strategy(),
                     "ack_key": ack_key,
                     "state_file": state_file,
                     "number": event.display_number,
@@ -266,3 +297,38 @@ class GitHubReviewRequestsTrigger(_GitHubWatchTrigger):
         if event.number:
             return f"review-pr:{event.number}"
         return f"review:{event.ack_key or 'unknown'}"
+
+
+class GitHubNewPullRequestsTrigger(_GitHubWatchTrigger):
+    """Poll newly opened PRs filtered by author — see pr_watcher.py."""
+
+    name = "github-new-pr"
+    state_file_basename = "new-prs.json"
+
+    def _build_prompt(self, event: pr_watcher.PullRequestEvent) -> str:
+        return prompts.build_new_pr_prompt(
+            event.display_number, event.title, event.author, event.url,
+        )
+
+    def _session_key(self, event: pr_watcher.PullRequestEvent) -> str:
+        if event.number:
+            return f"new-pr:{event.number}"
+        return f"new-pr:{event.ack_key or 'unknown'}"
+
+    def _ack_strategy(self) -> str:
+        return "new_pr"
+
+    def _poll_events(
+        self,
+        cfg: "GitHubConfig",
+        repo: str,
+        state_file: str,
+        poll_interval: int,  # noqa: ARG002 — base-class signature only
+        gh_token: str,
+    ) -> list[pr_watcher.PullRequestEvent]:
+        return pr_watcher.poll_new_prs_once(
+            repo=repo,
+            state_file=state_file,
+            gh_token=gh_token,
+            authors=list(cfg.watch_new_prs_authors),
+        )

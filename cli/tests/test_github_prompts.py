@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins_builtin.github.prompts import (
     build_mention_prompt,
+    build_new_pr_prompt,
     build_review_request_prompt,
 )
 
@@ -63,6 +64,28 @@ class ReviewRequestPromptTests(unittest.TestCase):
         )
         # Both prompts ask for the eye reaction; the agent uses it as
         # the user-visible "I see your request" signal.
+        self.assertIn("👀", out)
+
+
+class NewPullRequestPromptTests(unittest.TestCase):
+    def test_includes_all_fields_and_warning(self) -> None:
+        out = build_new_pr_prompt(
+            "9",
+            "Ship automation",
+            "hivemoot",
+            "https://github.com/o/r/pull/9",
+        )
+        self.assertIn("PR #9", out)
+        self.assertIn("Ship automation", out)
+        self.assertIn("@hivemoot", out)
+        self.assertIn("https://github.com/o/r/pull/9", out)
+        self.assertIn("untrusted GitHub content", out)
+        self.assertIn("prompt-injection", out)
+
+    def test_emoji_reaction_directive_present(self) -> None:
+        out = build_new_pr_prompt(
+            "9", "t", "a", "https://example.com/pr/9",
+        )
         self.assertIn("👀", out)
 
 

@@ -55,6 +55,22 @@ class GitHubConfig(StrictPluginConfig):
         default=False,
         description="Enable review-request polling trigger.",
     )
+    watch_new_prs: bool = Field(
+        default=False,
+        description=(
+            "Enable new-PR polling trigger.  Unlike the notification-backed "
+            "mention/review watches, this trigger polls the REST `/pulls` "
+            "endpoint and keeps local state so a fresh deployment does not "
+            "replay the existing open-PR backlog."
+        ),
+    )
+    watch_new_prs_authors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Allowlist of GitHub login logins for ``watch_new_prs``.  "
+            "Empty means 'any author'.  Matched case-insensitively."
+        ),
+    )
     watch_poll_interval_secs: int = Field(
         default=300,
         ge=30,

@@ -16,6 +16,7 @@ from hivemoot_agent.plugins.interfaces import (
     Trigger,
 )
 from hivemoot_agent.plugins_builtin.github import ack as ack_module
+from hivemoot_agent.plugins_builtin.github import pr_watcher
 from hivemoot_agent.plugins_builtin.github.repo_manager import (
     RepoInfo,
     clone_or_sync,
@@ -26,6 +27,7 @@ from hivemoot_agent.plugins_builtin.github.repo_manager import (
 from hivemoot_agent.plugins_builtin.github.system_prompt import build_system_prompt
 from hivemoot_agent.plugins_builtin.github.trigger import (
     GitHubMentionsTrigger,
+    GitHubNewPullRequestsTrigger,
     GitHubReviewRequestsTrigger,
 )
 
@@ -156,6 +158,8 @@ class GitHubPlugin:
             instances.append(GitHubMentionsTrigger(self))
         if cfg.watch_review_requests:
             instances.append(GitHubReviewRequestsTrigger(self))
+        if cfg.watch_new_prs:
+            instances.append(GitHubNewPullRequestsTrigger(self))
         return instances
 
     def setup(self, config: PluginConfig) -> None:
@@ -278,8 +282,21 @@ class GitHubPlugin:
 
         ack_key = str(watch_meta.get("ack_key") or "")
         state_file = str(watch_meta.get("state_file") or "")
-        gh_token = _read_token(config.typed) if config.typed else ""
-        ack_module.ack_event(ack_key, state_file, gh_token)
+        ack_strategy = str(watch_meta.get("ack_strategy") or "notification")
+
+        if ack_strategy == "notification":
+            gh_token = _read_token(config.typed) if config.typed else ""
+            ack_module.ack_event(ack_key, state_file, gh_token)
+            return
+        if ack_strategy == "new_pr":
+            pr_watcher.ack_new_pr(ack_key, state_file)
+            return
+
+        print(
+            f"[{watch_meta.get('trigger', 'github-watch')}] "
+            f"unknown ack strategy: {ack_strategy}",
+            file=sys.stderr, flush=True,
+        )
 
 
 def create_plugin() -> Plugin:

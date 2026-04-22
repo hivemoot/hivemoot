@@ -76,6 +76,12 @@ jobs:
         run: python3 cli/tests/test_config.py
       - name: Verify cron config schema validators
         run: python3 cli/tests/test_cron_config.py
+      - name: Verify github plugin prompts (untrusted-content contract)
+        run: python3 cli/tests/test_github_prompts.py
+      - name: Verify github new-PR watcher state + ack
+        run: python3 cli/tests/test_github_pr_watcher.py
+      - name: Verify github watch triggers + plugin ack lifecycle
+        run: python3 cli/tests/test_github_trigger.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 
