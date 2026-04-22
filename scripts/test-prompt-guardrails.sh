@@ -8,8 +8,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root_prompt="$repo_root/cli/hivemoot_agent/root_system_prompt.md"
-autonomous_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md"
-task_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md"
+autonomous_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot/github_workflows/prompts/autonomous.md"
+task_prompt="$repo_root/cli/hivemoot_agent/plugins_builtin/hivemoot/tasks/prompts/task.md"
 claude_provider="$repo_root/cli/hivemoot_agent/providers/claude.py"
 github_prompts="$repo_root/cli/hivemoot_agent/plugins_builtin/github/prompts.py"
 github_trigger="$repo_root/cli/hivemoot_agent/plugins_builtin/github/trigger.py"

@@ -11,7 +11,7 @@ Exercises three bugs from the post-PR-575 ultrareview:
   ``_PluginDispatcher`` config.
 - bug_003: ``on_job_finished`` MUST run even when the body between
   ``on_job_started`` and the end of ``run_agent`` raises — otherwise
-  the hivemoot-task plugin's heartbeat thread is orphaned and the
+  the hivemoot plugin's heartbeat thread is orphaned and the
   backend never sees the terminal outcome.
 """
 
@@ -53,7 +53,7 @@ def _make_job(session_key: str = "task:t-1") -> Job:
 
 def _config(workspace: str) -> PluginConfig:
     return PluginConfig(
-        name="hivemoot-task",
+        name="hivemoot",
         settings={
             "WORKSPACE_ROOT": workspace,
             "AGENT_PROVIDER": "claude",
@@ -75,7 +75,7 @@ class _OrderingPlugin:
         self.events: list[str] = []
 
     def on_job_started(self, job: Job, config: PluginConfig) -> None:
-        # The hivemoot-task plugin sets CODEX_ANSWER_FILE here; this
+        # The hivemoot plugin sets CODEX_ANSWER_FILE here; this
         # fake records the event so the test can assert ordering.
         self.events.append("on_job_started")
         os.environ["TEST_LIFECYCLE_TOKEN"] = "from-on-job-started"
@@ -225,7 +225,7 @@ class FinishedRunsOnExceptionTest(unittest.TestCase):
                 len(finished_events), 1,
                 "on_job_finished must run exactly once even when the body "
                 "between on_job_started and on_job_finished raises — "
-                "otherwise the hivemoot-task heartbeat thread is orphaned",
+                "otherwise the hivemoot heartbeat thread is orphaned",
             )
             # The bare-failure result lets the plugin's failure-path post.
             self.assertIn("exit=1", finished_events[0])

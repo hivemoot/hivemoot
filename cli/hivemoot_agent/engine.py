@@ -246,7 +246,7 @@ class Engine:
 
             # Validate BEFORE registering.  If a plugin's validate
             # fails and we've already called registry.configure(), any
-            # downstream plugin's validate (e.g. hivemoot-github
+            # downstream plugin's validate (e.g. hivemoot.github_workflows
             # reading registry.config_for("github")) sees a
             # partially-validated sibling config and may emit a
             # misleading second error.  Registering only after the
@@ -1198,14 +1198,14 @@ class Engine:
 
         # Plugin gets first crack at per-job env *before* the provider
         # command is built — codex/build_cmd reads CODEX_ANSWER_FILE
-        # at build time, and the hivemoot-task plugin sets it from
+        # at build time, and the hivemoot.tasks plugin sets it from
         # on_job_started.  Reordering here is a contract: by the time
         # any provider builder runs, the plugin has already configured
         # per-job state.
         plugin.on_job_started(job, config)
 
         # Anything between on_job_started and on_job_finished MUST run
-        # on_job_finished too — for hivemoot-task that's where the
+        # on_job_finished too — for hivemoot.tasks that's where the
         # heartbeat thread is stopped and the terminal outcome posted
         # to the backend.  Without try/finally an exception inside
         # _build_provider_cmd / _run_subprocess / session save / etc.
@@ -1318,7 +1318,7 @@ class Engine:
             return result
         finally:
             # Final outcome MUST be reported.  on_job_finished is
-            # already wrapped in try/except inside the hivemoot-task
+            # already wrapped in try/except inside the hivemoot.tasks
             # plugin, but the engine still guards against an unhandled
             # raise from any other plugin so a bad lifecycle hook
             # doesn't poison the dispatcher's exception path.

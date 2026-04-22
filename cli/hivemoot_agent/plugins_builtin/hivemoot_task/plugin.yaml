@@ -1,7 +1,0 @@
-name: hivemoot-task
-version: 0.4.0
-description: >
-  Hivemoot delegated-task workflow (claim from backend, run, report
-  outcome).  Polls hivemoot.dev /api/tasks/claim and dispatches a job
-  per claimed task with heartbeat + final outcome posts.
-schema_class: hivemoot_agent.plugins_builtin.hivemoot_task.config:HivemootTaskConfig

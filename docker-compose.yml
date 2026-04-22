@@ -61,7 +61,7 @@ x-agent-env: &agent-env
   AGENT_IDENTITY_FILE: ${AGENT_IDENTITY_FILE:-}
   AGENT_SKILLS: ${AGENT_SKILLS:-}
   AGENT_EXTRA_PROMPT: ${AGENT_EXTRA_PROMPT:-}
-  AGENT_PLUGINS: ${AGENT_PLUGINS-github,hivemoot-github}
+  AGENT_PLUGINS: ${AGENT_PLUGINS-github,hivemoot}
   AGENT_TOOL_OPTIONS_JSON: ${AGENT_TOOL_OPTIONS_JSON:-}
   HIVEMOOT_BUZZ_ROLE: ${HIVEMOOT_BUZZ_ROLE:-}
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -91,10 +91,6 @@ x-agent-env: &agent-env
   OPENCODE_MODEL: ${OPENCODE_MODEL:-}
   HIVEMOOT_AGENT_TOKEN: ${HIVEMOOT_AGENT_TOKEN:-}
   HIVEMOOT_AGENT_TOKEN_FILE: ${HIVEMOOT_AGENT_TOKEN_FILE:-}
-  AGENT_TASK_CLAIM_URL: ${AGENT_TASK_CLAIM_URL:-}
-  AGENT_TASK_EXECUTE_BASE_URL: ${AGENT_TASK_EXECUTE_BASE_URL:-}
-  AGENT_TASK_POLL_INTERVAL_SECS: ${AGENT_TASK_POLL_INTERVAL_SECS:-10}
-  AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS: ${AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS:-45}
   CRON_SCHEDULES_JSON: ${CRON_SCHEDULES_JSON:-}
   JOB_ID: ${JOB_ID:-}
 
@@ -103,8 +99,8 @@ services:
     <<: *agent-base
     stop_grace_period: 5m
     # Compose-invoked services are daemon-mode: triggers (cron,
-    # messaging, github-watch, hivemoot-task) run in-process inside
-    # ``hivemoot-agent run`` and block until shutdown.  The Dockerfile
+    # messaging, github-watch, hivemoot tasks/health) run in-process
+    # inside ``hivemoot-agent run`` and block until shutdown.  The Dockerfile
     # CMD default stays ``worker`` so a plain ``docker run`` with no
     # plugin config fails fast rather than entering an idle daemon.
     command: ["run"]

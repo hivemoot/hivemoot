@@ -70,7 +70,7 @@ class DualSourceDiscoveryTests(unittest.TestCase):
             names = sorted(reg.all().keys())
             # Built-ins still load.
             self.assertIn("github", names)
-            self.assertIn("hivemoot-task", names)
+            self.assertIn("hivemoot", names)
             # External plugin loaded too.
             self.assertIn("apiary-demo", names)
 

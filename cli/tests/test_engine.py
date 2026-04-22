@@ -265,7 +265,7 @@ def test_oneshot_resumes_explicit_session_key_and_saves_new_session():
 
     env = {
         "AGENT_PROVIDER": "codex",
-        "AGENT_PLUGINS": "github,hivemoot-github",
+        "AGENT_PLUGINS": "github,hivemoot",
         "AGENT_SESSION_KEY": "mention-thread:123",
         "TARGET_REPO": "owner/repo",
         "AGENT_MEMORY_DIR": tempfile.gettempdir(),
@@ -328,7 +328,7 @@ def test_oneshot_retries_fresh_after_resume_failure():
 
     env = {
         "AGENT_PROVIDER": "codex",
-        "AGENT_PLUGINS": "github,hivemoot-github",
+        "AGENT_PLUGINS": "github,hivemoot",
         "AGENT_SESSION_KEY": "mention-thread:retry",
         "TARGET_REPO": "owner/repo",
         "AGENT_MEMORY_DIR": tempfile.gettempdir(),

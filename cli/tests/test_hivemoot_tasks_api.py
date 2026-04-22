@@ -1,4 +1,4 @@
-"""Tests for cli/hivemoot_agent/plugins_builtin/hivemoot_task/api.py."""
+"""Tests for cli/hivemoot_agent/plugins_builtin/hivemoot/tasks/api.py."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hivemoot_agent.plugins_builtin.hivemoot_task import api as task_api
+from hivemoot_agent.plugins_builtin.hivemoot.tasks import api as task_api
 
 
 def _fake_response(status: int = 200, body: bytes = b"") -> MagicMock:

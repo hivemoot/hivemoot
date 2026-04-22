@@ -25,9 +25,9 @@ def build_cmd(
     common = ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json"]
 
     # When the engine has wired CODEX_ANSWER_FILE (set by the
-    # hivemoot-task plugin's on_job_started for codex provider runs),
+    # hivemoot.tasks plugin's on_job_started for codex provider runs),
     # ask codex to write its final markdown answer to that path.
-    # The hivemoot-task plugin's result extractor reads this sidecar
+    # The hivemoot.tasks plugin's result extractor reads this sidecar
     # in preference to NDJSON parsing — it's the source of truth
     # codex itself emits without intermediate parsing.
     answer_file = os.environ.get("CODEX_ANSWER_FILE", "").strip()

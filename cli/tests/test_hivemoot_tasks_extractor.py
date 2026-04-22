@@ -1,4 +1,4 @@
-"""Tests for hivemoot_task result extraction and auth-error detection."""
+"""Tests for hivemoot tasks result extraction and auth-error detection."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hivemoot_agent.plugins_builtin.hivemoot_task import (
+from hivemoot_agent.plugins_builtin.hivemoot.tasks import (
     auth_errors,
     result_extractor,
 )

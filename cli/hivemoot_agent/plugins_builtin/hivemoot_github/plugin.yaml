@@ -1,8 +1,0 @@
-name: hivemoot-github
-version: 0.2.0
-description: >
-  Hivemoot-specific GitHub contribution workflow (governance roles,
-  buzz prompt block).  Co-loaded with the github plugin; reads the
-  github plugin's typed config (repos[0], workspace) for the active
-  repo.
-schema_class: hivemoot_agent.plugins_builtin.hivemoot_github.config:HivemootGithubConfig

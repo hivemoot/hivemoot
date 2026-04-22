@@ -180,12 +180,13 @@ This path is intentionally simple:
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
 For the default Hivemoot repo workflow, use
-`AGENT_PLUGINS=github,hivemoot-github`.
+`AGENT_PLUGINS=github,hivemoot` with `github_workflows.enabled: true`
+under `plugins.hivemoot` in `hivemoot.yaml`.
 
 **Minimal plugin-mode config**:
 
 ```env
-AGENT_PLUGINS=github,hivemoot-github
+AGENT_PLUGINS=github,hivemoot
 GITHUB_TOKEN_FILE=/run/secrets/github_token
 GITHUB_REPOS=hivemoot/hivemoot-agent
 TARGET_REPO=hivemoot/hivemoot-agent
@@ -200,8 +201,8 @@ Notes:
 - if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
 - use `AGENT_PLUGINS=github` for generic GitHub repo automation
-- use `AGENT_PLUGINS=github,hivemoot-github` for the Hivemoot GitHub contribution workflow
-- `hivemoot-github` requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
+- use `AGENT_PLUGINS=github,hivemoot` with `plugins.hivemoot.github_workflows.enabled: true` for the Hivemoot contribution workflow
+- the `hivemoot` plugin's `github_workflows` feature requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
 
 For recurring runs, use the `cron` plugin — list of named tasks, each
 with its own cron expression and prompt.  Cron triggers fire inside
@@ -249,11 +250,11 @@ The architecture follows
   subcommands; no host-side trigger scripts; no plugin-specific env
   wires outside the plugin that owns them.
 
-Plugin-owned triggers: `messaging`, `hivemoot-task`, `github-mention`,
-`github-review-request`, and `cron` — all implement the
-`Plugin.triggers()` protocol and run inside `hivemoot-agent run`.
-Every trigger in the system now lives in its plugin; there is no
-host-side supervisor to spawn containers.
+Plugin-owned triggers: `messaging`, `hivemoot` (tasks + health
+heartbeat), `github-mention`, `github-review-request`, and `cron` —
+all implement the `Plugin.triggers()` protocol and run inside
+`hivemoot-agent run`.  Every trigger in the system now lives in its
+plugin; there is no host-side supervisor to spawn containers.
 
 ### Custom (deployer-supplied) plugins
 
@@ -351,40 +352,53 @@ Write like a teammate, not a report generator. Lead with your point.
 - Body explains why the change was made
 ```
 
-**Task workflow** (minimal: `AGENT_PLUGINS=hivemoot-task`; for tasks
+**Hivemoot plugin** (minimal: `AGENT_PLUGINS=hivemoot`; for tasks
 that operate on GitHub repos, add `github`):
 
-A task is a generic unit of work dispatched by the hivemoot.dev
-backend — it can be "review this RFC," "summarize yesterday's
-governance," "edit this file in repo X," or anything else. The
-plugin is deliberately **not** coupled to `github`: it has no
-required sibling plugins, no `GITHUB_REPOS` / `TARGET_REPO` reads,
-and its system prompt carries no repo-specific context. If a task
-happens to involve a repo, that scope is in the task body itself,
-and whichever other plugins are loaded (github, hivemoot-github,
-etc.) provide the tools the agent uses.
+The consolidated `hivemoot` plugin bundles three feature-toggled
+subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
 
-The plugin's `HivemootTaskTrigger` polls `AGENT_TASK_CLAIM_URL` at
-`AGENT_TASK_POLL_INTERVAL_SECS` (default 10s). On a successful claim it
+- `health` — periodic heartbeats + per-run reports to
+  `POST {base_url}/api/agent-health`.  Populates the Agent Health
+  dashboard tab.  Each report carries `agent_id`, `repo`, `run_id`,
+  `outcome` (success / failure / timeout), `duration_secs`,
+  `consecutive_failures`, `exit_code`, and `trigger` (derived from
+  the job's session key).
+- `tasks` — delegated-task workflow.  A task is a generic unit of
+  work dispatched by the hivemoot.dev backend — it can be "review
+  this RFC," "summarize yesterday's governance," "edit this file in
+  repo X," or anything else.  The task trigger is deliberately
+  decoupled from GitHub: no `GITHUB_REPOS` / `TARGET_REPO` reads,
+  no repo-specific system prompt.  Repo scope (when present) is
+  carried in the task body itself.
+- `github_workflows` — Hivemoot-flavored GitHub contribution
+  operating mode, buzz role loading, skill bundle.  Co-loads with
+  the `github` plugin and reads its typed config for `repos[0]` +
+  `workspace`.
+
+Task claim flow: the trigger polls `plugins.hivemoot.tasks.claim_url`
+every `poll_interval_secs` (default 10s).  On a successful claim it
 renders the task prompt template (`prompts/messages/task.md`) plus the
 conversation-history block from the claim payload's `messages`, builds a
 `Job(session_key="task:<id>", metadata={task_id, claim_token, repo, messages})`,
-and dispatches it to the engine. `Job.metadata["repo"]` is kept as
-informational context for plugins that want it; the task plugin itself
-does not enforce any repo contract. The plugin's `on_job_started` posts
-the initial progress ping and starts a background heartbeat thread
-(cadence: `AGENT_TASK_HEARTBEAT_INTERVAL_SECONDS`, default 45s; `0`
-disables). `on_job_finished` stops the heartbeat and posts the final
+and dispatches it to the engine.  `on_job_started` posts the initial
+progress ping and starts a background heartbeat thread
+(cadence: `tasks.heartbeat_interval_secs`, default 45s; `0`
+disables).  `on_job_finished` stops the heartbeat and posts the final
 outcome (`complete` / `fail` / `timeout`), promoting silent codex auth
 failures into reported failures via `auth_errors.detect_codex_auth_error`.
 
 Backend contract:
-- `AGENT_TASK_EXECUTE_BASE_URL` — base for `${base}/${task_id}/execute`
-- Auth via `Authorization: Bearer ${HIVEMOOT_AGENT_TOKEN}` plus
-  `X-Task-Claim-Token: <claim_token>` on every update
+- `plugins.hivemoot.tasks.execute_base_url` — base for `${base}/${task_id}/execute`
+- Auth via `Authorization: Bearer <token>` resolved from
+  `plugins.hivemoot.token_file` → `HIVEMOOT_AGENT_TOKEN_FILE` →
+  `HIVEMOOT_AGENT_TOKEN` (plus `X-Task-Claim-Token: <claim_token>`
+  on every per-task update).
 - Codex sidecar: when `AGENT_PROVIDER=codex` the plugin sets `CODEX_ANSWER_FILE`
   before the agent run; the codex provider passes `--output-last-message <path>`
   so codex writes its final markdown directly (preferred over NDJSON parsing).
+- Health contract: see
+  [`hivemoot/apps/web/AGENT_HEALTH_CONTRACT.md`](https://github.com/hivemoot/hivemoot/blob/main/apps/web/AGENT_HEALTH_CONTRACT.md).
 
 Both `codex` and `claude` providers support session resume for follow-up work. GitHub mention triggers store one session per notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Cron ticks (empty session key) always start fresh by design. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 
@@ -403,7 +417,7 @@ ExecStart=/usr/bin/docker compose -f /opt/hivemoot-agent/docker-compose.yml \
 Environment=AGENT_ID=worker
 Environment=TARGET_REPO=acme/api
 Environment=GITHUB_REPOS=acme/api
-Environment=AGENT_PLUGINS=github,hivemoot-github,cron
+Environment=AGENT_PLUGINS=github,hivemoot,cron
 Environment=CRON_SCHEDULES_JSON=[{"name":"autonomous",...}]
 Restart=on-failure
 ```
@@ -616,9 +630,9 @@ next to the host `AGENT_PROMPT_FILE`, so mode-specific overrides can
 stay concise while sharing the same base.
 
 When unset, standing agents use
-[`cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_github/prompts/autonomous.md)
+[`cli/hivemoot_agent/plugins_builtin/hivemoot/github_workflows/prompts/autonomous.md`](cli/hivemoot_agent/plugins_builtin/hivemoot/github_workflows/prompts/autonomous.md)
 and task mode uses
-[`cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot_task/prompts/task.md).
+[`cli/hivemoot_agent/plugins_builtin/hivemoot/tasks/prompts/task.md`](cli/hivemoot_agent/plugins_builtin/hivemoot/tasks/prompts/task.md).
 Both compose under the runtime's always-applied root baseline
 ([`cli/hivemoot_agent/root_system_prompt.md`](cli/hivemoot_agent/root_system_prompt.md))
 and, when set, the deployer-supplied `AGENT_IDENTITY_FILE` — see

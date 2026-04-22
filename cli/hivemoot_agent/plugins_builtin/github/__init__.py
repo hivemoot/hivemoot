@@ -263,7 +263,7 @@ class GitHubPlugin:
         self, job: Job, result: AgentResult, config: PluginConfig
     ) -> None:
         # Watch triggers tag their jobs with ack metadata; everything
-        # else (oneshot, hivemoot-task) leaves it absent.
+        # else (oneshot, hivemoot.tasks) leaves it absent.
         watch_meta = job.metadata.get("github_watch") if job.metadata else None
         if not isinstance(watch_meta, dict):
             return

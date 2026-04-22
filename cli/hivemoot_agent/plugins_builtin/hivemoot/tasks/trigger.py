@@ -9,7 +9,7 @@ import threading
 from typing import Any
 
 from hivemoot_agent.plugins.interfaces import Job, JobDispatcher, PluginConfig
-from hivemoot_agent.plugins_builtin.hivemoot_task import api
+from hivemoot_agent.plugins_builtin.hivemoot.tasks import api
 
 
 _TASK_TEMPLATE_PATH = os.path.join(
@@ -76,63 +76,68 @@ class HivemootTaskTrigger:
     without re-querying the backend.
     """
 
-    name = "hivemoot-task"
+    name = "hivemoot-tasks"
 
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
         self._stop_event = threading.Event()
 
     def validate(self, config: PluginConfig) -> list[str]:
-        cfg = config.typed
-        if cfg is None:
-            return [
-                "hivemoot-task trigger requires typed config (plugins."
-                "hivemoot-task in hivemoot.yaml)."
-            ]
-        errors: list[str] = []
-        if not cfg.claim_url:
-            errors.append(
-                "plugins.hivemoot-task.claim_url is required for the "
-                "polling trigger"
-            )
-        if not cfg.execute_base_url:
-            errors.append(
-                "plugins.hivemoot-task.execute_base_url is required for "
-                "the polling trigger"
-            )
-        if cfg.token_file is None:
-            errors.append(
-                "plugins.hivemoot-task.token_file is required for backend "
-                "auth (typically `!secret hivemoot_agent_token`)"
-            )
-        return errors
+        # Parent plugin does the combined validation so operators get
+        # one consolidated error bundle rather than scattered per-trigger
+        # messages.
+        return []
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
         cfg = config.typed
-        if cfg is None or not cfg.claim_url:
+        tasks = cfg.tasks if cfg is not None else None
+        if tasks is None or not tasks.enabled or not tasks.claim_url:
             print(
-                "[hivemoot-task] no typed config or empty claim_url; trigger idle",
+                "[hivemoot-tasks] tasks disabled or claim_url empty; "
+                "trigger idle",
                 file=sys.stderr, flush=True,
             )
             return
 
-        claim_url = cfg.claim_url
-        poll_interval = max(1, cfg.poll_interval_secs)
+        claim_url = tasks.claim_url
+        poll_interval = max(1, tasks.poll_interval_secs)
         token_file = str(cfg.token_file) if cfg.token_file else ""
-        bearer = api.resolve_executor_token(token_file)
 
         self._stop_event.clear()
         print(
-            f"[hivemoot-task] polling {claim_url} every {poll_interval}s",
+            f"[hivemoot-tasks] polling {claim_url} every {poll_interval}s",
             file=sys.stderr, flush=True,
         )
 
         while not self._stop_event.is_set():
+            # In-flight gate.  Engine's dispatcher is async (enqueues
+            # onto the keyed workqueue, returns before on_job_started
+            # fires); without this block the claim loop would
+            # pre-claim backend tasks faster than the single-worker
+            # queue drains them.  Pre-claimed tasks sit silent in the
+            # queue with no progress posts, and a worker crash or
+            # restart strands them with no terminal state reported
+            # to the backend.  Gate via a plugin-exposed Event:
+            # on_job_finished sets it; we clear it just before
+            # dispatching the next claim.
+            if not self._plugin.wait_task_slot(self._stop_event, timeout=1.0):
+                # Still draining the previous task — loop back to
+                # check the stop event, then wait again.  1s slice
+                # is tight enough for prompt shutdown without burning
+                # CPU.
+                continue
+
+            # Re-resolve the bearer per claim attempt so an operator
+            # rotating HIVEMOOT_AGENT_TOKEN{,_FILE} takes effect
+            # within the next poll_interval_secs rather than waiting
+            # for a process restart.  One tiny file read per poll.
+            bearer = api.resolve_executor_token(token_file)
+
             try:
                 claimed = api.claim_next_task(claim_url, bearer)
             except Exception as exc:
                 print(
-                    f"[hivemoot-task] claim failed: {type(exc).__name__}: {exc}",
+                    f"[hivemoot-tasks] claim failed: {type(exc).__name__}: {exc}",
                     file=sys.stderr, flush=True,
                 )
                 # Wait the full poll interval before retrying so a
@@ -153,7 +158,7 @@ class HivemootTaskTrigger:
                 if claimed.repos else ""
             )
             print(
-                f"[hivemoot-task] claimed task {claimed.task_id}{repo_tag}",
+                f"[hivemoot-tasks] claimed task {claimed.task_id}{repo_tag}",
                 file=sys.stderr, flush=True,
             )
 
@@ -182,14 +187,19 @@ class HivemootTaskTrigger:
                 },
             )
 
+            # Reserve the slot *before* dispatch.  on_job_finished is
+            # the ONLY path that reopens it (including the failure
+            # path — see HivemootPlugin.on_job_finished's finally
+            # block).  Dispatch-failed is the one case we must
+            # reopen manually since the engine never calls the hook.
+            self._plugin.reserve_task_slot()
             ok = dispatcher.dispatch(job)
             if not ok:
                 print(
-                    f"[hivemoot-task] dispatch failed for {claimed.task_id}",
+                    f"[hivemoot-tasks] dispatch failed for {claimed.task_id}",
                     file=sys.stderr, flush=True,
                 )
-            # Either way, immediately try claiming the next task —
-            # backlog should drain as fast as the agent can run.
+                self._plugin.release_task_slot()
 
     def stop(self) -> None:
         self._stop_event.set()

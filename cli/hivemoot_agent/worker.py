@@ -295,7 +295,7 @@ def _prepare_plugin_engine_dispatch() -> None:
     if not os.environ.get("AGENT_PLUGINS"):
         print(
             "AGENT_PLUGINS is required. Set it to the plugin stack "
-            "(e.g. github,hivemoot-github).",
+            "(e.g. github,hivemoot).",
             file=sys.stderr,
         )
         sys.exit(1)

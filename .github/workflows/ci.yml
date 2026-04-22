@@ -62,12 +62,24 @@ jobs:
         run: python3 cli/tests/test_engine_lifecycle.py
       - name: Verify worker entrypoint tests
         run: python3 cli/tests/test_worker_cli.py
-      - name: Verify hivemoot-task plugin API tests
-        run: python3 cli/tests/test_hivemoot_task_api.py
-      - name: Verify hivemoot-task plugin extractor tests
-        run: python3 cli/tests/test_hivemoot_task_extractor.py
-      - name: Verify hivemoot-task plugin trigger + lifecycle tests
-        run: python3 cli/tests/test_hivemoot_task_trigger.py
+      - name: Verify hivemoot plugin config schema
+        run: python3 cli/tests/test_hivemoot_config.py
+      - name: Verify hivemoot plugin lifecycle (tasks + health + in-flight gate)
+        run: python3 cli/tests/test_hivemoot_plugin.py
+      - name: Verify hivemoot bearer token resolution
+        run: python3 cli/tests/test_hivemoot_auth.py
+      - name: Verify hivemoot diagnostic scrubbing
+        run: python3 cli/tests/test_hivemoot_sanitize.py
+      - name: Verify hivemoot tasks API tests
+        run: python3 cli/tests/test_hivemoot_tasks_api.py
+      - name: Verify hivemoot tasks extractor tests
+        run: python3 cli/tests/test_hivemoot_tasks_extractor.py
+      - name: Verify hivemoot tasks trigger (dispatch flow + in-flight gate)
+        run: python3 cli/tests/test_hivemoot_tasks_trigger.py
+      - name: Verify hivemoot health API (heartbeat + run report)
+        run: python3 cli/tests/test_hivemoot_health_api.py
+      - name: Verify hivemoot health heartbeat trigger
+        run: python3 cli/tests/test_hivemoot_health_trigger.py
       - name: Verify dual-source plugin discovery (builtin + external)
         run: python3 cli/tests/test_plugin_discovery.py
       - name: Verify messaging inbound media handling
@@ -164,10 +176,10 @@ jobs:
           grep -qF "AGENT_PLUGINS" "$stderr_file"
 
           # Verify the Python CLI is available and plugin discovery surfaces
-          # the daemon-mode plugins (messaging + hivemoot-task) per ADR-002.
+          # the daemon-mode plugins (messaging + hivemoot) per ADR-002.
           docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | tee /tmp/plugin-list
           grep -qF "messaging" /tmp/plugin-list
-          grep -qF "hivemoot-task" /tmp/plugin-list
+          grep -qF "hivemoot" /tmp/plugin-list
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
         with:

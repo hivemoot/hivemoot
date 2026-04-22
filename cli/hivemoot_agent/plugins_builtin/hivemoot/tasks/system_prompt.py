@@ -1,4 +1,4 @@
-"""System prompt assembly for the hivemoot-task plugin.
+"""System prompt assembly for the hivemoot tasks subsystem.
 
 Deliberately minimal: the task operating-mode prompt lives in
 ``prompts/task.md`` and is repo-agnostic.  The plugin does not know

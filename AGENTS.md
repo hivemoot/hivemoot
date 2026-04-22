@@ -42,11 +42,11 @@ changing the architecture; what follows is a summary.
 
 1. **No `hivemoot-agent <plugin-name> ...` CLI subcommands.** The CLI surface is fixed: `run`, `oneshot`, `worker`, `plugin list`, `plugin doctor`, `doctor`. Adding a plugin must not change argparse.
 2. **No host-side trigger scripts.** All triggers are Python `Trigger` implementations inside their plugin directory.
-3. **No cross-plugin env snooping.** Each plugin reads its own env (`MESSAGING_*`, `AGENT_TASK_*`, `GITHUB_*`, `CRON_*`, etc.) at load time; a plugin MUST NOT read another plugin's config.
+3. **No cross-plugin env snooping.** Each plugin reads its own env (`MESSAGING_*`, `GITHUB_*`, `CRON_*`, `HIVEMOOT_AGENT_TOKEN*`, etc.) at load time; a plugin MUST NOT read another plugin's config.
 
 Reference plugins:
 - `cli/hivemoot_agent/plugins_builtin/messaging/` (Telegram polling, typing, response delivery).
-- `cli/hivemoot_agent/plugins_builtin/hivemoot_task/` (hivemoot.dev API polling, heartbeats, result extraction).
+- `cli/hivemoot_agent/plugins_builtin/hivemoot/` (ecosystem integration — feature-toggled `health` reports, delegated `tasks`, and `github_workflows` contribution mode).
 
 ## Provider and Auth Model
 
