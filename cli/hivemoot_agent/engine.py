@@ -124,6 +124,26 @@ class Engine:
         # can merge system prompts from every plugin, not just the
         # one that triggered the job.
         self._plugins: dict[str, Any] = {}
+        # Per-engine mutex serializing agent subprocess runs across
+        # trigger threads.  Each trigger polls in its own thread and
+        # dispatches jobs via its own _PluginDispatcher, but all those
+        # dispatchers share this engine — so without this lock, two
+        # triggers firing near-simultaneously would spawn two agent
+        # subprocesses in parallel, doubling provider token burn and
+        # racing on the shared workspace clone (gh pr checkout etc.).
+        # Scope is the entire run_agent body so on_job_started /
+        # subprocess / on_job_finished are an atomic unit; no plugin
+        # lifecycle hook can interleave with another job's hook.
+        #
+        # Reentrancy: plugin hooks (on_job_started, on_job_finished)
+        # MUST NOT call back into run_agent on the same thread — this
+        # is a non-reentrant Lock and a recursive call would deadlock
+        # silently.  If a future plugin needs synchronous sub-dispatch
+        # from inside a lifecycle hook, swap to threading.RLock() here.
+        # (RLock has identical semantics for the current call sites —
+        # staying with Lock keeps the "no recursion" invariant explicit
+        # so the deadlock surface stays small and obvious.)
+        self._run_lock = threading.Lock()
 
     def _resolve_plugins(self) -> dict[str, Any] | None:
         """Discover + activate plugins.
@@ -979,7 +999,38 @@ class Engine:
         config: PluginConfig,
         plugin_name: str,
     ) -> AgentResult:
-        """Run the agent with MCP tools from the plugin."""
+        """Run the agent with MCP tools from the plugin.
+
+        Serialized across trigger threads via ``self._run_lock`` — at
+        most one agent subprocess runs at a time per engine.  Callers
+        dispatching from multiple triggers concurrently will block on
+        the lock until the in-flight run completes, then proceed in
+        acquisition order.
+        """
+        # Log when a dispatch is queued behind an in-flight run so
+        # operators can see the serialization rather than attributing
+        # the latency to a slow provider.
+        if not self._run_lock.acquire(blocking=False):
+            print(
+                f"[engine] dispatch for {plugin_name} queued "
+                f"(session={job.session_key}); "
+                f"another run holds the engine lock",
+                file=sys.stderr, flush=True,
+            )
+            self._run_lock.acquire()
+        try:
+            return self._run_agent_locked(plugin, job, config, plugin_name)
+        finally:
+            self._run_lock.release()
+
+    def _run_agent_locked(
+        self,
+        plugin: Any,
+        job: Job,
+        config: PluginConfig,
+        plugin_name: str,
+    ) -> AgentResult:
+        """Body of run_agent — runs under ``self._run_lock``."""
         job_repo = config.get("GITHUB_REPOS", "") or ""
         system_prompt = _append_agent_memory(self._build_system_prompt(), repo=job_repo)
         provider_name = config.get("AGENT_PROVIDER", "claude")

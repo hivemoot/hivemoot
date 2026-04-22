@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -229,6 +231,132 @@ class FinishedRunsOnExceptionTest(unittest.TestCase):
             )
             # The bare-failure result lets the plugin's failure-path post.
             self.assertIn("exit=1", finished_events[0])
+
+
+class ConcurrentDispatchSerializedTest(unittest.TestCase):
+    """Per-engine mutex serializes run_agent across trigger threads.
+
+    Multiple triggers (mentions + review-requests + new-prs) poll in
+    their own threads and dispatch jobs via separate _PluginDispatcher
+    instances, but they all share one Engine.  Without serialization,
+    two near-simultaneous events spawn two agent subprocesses at once
+    — doubling provider token burn and racing on the shared workspace
+    clone.  This test fires two concurrent run_agent calls and asserts
+    their critical sections (between on_job_started and on_job_finished)
+    do not interleave.
+    """
+
+    def test_two_concurrent_dispatches_run_serially(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = _make_engine(tmp)
+            plugin = _OrderingPlugin()
+
+            # Events captured with enough precision to assert interleave.
+            # Each run records "start:N" → "end:N"; serialization means
+            # every "end:N" is followed by the next "start:M", never
+            # "start:A", "start:B", "end:A", "end:B".
+            events: list[str] = []
+            events_lock = threading.Lock()
+            first_in_subprocess = threading.Event()
+            release_first = threading.Event()
+            run_counter = {"n": 0}
+
+            def fake_subprocess(*args, **kwargs):
+                with events_lock:
+                    run_counter["n"] += 1
+                    n = run_counter["n"]
+                    events.append(f"start:{n}")
+                if n == 1:
+                    # Hold the lock until the test releases us — gives
+                    # the second thread time to block on the mutex.
+                    first_in_subprocess.set()
+                    release_first.wait(timeout=5.0)
+                with events_lock:
+                    events.append(f"end:{n}")
+                return (0, "")
+
+            def fire() -> None:
+                engine.run_agent(
+                    plugin, _make_job(), _config(tmp), "ordering",
+                )
+
+            with patch.object(
+                engine, "_build_provider_cmd", return_value=["true"],
+            ), patch.object(
+                engine, "_run_subprocess", side_effect=fake_subprocess,
+            ), patch.object(
+                engine, "_resolve_skill_runtime",
+                return_value=MagicMock(
+                    plugin_dir="", scope_json="", prompt_skills="",
+                ),
+            ), patch.object(engine, "_cleanup_skill_runtime"), \
+                    patch.object(engine, "_build_mcp_config", return_value=""), \
+                    patch.object(engine, "_init_session_store"):
+
+                t1 = threading.Thread(target=fire)
+                t2 = threading.Thread(target=fire)
+                t1.start()
+                # Wait for the first run to reach the subprocess stage
+                # before starting the second — makes the race reliable.
+                self.assertTrue(
+                    first_in_subprocess.wait(timeout=2.0),
+                    "first dispatch never reached subprocess stage",
+                )
+                t2.start()
+                # Second thread must now be blocked on the engine lock.
+                # Give it a beat to actually block (scheduling latency),
+                # then assert it hasn't entered the subprocess yet.
+                time.sleep(0.1)
+                with events_lock:
+                    self.assertEqual(
+                        len(events), 1,
+                        f"second dispatch started before first finished: "
+                        f"events={events}",
+                    )
+                release_first.set()
+                t1.join(timeout=2.0)
+                t2.join(timeout=2.0)
+
+            # Strict ordering: start/end of run 1 come before start/end of run 2.
+            self.assertEqual(
+                events, ["start:1", "end:1", "start:2", "end:2"],
+                "run_agent must serialize concurrent dispatches via the "
+                "per-engine lock",
+            )
+
+    def test_lock_released_on_exception(self) -> None:
+        """A raise inside run_agent still releases the lock."""
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = _make_engine(tmp)
+            plugin = _OrderingPlugin()
+
+            def boom(*args, **kwargs):
+                raise RuntimeError("simulated failure inside locked region")
+
+            with patch.object(
+                engine, "_build_provider_cmd", return_value=["true"],
+            ), patch.object(engine, "_run_subprocess", side_effect=boom), \
+                    patch.object(
+                        engine, "_resolve_skill_runtime",
+                        return_value=MagicMock(
+                            plugin_dir="", scope_json="", prompt_skills="",
+                        ),
+                    ), \
+                    patch.object(engine, "_cleanup_skill_runtime"), \
+                    patch.object(engine, "_build_mcp_config", return_value=""), \
+                    patch.object(engine, "_init_session_store"):
+                with self.assertRaises(RuntimeError):
+                    engine.run_agent(
+                        plugin, _make_job(), _config(tmp), "ordering",
+                    )
+
+            # Lock must be free now — otherwise subsequent dispatches
+            # would hang indefinitely.
+            self.assertTrue(
+                engine._run_lock.acquire(blocking=False),
+                "engine lock leaked after run_agent raised",
+            )
+            engine._run_lock.release()
 
 
 if __name__ == "__main__":
