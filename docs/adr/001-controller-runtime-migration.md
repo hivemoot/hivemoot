@@ -1,6 +1,9 @@
 # ADR-001: Controller Runtime Migration
 
-**Status:** Accepted
+**Status:** Superseded by ADR-002.  The shell controller this ADR
+migrated from was fully retired by the in-process plugin engine
+(`cli/hivemoot_agent/engine.py`) and its workqueue/coalescing layer.
+Retained as a historical record of the shell-era architecture.
 **Date:** 2026-02-20
 **Issue:** [#89](https://github.com/hivemoot/hivemoot-agent/issues/89)
 

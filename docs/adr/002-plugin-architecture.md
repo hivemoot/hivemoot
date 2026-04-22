@@ -1,6 +1,11 @@
 # ADR-002: Plugin Architecture — host is plugin-agnostic
 
-**Status:** Accepted
+**Status:** Accepted, extended by the ADR-003 typed-config migration
+(PRs #586 / #598) and the coalescing-workqueue layer (PR #606).
+Env-var plugin activation (``AGENT_PLUGINS``) and env-gated watch
+triggers (``GITHUB_WATCH_*``) described in this document were moved
+to ``hivemoot.yaml`` under a typed Pydantic schema; see the github
+and hivemoot-github plugins' ``config.py`` for the current shape.
 **Date:** 2026-04-18
 
 ## Context
