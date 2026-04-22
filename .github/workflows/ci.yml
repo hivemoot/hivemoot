@@ -82,6 +82,10 @@ jobs:
         run: python3 cli/tests/test_github_pr_watcher.py
       - name: Verify github watch triggers + plugin ack lifecycle
         run: python3 cli/tests/test_github_trigger.py
+      - name: Verify keyed workqueue (coalescing + concurrency)
+        run: python3 cli/tests/test_workqueue.py
+      - name: Verify engine coalescing integration
+        run: python3 cli/tests/test_engine_coalescing.py
       - name: Verify all test scripts have executable bit
         run: bash scripts/test-script-executable-bits.sh
 

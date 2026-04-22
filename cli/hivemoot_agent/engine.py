@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,7 @@ from hivemoot_agent.sessions import (
     build_scoped_key,
     create_session_store,
 )
+from hivemoot_agent.workqueue import WorkQueue
 
 _RESUME_STALENESS_NOTE = (
     "You are resuming a prior session. Some data in your context "
@@ -124,26 +126,23 @@ class Engine:
         # can merge system prompts from every plugin, not just the
         # one that triggered the job.
         self._plugins: dict[str, Any] = {}
-        # Per-engine mutex serializing agent subprocess runs across
-        # trigger threads.  Each trigger polls in its own thread and
-        # dispatches jobs via its own _PluginDispatcher, but all those
-        # dispatchers share this engine — so without this lock, two
-        # triggers firing near-simultaneously would spawn two agent
-        # subprocesses in parallel, doubling provider token burn and
-        # racing on the shared workspace clone (gh pr checkout etc.).
-        # Scope is the entire run_agent body so on_job_started /
-        # subprocess / on_job_finished are an atomic unit; no plugin
-        # lifecycle hook can interleave with another job's hook.
+        # Coalescing workqueue — triggers enqueue (plugin, job, config,
+        # plugin_name) tuples keyed by a plugin-chosen coalesce_key.
+        # A single worker thread drains the queue and calls run_agent
+        # once per pop, merging acks across coalesced payloads.
         #
-        # Reentrancy: plugin hooks (on_job_started, on_job_finished)
-        # MUST NOT call back into run_agent on the same thread — this
-        # is a non-reentrant Lock and a recursive call would deadlock
-        # silently.  If a future plugin needs synchronous sub-dispatch
-        # from inside a lifecycle hook, swap to threading.RLock() here.
-        # (RLock has identical semantics for the current call sites —
-        # staying with Lock keeps the "no recursion" invariant explicit
-        # so the deadlock surface stays small and obvious.)
-        self._run_lock = threading.Lock()
+        # The single-worker model is what gives us "one subprocess at
+        # a time" — there's no secondary mutex around run_agent
+        # because there doesn't need to be: the worker is the only
+        # run_agent caller during daemon operation, and oneshot() is
+        # single-threaded by construction.  If a future change adds a
+        # worker pool (N>1), a run-level lock OR a per-key lock will
+        # be required again to prevent the shared-workspace race on
+        # ``gh pr checkout``.
+        #
+        # See workqueue.py for the queue semantics.
+        self._workqueue: WorkQueue = WorkQueue()
+        self._worker_thread: threading.Thread | None = None
 
     def _resolve_plugins(self) -> dict[str, Any] | None:
         """Discover + activate plugins.
@@ -348,6 +347,23 @@ class Engine:
         first_config = registry.config_for(next(iter(enabled)))
         self._init_session_store(first_config)
 
+        # Start the workqueue drain thread.  Triggers enqueue jobs via
+        # _PluginDispatcher.dispatch; this single worker pops them and
+        # runs the agent.  One worker is deliberate: it gives the same
+        # "one subprocess at a time" guarantee as the per-engine lock
+        # from #605, and it's what makes coalescing actually reduce
+        # runs (multiple workers would process different keys in
+        # parallel — fine semantically, but reintroduces the workspace-
+        # clone race).  Make worker count configurable in a follow-up
+        # if a specific agent needs more throughput and accepts the
+        # races.
+        self._worker_thread = threading.Thread(
+            target=self._drain_workqueue,
+            name="engine-workqueue",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
         # Start triggers in background threads.
         threads: list[threading.Thread] = []
         triggers: list[Any] = []
@@ -391,8 +407,16 @@ class Engine:
         self._running = False
         for trigger in triggers:
             trigger.stop()
+        # Shut down the workqueue before joining trigger threads so
+        # any in-flight trigger.dispatch call sees RuntimeError and
+        # exits its poll loop; then the worker thread returns from
+        # its parked get() and exits.
+        self._workqueue.shutdown()
         for t in threads:
             t.join(timeout=5)
+        if self._worker_thread:
+            self._worker_thread.join(timeout=30)
+            self._worker_thread = None
 
         return 0
 
@@ -632,6 +656,129 @@ class Engine:
         except Exception as exc:
             print(f"[engine] oneshot failed: {exc}", file=sys.stderr, flush=True)
             return 1, ""
+
+    def enqueue(
+        self,
+        coalesce_key: str,
+        plugin: Any,
+        job: Job,
+        config: PluginConfig,
+        plugin_name: str,
+    ) -> bool:
+        """Enqueue a job under ``coalesce_key`` for the worker thread.
+
+        Returns True if the job was accepted into the queue, False if
+        the queue is shut down (e.g. engine is tearing down).  Unlike
+        the pre-coalescing synchronous dispatch this does NOT block
+        on the agent run — callers cannot observe run success here.
+        Success is reflected later via the plugin's on_job_finished
+        hook (which is still called synchronously with the run result
+        inside the worker thread).
+        """
+        try:
+            self._workqueue.add(
+                coalesce_key, (plugin, job, config, plugin_name),
+            )
+            return True
+        except RuntimeError:
+            # WorkQueue shut down — engine is stopping.
+            return False
+
+    def _drain_workqueue(self) -> None:
+        """Worker thread: pop coalesced payloads, run agent, merge acks.
+
+        Runs until the queue is shut down.  Each pop yields a
+        ``(coalesce_key, payloads)`` pair where ``payloads`` is a list
+        of (plugin, job, config, plugin_name) tuples — one per event
+        that accumulated under the same key.
+
+        Coalescing policy: **latest wins** for the prompt + config.
+        When multiple events coalesce, the job from the most-recent
+        payload drives the agent run.  The earlier events' ack metadata
+        is collected into ``github_watch.acks`` so on_job_finished can
+        ack every source event on success.  Failure → no acks (all
+        events replay on next poll).
+
+        All events in the coalesced set MUST belong to the same plugin
+        — coalesce_keys are plugin-chosen so this is an invariant of
+        the caller, not defensively enforced here.
+        """
+        while self._running:
+            item = self._workqueue.get(timeout=1.0)
+            if item is None:
+                # Either shutdown or timeout — loop tests _running.
+                continue
+            coalesce_key, payloads = item
+            try:
+                self._process_coalesced_payloads(coalesce_key, payloads)
+            except Exception as exc:
+                # Never let an unhandled exception in one job crash
+                # the drain loop — that would silently halt all
+                # subsequent trigger dispatches.
+                print(
+                    f"[engine] workqueue drain for key={coalesce_key} "
+                    f"raised {type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+            finally:
+                self._workqueue.done(coalesce_key)
+
+    def _process_coalesced_payloads(
+        self,
+        coalesce_key: str,
+        payloads: list[Any],
+    ) -> None:
+        """Run the agent once with the latest job, acking every source event.
+
+        See _drain_workqueue docstring for the coalescing policy.
+        """
+        if not payloads:
+            return
+        # Latest wins: the most recently enqueued payload carries the
+        # job + plugin + config the worker will execute with.
+        plugin, latest_job, config, plugin_name = payloads[-1]
+
+        # Collect every source event's ack metadata so on_job_finished
+        # can ack them all.  Preserve order (oldest first) — it matches
+        # how they'd be acked if we'd run each event individually.
+        merged_acks: list[dict[str, Any]] = []
+        for _p, j, _c, _n in payloads:
+            ack = (j.metadata or {}).get("github_watch")
+            if isinstance(ack, dict):
+                merged_acks.append({
+                    "ack_strategy": ack.get("ack_strategy", "notification"),
+                    "ack_key": ack.get("ack_key", ""),
+                    "state_file": ack.get("state_file", ""),
+                    "trigger": ack.get("trigger", ""),
+                })
+
+        # Inject merged_acks into the latest job's github_watch block
+        # so the plugin's on_job_finished hook iterates and acks each.
+        # Copy before mutating so the original Job (held by trigger
+        # metadata, maybe in logs) stays untouched.
+        if merged_acks:
+            new_metadata = dict(latest_job.metadata or {})
+            new_gw = dict(new_metadata.get("github_watch") or {})
+            new_gw["acks"] = merged_acks
+            new_metadata["github_watch"] = new_gw
+            latest_job = Job(
+                session_key=latest_job.session_key,
+                prompt=latest_job.prompt,
+                metadata=new_metadata,
+            )
+
+        if len(payloads) > 1:
+            triggers = [
+                (j.metadata or {}).get("github_watch", {}).get("trigger", "?")
+                for _p, j, _c, _n in payloads
+            ]
+            print(
+                f"[engine] coalesced {len(payloads)} events for "
+                f"key={coalesce_key} triggers={triggers}",
+                file=sys.stderr, flush=True,
+            )
+
+        self.run_agent(plugin, latest_job, config, plugin_name)
 
     def _run_trigger(
         self,
@@ -1001,36 +1148,20 @@ class Engine:
     ) -> AgentResult:
         """Run the agent with MCP tools from the plugin.
 
-        Serialized across trigger threads via ``self._run_lock`` — at
-        most one agent subprocess runs at a time per engine.  Callers
-        dispatching from multiple triggers concurrently will block on
-        the lock until the in-flight run completes, then proceed in
-        acquisition order.
-        """
-        # Log when a dispatch is queued behind an in-flight run so
-        # operators can see the serialization rather than attributing
-        # the latency to a slow provider.
-        if not self._run_lock.acquire(blocking=False):
-            print(
-                f"[engine] dispatch for {plugin_name} queued "
-                f"(session={job.session_key}); "
-                f"another run holds the engine lock",
-                file=sys.stderr, flush=True,
-            )
-            self._run_lock.acquire()
-        try:
-            return self._run_agent_locked(plugin, job, config, plugin_name)
-        finally:
-            self._run_lock.release()
+        Under daemon operation (``Engine.run``), this is called
+        exclusively from the single workqueue drain thread — the
+        "one subprocess at a time" guarantee comes from being the
+        only caller, not from a mutex.  Under ``oneshot()`` it runs
+        directly on the caller's thread; that path is single-threaded
+        by construction.
 
-    def _run_agent_locked(
-        self,
-        plugin: Any,
-        job: Job,
-        config: PluginConfig,
-        plugin_name: str,
-    ) -> AgentResult:
-        """Body of run_agent — runs under ``self._run_lock``."""
+        NOT thread-safe against concurrent invocations from multiple
+        threads — it mutates process env (``AGENT_LAST_RUN_LOG``,
+        ``GH_TOKEN``) and the shared session store.  If a future
+        change adds a worker pool (N>1 drain threads), add a lock
+        here OR move to per-key locks so the shared-workspace race
+        on ``gh pr checkout`` stays covered.
+        """
         job_repo = config.get("GITHUB_REPOS", "") or ""
         system_prompt = _append_agent_memory(self._build_system_prompt(), repo=job_repo)
         provider_name = config.get("AGENT_PROVIDER", "claude")
@@ -1602,7 +1733,44 @@ def _append_agent_memory(system_prompt: str, repo: str = "") -> str:
 
 
 class _PluginDispatcher:
-    """JobDispatcher that runs the agent via the engine."""
+    """JobDispatcher that enqueues agent runs onto the engine's workqueue.
+
+    Previously this called ``engine.run_agent`` synchronously and
+    returned True on success.  With the keyed workqueue in place,
+    dispatch now enqueues the job — a single worker thread drains
+    the queue and runs the agent, merging coalesced events' acks.
+
+    **Return semantic shift**: True means "enqueued for execution",
+    not "succeeded".  Existing callers use the return value for log
+    lines ("ok, offset→N" vs "dispatch failed") — that log now reads
+    as "submitted" rather than "completed", which is the correct
+    operator framing for an async dispatch anyway.  Actual success
+    is observed via the plugin's on_job_finished hook.
+
+    **Coalescing is strictly opt-in** via ``job.metadata["coalesce_key"]``:
+
+      * Key present → the dispatcher namespaces it with ``plugin_name``
+        (preventing cross-plugin key collisions that would otherwise
+        merge unrelated plugins' payloads) and enqueues under the
+        resulting key.  Multiple events with the same namespaced key
+        coalesce into one agent run — safe when the plugin's prompts
+        are level-triggered (the agent re-reads the state on each run,
+        so a merged set of events produces identical behavior to a
+        single event).
+
+      * Key absent → the dispatcher generates a unique per-event key
+        (``<plugin>::<session_key>:<uuid>``) so each dispatch gets its
+        own queue entry and its own agent run.  This preserves the
+        every-event-is-its-own-run semantic that edge-triggered
+        plugins (messaging, where each chat message is a discrete
+        utterance and MUST NOT be dropped by a latest-wins coalesce)
+        depend on.
+
+    The namespace prefix and unique-event fallback are dispatcher
+    invariants, NOT plugin responsibilities — plugins pick a stable
+    key when they want coalescing and leave metadata alone when they
+    don't, and the dispatcher ensures collisions can't happen.
+    """
 
     def __init__(
         self, engine: Engine, plugin: Any, config: PluginConfig,
@@ -1614,11 +1782,27 @@ class _PluginDispatcher:
         self._plugin_name = plugin_name
 
     def dispatch(self, job: Job) -> bool:
-        try:
-            result = self._engine.run_agent(
-                self._plugin, job, self._config, self._plugin_name
+        raw_key = ""
+        if job.metadata:
+            raw_key = str(job.metadata.get("coalesce_key") or "").strip()
+
+        if raw_key:
+            # Opt-in coalescing: namespace by plugin_name so two plugins
+            # that happen to choose identical keys can never merge.
+            namespaced_key = f"{self._plugin_name}::{raw_key}"
+        else:
+            # No coalescing requested — generate a unique key per event
+            # so the workqueue treats each dispatch as its own unit.
+            # Retain session_key in the human-readable prefix for
+            # log/debug traceability; the uuid suffix guarantees
+            # uniqueness without depending on monotonic clocks or
+            # per-key counters.
+            session = job.session_key or "anon"
+            namespaced_key = (
+                f"{self._plugin_name}::{session}:{uuid.uuid4().hex[:8]}"
             )
-            return result.exit_code == 0
-        except Exception as exc:
-            print(f"[engine] dispatch failed: {exc}", file=sys.stderr)
-            return False
+
+        return self._engine.enqueue(
+            namespaced_key,
+            self._plugin, job, self._config, self._plugin_name,
+        )

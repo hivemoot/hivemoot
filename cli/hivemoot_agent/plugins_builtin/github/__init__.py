@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hivemoot_agent.plugins.interfaces import (
     AgentResult,
@@ -280,23 +280,60 @@ class GitHubPlugin:
             )
             return
 
-        ack_key = str(watch_meta.get("ack_key") or "")
-        state_file = str(watch_meta.get("state_file") or "")
-        ack_strategy = str(watch_meta.get("ack_strategy") or "notification")
-
-        if ack_strategy == "notification":
-            gh_token = _read_token(config.typed) if config.typed else ""
-            ack_module.ack_event(ack_key, state_file, gh_token)
+        # Coalesced path: the engine merged multiple events' ack
+        # metadata into watch_meta["acks"] (a list of dicts), one per
+        # source event.  Ack each one — a single flaky ack is logged
+        # but does NOT abort the remaining acks, so one wedged state
+        # file can't leave the other notifications unread.
+        acks = watch_meta.get("acks")
+        if isinstance(acks, list) and acks:
+            for ack in acks:
+                if isinstance(ack, dict):
+                    self._perform_ack(ack, config)
             return
-        if ack_strategy == "new_pr":
-            pr_watcher.ack_new_pr(ack_key, state_file)
+
+        # Legacy / single-event path: fall back to the top-level fields.
+        # Kept so any job built without the coalesced-acks list (tests,
+        # non-engine direct calls, future plugins) still acks correctly.
+        self._perform_ack(watch_meta, config)
+
+    def _perform_ack(
+        self,
+        ack: dict[str, Any],
+        config: PluginConfig,
+    ) -> None:
+        """Dispatch one ack by strategy; swallow errors per-ack.
+
+        Any exception from the underlying ack helper is logged and
+        swallowed so a single flaky ack does not cancel the rest of
+        the coalesced set.  The notification stays unread → next poll
+        re-emits → retried.
+        """
+        ack_key = str(ack.get("ack_key") or "")
+        state_file = str(ack.get("state_file") or "")
+        ack_strategy = str(ack.get("ack_strategy") or "notification")
+        trigger = str(ack.get("trigger") or "github-watch")
+        if not ack_key or not state_file:
             return
 
-        print(
-            f"[{watch_meta.get('trigger', 'github-watch')}] "
-            f"unknown ack strategy: {ack_strategy}",
-            file=sys.stderr, flush=True,
-        )
+        try:
+            if ack_strategy == "notification":
+                gh_token = _read_token(config.typed) if config.typed else ""
+                ack_module.ack_event(ack_key, state_file, gh_token)
+                return
+            if ack_strategy == "new_pr":
+                pr_watcher.ack_new_pr(ack_key, state_file)
+                return
+            print(
+                f"[{trigger}] unknown ack strategy: {ack_strategy}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[{trigger}] ack failed (key={ack_key}): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
 
 
 def create_plugin() -> Plugin:

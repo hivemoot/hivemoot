@@ -504,6 +504,97 @@ class PluginAckLifecycleTests(unittest.TestCase):
             )
         ack.assert_not_called()
 
+    def test_coalesced_acks_list_processes_every_ack(self) -> None:
+        """When the engine coalesces N events, on_job_finished acks all N."""
+        plugin = create_plugin()
+        job = Job(
+            session_key="sess",
+            prompt="hi",
+            metadata={"github_watch": {
+                "trigger": "github-mention",
+                "acks": [
+                    {"ack_strategy": "notification", "ack_key": "a1",
+                     "state_file": "/s/mentions.json", "trigger": "m"},
+                    {"ack_strategy": "notification", "ack_key": "a2",
+                     "state_file": "/s/mentions.json", "trigger": "m"},
+                    {"ack_strategy": "new_pr", "ack_key": "42",
+                     "state_file": "/s/new-prs.json", "trigger": "n"},
+                ],
+            }},
+        )
+        result = AgentResult(exit_code=0, response="ok")
+        with tempfile.TemporaryDirectory(prefix="hm-gh-ack-") as tmpdir, patch(
+            "hivemoot_agent.plugins_builtin.github.ack_module.ack_event",
+            return_value=True,
+        ) as ack_ev, patch(
+            "hivemoot_agent.plugins_builtin.github.pr_watcher.ack_new_pr",
+            return_value=True,
+        ) as ack_new:
+            plugin.on_job_finished(
+                job, result, self._plugin_config(tmpdir),
+            )
+        # Two notification acks + one new-pr ack = all three attempted.
+        self.assertEqual(ack_ev.call_count, 2)
+        self.assertEqual(ack_new.call_count, 1)
+        self.assertEqual(
+            sorted(c.args[0] for c in ack_ev.call_args_list),
+            ["a1", "a2"],
+        )
+
+    def test_flaky_ack_does_not_abort_remaining_acks(self) -> None:
+        """Guard-requested invariant: one raising ack must not cancel the rest.
+
+        The plugin's _perform_ack wraps each ack in try/except — a
+        single flaky ack logs and falls through so the remaining
+        events still get acked.  Without this, one bad state file or
+        one GitHub 5xx could leave arbitrarily many notifications
+        unread (and thus replaying on every poll).
+        """
+        plugin = create_plugin()
+        job = Job(
+            session_key="sess",
+            prompt="hi",
+            metadata={"github_watch": {
+                "trigger": "github-mention",
+                "acks": [
+                    {"ack_strategy": "notification", "ack_key": "a1",
+                     "state_file": "/s/x.json", "trigger": "m"},
+                    {"ack_strategy": "notification", "ack_key": "a2",
+                     "state_file": "/s/x.json", "trigger": "m"},
+                    {"ack_strategy": "notification", "ack_key": "a3",
+                     "state_file": "/s/x.json", "trigger": "m"},
+                ],
+            }},
+        )
+        result = AgentResult(exit_code=0, response="ok")
+
+        # Second ack raises; first + third must still be attempted.
+        call_order: list[str] = []
+
+        def fake_ack_event(ack_key, state_file, gh_token):
+            call_order.append(ack_key)
+            if ack_key == "a2":
+                raise RuntimeError("simulated ack network failure")
+            return True
+
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="hm-gh-ack-") as tmpdir, patch(
+            "hivemoot_agent.plugins_builtin.github.ack_module.ack_event",
+            side_effect=fake_ack_event,
+        ), patch("sys.stderr", buf):
+            plugin.on_job_finished(
+                job, result, self._plugin_config(tmpdir),
+            )
+
+        # All three acks attempted — the failure at a2 MUST NOT skip a3.
+        self.assertEqual(
+            call_order, ["a1", "a2", "a3"],
+            f"flaky ack aborted the list: got call_order={call_order}",
+        )
+        # The failure was logged to stderr so operators can see it.
+        self.assertIn("ack failed", buf.getvalue())
+        self.assertIn("a2", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -218,18 +218,30 @@ class _GitHubWatchTrigger:
             for event in events:
                 if self._stop_event.is_set():
                     break
-                self._dispatch_event(event, state_file, dispatcher)
+                self._dispatch_event(event, repo, state_file, dispatcher)
 
             self._stop_event.wait(poll_interval)
+
+    def _coalesce_key(self, event: Any, repo: str) -> str:
+        """Coalescing key — subclasses override to opt in to merging.
+
+        Default: session_key-based, so each session gets its own
+        coalesce key (effectively no cross-event coalescing).
+        Subclasses (mentions per-thread, review+new-pr per-PR) return
+        a stable key to enable dedup + ack merging in the engine.
+        """
+        return self._session_key(event)
 
     def _dispatch_event(
         self,
         event: Any,
+        repo: str,
         state_file: str,
         dispatcher: JobDispatcher,
     ) -> None:
         prompt_body = self._build_prompt(event)
         session_key = self._session_key(event)
+        coalesce_key = self._coalesce_key(event, repo)
         ack_key = event.ack_key
 
         print(
@@ -244,6 +256,7 @@ class _GitHubWatchTrigger:
             session_key=session_key,
             prompt=prompt_body,
             metadata={
+                "coalesce_key": coalesce_key,
                 "github_watch": {
                     "trigger": self.name,
                     "ack_strategy": self._ack_strategy(),
@@ -282,6 +295,21 @@ class GitHubMentionsTrigger(_GitHubWatchTrigger):
         # collapsing distinct events into one resumed session.
         return f"mention:{event.ack_key or 'unknown'}"
 
+    def _coalesce_key(
+        self, event: watcher.WatchEvent, repo: str,
+    ) -> str:
+        """Coalesce per-thread — rapid-fire mentions in one thread merge.
+
+        NOT per-PR — a mention thread is its own conversation unit and
+        may live inside an issue (not a PR) or span multiple comments;
+        coalescing by PR would conflate distinct threads on the same PR.
+        """
+        if event.thread_id:
+            return f"{repo}:mention-thread:{event.thread_id}"
+        if event.number:
+            return f"{repo}:mention-number:{event.number}"
+        return f"{repo}:mention:{event.ack_key or 'unknown'}"
+
 
 class GitHubReviewRequestsTrigger(_GitHubWatchTrigger):
     name = "github-review-request"
@@ -297,6 +325,20 @@ class GitHubReviewRequestsTrigger(_GitHubWatchTrigger):
         if event.number:
             return f"review-pr:{event.number}"
         return f"review:{event.ack_key or 'unknown'}"
+
+    def _coalesce_key(
+        self, event: watcher.WatchEvent, repo: str,
+    ) -> str:
+        """Coalesce per-PR — shared with new-PR events for the same PR.
+
+        "Someone opened #42 AND assigned guard as reviewer" is a common
+        human workflow; the two events merge into a single review run
+        because the prompts are level-triggered (agent reads the PR
+        state fresh) and the ack list preserves both notifications.
+        """
+        if event.number:
+            return f"{repo}:pr:{event.number}"
+        return f"{repo}:review:{event.ack_key or 'unknown'}"
 
 
 class GitHubNewPullRequestsTrigger(_GitHubWatchTrigger):
@@ -314,6 +356,17 @@ class GitHubNewPullRequestsTrigger(_GitHubWatchTrigger):
         if event.number:
             return f"new-pr:{event.number}"
         return f"new-pr:{event.ack_key or 'unknown'}"
+
+    def _coalesce_key(
+        self, event: pr_watcher.PullRequestEvent, repo: str,
+    ) -> str:
+        """Coalesce per-PR — shared with review-request events.
+
+        See GitHubReviewRequestsTrigger._coalesce_key for the rationale.
+        """
+        if event.number:
+            return f"{repo}:pr:{event.number}"
+        return f"{repo}:new-pr:{event.ack_key or 'unknown'}"
 
     def _ack_strategy(self) -> str:
         return "new_pr"
