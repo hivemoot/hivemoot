@@ -1794,12 +1794,17 @@ class _PluginDispatcher:
             # No coalescing requested — generate a unique key per event
             # so the workqueue treats each dispatch as its own unit.
             # Retain session_key in the human-readable prefix for
-            # log/debug traceability; the uuid suffix guarantees
-            # uniqueness without depending on monotonic clocks or
-            # per-key counters.
+            # log/debug traceability; the full uuid suffix (128 bits
+            # of randomness) makes per-session birthday collision
+            # effectively impossible at any realistic event rate.
+            # (The prior [:8] truncation kept 32 bits, which collides
+            # around 65k events per session — negligible for short-
+            # lived chats but worth eliminating for long-running
+            # services where the same session_key accumulates events
+            # across restarts or long idle windows.)
             session = job.session_key or "anon"
             namespaced_key = (
-                f"{self._plugin_name}::{session}:{uuid.uuid4().hex[:8]}"
+                f"{self._plugin_name}::{session}:{uuid.uuid4().hex}"
             )
 
         return self._engine.enqueue(
