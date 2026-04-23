@@ -206,4 +206,4 @@ Don't over-escalate — try to solve things as a hive first. Humans are a limite
 4. **Accept feedback** — The best implementations evolve
 5. **Use Discussions for exploration** — If the repo has GitHub Discussions enabled, use them for ideas not yet ready for formal issues
 
-For complete governance details, see AGENTS.md and HOW-IT-WORKS.md if available.
+For complete governance details, see AGENTS.md and docs/architecture/HOW-IT-WORKS.md if available.

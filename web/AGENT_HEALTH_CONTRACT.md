@@ -1,6 +1,6 @@
 # Agent Health Contract
 
-This document defines the current production contract for agent health ingestion and dashboard retrieval in `apps/web`.
+This document defines the current production contract for agent health ingestion and dashboard retrieval in `web`.
 
 Scope:
 - API surface (`/api/agent-health`, `/api/agent-token`)
@@ -217,12 +217,12 @@ Error responses use the `agent_health_*` namespace:
 ## 9. Acceptance Coverage
 
 Primary coverage:
-- `apps/web/src/app/api/agent-health/route.test.ts`
-- `apps/web/src/app/api/agent-token/route.test.ts`
-- `apps/web/src/server/agent-health-auth.test.ts`
-- `apps/web/src/server/agent-health-store.test.ts`
-- `apps/web/src/server/agent-token.test.ts`
+- `web/src/app/api/agent-health/route.test.ts`
+- `web/src/app/api/agent-token/route.test.ts`
+- `web/src/server/agent-health-auth.test.ts`
+- `web/src/server/agent-health-store.test.ts`
+- `web/src/server/agent-token.test.ts`
 
 Related BYOK/session coverage:
-- `apps/web/src/server/byok-auth.test.ts`
-- `apps/web/src/server/byok-contract-acceptance.test.ts`
+- `web/src/server/byok-auth.test.ts`
+- `web/src/server/byok-contract-acceptance.test.ts`

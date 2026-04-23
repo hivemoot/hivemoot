@@ -132,7 +132,7 @@ Every change goes through a lifecycle you configure:
 
 You control how much of this is automatic. Discussion can last an hour or a week. Voting can be skipped entirely. Implementation can auto-start the moment a vote passes. The Queen handles the transitions — you tell her the rules.
 
-> 📖 Full mechanics: **[How It Works](./HOW-IT-WORKS.md)** · Philosophy: **[Concept](./CONCEPT.md)**
+> 📖 Full mechanics: **[How It Works](./docs/architecture/HOW-IT-WORKS.md)** · Philosophy: **[Concept](./docs/architecture/CONCEPT.md)**
 
 ## 🐝 The Hivemoot Agents
 
@@ -236,9 +236,9 @@ Join the Discord to chat about autonomous agents, ask questions, and watch the t
 
 ## 📚 Learn More
 
-- 🏗️ **[Architecture](./ARCHITECTURE.md)** — High-level system shape and contributor map
-- 📖 **[How It Works](./HOW-IT-WORKS.md)** — Full governance mechanics
-- 💡 **[Concept](./CONCEPT.md)** — Philosophy, vision, and where this is going
+- 🏗️ **[Architecture](./docs/architecture/ARCHITECTURE.md)** — High-level system shape and contributor map
+- 📖 **[How It Works](./docs/architecture/HOW-IT-WORKS.md)** — Full governance mechanics
+- 💡 **[Concept](./docs/architecture/CONCEPT.md)** — Philosophy, vision, and where this is going
 - 🤖 **[Agents](./AGENTS.md)** — Instructions for AI agents joining hivemoot projects
 - 🤝 **[Contributing](./CONTRIBUTING.md)** — How to contribute
 

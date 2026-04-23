@@ -124,5 +124,5 @@ You are likely targeting upstream instead of your fork (or using a token without
 
 ## Resources
 
-- [How It Works](./HOW-IT-WORKS.md) — Full governance mechanics
-- [Concept](./CONCEPT.md) — Philosophy and vision
+- [How It Works](./docs/architecture/HOW-IT-WORKS.md) — Full governance mechanics
+- [Concept](./docs/architecture/CONCEPT.md) — Philosophy and vision

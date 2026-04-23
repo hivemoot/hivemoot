@@ -1,6 +1,6 @@
 # Web App Deployment
 
-The web app (`apps/web`) deploys automatically on every successful push to `main`, with the build executed in GitHub Actions and deployed to Vercel as a prebuilt artifact.
+The web app (`web`) deploys automatically on every successful push to `main`, with the build executed in GitHub Actions and deployed to Vercel as a prebuilt artifact.
 
 **Live URL:** [https://hivemoot-web.vercel.app/](https://hivemoot-web.vercel.app/)
 Custom domain connection is pending.
@@ -12,12 +12,12 @@ Custom domain connection is pending.
    - `VERCEL_ORG_ID`
    - `VERCEL_PROJECT_ID`
 2. Configure production runtime env vars in Vercel (see `.env.example`).
-3. Merge or push changes that touch `apps/web/**` into `main`.
+3. Merge or push changes that touch `web/**` into `main`.
 
 ## Contracts
 
-- BYOK storage/runtime contract: `apps/web/BYOK_CONTRACT.md`
-- Agent health + agent token API contract: `apps/web/AGENT_HEALTH_CONTRACT.md`
+- BYOK storage/runtime contract: `web/BYOK_CONTRACT.md`
+- Agent health + agent token API contract: `web/AGENT_HEALTH_CONTRACT.md`
 
 ## Flow
 
