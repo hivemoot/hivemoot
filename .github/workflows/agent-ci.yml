@@ -210,6 +210,9 @@ jobs:
           exit-code: "1"
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          # uses: actions don't respect defaults.run.working-directory,
+          # so .trivyignore must be passed by path from the repo root.
+          trivyignores: agent/.trivyignore
       - name: Create empty trivyignore for unfiltered scan
         run: |
           : > .trivyignore.empty
@@ -222,7 +225,9 @@ jobs:
           exit-code: "0"
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          trivyignores: .trivyignore.empty
+          # Unfiltered scan for the stale-suppression check below;
+          # relative to repo root (action's cwd), not agent/.
+          trivyignores: agent/.trivyignore.empty
       - name: Check for stale Trivy suppressions
         run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
 
