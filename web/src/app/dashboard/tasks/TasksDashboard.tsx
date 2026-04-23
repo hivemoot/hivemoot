@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DRAFT_PROMPT_KEY, DRAFT_REPOS_KEY } from "./task-helpers";
+import { DRAFT_PROMPT_KEY } from "./task-helpers";
 import { type TaskRecord } from "./types";
 
 type CreateFormStatus = "idle" | "submitting" | "success" | "error";
@@ -173,6 +173,7 @@ function truncate(text: string, max: number): string {
 // ---------------------------------------------------------------------------
 
 const REFRESH_INTERVAL_MS = 10_000;
+const LEGACY_DRAFT_REPOS_KEY = "create-task-draft-repos";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -186,16 +187,14 @@ export default function TasksDashboard() {
   const [createStatus, setCreateStatus] = useState<CreateFormStatus>("idle");
   const [createError, setCreateError] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [repos, setRepos] = useState("hivemoot/hivemoot");
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
   // ---- Restore drafts from sessionStorage ----
   useEffect(() => {
     try {
       const savedPrompt = sessionStorage.getItem(DRAFT_PROMPT_KEY);
-      const savedRepos = sessionStorage.getItem(DRAFT_REPOS_KEY);
+      sessionStorage.removeItem(LEGACY_DRAFT_REPOS_KEY);
       if (savedPrompt) { setPrompt(savedPrompt); setShowCreateForm(true); }
-      if (savedRepos) setRepos(savedRepos);
     } catch {
       // sessionStorage unavailable
     }
@@ -208,13 +207,6 @@ export default function TasksDashboard() {
       else sessionStorage.removeItem(DRAFT_PROMPT_KEY);
     } catch { /* noop */ }
   }, [prompt]);
-
-  useEffect(() => {
-    try {
-      if (repos && repos !== "hivemoot/hivemoot") sessionStorage.setItem(DRAFT_REPOS_KEY, repos);
-      else sessionStorage.removeItem(DRAFT_REPOS_KEY);
-    } catch { /* noop */ }
-  }, [repos]);
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -247,9 +239,6 @@ export default function TasksDashboard() {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) { setCreateError("Please enter a task prompt."); return; }
 
-    const repoList = repos.split(",").map((r) => r.trim()).filter(Boolean);
-    if (repoList.length === 0) { setCreateError("Please enter at least one repository."); return; }
-
     setCreateStatus("submitting");
     setCreateError("");
 
@@ -257,7 +246,7 @@ export default function TasksDashboard() {
       const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmedPrompt, repos: repoList }),
+        body: JSON.stringify({ prompt: trimmedPrompt }),
       });
 
       if (!res.ok) {
@@ -271,7 +260,7 @@ export default function TasksDashboard() {
       setPrompt("");
       setShowCreateForm(false);
       setCreateStatus("idle");
-      try { sessionStorage.removeItem(DRAFT_PROMPT_KEY); sessionStorage.removeItem(DRAFT_REPOS_KEY); } catch { /* noop */ }
+      try { sessionStorage.removeItem(DRAFT_PROMPT_KEY); } catch { /* noop */ }
       await fetchTasks();
     } catch {
       setCreateError("Could not reach the server.");
@@ -357,20 +346,6 @@ export default function TasksDashboard() {
               />
             </div>
 
-            <div className="mb-4">
-              <label htmlFor="task-repos" className="mb-2 block text-sm text-zinc-400">
-                Repositories <span className="text-zinc-600">(comma-separated)</span>
-              </label>
-              <input
-                id="task-repos"
-                type="text"
-                value={repos}
-                onChange={(e) => setRepos(e.target.value)}
-                placeholder="hivemoot/hivemoot"
-                className="w-full rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 font-mono text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20"
-              />
-            </div>
-
             <div className="flex gap-3">
               <button
                 type="submit"
@@ -435,10 +410,9 @@ export default function TasksDashboard() {
                     {statusLabel(task.status)}
                   </span>
                 </div>
-                <div className="mt-1.5 flex items-center gap-3 text-xs text-zinc-600">
-                  <span className="font-mono">{task.repos.join(", ")}</span>
-                  <span suppressHydrationWarning>{relativeTime(task.created_at)}</span>
-                </div>
+                <span className="mt-1.5 block text-xs text-zinc-600" suppressHydrationWarning>
+                  {relativeTime(task.created_at)}
+                </span>
                 {task.progress && task.status !== "pending" && (
                   <p className="mt-1 truncate text-xs text-zinc-500">{task.progress}</p>
                 )}

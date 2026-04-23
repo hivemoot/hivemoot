@@ -4,7 +4,6 @@ export interface TaskRecord {
   task_id: string;
   status: string;
   prompt: string;
-  repos: string[];
   timeout_secs: number;
   created_by: string;
   created_at: string;

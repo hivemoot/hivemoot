@@ -33,7 +33,6 @@ beforeEach(() => {
       task_id: TASK_ID,
       status: "pending",
       prompt: "Task",
-      repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,
       created_by: "queen",
       created_at: "2026-03-03T12:00:00.000Z",

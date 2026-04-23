@@ -8,13 +8,11 @@ export const MAX_TASK_TIMEOUT_SECONDS = 10 * 60;
 export const COMPLETED_TASK_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const FAILED_TASK_TTL_SECONDS = 24 * 60 * 60;
 export const TASK_CREATE_RATE_LIMIT_PER_MINUTE = 10;
-const MAX_REPOS_PER_TASK = 10;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_PROGRESS_CHARS = 400;
 const TASK_CLAIM_TOKEN_BYTES = 32;
 const TASK_LOCK_PREFIX = "hive:task-lock:";
 
-const VALID_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export const TASK_ID_PATTERN = /^[a-f0-9]{24}$/;
 
 export type TaskStatus = "pending" | "running" | "needs_follow_up" | "completed" | "failed" | "timed_out";
@@ -37,7 +35,6 @@ export interface TaskRecord {
   task_id: string;
   status: TaskStatus;
   prompt: string;
-  repos: string[];
   timeout_secs: number;
   created_by: string;
   created_at: string;
@@ -57,7 +54,6 @@ interface StoredTaskRecord {
   task_id: string;
   status: TaskStatus;
   prompt: string;
-  repos: string[];
   timeout_secs: number;
   created_by: string;
   created_at: string;
@@ -69,7 +65,6 @@ interface StoredTaskRecord {
 
 export interface CreateTaskRequest {
   prompt: string;
-  repos: string[];
   timeout_secs: number;
 }
 
@@ -189,8 +184,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
     || typeof obj.status !== "string"
     || !["pending", "running", "needs_follow_up", "completed", "failed", "timed_out"].includes(obj.status)
     || typeof obj.prompt !== "string"
-    || !Array.isArray(obj.repos)
-    || obj.repos.some((repo) => typeof repo !== "string")
     || typeof obj.timeout_secs !== "number"
     || !Number.isInteger(obj.timeout_secs)
     || typeof obj.created_by !== "string"
@@ -204,7 +197,6 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
     task_id: obj.task_id,
     status: obj.status as TaskStatus,
     prompt: obj.prompt,
-    repos: obj.repos,
     timeout_secs: obj.timeout_secs,
     created_by: obj.created_by,
     created_at: obj.created_at,
@@ -381,7 +373,6 @@ async function maybeTimeoutTask(
     task_id: timedOut.task.task_id,
     status: timedOut.task.status,
     prompt: timedOut.task.prompt,
-    repos: timedOut.task.repos,
     timeout_secs: timedOut.task.timeout_secs,
     created_by: timedOut.task.created_by,
     created_at: timedOut.task.created_at,
@@ -398,7 +389,7 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   }
 
   const obj = body as Record<string, unknown>;
-  const allowedFields = new Set(["prompt", "repos", "timeout_secs"]);
+  const allowedFields = new Set(["prompt", "timeout_secs"]);
   for (const key of Object.keys(obj)) {
     if (!allowedFields.has(key)) {
       return { ok: false, message: `Unknown field: ${key}` };
@@ -413,33 +404,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
   if (prompt.length < 1) {
     return { ok: false, message: "prompt must not be empty" };
   }
-
-  if (!Array.isArray(obj.repos)) {
-    return { ok: false, message: "repos must be an array" };
-  }
-
-  if (obj.repos.length < 1 || obj.repos.length > MAX_REPOS_PER_TASK) {
-    return {
-      ok: false,
-      message: `repos must contain between 1 and ${MAX_REPOS_PER_TASK} entries`,
-    };
-  }
-
-  const dedupedRepos = new Set<string>();
-  for (const repoRaw of obj.repos) {
-    if (typeof repoRaw !== "string") {
-      return { ok: false, message: "each repo must be a string" };
-    }
-
-    const repo = repoRaw.trim();
-    if (!VALID_REPO_PATTERN.test(repo)) {
-      return { ok: false, message: `invalid repo format: ${repoRaw}` };
-    }
-
-    dedupedRepos.add(repo);
-  }
-
-  const repos = [...dedupedRepos];
 
   let timeoutSecs = DEFAULT_TASK_TIMEOUT_SECONDS;
   if (obj.timeout_secs !== undefined) {
@@ -461,7 +425,6 @@ export function validateCreateTaskRequest(body: unknown): CreateTaskValidationRe
     ok: true,
     request: {
       prompt,
-      repos,
       timeout_secs: timeoutSecs,
     },
   };
@@ -508,7 +471,6 @@ export async function createTask(
         task_id: taskId,
         status: "pending",
         prompt: request.prompt,
-        repos: request.repos,
         timeout_secs: request.timeout_secs,
         created_by: createdBy,
         created_at: timestamp,

@@ -84,6 +84,3 @@ export function taskComposerGuidance(status: string): string | null {
 
 /** SessionStorage key for the create-task prompt draft. */
 export const DRAFT_PROMPT_KEY = "create-task-draft-prompt";
-
-/** SessionStorage key for the create-task repos draft. */
-export const DRAFT_REPOS_KEY = "create-task-draft-repos";

@@ -11,17 +11,12 @@ vi.mock("@/server/task-store", () => ({
   validateCreateTaskRequest: vi.fn(),
 }));
 
-vi.mock("@/server/task-repo-preflight", () => ({
-  preflightTaskRepos: vi.fn(),
-}));
-
 import { authenticateByokRequest } from "@/server/byok-auth";
 import {
   checkTaskCreateRateLimit,
   createTask,
   validateCreateTaskRequest,
 } from "@/server/task-store";
-import { preflightTaskRepos } from "@/server/task-repo-preflight";
 import { POST } from "./route";
 
 function makeRequest(body: unknown): NextRequest {
@@ -51,7 +46,6 @@ beforeEach(() => {
     ok: true,
     request: {
       prompt: "Deep analysis",
-      repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,
     },
   });
@@ -61,15 +55,12 @@ beforeEach(() => {
     retryAfterSeconds: 0,
   });
 
-  vi.mocked(preflightTaskRepos).mockResolvedValue({ ok: true });
-
   vi.mocked(createTask).mockResolvedValue({
     ok: true,
     task: {
       task_id: "abc123abc123abc123abc123",
       status: "pending",
       prompt: "Deep analysis",
-      repos: ["hivemoot/hivemoot"],
       timeout_secs: 300,
       created_by: "queen",
       created_at: "2026-03-03T12:00:00.000Z",
@@ -81,7 +72,7 @@ beforeEach(() => {
 
 describe("POST /api/tasks/create", () => {
   it("creates a task and returns stream url", async () => {
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "Deep analysis" }));
     expect(res.status).toBe(202);
 
     const body = await res.json();
@@ -95,7 +86,7 @@ describe("POST /api/tasks/create", () => {
       response: NextResponse.json({ code: "byok_not_authenticated" }, { status: 401 }),
     });
 
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "Deep analysis" }));
     expect(res.status).toBe(401);
   });
 
@@ -105,7 +96,7 @@ describe("POST /api/tasks/create", () => {
       message: "prompt must not be empty",
     });
 
-    const res = await POST(makeRequest({ prompt: "", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "" }));
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("task_validation_failed");
@@ -117,7 +108,7 @@ describe("POST /api/tasks/create", () => {
       retryAfterSeconds: 60,
     });
 
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "Deep analysis" }));
     expect(res.status).toBe(429);
     const body = await res.json();
     expect(body.code).toBe("task_rate_limited");
@@ -129,40 +120,10 @@ describe("POST /api/tasks/create", () => {
       reason: "concurrency_limited",
     });
 
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "Deep analysis" }));
     expect(res.status).toBe(429);
     const body = await res.json();
     expect(body.code).toBe("task_concurrency_limited");
-  });
-
-  it("returns 403 when a requested repo is not available to the active installation", async () => {
-    vi.mocked(preflightTaskRepos).mockResolvedValue({
-      ok: false,
-      reason: "repo_unavailable",
-      message: "One or more requested repositories aren't available to the current Hivemoot installation.",
-    });
-
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/private"] }));
-    expect(res.status).toBe(403);
-
-    const body = await res.json();
-    expect(body.code).toBe("task_repo_unavailable");
-    expect(createTask).not.toHaveBeenCalled();
-  });
-
-  it("returns 503 when repo access checks are temporarily unavailable", async () => {
-    vi.mocked(preflightTaskRepos).mockResolvedValue({
-      ok: false,
-      reason: "server_error",
-      message: "Repository access checks are unavailable right now. Please retry shortly.",
-    });
-
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
-    expect(res.status).toBe(503);
-
-    const body = await res.json();
-    expect(body.code).toBe("task_server_error");
-    expect(createTask).not.toHaveBeenCalled();
   });
 
   it("returns 400 for invalid json", async () => {
@@ -185,7 +146,7 @@ describe("POST /api/tasks/create", () => {
         "Content-Type": "application/json",
         Origin: "https://evil.example",
       },
-      body: JSON.stringify({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }),
+      body: JSON.stringify({ prompt: "Deep analysis" }),
     });
 
     const res = await POST(req);
@@ -194,19 +155,10 @@ describe("POST /api/tasks/create", () => {
     expect(body.code).toBe("task_forbidden");
   });
 
-  it("preflights repos against the authenticated installation", async () => {
-    await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
-
-    expect(preflightTaskRepos).toHaveBeenCalledWith(
-      ["hivemoot/hivemoot"],
-      "inst-1",
-    );
-  });
-
   it("returns 500 when createTask throws", async () => {
     vi.mocked(createTask).mockRejectedValue(new Error("redis down"));
 
-    const res = await POST(makeRequest({ prompt: "Deep analysis", repos: ["hivemoot/hivemoot"] }));
+    const res = await POST(makeRequest({ prompt: "Deep analysis" }));
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.code).toBe("task_server_error");
