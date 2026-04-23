@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   DRAFT_PROMPT_KEY,
-  DRAFT_REPOS_KEY,
   draftStorageKey,
   filterConversationMessages,
   filterDuplicatePrompt,
@@ -180,14 +179,5 @@ describe("draft storage constants", () => {
   it("DRAFT_PROMPT_KEY is a non-empty string", () => {
     expect(typeof DRAFT_PROMPT_KEY).toBe("string");
     expect(DRAFT_PROMPT_KEY.length).toBeGreaterThan(0);
-  });
-
-  it("DRAFT_REPOS_KEY is a non-empty string", () => {
-    expect(typeof DRAFT_REPOS_KEY).toBe("string");
-    expect(DRAFT_REPOS_KEY.length).toBeGreaterThan(0);
-  });
-
-  it("prompt and repos keys are distinct", () => {
-    expect(DRAFT_PROMPT_KEY).not.toBe(DRAFT_REPOS_KEY);
   });
 });

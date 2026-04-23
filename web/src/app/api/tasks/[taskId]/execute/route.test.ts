@@ -34,7 +34,6 @@ const BASE_TASK = {
   task_id: "abc123abc123abc123abc123",
   status: "running" as const,
   prompt: "Deep analysis",
-  repos: ["hivemoot/hivemoot"],
   timeout_secs: 300,
   created_by: "queen",
   created_at: "2026-03-03T12:00:00.000Z",

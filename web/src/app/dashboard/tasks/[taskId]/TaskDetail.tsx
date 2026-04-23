@@ -175,23 +175,6 @@ function ClockIcon({ className }: { className?: string }) {
   );
 }
 
-function RepoIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-3.5 w-3.5"}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 2v12M4 4h6a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2H4" />
-    </svg>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -627,16 +610,6 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
 
         {/* Prompt as title */}
         <h1 className="mt-4 text-[15px] font-medium leading-relaxed text-[#fafafa] sm:text-base">{task.prompt}</h1>
-
-        {/* Metadata chips */}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {task.repos.map((repo) => (
-            <span key={repo} className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2.5 py-1 text-xs text-zinc-400">
-              <RepoIcon className="h-3 w-3 text-zinc-500" />
-              <span className="font-mono">{repo}</span>
-            </span>
-          ))}
-        </div>
 
         <div className="mt-3 flex items-center gap-1.5 text-xs text-zinc-600">
           <ClockIcon className="h-3 w-3 text-zinc-600" />

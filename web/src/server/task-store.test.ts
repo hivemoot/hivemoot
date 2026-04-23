@@ -185,21 +185,19 @@ describe("validateCreateTaskRequest", () => {
   it("accepts a valid create request", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate auth failures",
-      repos: ["hivemoot/hivemoot", "hivemoot/hivemoot-agent"],
       timeout_secs: 420,
     });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.request.timeout_secs).toBe(420);
-      expect(result.request.repos).toHaveLength(2);
+      expect(result.request.prompt).toBe("Investigate auth failures");
     }
   });
 
   it("applies defaults when optional fields are omitted", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate",
-      repos: ["hivemoot/hivemoot"],
     });
 
     expect(result.ok).toBe(true);
@@ -208,22 +206,21 @@ describe("validateCreateTaskRequest", () => {
     }
   });
 
-  it("rejects invalid repo format", () => {
+  it("rejects repository fields from the create contract", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate",
-      repos: ["invalid-repo"],
+      repos: ["hivemoot/hivemoot"],
     });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.message).toContain("invalid repo format");
+      expect(result.message).toBe("Unknown field: repos");
     }
   });
 
   it("rejects timeout above max", () => {
     const result = validateCreateTaskRequest({
       prompt: "Investigate",
-      repos: ["hivemoot/hivemoot"],
       timeout_secs: 9999,
     });
 
@@ -247,7 +244,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "Deep analysis",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -292,7 +288,6 @@ describe("task lifecycle", () => {
         "queen",
         {
               prompt: `Task ${i}`,
-          repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
         redis,
@@ -305,7 +300,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "Overflow",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -322,7 +316,6 @@ describe("task lifecycle", () => {
           "queen",
           {
                   prompt: `parallel-${index}`,
-            repos: ["hivemoot/hivemoot"],
             timeout_secs: 300,
           },
           redis,
@@ -344,7 +337,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -365,7 +357,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "Task2",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -388,7 +379,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
       redis,
@@ -421,7 +411,6 @@ describe("task lifecycle", () => {
       "queen",
       {
         prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
       redis,
@@ -469,7 +458,6 @@ describe("task lifecycle", () => {
       "queen",
       {
         prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -543,7 +531,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "A",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -553,7 +540,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "B",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -572,7 +558,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "first",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -582,7 +567,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "second",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -614,7 +598,6 @@ describe("task lifecycle", () => {
       "queen",
       {
           prompt: "single",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -670,7 +653,6 @@ describe("follow-up workflow", () => {
       "queen",
       {
           prompt: "Investigate auth flow",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -731,7 +713,6 @@ describe("follow-up workflow", () => {
       "queen",
       {
           prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -825,7 +806,6 @@ describe("follow-up workflow", () => {
       "queen",
       {
           prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 1,
       },
       redis,
@@ -856,7 +836,6 @@ describe("follow-up workflow", () => {
       "queen",
       {
           prompt: "Task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 5,
       },
       redis,
@@ -899,7 +878,6 @@ describe("follow-up workflow", () => {
         "queen",
         {
               prompt: `Task ${i}`,
-          repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
         redis,
@@ -918,7 +896,6 @@ describe("follow-up workflow", () => {
       "queen",
       {
           prompt: "Extra task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -940,7 +917,6 @@ describe("task messages", () => {
       "queen",
       {
           prompt: "Analyze the codebase",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -960,7 +936,6 @@ describe("task messages", () => {
       "queen",
       {
           prompt: "Do work",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -984,7 +959,6 @@ describe("task messages", () => {
       "queen",
       {
           prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1031,7 +1005,6 @@ describe("post-transition append failure resilience", () => {
       "queen",
       {
           prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1053,7 +1026,6 @@ describe("post-transition append failure resilience", () => {
       "queen",
       {
           prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1084,7 +1056,6 @@ describe("post-transition append failure resilience", () => {
       "queen",
       {
           prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1116,7 +1087,6 @@ describe("post-transition append failure resilience", () => {
       "queen",
       {
           prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1147,7 +1117,6 @@ describe("post-transition append failure resilience", () => {
       "queen",
       {
         prompt: "Investigate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1197,7 +1166,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Task to delete",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1226,7 +1194,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Pending task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1247,7 +1214,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Running task",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1271,7 +1237,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Need follow-up",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1295,7 +1260,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Race candidate",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1388,7 +1352,6 @@ describe("deleteTask", () => {
         "queen",
         {
               prompt: `Task ${i}`,
-          repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
         redis,
@@ -1402,7 +1365,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Overflow",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1419,7 +1381,6 @@ describe("deleteTask", () => {
       "queen",
       {
           prompt: "Now fits",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1441,7 +1402,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Retry me",
-        repos: ["hivemoot/hivemoot", "hivemoot/colony"],
         timeout_secs: 420,
       },
       redis,
@@ -1460,7 +1420,6 @@ describe("retryTask", () => {
     expect(retried.task.task_id).toBe(created.task.task_id);
     expect(retried.task.status).toBe("pending");
     expect(retried.task.prompt).toBe("Retry me");
-    expect(retried.task.repos).toEqual(["hivemoot/hivemoot", "hivemoot/colony"]);
     expect(retried.task.timeout_secs).toBe(420);
     expect(retried.task.created_by).toBe("queen");
     expect(retried.task.error).toBeUndefined();
@@ -1473,7 +1432,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Running",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1496,7 +1454,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Pending",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1519,7 +1476,6 @@ describe("retryTask", () => {
         "queen",
         {
               prompt: `Slot ${i}`,
-          repos: ["hivemoot/hivemoot"],
           timeout_secs: 300,
         },
         redis,
@@ -1538,7 +1494,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Refill slot",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1559,7 +1514,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Original",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1600,7 +1554,6 @@ describe("retryTask", () => {
       "queen",
       {
           prompt: "Original",
-        repos: ["hivemoot/hivemoot"],
         timeout_secs: 300,
       },
       redis,
@@ -1644,7 +1597,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Original prompt", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Original prompt", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1665,7 +1618,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1699,7 +1652,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1720,7 +1673,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 5 },
+      { prompt: "Task", timeout_secs: 5 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1758,7 +1711,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1777,7 +1730,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1802,7 +1755,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Original prompt", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Original prompt", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1824,7 +1777,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1849,7 +1802,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1872,7 +1825,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
@@ -1903,7 +1856,7 @@ describe("addUserMessage", () => {
       await createTask(
         "inst-1",
         "queen",
-        { prompt: `Slot ${i}`, repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+        { prompt: `Slot ${i}`, timeout_secs: 300 },
         redis,
       );
     }
@@ -1918,7 +1871,7 @@ describe("addUserMessage", () => {
     await createTask(
       "inst-1",
       "queen",
-      { prompt: "Refill", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Refill", timeout_secs: 300 },
       redis,
     );
 
@@ -1934,7 +1887,7 @@ describe("addUserMessage", () => {
     const created = await createTask(
       "inst-1",
       "queen",
-      { prompt: "Task", repos: ["hivemoot/hivemoot"], timeout_secs: 300 },
+      { prompt: "Task", timeout_secs: 300 },
       redis,
     );
     expect(created.ok).toBe(true);
