@@ -1,0 +1,49 @@
+name: close-discussions
+
+on:
+  schedule:
+    - cron: "0,30 * * * *"  # Every 30 minutes
+  workflow_dispatch:
+    # Manual trigger for testing
+
+# Prevent overlapping runs of this workflow
+concurrency:
+  group: hivemoot-close-discussions
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: bot
+
+jobs:
+  close-discussions:
+    name: Close Expired Discussions & Voting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run close-discussions script
+        run: npm run close-discussions
+        env:
+          APP_ID: ${{ vars.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          # LLM for discussion summarization (optional - falls back to generic message)
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          # Per-repo config in .github/hivemoot.yml (only phases with auto exits are transitioned)

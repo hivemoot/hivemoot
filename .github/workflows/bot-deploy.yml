@@ -1,0 +1,126 @@
+name: Bot Deploy
+
+# Ported from hivemoot-bot's ci.yml deploy job under the monorepo
+# consolidation.  Split into a dedicated workflow for three reasons:
+#   1. Runs from the repo root (no `defaults.run.working-directory`)
+#      so Vercel's Root Directory = bot/ resolves correctly instead
+#      of doubling to bot/bot/ — the same bug PR #109 fixed on web.
+#   2. Matches the web-deploy.yml / web.yml split pattern, keeping
+#      the two deployable surfaces structurally symmetric.
+#   3. Makes Bot CI re-entrant: rerunning CI doesn't redeploy; only
+#      a successful CI run on main triggers deploy via workflow_run.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Bot CI"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to Vercel
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.repository.full_name == github.repository
+      )
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_BOT_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "22"
+
+      - name: Verify Vercel secrets
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Missing one or more required Vercel secrets."
+            echo "Required: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_BOT_PROJECT_ID"
+            exit 1
+          fi
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy
+        id: deploy
+        run: |
+          set -euo pipefail
+
+          deploy_output="$(vercel deploy --prebuilt --prod --archive=tgz --token="$VERCEL_TOKEN" 2>&1)"
+          echo "$deploy_output"
+
+          deploy_url="$(printf '%s\n' "$deploy_output" | grep -Eo 'https://[^[:space:]]+\.vercel\.app' | tail -n1 || true)"
+          if [ -z "$deploy_url" ]; then
+            echo "::error::Failed to extract deployment URL from Vercel output"
+            exit 1
+          fi
+
+          echo "url=$deploy_url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $deploy_url"
+
+      - name: Verify deployment health
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          health_url="${DEPLOY_URL}/api/github/webhooks"
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            if response="$(curl -fsS --max-time 15 "$health_url")"; then
+              echo "$response" | jq .
+
+              status="$(echo "$response" | jq -r '.status // "unknown"')"
+              github_app_ready="$(echo "$response" | jq -r '.checks.githubApp.ready // false')"
+              llm_ready="$(echo "$response" | jq -r '.checks.llm.ready // false')"
+
+              if [ "$status" != "ok" ] || [ "$github_app_ready" != "true" ]; then
+                echo "::error::Critical health check failed: $(echo "$response" | jq -c '{status, githubApp: .checks.githubApp}')"
+                exit 1
+              fi
+
+              if [ "$llm_ready" != "true" ]; then
+                echo "::warning::LLM readiness degraded: $(echo "$response" | jq -c '.checks.llm')"
+              fi
+
+              echo "Post-deploy health check passed"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep_seconds=$((attempt * 5))
+              echo "Health endpoint not ready (attempt ${attempt}/${max_attempts}); retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Deployment health endpoint unreachable after ${max_attempts} attempts: $health_url"
+          exit 1

@@ -1,0 +1,65 @@
+name: Bot CodeQL
+
+# Path-scoped so edits outside bot/ don't fire the scan.  The weekly
+# cron keeps the "run on Monday" cadence inherited from hivemoot-bot.
+
+on:
+  pull_request:
+    paths:
+      - 'bot/**'
+      - '.github/workflows/bot-codeql.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'bot/**'
+      - '.github/workflows/bot-codeql.yml'
+  schedule:
+    - cron: "23 3 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+defaults:
+  run:
+    # Applies only to the npm ci run step below; codeql-action
+    # uses: steps ignore workflow-level working-directory and take
+    # their source-root / working-directory inputs directly.
+    working-directory: bot
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a  # v3
+        with:
+          languages: javascript-typescript
+          # Scope the scan to bot/ so autobuild and the query set
+          # don't walk web/, agent/, or cli/ once those gain JS/TS
+          # surface area.
+          source-root: bot
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a  # v3
+        with:
+          working-directory: bot
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a  # v3

@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+/lib/
+/dist/
+
+# Test coverage
+/coverage/
+
+# Environment
+.env
+.env.local
+
+# Secrets
+*.pem
