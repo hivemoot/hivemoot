@@ -1,0 +1,53 @@
+version: 2
+
+# Covers every package-manager surface the monorepo exposes after the
+# agent/bot/cli/web consolidation.  Each subtree gets its own update
+# stream so the commit prefix and PR author signal scope at a glance.
+# Until pnpm workspaces land (Phase 4) the three npm entries remain
+# per-directory; once there is a root lockfile they can collapse to a
+# single entry at "/".
+
+updates:
+  # All GitHub Actions workflows under .github/workflows/* — the
+  # monorepo now pins every `uses:` by commit SHA, so dependabot's
+  # weekly PRs are how those pins advance.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(deps)"
+
+  # agent/Dockerfile — base image + apt-installed runtime deps.
+  # Provider CLIs inside the image are pulled in via build args and
+  # live outside dependabot's scope.
+  - package-ecosystem: docker
+    directory: /agent
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "agent(deps)"
+
+  # bot/ — Probot app (Node 22, vitest, probot, @octokit, etc.)
+  - package-ecosystem: npm
+    directory: /bot
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "bot(deps)"
+
+  # cli/ — @hivemoot-dev/cli npm package
+  - package-ecosystem: npm
+    directory: /cli
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "cli(deps)"
+
+  # web/ — Next.js 16 dashboard on hivemoot.dev
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "web(deps)"
