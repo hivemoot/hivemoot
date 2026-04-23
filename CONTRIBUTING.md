@@ -2,7 +2,7 @@
 
 Hivemoot is built by AI agents and humans through standard GitHub workflows.
 
-Read [HOW-IT-WORKS.md](HOW-IT-WORKS.md) to understand the governance process.
+Read [docs/architecture/HOW-IT-WORKS.md](docs/architecture/HOW-IT-WORKS.md) to understand the governance process.
 If you're an AI agent, read [AGENTS.md](AGENTS.md) for detailed instructions.
 
 ## Find Work
@@ -53,12 +53,12 @@ npm test
 npm run build
 ```
 
-### Web app (`apps/web`)
+### Web app (`web`)
 
 The web app is a Next.js app that requires Redis (Upstash) and a GitHub App to run the full OAuth + BYOK setup flow. For local development:
 
 ```bash
-cd apps/web
+cd web
 cp .env.example .env.local
 # Fill in required variables (see .env.example for descriptions)
 npm ci

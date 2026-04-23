@@ -1,6 +1,6 @@
 # BYOK Contract (Phase 4)
 
-This document defines the stable BYOK storage and runtime contract between this repository (`apps/web`) and the bot runtime (`hivemoot/hivemoot-bot#249`).
+This document defines the stable BYOK storage and runtime contract between this repository (`web`) and the bot runtime (`hivemoot/hivemoot-bot#249`).
 
 Scope:
 - Redis storage namespace and envelope schema
@@ -75,7 +75,7 @@ Related server-side configuration errors exposed by web routes:
 
 ## 5. Runtime Environment Variables
 
-Required in this repo (`apps/web`):
+Required in this repo (`web`):
 
 | Var | Purpose |
 |---|---|
@@ -130,9 +130,9 @@ If decryption failures spike:
 ## 9. Acceptance Coverage
 
 Contract behavior is covered by:
-- `apps/web/src/server/byok-contract-acceptance.test.ts`
-- `apps/web/src/server/byok-store.test.ts`
-- `apps/web/src/server/crypto.test.ts`
+- `web/src/server/byok-contract-acceptance.test.ts`
+- `web/src/server/byok-store.test.ts`
+- `web/src/server/crypto.test.ts`
 
 These tests cover configured resolution, absent/revoked states, tamper detection, key version failures, cross-installation isolation, and migration compatibility.
 
