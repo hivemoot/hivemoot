@@ -1,0 +1,21 @@
+name: hivemoot
+version: 0.1.0
+description: >
+  Hivemoot ecosystem integration — consolidates the previously
+  separate hivemoot-task, hivemoot-github, and agent-health concerns
+  into one plugin with per-feature toggles.  Exposes:
+
+    * health — periodic heartbeats + per-run reports to
+      POST {base_url}/api/agent-health (contract:
+      apps/web/AGENT_HEALTH_CONTRACT.md).
+    * tasks — polls the hivemoot.dev claim endpoint, dispatches
+      claimed tasks as jobs, posts per-task heartbeat + final
+      outcome to the tasks API.
+    * github_workflows — autonomous GitHub contribution operating
+      mode, buzz role loading, and skill bundle.  Co-loads with the
+      github plugin (reads its typed config for the target repo).
+
+  Each feature has its own ``enabled`` flag so fleets can pick any
+  subset.  Bearer auth (HIVEMOOT_AGENT_TOKEN{,_FILE}) is shared
+  across health and tasks.
+schema_class: hivemoot_agent.plugins_builtin.hivemoot.config:HivemootConfig

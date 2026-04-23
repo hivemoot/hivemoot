@@ -1,0 +1,3 @@
+# exp:2026-06-30 - picomatch ReDoS (CVE-2026-33671) via @google/gemini-cli transitive dep
+# (fdir → picomatch). Fix requires gemini-cli upstream to bump to >= 4.0.4.
+CVE-2026-33671

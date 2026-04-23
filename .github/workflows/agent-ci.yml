@@ -1,0 +1,272 @@
+name: Agent CI
+
+# Ported from hivemoot-agent's ci.yml under the monorepo consolidation.
+# Every path-sensitive step now assumes the agent is under agent/ rather
+# than at the repo root.  Path-scoped at the trigger level so unrelated
+# edits (web/, bot/, cli/, docs/) don't fire this pipeline.
+
+on:
+  pull_request:
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent-ci.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # All `run:` steps execute inside agent/ so the in-workflow paths
+    # (scripts/, cli/, docker-compose.yml, .env.example) keep their
+    # original shape.  `uses:` actions don't respect this; those pass
+    # context/dockerfile paths explicitly where needed.
+    working-directory: agent
+
+jobs:
+  filter:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.changes.outputs.docker }}
+      dockerfile: ${{ steps.changes.outputs.dockerfile }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
+        id: changes
+        with:
+          filters: |
+            docker:
+              - 'agent/Dockerfile'
+              - 'agent/.dockerignore'
+              - 'agent/cli/**'
+              - 'agent/.trivyignore'
+              - '.github/workflows/agent-ci.yml'
+            dockerfile:
+              - 'agent/Dockerfile'
+              - '.github/workflows/agent-ci.yml'
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Run ShellCheck
+        run: find scripts -name '*.sh' -print0 | xargs -0 shellcheck
+
+  script-validation:
+    name: Script Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install Python test dependencies
+        run: |
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user 'pydantic==2.11.*' 'PyYAML==6.*'
+      - name: Verify Trivy ignore validation behavior
+        run: bash scripts/test-trivyignore-check.sh
+      - name: Verify prompt security guardrails
+        run: bash scripts/test-prompt-guardrails.sh
+      - name: Verify plugin engine compose-config check
+        run: bash scripts/test-plugin-engine-routing.sh
+      - name: Verify plugin formatter tests
+        run: python3 cli/tests/test_formatter.py
+      - name: Verify engine and oneshot tests
+        run: python3 cli/tests/test_engine.py
+      - name: Verify engine lifecycle contract tests
+        run: python3 cli/tests/test_engine_lifecycle.py
+      - name: Verify worker entrypoint tests
+        run: python3 cli/tests/test_worker_cli.py
+      - name: Verify hivemoot plugin config schema
+        run: python3 cli/tests/test_hivemoot_config.py
+      - name: Verify hivemoot plugin lifecycle (tasks + health + in-flight gate)
+        run: python3 cli/tests/test_hivemoot_plugin.py
+      - name: Verify hivemoot bearer token resolution
+        run: python3 cli/tests/test_hivemoot_auth.py
+      - name: Verify hivemoot diagnostic scrubbing
+        run: python3 cli/tests/test_hivemoot_sanitize.py
+      - name: Verify hivemoot tasks API tests
+        run: python3 cli/tests/test_hivemoot_tasks_api.py
+      - name: Verify hivemoot tasks extractor tests
+        run: python3 cli/tests/test_hivemoot_tasks_extractor.py
+      - name: Verify hivemoot tasks trigger (dispatch flow + in-flight gate)
+        run: python3 cli/tests/test_hivemoot_tasks_trigger.py
+      - name: Verify hivemoot health API (heartbeat + run report)
+        run: python3 cli/tests/test_hivemoot_health_api.py
+      - name: Verify hivemoot health heartbeat trigger
+        run: python3 cli/tests/test_hivemoot_health_trigger.py
+      - name: Verify dual-source plugin discovery (builtin + external)
+        run: python3 cli/tests/test_plugin_discovery.py
+      - name: Verify messaging inbound media handling
+        run: python3 cli/tests/test_messaging_media.py
+      - name: Verify config layer (loader, manifest, resolver, alias shim)
+        run: python3 cli/tests/test_config.py
+      - name: Verify cron config schema validators
+        run: python3 cli/tests/test_cron_config.py
+      - name: Verify github plugin prompts (untrusted-content contract)
+        run: python3 cli/tests/test_github_prompts.py
+      - name: Verify github new-PR watcher state + ack
+        run: python3 cli/tests/test_github_pr_watcher.py
+      - name: Verify github watch triggers + plugin ack lifecycle
+        run: python3 cli/tests/test_github_trigger.py
+      - name: Verify keyed workqueue (coalescing + concurrency)
+        run: python3 cli/tests/test_workqueue.py
+      - name: Verify engine coalescing integration
+        run: python3 cli/tests/test_engine_coalescing.py
+      - name: Verify all test scripts have executable bit
+        run: bash scripts/test-script-executable-bits.sh
+
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5  # v3.3.0
+        with:
+          dockerfile: agent/Dockerfile
+          # Point at agent/.hadolint.yaml since the action auto-finds
+          # .hadolint.yaml at the repo root only, and our suppression
+          # rules (DL3008 intentionally skipped) live with the
+          # Dockerfile they apply to.
+          config: agent/.hadolint.yaml
+
+  compose-config:
+    name: Compose Config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+  env-docs:
+    name: Env Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Check env vars documented in .env.example
+        run: |
+          set -euo pipefail
+          vars=$(grep -oP '\$\{\K[A-Z][A-Z0-9_]*' docker-compose.yml | sort -u)
+          fail=0
+          for var in $vars; do
+            if ! grep -qF "$var" .env.example; then
+              echo "::error::${var} is in docker-compose.yml but missing from .env.example"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "All compose variables documented in .env.example"
+          exit "$fail"
+
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: DavidAnson/markdownlint-cli2-action@05f32210e84442804257b2a6f20b273450ec8265  # v19
+        with:
+          globs: 'agent/**/*.md'
+
+  docker-build:
+    name: Docker Build & Security Scan
+    needs: [filter]
+    if: needs.filter.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - name: Build image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        with:
+          context: ./agent
+          load: true
+          tags: hivemoot-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test plugin engine in built image
+        run: |
+          set -euo pipefail
+          stderr_file="$(mktemp)"
+          trap 'rm -f "$stderr_file"' EXIT
+
+          if timeout 10 docker run --rm hivemoot-agent:ci \
+            > /dev/null 2> "$stderr_file"; then
+            echo "::error::entrypoint should fail without AGENT_PLUGINS"
+            exit 1
+          fi
+          grep -qF "AGENT_PLUGINS" "$stderr_file"
+
+          docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | tee /tmp/plugin-list
+          grep -qF "messaging" /tmp/plugin-list
+          grep -qF "hivemoot" /tmp/plugin-list
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
+        with:
+          image-ref: hivemoot-agent:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # uses: actions don't respect defaults.run.working-directory,
+          # so .trivyignore must be passed by path from the repo root.
+          trivyignores: agent/.trivyignore
+      - name: Create empty trivyignore for unfiltered scan
+        run: |
+          : > .trivyignore.empty
+      - name: Generate Trivy JSON report
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # 0.35.0
+        with:
+          image-ref: hivemoot-agent:ci
+          format: json
+          # Write alongside agent/.trivyignore so the stale-
+          # suppression check below (running with working-directory:
+          # agent) finds both at relative paths.
+          output: agent/trivy-report.json
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # uses: actions paths are relative to repo root, not the
+          # defaults.run.working-directory.
+          trivyignores: agent/.trivyignore.empty
+      - name: Check for stale Trivy suppressions
+        run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
+
+  docker-provider-stages:
+    name: Provider Stage Build (${{ matrix.provider }})
+    needs: [filter]
+    if: needs.filter.outputs.dockerfile == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: codex
+            cli: codex
+          - provider: gemini
+            cli: gemini
+          - provider: kilo
+            cli: kilo
+          - provider: opencode
+            cli: opencode
+          - provider: claude
+            cli: claude
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - name: Build provider-${{ matrix.provider }} image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        with:
+          context: ./agent
+          load: true
+          tags: hivemoot-agent:ci-${{ matrix.provider }}
+          build-args: PROVIDER=${{ matrix.provider }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify ${{ matrix.cli }} CLI is present
+        run: |
+          docker run --rm --entrypoint /bin/sh \
+            hivemoot-agent:ci-${{ matrix.provider }} \
+            -c 'command -v ${{ matrix.cli }}'

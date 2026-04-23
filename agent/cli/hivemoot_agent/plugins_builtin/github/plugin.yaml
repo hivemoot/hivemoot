@@ -1,0 +1,7 @@
+name: github
+version: 0.2.0
+description: >
+  GitHub repository management + @-mention and review-request watchers.
+  Clones repos, configures git credentials, and provides the in-process
+  trigger loops that dispatch agent jobs on GitHub events.
+schema_class: hivemoot_agent.plugins_builtin.github.config:GitHubConfig

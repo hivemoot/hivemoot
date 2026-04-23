@@ -1,0 +1,22 @@
+globs:
+  - "**/*.md"
+  - "!data/**"
+  - "!node_modules/**"
+
+config:
+  # Line length — prompts and docs have intentionally long lines
+  MD013: false
+  # Blanks around headings — prompt files use compact style
+  MD022: false
+  # Ordered list prefix — code blocks between items reset the counter
+  MD029: false
+  # Blanks around lists — prompt files use compact style
+  MD032: false
+  # Inline HTML — used in tables
+  MD033: false
+  # First-line heading — prompts start with descriptive text, not headings
+  MD041: false
+  # Table column style — docs use the compact ``|---|---|`` form
+  # for narrow tables; it renders fine and churning them to
+  # ``| --- | --- |`` adds no information.
+  MD060: false
