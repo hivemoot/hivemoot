@@ -221,12 +221,15 @@ jobs:
         with:
           image-ref: hivemoot-agent:ci
           format: json
-          output: trivy-report.json
+          # Write alongside agent/.trivyignore so the stale-
+          # suppression check below (running with working-directory:
+          # agent) finds both at relative paths.
+          output: agent/trivy-report.json
           exit-code: "0"
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          # Unfiltered scan for the stale-suppression check below;
-          # relative to repo root (action's cwd), not agent/.
+          # uses: actions paths are relative to repo root, not the
+          # defaults.run.working-directory.
           trivyignores: agent/.trivyignore.empty
       - name: Check for stale Trivy suppressions
         run: scripts/check-trivyignore.sh .trivyignore trivy-report.json
