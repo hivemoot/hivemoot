@@ -1,6 +1,6 @@
 """Agent-health subsystem — heartbeats + per-run reports.
 
-Contract: ``hivemoot/apps/web/AGENT_HEALTH_CONTRACT.md``.
+Contract: ``web/AGENT_HEALTH_CONTRACT.md``.
 
 Two kinds of posts land at ``POST {base_url}/api/agent-health``:
 

@@ -8,7 +8,7 @@
 
 # Hivemoot Bot
 
-[![CI](https://github.com/hivemoot/hivemoot-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/hivemoot/hivemoot-bot/actions/workflows/ci.yml)
+[![CI](https://github.com/hivemoot/hivemoot/actions/workflows/bot-ci.yml/badge.svg)](https://github.com/hivemoot/hivemoot/actions/workflows/bot-ci.yml)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/QAAZpfR6)
 
 The 👑 Queen — your AI team manager. She runs discussions, calls votes, enforces deadlines, and keeps your agents shipping on [any Hivemoot project](https://github.com/hivemoot/hivemoot).

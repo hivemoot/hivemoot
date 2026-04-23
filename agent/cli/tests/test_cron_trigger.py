@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
 from hivemoot_agent.plugins_builtin.cron import CronPlugin, create_plugin
+from hivemoot_agent.plugins_builtin.cron.config import CronConfig
 from hivemoot_agent.plugins_builtin.cron.schedule import parse_schedules
 from hivemoot_agent.plugins_builtin.cron.trigger import (
     CronTrigger,
@@ -23,12 +24,8 @@ from hivemoot_agent.plugins_builtin.cron.trigger import (
 )
 
 
-def _cfg_settings(entries: list[dict]) -> dict:
-    return {"CRON_SCHEDULES_JSON": json.dumps(entries)}
-
-
 def _make_cfg(entries: list[dict]) -> PluginConfig:
-    return PluginConfig(name="cron", settings=_cfg_settings(entries))
+    return PluginConfig(name="cron", typed=CronConfig(schedules=entries))
 
 
 # ── Plugin lifecycle ──────────────────────────────────────────────
@@ -38,18 +35,16 @@ class PluginLifecycleTests(unittest.TestCase):
     def test_validate_empty_config_ok(self) -> None:
         plugin = create_plugin()
         self.assertEqual(
-            plugin.validate(PluginConfig(name="cron", settings={})),
+            plugin.validate(PluginConfig(name="cron", typed=CronConfig())),
             [],
         )
 
-    def test_validate_reports_config_errors(self) -> None:
-        plugin = create_plugin()
-        cfg = PluginConfig(name="cron", settings={
-            "CRON_SCHEDULES_JSON": '[{"name":"x","schedule":"bad","prompt":"p"}]',
-        })
-        errors = plugin.validate(cfg)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("x", errors[0])
+    def test_invalid_config_fails_at_typed_config_load(self) -> None:
+        with self.assertRaises(Exception) as ctx:
+            CronConfig(schedules=[
+                {"name": "x", "schedule": "bad", "prompt": "p"},
+            ])
+        self.assertIn("invalid cron expression", str(ctx.exception))
 
     def test_triggers_returns_single_instance(self) -> None:
         plugin = create_plugin()
@@ -66,7 +61,7 @@ class PluginLifecycleTests(unittest.TestCase):
 
     def test_lifecycle_hooks_are_noops(self) -> None:
         plugin = create_plugin()
-        cfg = PluginConfig(name="cron", settings={})
+        cfg = PluginConfig(name="cron", typed=CronConfig())
         self.assertIsNone(plugin.setup(cfg))
         self.assertIsNone(
             plugin.on_job_started(Job(session_key="", prompt="x"), cfg),
@@ -92,11 +87,10 @@ class TriggerValidationTests(unittest.TestCase):
         self.assertEqual(trig.validate(cfg), [])
 
     def test_invalid_config_fails(self) -> None:
-        trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([
-            {"name": "a", "schedule": "not a cron", "prompt": "p"},
-        ])
-        self.assertNotEqual(trig.validate(cfg), [])
+        with self.assertRaises(Exception):
+            _make_cfg([
+                {"name": "a", "schedule": "not a cron", "prompt": "p"},
+            ])
 
 
 # ── Trigger dispatch loop ────────────────────────────────────────
@@ -106,7 +100,7 @@ class TriggerDispatchTests(unittest.TestCase):
     def test_empty_config_idles(self) -> None:
         """No schedules → blocks until stop, does not crash."""
         trig = CronTrigger(MagicMock())
-        cfg = PluginConfig(name="cron", settings={})
+        cfg = PluginConfig(name="cron", typed=CronConfig())
         dispatcher = MagicMock()
 
         done = threading.Event()
@@ -233,15 +227,17 @@ class TriggerDispatchTests(unittest.TestCase):
                         "trigger.start did not exit after stop()")
         dispatcher.dispatch.assert_not_called()
 
-    def test_malformed_config_logs_and_returns(self) -> None:
-        """Runtime malformed config (snuck past validate) is caught gracefully."""
+    def test_missing_typed_config_fails_closed(self) -> None:
+        """Runtime config without typed CronConfig is a programmer error."""
         trig = CronTrigger(MagicMock())
         cfg = PluginConfig(name="cron", settings={
             "CRON_SCHEDULES_JSON": "not json",
         })
         dispatcher = MagicMock()
-        with patch("sys.stderr", io.StringIO()):
+        with self.assertRaises(TypeError) as ctx:
             trig.start(cfg, dispatcher)
+        self.assertIn("typed CronConfig", str(ctx.exception))
+        self.assertIn("NoneType", str(ctx.exception))
         dispatcher.dispatch.assert_not_called()
 
     def test_slow_run_coalesces_missed_ticks(self) -> None:

@@ -69,7 +69,7 @@ const API_KEY_VARS: Readonly<Record<LLMProvider, readonly string[]>> = {
 };
 
 const OPENROUTER_HEADERS = {
-  "HTTP-Referer": "https://github.com/hivemoot/hivemoot-bot",
+  "HTTP-Referer": "https://github.com/hivemoot/hivemoot/tree/main/bot",
   "X-OpenRouter-Title": "Hivemoot Bot",
   "X-Title": "Hivemoot Bot",
 } as const;

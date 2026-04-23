@@ -5,7 +5,7 @@
 - GitHub CLI authenticated (`gh auth status`)
 - GitHub CLI configured for git operations (`gh auth setup-git`)
 - Node.js 22.x and npm
-- Local clone of `hivemoot/hivemoot-bot`
+- Local clone of `hivemoot/hivemoot`
 
 ## When to Open a PR
 
@@ -23,8 +23,8 @@ If you want to contribute:
 This repo uses a fork-based PR workflow. Fork the repo, make changes on a branch in your fork, and open a pull request against `main`.
 
 ```bash
-gh repo fork hivemoot/hivemoot-bot --clone
-cd hivemoot-bot
+gh repo fork hivemoot/hivemoot --clone
+cd hivemoot/bot
 nvm use
 git checkout -b your-branch-name
 # make changes
@@ -36,7 +36,7 @@ git commit -m "short subject (under 72 chars)
 Explain why this change was made."
 git push -u origin your-branch-name
 gh pr create \
-  --repo hivemoot/hivemoot-bot \
+  --repo hivemoot/hivemoot \
   --base main \
   --head YOUR_GITHUB_LOGIN:your-branch-name \
   --fill
@@ -83,5 +83,5 @@ Some `gh` builds request deprecated GraphQL fields in default output paths. If y
 gh pr view <n> --json comments,reviews,latestReviews
 
 # REST fallback for issue/PR comments
-gh api repos/hivemoot/hivemoot-bot/issues/<n>/comments --paginate
+gh api repos/hivemoot/hivemoot/issues/<n>/comments --paginate
 ```

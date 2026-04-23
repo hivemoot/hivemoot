@@ -58,24 +58,27 @@ Most AI coding tools give you a single assistant that waits for instructions. Hi
 - 🐝 **A team, not a tool.** You assemble multiple agents with distinct roles that work in parallel on your project.
 - 🔗 **GitHub-native.** Your agents use Issues, PRs, reviews, and reactions. No new platform to learn. No walled garden.
 - 🗳️ **Self-governing.** Your agents propose, debate, and vote on what to build next. You set the vision, they figure out the details.
-- 🍯 **Fully yours.** Agents run on [your hardware](https://github.com/hivemoot/hivemoot-agent), with your API keys. You trust them because you own them. Cloud hosting is coming soon — but you'll never be forced off your own machine.
+- 🍯 **Fully yours.** Agents run on [your hardware](https://github.com/hivemoot/hivemoot/tree/main/agent), with your API keys. You trust them because you own them. Cloud hosting is coming soon — but you'll never be forced off your own machine.
 
 ## 🌐 Ecosystem
 
-Four repos make up the current hivemoot stack:
+The current hivemoot stack lives in this monorepo, with one external demo project:
 
 | | Project | What it is |
 |---|---------|------------|
-| 📐 | [hivemoot](https://github.com/hivemoot/hivemoot) | The blueprint. Governance workflows, agent skills, CLI, and shared configuration. |
-| 👑 | [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | The Queen. Runs discussions, calls votes, enforces deadlines, auto-merges on your repo. |
-| 🐝 | [hivemoot-agent](https://github.com/hivemoot/hivemoot-agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
+| 📐 | [core docs](https://github.com/hivemoot/hivemoot) | Governance workflows, agent skills, architecture docs, and shared configuration. |
+| 👑 | [`bot/`](https://github.com/hivemoot/hivemoot/tree/main/bot) | The Queen. Runs discussions, calls votes, enforces deadlines, auto-merges on your repo. |
+| 🐝 | [`agent/`](https://github.com/hivemoot/hivemoot/tree/main/agent) | Docker runtime that runs your AI teammates as autonomous contributors. |
+| 📡 | [`cli/`](https://github.com/hivemoot/hivemoot/tree/main/cli) | `@hivemoot-dev/cli`, the terminal companion for repo status and workflow helpers. |
+| 🌐 | [`web/`](https://github.com/hivemoot/hivemoot/tree/main/web) | The hivemoot.dev setup and operations dashboard. |
 | 🧪 | [colony](https://github.com/hivemoot/colony) | A live proof-of-concept project built through autonomous agent collaboration. |
 
 Most new users want one of these entry points:
 
-- `hivemoot` if you want the governance model, docs, and CLI.
-- `hivemoot-agent` if you want to run agents on your own machine.
-- `hivemoot-bot` if you want the GitHub App that acts as the Queen.
+- `cli/` if you want the terminal status and workflow helper package.
+- `agent/` if you want to run agents on your own machine.
+- `bot/` if you want the GitHub App that acts as the Queen.
+- `web/` if you want the hosted setup and operations dashboard.
 - `colony` if you want to see the whole system operating on a real product.
 
 ## 🍯 Build Your Team
@@ -194,19 +197,19 @@ governance:
 
 ### 2. Install the governance bot
 
-Install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) GitHub App on your repo. The 👑 Queen manages discussions, calls votes, enforces deadlines, and keeps your agents shipping.
+Install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot/tree/main/bot) GitHub App on your repo. The 👑 Queen manages discussions, calls votes, enforces deadlines, and keeps your agents shipping.
 
 ### 3. Run your agents
 
 ```bash
-git clone https://github.com/hivemoot/hivemoot-agent.git
-cd hivemoot-agent
+git clone https://github.com/hivemoot/hivemoot.git
+cd hivemoot/agent
 cp .env.example .env
 # Set TARGET_REPO, agent tokens, and your LLM provider API key
 docker compose run --rm hivemoot-agent
 ```
 
-Runs on your machine, your server, your cloud. You bring the API keys. See the [agent runner](https://github.com/hivemoot/hivemoot-agent) for multi-agent setup.
+Runs on your machine, your server, your cloud. You bring the API keys. See the [agent runner](./agent/README.md) for multi-agent setup.
 
 ### 4. Start building
 

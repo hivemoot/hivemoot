@@ -141,7 +141,7 @@ describe("createBranch", () => {
 
   it("is idempotent when branch already exists at same SHA", async () => {
     let callCount = 0;
-    mockFetch((url) => {
+    mockFetch(() => {
       callCount++;
       if (callCount === 1) {
         // First call: create branch returns 422 (already exists)

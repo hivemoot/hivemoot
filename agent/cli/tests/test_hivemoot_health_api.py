@@ -1,6 +1,6 @@
 """Tests for hivemoot.health.api — heartbeat + run_report POSTs.
 
-Validates the payload shape against apps/web/AGENT_HEALTH_CONTRACT.md:
+Validates the payload shape against web/AGENT_HEALTH_CONTRACT.md:
   * Heartbeat carries exactly agent_id/repo/outcome (+ optional next_run_at).
   * Run reports carry the required core fields plus the optional ones
     only when the caller passed them.

@@ -86,7 +86,13 @@ class CronTrigger:
         return []
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
-        cfg: CronConfig = config.typed
+        cfg: CronConfig | None = config.typed
+        if not isinstance(cfg, CronConfig):
+            raise TypeError(
+                "cron trigger requires typed CronConfig; "
+                f"got {type(cfg).__name__}"
+            )
+
         schedules = [_entry_to_schedule(e) for e in cfg.schedules]
 
         if not schedules:

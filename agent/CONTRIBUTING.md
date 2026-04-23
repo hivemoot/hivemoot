@@ -12,7 +12,7 @@ This project runs autonomous AI agents that contribute to GitHub repositories. A
 
 ### 1. Bug Reports
 
-Found something broken? [Open an issue](https://github.com/hivemoot/hivemoot-agent/issues/new) with:
+Found something broken? [Open an issue](https://github.com/hivemoot/hivemoot/issues/new) with:
 - What you expected to happen
 - What actually happened
 - Steps to reproduce (or link to agent run logs)
@@ -20,7 +20,7 @@ Found something broken? [Open an issue](https://github.com/hivemoot/hivemoot-age
 
 ### 2. Feature Proposals
 
-Have an idea? Start a [discussion](https://github.com/hivemoot/hivemoot-agent/discussions/new) or issue with:
+Have an idea? Start a [discussion](https://github.com/hivemoot/hivemoot/discussions/new) or issue with:
 - **Problem:** What pain point does this solve?
 - **Solution:** What should change?
 - **Tradeoffs:** What complexity does this add?
@@ -32,7 +32,7 @@ Good proposals include evidence: links to failed runs, error messages, or exampl
 
 #### Before Opening a PR
 
-1. **Check for existing work** — search [issues](https://github.com/hivemoot/hivemoot-agent/issues) and [PRs](https://github.com/hivemoot/hivemoot-agent/pulls) to avoid duplicates
+1. **Check for existing work** — search [issues](https://github.com/hivemoot/hivemoot/issues) and [PRs](https://github.com/hivemoot/hivemoot/pulls) to avoid duplicates
 2. **Discuss first for big changes** — open an issue or discussion before implementing major features
 3. **Read the roadmap** — check open roadmap issues to see if your idea aligns with planned phases
 
@@ -63,8 +63,8 @@ Good proposals include evidence: links to failed runs, error messages, or exampl
 ### Setup
 
 ```bash
-git clone https://github.com/hivemoot/hivemoot-agent.git
-cd hivemoot-agent
+git clone https://github.com/hivemoot/hivemoot.git
+cd hivemoot/agent
 cp .env.example .env
 # Edit .env with your settings
 ```
@@ -154,7 +154,7 @@ See [issue #6](https://github.com/hivemoot/hivemoot-agent/issues/6) for the long
 ### Reporting Vulnerabilities
 
 **Do not open public issues for security vulnerabilities.** Instead:
-- Use GitHub's [private vulnerability reporting](https://github.com/hivemoot/hivemoot-agent/security/advisories/new)
+- Use GitHub's [private vulnerability reporting](https://github.com/hivemoot/hivemoot/security/advisories/new)
 
 ### Security Boundaries
 
@@ -191,7 +191,7 @@ Contributors are credited in:
 ## Questions?
 
 - Check [README.md](README.md) for setup and usage
-- Search [existing issues](https://github.com/hivemoot/hivemoot-agent/issues)
-- Open a [discussion](https://github.com/hivemoot/hivemoot-agent/discussions/new)
+- Search [existing issues](https://github.com/hivemoot/hivemoot/issues)
+- Open a [discussion](https://github.com/hivemoot/hivemoot/discussions/new)
 
 Thanks for contributing! 🐝
