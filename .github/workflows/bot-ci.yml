@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    working-directory: bot
+
 jobs:
   build:
     name: Build
@@ -20,6 +24,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -40,6 +45,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -60,6 +66,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -83,6 +90,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci

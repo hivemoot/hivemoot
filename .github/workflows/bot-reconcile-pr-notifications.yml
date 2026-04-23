@@ -1,19 +1,23 @@
-name: reconcile-repository-labels
+name: reconcile-pr-notifications
 
 on:
   schedule:
-    - cron: "20 3 * * *"  # Daily at 03:20 UTC (staggered from other scheduled scripts)
+    - cron: "20,50 * * * *"  # Every 30 minutes (staggered +20)
   workflow_dispatch:
     # Manual trigger for testing
 
 # Prevent overlapping runs of this workflow
 concurrency:
-  group: hivemoot-reconcile-repository-labels
+  group: hivemoot-reconcile-pr-notifications
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: bot
+
 jobs:
-  reconcile-repository-labels:
-    name: Reconcile Repository Labels
+  reconcile-pr-notifications:
+    name: Reconcile PR Notifications
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +29,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -32,8 +37,8 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Run reconcile-repository-labels script
-        run: npm run reconcile-repository-labels
+      - name: Run reconcile-pr-notifications script
+        run: npm run reconcile-pr-notifications
         env:
           APP_ID: ${{ vars.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

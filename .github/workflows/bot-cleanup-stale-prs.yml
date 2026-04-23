@@ -1,19 +1,23 @@
-name: daily-standup
+name: cleanup-stale-prs
 
 on:
   schedule:
-    - cron: "5 0 * * *"    # 00:05 UTC daily — reports on previous calendar day
+    - cron: "10,40 * * * *"  # Every 30 minutes (staggered +10)
   workflow_dispatch:
     # Manual trigger for testing
 
 # Prevent overlapping runs of this workflow
 concurrency:
-  group: hivemoot-daily-standup
+  group: hivemoot-cleanup-stale-prs
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: bot
+
 jobs:
-  daily-standup:
-    name: Post Colony Reports
+  cleanup-stale-prs:
+    name: Cleanup Stale Implementation PRs
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +29,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+          cache-dependency-path: bot/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -32,12 +37,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Run daily standup script
-        run: npm run daily-standup
+      - name: Run cleanup-stale-prs script
+        run: npm run cleanup-stale-prs
         env:
           APP_ID: ${{ vars.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-          # LLM configuration (optional — falls back to template without LLM)
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          # Per-repo config in .github/hivemoot.yml (defaults: 3 days stale, 6 days close)
