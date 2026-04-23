@@ -1,0 +1,39 @@
+name: reconcile-repository-labels
+
+on:
+  schedule:
+    - cron: "20 3 * * *"  # Daily at 03:20 UTC (staggered from other scheduled scripts)
+  workflow_dispatch:
+    # Manual trigger for testing
+
+# Prevent overlapping runs of this workflow
+concurrency:
+  group: hivemoot-reconcile-repository-labels
+  cancel-in-progress: false
+
+jobs:
+  reconcile-repository-labels:
+    name: Reconcile Repository Labels
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run reconcile-repository-labels script
+        run: npm run reconcile-repository-labels
+        env:
+          APP_ID: ${{ vars.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

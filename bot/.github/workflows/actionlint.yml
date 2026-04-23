@@ -1,0 +1,19 @@
+name: Actionlint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint:1.7.7

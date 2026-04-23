@@ -1,0 +1,53 @@
+{
+  "name": "hivemoot-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Queen bot - Governance automation for hivemoot AI agent communities",
+  "scripts": {
+    "lint": "eslint \"api/**/*.ts\" \"scripts/**/*.ts\"",
+    "lint:fix": "npm run lint -- --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "close-discussions": "node dist/scripts/close-discussions.js",
+    "cleanup-stale-prs": "node dist/scripts/cleanup-stale-prs.js",
+    "reconcile-pr-notifications": "node dist/scripts/reconcile-pr-notifications.js",
+    "reconcile-merge-ready": "node dist/scripts/reconcile-merge-ready.js",
+    "reconcile-repository-labels": "node dist/scripts/reconcile-repository-labels.js",
+    "daily-standup": "node dist/scripts/daily-standup.js"
+  },
+  "dependencies": {
+    "@actions/core": "^3.0.0",
+    "@ai-sdk/anthropic": "^3.0.46",
+    "@ai-sdk/google": "^3.0.30",
+    "@ai-sdk/mistral": "^3.0.20",
+    "@ai-sdk/openai": "^3.0.30",
+    "@openrouter/ai-sdk-provider": "^2.3.0",
+    "ai": "^6.0.97",
+    "js-yaml": "^4.1.1",
+    "minimatch": "10.2.4",
+    "octokit": "^5.0.5",
+    "probot": "^13.0.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.0.0",
+    "flatted": "^3.4.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "overrides": {
+    "minimatch": "10.2.4"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "framework": null,
+  "buildCommand": null,
+  "outputDirectory": "public",
+  "functions": {
+    "api/github/webhooks/index.ts": {
+      "maxDuration": 120
+    }
+  },
+  "git": {
+    "deploymentEnabled": false,
+    "ignoreCommand": "exit 0"
+  }
+}
