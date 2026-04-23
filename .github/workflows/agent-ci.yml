@@ -128,6 +128,11 @@ jobs:
       - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5  # v3.3.0
         with:
           dockerfile: agent/Dockerfile
+          # Point at agent/.hadolint.yaml since the action auto-finds
+          # .hadolint.yaml at the repo root only, and our suppression
+          # rules (DL3008 intentionally skipped) live with the
+          # Dockerfile they apply to.
+          config: agent/.hadolint.yaml
 
   compose-config:
     name: Compose Config
