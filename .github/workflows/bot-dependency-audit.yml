@@ -1,10 +1,19 @@
-name: Dependency Audit
+name: Bot Dependency Audit
+
+# Path-scoped so non-bot edits don't re-run the npm audit.  Weekly
+# cron keeps the "run on Monday" cadence inherited from hivemoot-bot
+# for catching newly-published advisories even on quiet weeks.
 
 on:
+  pull_request:
+    paths:
+      - 'bot/**'
+      - '.github/workflows/bot-dependency-audit.yml'
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths:
+      - 'bot/**'
+      - '.github/workflows/bot-dependency-audit.yml'
   schedule:
     - cron: "17 2 * * 1"
 
@@ -19,10 +28,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "22"
           cache: "npm"

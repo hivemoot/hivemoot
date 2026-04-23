@@ -31,6 +31,8 @@ describe("node runtime contract", () => {
   it("pins setup-node to package engines major across workflows", () => {
     const workflows = [
       "../.github/workflows/bot-ci.yml",
+      "../.github/workflows/bot-codeql.yml",
+      "../.github/workflows/bot-deploy.yml",
       "../.github/workflows/bot-dependency-audit.yml",
       "../.github/workflows/bot-cleanup-stale-prs.yml",
       "../.github/workflows/bot-close-discussions.yml",

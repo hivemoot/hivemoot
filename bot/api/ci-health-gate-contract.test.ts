@@ -7,7 +7,7 @@ function readRoot(path: string): string {
 }
 
 describe("ci post-deploy health gate contract", () => {
-  const ciWorkflow = readRoot("../.github/workflows/bot-ci.yml");
+  const ciWorkflow = readRoot("../.github/workflows/bot-deploy.yml");
 
   it("captures deployment URL and exposes it via deploy step output", () => {
     expect(ciWorkflow).toContain("- name: Deploy");
@@ -17,7 +17,8 @@ describe("ci post-deploy health gate contract", () => {
   });
 
   it("probes webhook health endpoint derived from deployment URL", () => {
-    expect(ciWorkflow).toContain('health_url="${{ steps.deploy.outputs.url }}/api/github/webhooks"');
+    expect(ciWorkflow).toContain("DEPLOY_URL: ${{ steps.deploy.outputs.url }}");
+    expect(ciWorkflow).toContain('health_url="${DEPLOY_URL}/api/github/webhooks"');
     expect(ciWorkflow).toContain('response="$(curl -fsS --max-time 15 "$health_url")"');
   });
 
