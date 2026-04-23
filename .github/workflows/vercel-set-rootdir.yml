@@ -1,0 +1,69 @@
+name: Vercel — Set rootDirectory
+
+# One-shot operator tool.  Updates the Vercel project's rootDirectory
+# via Vercel's API using the same VERCEL_TOKEN / VERCEL_ORG_ID /
+# VERCEL_PROJECT_ID secrets that web-deploy.yml already uses.
+#
+# Needed when the repo layout moves the web app to a new path
+# (e.g. apps/web → web for the monorepo consolidation, and bot/
+# for the Phase 3 bot import).  Vercel stores rootDirectory
+# server-side; there's no in-repo config for it.
+#
+# Manual invocation only — no automatic triggers.
+on:
+  workflow_dispatch:
+    inputs:
+      root_directory:
+        description: 'New rootDirectory (e.g. "web" or "bot")'
+        required: true
+        type: string
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Inspect current rootDirectory
+        env:
+          VERCEL_TOKEN:      ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID:     ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -eu
+          current=$(curl -sS -f \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" | jq -r '.rootDirectory // "<null>"')
+          echo "Current rootDirectory: $current"
+
+      - name: PATCH rootDirectory
+        env:
+          VERCEL_TOKEN:      ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID:     ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          NEW_ROOT:          ${{ inputs.root_directory }}
+        run: |
+          set -eu
+          echo "Setting rootDirectory to: $NEW_ROOT"
+          curl -sS -f -X PATCH \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"rootDirectory\":\"${NEW_ROOT}\"}" \
+            | jq '{name, rootDirectory, framework}'
+
+      - name: Verify
+        env:
+          VERCEL_TOKEN:      ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID:     ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          NEW_ROOT:          ${{ inputs.root_directory }}
+        run: |
+          set -eu
+          confirmed=$(curl -sS -f \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" | jq -r '.rootDirectory // "<null>"')
+          echo "rootDirectory now reads: $confirmed"
+          if [ "$confirmed" != "$NEW_ROOT" ]; then
+            echo "::error::PATCH did not persist (expected ${NEW_ROOT}, got ${confirmed})"
+            exit 1
+          fi
