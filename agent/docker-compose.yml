@@ -1,0 +1,110 @@
+x-agent-base-common: &agent-base-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      PROVIDER: ${DOCKER_PROVIDER:-all}
+      CODEX_VERSION: ${CODEX_VERSION:-latest}
+      GEMINI_VERSION: ${GEMINI_VERSION:-latest}
+      KILO_VERSION: ${KILO_VERSION:-latest}
+      OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
+      CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
+      HIVEMOOT_CLI_VERSION: ${HIVEMOOT_CLI_VERSION:-latest}
+  image: hivemoot-agent:local
+  deploy:
+    resources:
+      limits:
+        memory: ${AGENT_MEMORY_LIMIT:-16g}
+        cpus: "${AGENT_CPU_LIMIT:-4.0}"
+        pids: ${AGENT_PIDS_LIMIT:-512}
+  stdin_open: true
+  tty: true
+
+x-agent-base: &agent-base
+  <<: *agent-base-common
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+    - /home/node/.codex:uid=1000,gid=1000,mode=0700
+    - /home/node/.gemini:uid=1000,gid=1000,mode=0700
+    - /home/node/.claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/claude:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/kilo:uid=1000,gid=1000,mode=0700
+    - /home/node/.config/opencode:uid=1000,gid=1000,mode=0700
+    - /home/node/.local/share/opencode:uid=1000,gid=1000,mode=0700
+  volumes:
+    # Scope the bind mount to the repo-specific workspace directory so the
+    # container cannot access sibling workspaces or agent homes from other runs.
+    # Set WORKSPACE_DATA to a repo-specific host path when running multiple repos.
+    - ${WORKSPACE_DATA:-./data/repo}:${WORKSPACE_ROOT:-/workspace/repo}
+    # Persist MEMORY.md across `docker compose run --rm` invocations.
+    # Path includes AGENT_ID so different agents get isolated memory.
+    # Set AGENT_MEMORY_DATA explicitly when running multiple repos.
+    - ${AGENT_MEMORY_DATA:-./data/memory/${AGENT_ID:-default}}:${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}
+
+x-agent-env: &agent-env
+  AGENT_ID: ${AGENT_ID:-}
+  AGENT_TOKEN: ${AGENT_TOKEN:-}
+  AGENT_TOKEN_FILE: ${AGENT_TOKEN_FILE:-}
+  AGENT_PROVIDER: ${AGENT_PROVIDER:-claude}
+  AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-api_key}
+  AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-1800}
+  SESSION_RESUME: ${SESSION_RESUME:-}
+  SESSION_RESUME_ENABLED: ${SESSION_RESUME_ENABLED:-1}
+  SESSION_RESUME_MAX_IDLE_HOURS: ${SESSION_RESUME_MAX_IDLE_HOURS:-12}
+  SESSION_RESUME_MAX_AGE_HOURS: ${SESSION_RESUME_MAX_AGE_HOURS:-24}
+  SESSION_RESET_AT_HOUR: ${SESSION_RESET_AT_HOUR:-}
+  AGENT_MEMORY_DIR: ${AGENT_MEMORY_DIR:-/home/node/.hivemoot/memory}
+  AGENT_MEMORY_MODE: ${AGENT_MEMORY_MODE:-rw}
+  GIT_CLONE_DEPTH: ${GIT_CLONE_DEPTH:-50}
+  AGENT_MODEL: ${AGENT_MODEL:-}
+  AGENT_PROMPT_FILE: ${AGENT_PROMPT_FILE:-}
+  AGENT_IDENTITY_FILE: ${AGENT_IDENTITY_FILE:-}
+  AGENT_SKILLS: ${AGENT_SKILLS:-}
+  AGENT_EXTRA_PROMPT: ${AGENT_EXTRA_PROMPT:-}
+  AGENT_PLUGINS: ${AGENT_PLUGINS-github,hivemoot}
+  AGENT_TOOL_OPTIONS_JSON: ${AGENT_TOOL_OPTIONS_JSON:-}
+  HIVEMOOT_BUZZ_ROLE: ${HIVEMOOT_BUZZ_ROLE:-}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  GITHUB_TOKEN_FILE: ${GITHUB_TOKEN_FILE:-}
+  GITHUB_REPOS: ${GITHUB_REPOS:-}
+  GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-}
+  GITHUB_CLONE_DEPTH: ${GITHUB_CLONE_DEPTH:-}
+  GITHUB_GIT_NAME: ${GITHUB_GIT_NAME:-}
+  GITHUB_GIT_EMAIL: ${GITHUB_GIT_EMAIL:-}
+  MESSAGING_PLATFORM: ${MESSAGING_PLATFORM:-telegram}
+  MESSAGING_AGENT_ID: ${MESSAGING_AGENT_ID:-}
+  MESSAGING_ALLOWED_CHAT_IDS: ${MESSAGING_ALLOWED_CHAT_IDS:-}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-}
+  OPENAI_API_KEY_FILE: ${OPENAI_API_KEY_FILE:-}
+  GOOGLE_API_KEY_FILE: ${GOOGLE_API_KEY_FILE:-}
+  GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
+  ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
+  OPENROUTER_API_KEY_FILE: ${OPENROUTER_API_KEY_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN_FILE: ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+  KILO_PROVIDER: ${KILO_PROVIDER:-}
+  KILO_MODEL: ${KILO_MODEL:-}
+  KILOCODE_TOKEN_FILE: ${KILOCODE_TOKEN_FILE:-}
+  ZAI_API_KEY_FILE: ${ZAI_API_KEY_FILE:-}
+  OPENCODE_PROVIDER: ${OPENCODE_PROVIDER:-}
+  OPENCODE_MODEL: ${OPENCODE_MODEL:-}
+  HIVEMOOT_AGENT_TOKEN: ${HIVEMOOT_AGENT_TOKEN:-}
+  HIVEMOOT_AGENT_TOKEN_FILE: ${HIVEMOOT_AGENT_TOKEN_FILE:-}
+  CRON_SCHEDULES_JSON: ${CRON_SCHEDULES_JSON:-}
+  JOB_ID: ${JOB_ID:-}
+
+services:
+  hivemoot-agent:
+    <<: *agent-base
+    stop_grace_period: 5m
+    # Compose-invoked services are daemon-mode: triggers (cron,
+    # messaging, github-watch, hivemoot tasks/health) run in-process
+    # inside ``hivemoot-agent run`` and block until shutdown.  The Dockerfile
+    # CMD default stays ``worker`` so a plain ``docker run`` with no
+    # plugin config fails fast rather than entering an idle daemon.
+    command: ["run"]
+    environment:
+      <<: *agent-env
+      TARGET_REPO: ${TARGET_REPO:-}
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace/repo}

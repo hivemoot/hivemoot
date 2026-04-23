@@ -1,0 +1,8 @@
+name: browser
+version: 0.2.0
+description: >
+  Browser automation via CDP attach to a deployer-run sidecar
+  (e.g. apiary's hivemoot-browser).  Wraps the agent-browser CLI
+  (Vercel Labs) shipped in the runtime image.  Promoted from
+  apiary's external apiary-browser plugin to a built-in.
+schema_class: hivemoot_agent.plugins_builtin.browser.config:BrowserConfig

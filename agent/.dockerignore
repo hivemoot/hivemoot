@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+.env.local
+data
+runs
+secrets
+research
+node_modules
+*.log
