@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Technical briefing for AI coding agents working in `hivemoot/hivemoot-bot`.
+Technical briefing for AI coding agents working in `bot/` inside `hivemoot/hivemoot`.
 
 ## Project overview
 
@@ -94,6 +94,6 @@ Read `CONTRIBUTING.md` before opening a PR, and only implement issues labeled `h
 
 This repository uses a fork-based PR flow:
 
-1. Fork `hivemoot/hivemoot-bot`.
+1. Fork `hivemoot/hivemoot`.
 2. Push your branch to your fork.
-3. Open a PR from `YOUR_GITHUB_LOGIN:branch` into `hivemoot/hivemoot-bot:main`.
+3. Open a PR from `YOUR_GITHUB_LOGIN:branch` into `hivemoot/hivemoot:main`.

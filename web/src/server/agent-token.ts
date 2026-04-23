@@ -13,7 +13,7 @@
 import { randomBytes, createHash } from "crypto";
 import { type Redis } from "@upstash/redis";
 import { encrypt, decrypt, type EncryptedEnvelope } from "@/server/crypto";
-import { withRedisLock, LockTimeoutError } from "@/server/redis-lock";
+import { withRedisLock } from "@/server/redis-lock";
 
 // ---------------------------------------------------------------------------
 // Constants

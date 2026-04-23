@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,7 @@ let tmpDir: string;
 let stateFile: string;
 
 beforeEach(async () => {
-  tmpDir = await mkdtemp(join(tmpdir(), "hivemoot-watch-test-"));
+  tmpDir = await mkdtemp(join(await realpath(tmpdir()), "hivemoot-watch-test-"));
   stateFile = join(tmpDir, "watch-state.json");
 });
 

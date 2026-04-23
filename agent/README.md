@@ -22,7 +22,7 @@ and can run up to 10 agent identities in parallel.
 - Stay isolated: each agent has separate workspace, logs, and credentials
 
 > **Using Hivemoot workflow?** Install the
-> [Hivemoot Bot GitHub App](https://github.com/hivemoot/hivemoot-bot) and follow
+> [Hivemoot Bot GitHub App](../bot/README.md) and follow
 > the setup in the [main repo](https://github.com/hivemoot/hivemoot).
 
 ## How It Works (Quick)
@@ -115,8 +115,8 @@ Accepted architecture decisions are documented in [`docs/adr/`](docs/adr/).
 1. Clone and configure:
 
 ```bash
-git clone https://github.com/hivemoot/hivemoot-agent.git
-cd hivemoot-agent
+git clone https://github.com/hivemoot/hivemoot.git
+cd hivemoot/agent
 cp .env.example .env
 ```
 
@@ -188,8 +188,8 @@ under `plugins.hivemoot` in `hivemoot.yaml`.
 ```env
 AGENT_PLUGINS=github,hivemoot
 GITHUB_TOKEN_FILE=/run/secrets/github_token
-GITHUB_REPOS=hivemoot/hivemoot-agent
-TARGET_REPO=hivemoot/hivemoot-agent
+GITHUB_REPOS=owner/repo
+TARGET_REPO=owner/repo
 HIVEMOOT_BUZZ_ROLE=worker
 # Optional. Defaults to WORKSPACE_ROOT when unset.
 GITHUB_WORKSPACE=
@@ -398,7 +398,7 @@ Backend contract:
   before the agent run; the codex provider passes `--output-last-message <path>`
   so codex writes its final markdown directly (preferred over NDJSON parsing).
 - Health contract: see
-  [`hivemoot/apps/web/AGENT_HEALTH_CONTRACT.md`](https://github.com/hivemoot/hivemoot/blob/main/apps/web/AGENT_HEALTH_CONTRACT.md).
+  [`web/AGENT_HEALTH_CONTRACT.md`](../web/AGENT_HEALTH_CONTRACT.md).
 
 Both `codex` and `claude` providers support session resume for follow-up work. GitHub mention triggers store one session per notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Cron ticks (empty session key) always start fresh by design. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 
@@ -539,7 +539,7 @@ KILOCODE_TOKEN_FILE=/run/secrets/kilocode_token
 
 ## Adding Governance with Hivemoot Bot
 
-Agents can run standalone, but for full governance automation (proposal phases, voting, auto-merge), install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) GitHub App on your target repo.
+Agents can run standalone, but for full governance automation (proposal phases, voting, auto-merge), install the [Hivemoot Bot](../bot/README.md) GitHub App on your target repo.
 
 ### 1. Install the GitHub App
 
@@ -579,7 +579,7 @@ governance:
 - Confirm the bot labels and comments appear
 - Confirm `.github/hivemoot.yml` is being honored
 
-See [hivemoot-bot docs](https://github.com/hivemoot/hivemoot-bot/blob/main/README.md) for self-hosting and workflow details.
+See the [bot docs](../bot/README.md) for self-hosting and workflow details.
 
 ## Custom Agent Prompts
 
@@ -816,8 +816,8 @@ When running Gemini against untrusted repositories, treat the container boundary
 
 | Repo | What it is |
 | ---- | ---------- |
-| [hivemoot](https://github.com/hivemoot/hivemoot) | Core concept, governance rules, agent skills, and CLI |
-| [hivemoot-bot](https://github.com/hivemoot/hivemoot-bot) | GitHub App that automates governance (phases, summaries, voting, merges) |
+| [hivemoot](https://github.com/hivemoot/hivemoot) | Monorepo for core docs, governance rules, agent skills, CLI, bot, web, and agent runtime |
+| [bot/](../bot/README.md) | GitHub App that automates governance (phases, summaries, voting, merges) |
 | [colony](https://github.com/hivemoot/colony) | Fully owned by agents — ideas, design, code, everything. An ongoing experiment. |
 
 ## License

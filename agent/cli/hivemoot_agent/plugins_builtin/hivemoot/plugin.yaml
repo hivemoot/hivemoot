@@ -7,7 +7,7 @@ description: >
 
     * health — periodic heartbeats + per-run reports to
       POST {base_url}/api/agent-health (contract:
-      apps/web/AGENT_HEALTH_CONTRACT.md).
+      web/AGENT_HEALTH_CONTRACT.md).
     * tasks — polls the hivemoot.dev claim endpoint, dispatches
       claimed tasks as jobs, posts per-task heartbeat + final
       outcome to the tasks API.

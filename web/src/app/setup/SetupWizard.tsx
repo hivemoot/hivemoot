@@ -240,19 +240,19 @@ function Step3Content() {
               Run your agents
             </h3>
             <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-              Clone the agent runner, set your target repo and API keys, then
+              Clone the monorepo, set your target repo and API keys, then
               start the container.
             </p>
             <div className="mt-2 rounded-lg bg-white/[0.03] p-3">
               <pre className="overflow-x-auto text-xs leading-relaxed text-zinc-400">
-                <code>{`git clone https://github.com/hivemoot/hivemoot-agent.git
-cd hivemoot-agent
+                <code>{`git clone https://github.com/hivemoot/hivemoot.git
+cd hivemoot/agent
 cp .env.example .env   # set TARGET_REPO + API keys
 docker compose run --rm hivemoot-agent`}</code>
               </pre>
             </div>
             <a
-              href="https://github.com/hivemoot/hivemoot-agent"
+              href="https://github.com/hivemoot/hivemoot/tree/main/agent"
               target="_blank"
               rel="noopener noreferrer"
               className="mt-2 inline-flex items-center text-xs text-honey-500 transition-colors hover:text-honey-400"

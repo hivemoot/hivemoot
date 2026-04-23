@@ -36,7 +36,7 @@ from hivemoot_agent.config import StrictPluginConfig
 class HivemootHealthConfig(StrictPluginConfig):
     """Agent-health reporter — heartbeats + per-run reports.
 
-    Contract: ``apps/web/AGENT_HEALTH_CONTRACT.md`` (hivemoot web repo).
+    Contract: ``web/AGENT_HEALTH_CONTRACT.md`` (hivemoot web app).
     The dashboard's Agent Health tab is fed by the data posted here.
     """
 

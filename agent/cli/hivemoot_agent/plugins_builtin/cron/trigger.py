@@ -87,6 +87,13 @@ class CronTrigger:
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
         cfg: CronConfig = config.typed
+        if not isinstance(cfg, CronConfig):
+            print(
+                "[cron] invalid runtime config; trigger disabled",
+                file=sys.stderr, flush=True,
+            )
+            return
+
         schedules = [_entry_to_schedule(e) for e in cfg.schedules]
 
         if not schedules:

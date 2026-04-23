@@ -1,6 +1,6 @@
 # BYOK Contract (Phase 4)
 
-This document defines the stable BYOK storage and runtime contract between this repository (`web`) and the bot runtime (`hivemoot/hivemoot-bot#249`).
+This document defines the stable BYOK storage and runtime contract between the web app (`web/`) and the bot runtime (`bot/`).
 
 Scope:
 - Redis storage namespace and envelope schema
@@ -84,7 +84,7 @@ Required in this repo (`web`):
 | `BYOK_ACTIVE_KEY_VERSION` | Key version used for new encryptions |
 | `BYOK_MASTER_KEYS` | JSON keyring map (`{"version":"hexKey"}`) |
 
-Required in bot runtime (`hivemoot/hivemoot-bot`):
+Required in bot runtime (`bot/`):
 
 | Var | Purpose |
 |---|---|
