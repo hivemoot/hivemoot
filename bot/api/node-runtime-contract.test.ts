@@ -30,13 +30,13 @@ describe("node runtime contract", () => {
 
   it("pins setup-node to package engines major across workflows", () => {
     const workflows = [
-      ".github/workflows/ci.yml",
-      ".github/workflows/dependency-audit.yml",
-      ".github/workflows/cleanup-stale-prs.yml",
-      ".github/workflows/close-discussions.yml",
-      ".github/workflows/reconcile-pr-notifications.yml",
-      ".github/workflows/reconcile-merge-ready.yml",
-      ".github/workflows/daily-standup.yml",
+      "../.github/workflows/bot-ci.yml",
+      "../.github/workflows/bot-dependency-audit.yml",
+      "../.github/workflows/bot-cleanup-stale-prs.yml",
+      "../.github/workflows/bot-close-discussions.yml",
+      "../.github/workflows/bot-reconcile-pr-notifications.yml",
+      "../.github/workflows/bot-reconcile-merge-ready.yml",
+      "../.github/workflows/bot-daily-standup.yml",
     ];
 
     for (const workflow of workflows) {

@@ -7,7 +7,7 @@ function readRoot(path: string): string {
 }
 
 describe("ci post-deploy health gate contract", () => {
-  const ciWorkflow = readRoot(".github/workflows/ci.yml");
+  const ciWorkflow = readRoot("../.github/workflows/bot-ci.yml");
 
   it("captures deployment URL and exposes it via deploy step output", () => {
     expect(ciWorkflow).toContain("- name: Deploy");
