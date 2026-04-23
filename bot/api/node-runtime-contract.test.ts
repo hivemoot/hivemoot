@@ -38,6 +38,7 @@ describe("node runtime contract", () => {
       "../.github/workflows/bot-close-discussions.yml",
       "../.github/workflows/bot-reconcile-pr-notifications.yml",
       "../.github/workflows/bot-reconcile-merge-ready.yml",
+      "../.github/workflows/bot-reconcile-repository-labels.yml",
       "../.github/workflows/bot-daily-standup.yml",
     ];
 
