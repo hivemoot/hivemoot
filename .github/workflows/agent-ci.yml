@@ -1,12 +1,31 @@
-name: CI
+name: Agent CI
+
+# Ported from hivemoot-agent's ci.yml under the monorepo consolidation.
+# Every path-sensitive step now assumes the agent is under agent/ rather
+# than at the repo root.  Path-scoped at the trigger level so unrelated
+# edits (web/, bot/, cli/, docs/) don't fire this pipeline.
 
 on:
   pull_request:
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent-ci.yml'
   push:
     branches: [main]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent-ci.yml'
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    # All `run:` steps execute inside agent/ so the in-workflow paths
+    # (scripts/, cli/, docker-compose.yml, .env.example) keep their
+    # original shape.  `uses:` actions don't respect this; those pass
+    # context/dockerfile paths explicitly where needed.
+    working-directory: agent
 
 jobs:
   filter:
@@ -22,14 +41,14 @@ jobs:
         with:
           filters: |
             docker:
-              - 'Dockerfile'
-              - '.dockerignore'
-              - 'cli/**'
-              - '.trivyignore'
-              - '.github/workflows/ci.yml'
+              - 'agent/Dockerfile'
+              - 'agent/.dockerignore'
+              - 'agent/cli/**'
+              - 'agent/.trivyignore'
+              - '.github/workflows/agent-ci.yml'
             dockerfile:
-              - 'Dockerfile'
-              - '.github/workflows/ci.yml'
+              - 'agent/Dockerfile'
+              - '.github/workflows/agent-ci.yml'
 
   shellcheck:
     name: ShellCheck
@@ -108,7 +127,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5  # v3.3.0
         with:
-          dockerfile: Dockerfile
+          dockerfile: agent/Dockerfile
 
   compose-config:
     name: Compose Config
@@ -143,6 +162,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - uses: DavidAnson/markdownlint-cli2-action@05f32210e84442804257b2a6f20b273450ec8265  # v19
+        with:
+          globs: 'agent/**/*.md'
 
   docker-build:
     name: Docker Build & Security Scan
@@ -155,7 +176,7 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
         with:
-          context: .
+          context: ./agent
           load: true
           tags: hivemoot-agent:ci
           cache-from: type=gha
@@ -166,8 +187,6 @@ jobs:
           stderr_file="$(mktemp)"
           trap 'rm -f "$stderr_file"' EXIT
 
-          # Verify the Python worker entrypoint runs and rejects a
-          # missing AGENT_PLUGINS with the expected error message.
           if timeout 10 docker run --rm hivemoot-agent:ci \
             > /dev/null 2> "$stderr_file"; then
             echo "::error::entrypoint should fail without AGENT_PLUGINS"
@@ -175,8 +194,6 @@ jobs:
           fi
           grep -qF "AGENT_PLUGINS" "$stderr_file"
 
-          # Verify the Python CLI is available and plugin discovery surfaces
-          # the daemon-mode plugins (messaging + hivemoot) per ADR-002.
           docker run --rm --entrypoint hivemoot-agent hivemoot-agent:ci plugin list 2>&1 | tee /tmp/plugin-list
           grep -qF "messaging" /tmp/plugin-list
           grep -qF "hivemoot" /tmp/plugin-list
@@ -229,7 +246,7 @@ jobs:
       - name: Build provider-${{ matrix.provider }} image
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
         with:
-          context: .
+          context: ./agent
           load: true
           tags: hivemoot-agent:ci-${{ matrix.provider }}
           build-args: PROVIDER=${{ matrix.provider }}
