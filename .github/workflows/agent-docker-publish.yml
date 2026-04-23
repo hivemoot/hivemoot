@@ -1,11 +1,15 @@
 name: Agent — Publish Docker Image
 
 # Ported from hivemoot-agent's docker-publish.yml under the monorepo
-# consolidation.  The published image name is pinned to
-# hivemoot/hivemoot-agent (not ${{ github.repository }}) so existing
-# image consumers — apiary's fleet config, the hive's docker pull
-# script, any external runners — keep resolving the same tag after
-# the repo merge.
+# consolidation.  Image name is pinned to hivemoot/agent (not
+# ${{ github.repository }}, which would produce the ambiguous
+# hivemoot/hivemoot) so the package has a clean home under the
+# monorepo from day one.  The legacy ghcr.io/hivemoot/hivemoot-agent
+# package is no longer pushed to; its existing sha-* tags remain
+# available for rollback until it is explicitly retired.  Apiary's
+# fleet config and the hive's docker pull will repoint at the new
+# path via a companion apiary PR that must merge before the next
+# fleet deploy.
 
 on:
   push:
@@ -20,7 +24,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: hivemoot/hivemoot-agent
+  IMAGE_NAME: hivemoot/agent
   DOCKER_METADATA_SHORT_SHA_LENGTH: 7
 
 jobs:
