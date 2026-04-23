@@ -109,8 +109,8 @@ class TriggerDispatchTests(unittest.TestCase):
         self.assertIn("Conversation Context", job.prompt)
         self.assertEqual(job.metadata["task_id"], "t-1")
         self.assertEqual(job.metadata["claim_token"], "ctok")
-        self.assertEqual(job.metadata["repo"], "o/r")
-        self.assertEqual(job.metadata["repos"], ["o/r"])
+        self.assertNotIn("repo", job.metadata)
+        self.assertNotIn("repos", job.metadata)
 
     def test_dispatches_repo_less_task(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())
@@ -141,8 +141,8 @@ class TriggerDispatchTests(unittest.TestCase):
         dispatcher.dispatch.assert_called_once()
         job = dispatcher.dispatch.call_args[0][0]
         self.assertEqual(job.session_key, "task:generic-1")
-        self.assertEqual(job.metadata["repo"], "")
-        self.assertEqual(job.metadata["repos"], [])
+        self.assertNotIn("repo", job.metadata)
+        self.assertNotIn("repos", job.metadata)
 
     def test_no_task_loops_then_stops(self) -> None:
         trig = HivemootTaskTrigger(MagicMock())

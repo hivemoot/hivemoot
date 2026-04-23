@@ -173,6 +173,7 @@ function truncate(text: string, max: number): string {
 // ---------------------------------------------------------------------------
 
 const REFRESH_INTERVAL_MS = 10_000;
+const LEGACY_DRAFT_REPOS_KEY = "create-task-draft-repos";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -192,6 +193,7 @@ export default function TasksDashboard() {
   useEffect(() => {
     try {
       const savedPrompt = sessionStorage.getItem(DRAFT_PROMPT_KEY);
+      sessionStorage.removeItem(LEGACY_DRAFT_REPOS_KEY);
       if (savedPrompt) { setPrompt(savedPrompt); setShowCreateForm(true); }
     } catch {
       // sessionStorage unavailable
@@ -408,9 +410,9 @@ export default function TasksDashboard() {
                     {statusLabel(task.status)}
                   </span>
                 </div>
-                <div className="mt-1.5 text-xs text-zinc-600">
-                  <span suppressHydrationWarning>{relativeTime(task.created_at)}</span>
-                </div>
+                <span className="mt-1.5 block text-xs text-zinc-600" suppressHydrationWarning>
+                  {relativeTime(task.created_at)}
+                </span>
                 {task.progress && task.status !== "pending" && (
                   <p className="mt-1 truncate text-xs text-zinc-500">{task.progress}</p>
                 )}

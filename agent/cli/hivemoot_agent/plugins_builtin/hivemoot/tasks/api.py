@@ -81,9 +81,9 @@ class ClaimedTask:
     "draft RFC" — or contain multiple for cross-repo work).
 
     ``repo`` is a singular convenience = the first entry (or empty
-    string).  Preserved for existing callers that stash it in
-    ``Job.metadata["repo"]`` and for log messages that print one
-    identifier.
+    string).  It is retained inside the claim client so older backend
+    payloads stay parseable, but task dispatch does not forward
+    repository metadata into the generic task job surface.
     """
 
     task_id: str
