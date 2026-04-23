@@ -384,7 +384,7 @@ describe("LLM Provider", () => {
         apiKey: "openrouter-test-key",
         compatibility: "strict",
         headers: {
-          "HTTP-Referer": "https://github.com/hivemoot/hivemoot-bot",
+          "HTTP-Referer": "https://github.com/hivemoot/hivemoot/tree/main/bot",
           "X-OpenRouter-Title": "Hivemoot Bot",
           "X-Title": "Hivemoot Bot",
         },
@@ -618,7 +618,7 @@ describe("LLM Provider", () => {
         apiKey: "sk-openrouter",
         compatibility: "strict",
         headers: {
-          "HTTP-Referer": "https://github.com/hivemoot/hivemoot-bot",
+          "HTTP-Referer": "https://github.com/hivemoot/hivemoot/tree/main/bot",
           "X-OpenRouter-Title": "Hivemoot Bot",
           "X-Title": "Hivemoot Bot",
         },

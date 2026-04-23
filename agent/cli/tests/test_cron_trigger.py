@@ -227,15 +227,17 @@ class TriggerDispatchTests(unittest.TestCase):
                         "trigger.start did not exit after stop()")
         dispatcher.dispatch.assert_not_called()
 
-    def test_malformed_config_logs_and_returns(self) -> None:
-        """Runtime malformed config (snuck past validate) is caught gracefully."""
+    def test_missing_typed_config_fails_closed(self) -> None:
+        """Runtime config without typed CronConfig is a programmer error."""
         trig = CronTrigger(MagicMock())
         cfg = PluginConfig(name="cron", settings={
             "CRON_SCHEDULES_JSON": "not json",
         })
         dispatcher = MagicMock()
-        with patch("sys.stderr", io.StringIO()):
+        with self.assertRaises(TypeError) as ctx:
             trig.start(cfg, dispatcher)
+        self.assertIn("typed CronConfig", str(ctx.exception))
+        self.assertIn("NoneType", str(ctx.exception))
         dispatcher.dispatch.assert_not_called()
 
     def test_slow_run_coalesces_missed_ticks(self) -> None:

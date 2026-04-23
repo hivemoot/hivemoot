@@ -18,7 +18,7 @@ const ONBOARDING_CONFIG_PATH = ".github/hivemoot.yml";
 const ONBOARDING_COMMIT_MESSAGE = "Add Hivemoot configuration";
 
 const ONBOARDING_CONFIG_CONTENT = `# Hivemoot Configuration
-# Docs: https://github.com/hivemoot/hivemoot-bot#configuration
+# Docs: https://github.com/hivemoot/hivemoot/tree/main/bot#configuration
 #
 # Merging this PR activates Hivemoot governance on this repository.
 # Close without merging to opt out of auto-governance for now.
@@ -120,7 +120,7 @@ Nothing. Hivemoot stays installed but runs no automations until a config file ex
 
 ## Customize before merging
 
-Edit \`.github/hivemoot.yml\` in this PR to adjust timing, PR limits, or trusted reviewers. See the [configuration reference](https://github.com/hivemoot/hivemoot-bot#configuration) for all options.`;
+Edit \`.github/hivemoot.yml\` in this PR to adjust timing, PR limits, or trusted reviewers. See the [configuration reference](https://github.com/hivemoot/hivemoot/tree/main/bot#configuration) for all options.`;
 
 export interface OnboardingClient {
   rest: {
