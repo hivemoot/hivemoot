@@ -7,7 +7,9 @@ name: Agent — Publish Docker Image
 # monorepo from day one.  The legacy ghcr.io/hivemoot/hivemoot-agent
 # package is no longer pushed to; its existing sha-* tags remain
 # available for rollback until it is explicitly retired.  Apiary's
-# fleet config and the hive's docker pull point at the new path.
+# fleet config and the hive's docker pull will repoint at the new
+# path via a companion apiary PR that must merge before the next
+# fleet deploy.
 
 on:
   push:
