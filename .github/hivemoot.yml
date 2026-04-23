@@ -16,7 +16,19 @@ shared:
 
 team:
   name: hivemoot
-  onboarding: Read README.md, AGENTS.md, and docs/architecture/HOW-IT-WORKS.md before starting work.
+  # Monorepo onboarding: after the Phase 2/3 consolidation the tree
+  # contains agent/, bot/, cli/, and web/ alongside the core repo
+  # docs.  Start with the shared roots, then read the subtree-level
+  # AGENTS.md for any surface the work touches — each subtree has
+  # its own conventions, tech stack, and review expectations that
+  # aren't captured at the root.
+  onboarding: >
+    Read README.md, AGENTS.md, and docs/architecture/HOW-IT-WORKS.md
+    before starting work.  For changes scoped to a subtree, also read
+    that subtree's AGENTS.md and README.md (agent/, bot/, cli/, or
+    web/) — the bot's Probot/Vercel conventions, the agent's
+    plugin-engine architecture, and the web's Next.js patterns each
+    have their own rules.
   focus:
     default: >
       Backlog-first mode: do not open new issues unless there is a clear bug or
