@@ -801,7 +801,7 @@ function AgentTokenSection({
         <div>
           <h2 className="text-lg font-semibold text-[#fafafa]">Agent Token</h2>
           <p className="mt-0.5 text-sm text-zinc-400">
-            Bearer token used by agents to authenticate health reports.
+            Bearer token used by agents for dashboard task execution and health reports.
           </p>
         </div>
       </div>
@@ -925,7 +925,7 @@ function AgentTokenSection({
             <span className="text-sm font-medium text-zinc-500">Not configured</span>
           </div>
           <p className="mb-6 text-sm text-zinc-400">
-            Generate a bearer token so your agents can authenticate when sending health reports.
+            Generate a bearer token so your agents can claim dashboard tasks and send health reports.
           </p>
           <button
             type="button"

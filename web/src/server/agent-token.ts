@@ -2,12 +2,12 @@
  * Agent token lifecycle management.
  *
  * Tokens are 64-char hex strings (32 random bytes). On creation the raw token
- * is encrypted with the BYOK keyring and stored at `hive:agent-token:{installationId}`.
+ * is encrypted with the BYOK keyring and stored at `hive:agent-token:{scopeId}`.
  * A SHA-256 hash of the raw token is stored as a reverse index at
  * `agent-token-hash:{hash}` so incoming Bearer tokens can be resolved to an
- * installationId in O(1) without decrypting anything.
+ * installation/user scope in O(1) without decrypting anything.
  *
- * Only one active token per installation. Creating a new token revokes the old one.
+ * Only one active token per scope. Creating a new token revokes the old one.
  */
 
 import { randomBytes, createHash } from "crypto";

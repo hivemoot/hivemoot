@@ -18,7 +18,9 @@ vi.mock("@/server/github-auth", () => ({
 vi.mock("@/server/setup-session", () => ({
   validateOAuthState: vi.fn(),
   createSetupSession: vi.fn(),
+  createUserScopeId: vi.fn((userId: number) => `user:${userId}`),
   DISCOVER_SENTINEL: "discover",
+  isGitHubInstallationScope: vi.fn((scopeId: string) => /^\d+$/.test(scopeId)),
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
   SETUP_SESSION_COOKIE: "setup_session",
   SESSION_TTL_SECONDS: 86400,
@@ -41,6 +43,7 @@ import {
   validateOAuthState,
   createSetupSession,
   OAUTH_STATE_BINDING_COOKIE,
+  createUserScopeId,
 } from "@/server/setup-session";
 import { SETUP_SESSION_COOKIE } from "@/server/setup-session";
 import { hasByokEnvelope } from "@/server/byok-store";
@@ -245,7 +248,7 @@ describe("GET /api/auth/github/callback — rejections", () => {
   it("cross-installation write attempt is blocked (installationId from state, not URL)", async () => {
     // Attacker sets state=legit-state but the URL has a different installation_id.
     // The route ignores any installation_id in the URL and uses only the one from Redis state.
-    vi.mocked(validateOAuthState).mockResolvedValue({ installationId: "VICTIM_INSTALL" });
+    vi.mocked(validateOAuthState).mockResolvedValue({ installationId: "999" });
     vi.mocked(getInstallation).mockResolvedValue({
       account: { login: "alice", type: "User" },
     });
@@ -258,7 +261,7 @@ describe("GET /api/auth/github/callback — rejections", () => {
 
     // Session must be created with the installationId FROM REDIS, not from the URL
     expect(createSetupSession).toHaveBeenCalledWith(
-      expect.objectContaining({ installationId: "VICTIM_INSTALL" }),
+      expect.objectContaining({ installationId: "999" }),
       expect.anything(),
     );
   });
@@ -375,7 +378,7 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     expect(getInstallation).toHaveBeenCalledWith("67890", "app-jwt");
   });
 
-  it("redirects to not_installed when no installations are found", async () => {
+  it("creates a user-scoped dashboard session when no installations are found", async () => {
     vi.mocked(getUserInstallations).mockResolvedValue([]);
 
     const req = makeRequestWithCookie(
@@ -385,9 +388,16 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     const res = await GET(req);
 
     expect(res.status).toBe(307);
-    const location = res.headers.get("location")!;
-    expect(location).toContain("auth=not_installed");
-    expect(location).not.toContain("installation_id=");
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/dashboard/credentials");
+    expect(location.searchParams.has("auth")).toBe(false);
+    expect(location.searchParams.has("installation_id")).toBe(false);
+    expect(createUserScopeId).toHaveBeenCalledWith(1);
+    expect(getInstallation).not.toHaveBeenCalled();
+    expect(createSetupSession).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "user:1" }),
+      expect.anything(),
+    );
   });
 
   it("uses the first installation when multiple exist", async () => {

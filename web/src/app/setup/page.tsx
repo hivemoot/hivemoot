@@ -1,15 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
+import SetupLocalFlow from "./SetupLocalFlow";
 import SetupWizard from "./SetupWizard";
 import { SESSION_TTL_SECONDS, SETUP_SESSION_COOKIE, getSetupSession } from "@/server/setup-session";
 import { getRedisClient } from "@/server/redis";
 import { validateEnv } from "@/server/env";
 
 export const metadata: Metadata = {
-  title: "Set up Hivemoot — Your AI Engineering Team",
+  title: "Set up Hivemoot — Local Agent Runner",
   description:
-    "Connect GitHub, add your API key, and launch your AI agent team in minutes.",
+    "Choose an agent CLI, enable plugins, and generate a local Hivemoot runner config.",
 };
 
 /**
@@ -62,155 +63,10 @@ function HoneycombDecoration({ className }: { className?: string }) {
   );
 }
 
-/** Step status determines visual treatment in the progress indicator. */
-type StepStatus = "complete" | "active" | "upcoming";
-
-interface Step {
-  number: number;
-  label: string;
-  status: StepStatus;
-}
-
-function buildSteps(isAuthorized: boolean): Step[] {
-  return [
-    { number: 1, label: "Connect GitHub", status: isAuthorized ? "complete" : "active" },
-    { number: 2, label: "Meet the Queen", status: isAuthorized ? "active" : "upcoming" },
-    { number: 3, label: "Launch your team", status: "upcoming" },
-  ];
-}
-
-function StepIndicator({ step }: { step: Step }) {
-  const isActive = step.status === "active";
-  const isComplete = step.status === "complete";
-  const isUpcoming = step.status === "upcoming";
-
-  return (
-    <li className="flex items-center gap-3">
-      {/* Step circle */}
-      <div
-        className={`
-          flex h-9 w-9 shrink-0 items-center justify-center rounded-full
-          text-sm font-semibold transition-colors
-          ${isActive ? "bg-honey-500 text-[#0a0a0a]" : ""}
-          ${isComplete ? "bg-honey-500/20 text-honey-400 ring-1 ring-honey-500/40" : ""}
-          ${isUpcoming ? "bg-white/5 text-zinc-500 ring-1 ring-white/10" : ""}
-        `}
-      >
-        {isComplete ? (
-          // Checkmark SVG for completed steps
-          <svg
-            className="h-4 w-4"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
-          </svg>
-        ) : (
-          step.number
-        )}
-      </div>
-
-      {/* Step label */}
-      <span
-        className={`
-          text-sm
-          ${isActive ? "font-medium text-[#fafafa]" : ""}
-          ${isComplete ? "text-honey-400" : ""}
-          ${isUpcoming ? "text-zinc-500" : ""}
-        `}
-      >
-        {step.label}
-      </span>
-    </li>
-  );
-}
-
-/** Connector line between steps in the progress indicator. */
-function StepConnector({ fromStatus }: { fromStatus: StepStatus }) {
-  const isActiveOrComplete =
-    fromStatus === "active" || fromStatus === "complete";
-
-  return (
-    <li aria-hidden="true" className="flex items-center pl-[17px]">
-      <div
-        className={`h-6 w-px ${isActiveOrComplete ? "bg-honey-500/30" : "bg-white/5"}`}
-      />
-    </li>
-  );
-}
-
 interface SearchParams {
   installation_id?: string;
   auth?: string;
   reason?: string;
-}
-
-/** Banner shown after the OAuth callback resolves. */
-function AuthStatusBanner({ auth, reason }: { auth: string; reason?: string }) {
-  if (auth === "ok") {
-    return (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-green-500/20 bg-green-500/5 px-4 py-3">
-        <svg className="h-4 w-4 shrink-0 text-green-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <polyline points="3.5 8.5 6.5 11.5 12.5 4.5" />
-        </svg>
-        <p className="text-sm text-green-400">GitHub authorization successful. Continue to Step 2.</p>
-      </div>
-    );
-  }
-  if (auth === "expired") {
-    return (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
-        <svg className="h-4 w-4 shrink-0 text-honey-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="8" cy="8" r="6" />
-          <line x1="8" y1="5" x2="8" y2="8.5" />
-          <circle cx="8" cy="11" r="0.5" fill="currentColor" />
-        </svg>
-        <p className="text-sm text-honey-400">Authorization could not be completed. Click below to try again.</p>
-      </div>
-    );
-  }
-  if (auth === "denied") {
-    return (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-zinc-500/20 bg-zinc-500/5 px-4 py-3">
-        <p className="text-sm text-zinc-400">Authorization was cancelled. Click the button below to try again.</p>
-      </div>
-    );
-  }
-  if (auth === "not_installed") {
-    return (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
-        <svg className="h-4 w-4 shrink-0 text-honey-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="8" cy="8" r="6" />
-          <line x1="8" y1="5" x2="8" y2="8.5" />
-          <circle cx="8" cy="11" r="0.5" fill="currentColor" />
-        </svg>
-        <p className="text-sm text-honey-400">No Hivemoot installation found on your account. Install the app first, then come back here.</p>
-      </div>
-    );
-  }
-  if (auth === "forbidden") {
-    const message =
-      reason === "not_org_admin"
-        ? "You need to be an organization admin to configure Hivemoot for this installation."
-        : reason === "user_mismatch"
-          ? "The GitHub account you authorized does not match this installation."
-          : "You are not authorized to configure this installation.";
-    return (
-      <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
-        <svg className="h-4 w-4 shrink-0 text-red-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <line x1="4" y1="4" x2="12" y2="12" />
-          <line x1="12" y1="4" x2="4" y2="12" />
-        </svg>
-        <p className="text-sm text-red-400">{message}</p>
-      </div>
-    );
-  }
-  return null;
 }
 
 export default async function SetupPage({
@@ -227,7 +83,6 @@ export default async function SetupPage({
   const hasSession = !!sessionToken;
 
   const isAuthorized = auth === "ok" && hasSession;
-  const STEPS = buildSteps(isAuthorized);
 
   // Resolve actual session expiry from Redis so the client countdown is accurate.
   // Falls back to a freshly-computed window if Redis is unavailable.
@@ -262,7 +117,7 @@ export default async function SetupPage({
 
       {/* --- Navigation --- */}
       <nav className="relative z-10 border-b border-white/5">
-        <div className="mx-auto flex max-w-3xl items-center gap-2 px-6 py-4">
+        <div className="mx-auto flex max-w-5xl items-center gap-2 px-6 py-4">
           <Link
             href="/"
             className="text-sm font-semibold text-honey-500 transition-colors hover:text-honey-400"
@@ -277,15 +132,14 @@ export default async function SetupPage({
       </nav>
 
       {/* --- Main content --- */}
-      <main className="relative z-10 mx-auto max-w-3xl px-6 py-12">
+      <main className="relative z-10 mx-auto max-w-5xl px-6 py-12">
         {/* Page header */}
         <header className="mb-10">
           <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-            Set up Hivemoot
+            Build your local runner
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-            Connect your GitHub account, add your API key, and your agents
-            start contributing.
+            Pick a runtime, choose plugins, then copy the generated config.
           </p>
         </header>
 
@@ -296,93 +150,17 @@ export default async function SetupPage({
             initialExpiresAt={initialExpiresAt}
           />
         ) : (
-          /* Step 1: static server-rendered */
-          <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
-            <aside className="shrink-0 sm:w-56">
-              <ol className="flex flex-col" aria-label="Setup progress">
-                {STEPS.map((step, i) => (
-                  <div key={step.number}>
-                    <StepIndicator step={step} />
-                    {i < STEPS.length - 1 && (
-                      <StepConnector fromStatus={step.status} />
-                    )}
-                  </div>
-                ))}
-              </ol>
-            </aside>
-
-            <section className="flex flex-1 flex-col gap-6">
-              <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
-                {auth && <AuthStatusBanner auth={auth} reason={reason} />}
-
-                <div className="mb-5 flex justify-center">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.06]">
-                    <svg
-                      className="h-7 w-7 text-[#fafafa]"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
-                    </svg>
-                  </div>
-                </div>
-
-                <div className="mb-6 text-center">
-                  <h2 className="text-lg font-semibold text-[#fafafa]">
-                    Connect your GitHub account
-                  </h2>
-                  <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-                    Install the Hivemoot Bot on your repo. It manages your
-                    agent team — coordinating proposals, tracking votes, and
-                    merging approved changes (if you let it).
-                  </p>
-                </div>
-
-                {installationId ? (
-                  <Link
-                    href={`/api/auth/github/start?installation_id=${encodeURIComponent(installationId)}`}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-3 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
-                  >
-                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                      <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
-                    </svg>
-                    Authorize with GitHub
-                  </Link>
-                ) : (
-                  <>
-                    <Link
-                      href="https://github.com/apps/hivemoot/installations/new"
-                      className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-honey-500 px-5 py-3 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
-                    >
-                      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
-                      </svg>
-                      Install GitHub App
-                    </Link>
-
-                    <Link
-                      href="/api/auth/github/start-discover"
-                      className="mt-3 flex w-full items-center justify-center rounded-lg px-5 py-2.5 text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-                    >
-                      Already installed? Authorize to continue
-                    </Link>
-                  </>
-                )}
-
-                <p className="mt-4 text-center text-xs leading-relaxed text-zinc-600">
-                  You&apos;ll be redirected to GitHub. After installation,
-                  you&apos;ll return here to finish setup.
-                </p>
-              </div>
-            </section>
-          </div>
+          <SetupLocalFlow
+            auth={auth}
+            reason={reason}
+            installationId={installationId}
+          />
         )}
       </main>
 
       {/* --- Footer --- */}
       <footer className="relative z-10 mt-16 border-t border-white/5">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <Link
             href="/"
             className="group flex items-center gap-1.5 text-xs text-zinc-500 transition-colors hover:text-zinc-300"

@@ -92,15 +92,15 @@ function StepConnector({ fromStatus }: { fromStatus: StepStatus }) {
 function buildSteps(activeStep: 2 | 3): Step[] {
   if (activeStep === 3) {
     return [
-      { number: 1, label: "Connect GitHub", status: "complete" },
-      { number: 2, label: "Meet the Queen", status: "complete" },
-      { number: 3, label: "Launch your team", status: "active" },
+      { number: 1, label: "GitHub App", status: "complete" },
+      { number: 2, label: "AI key", status: "complete" },
+      { number: 3, label: "Run agents", status: "active" },
     ];
   }
   return [
-    { number: 1, label: "Connect GitHub", status: "complete" },
-    { number: 2, label: "Meet the Queen", status: "active" },
-    { number: 3, label: "Launch your team", status: "upcoming" },
+    { number: 1, label: "GitHub App", status: "complete" },
+    { number: 2, label: "AI key", status: "active" },
+    { number: 3, label: "Run agents", status: "upcoming" },
   ];
 }
 
@@ -145,11 +145,11 @@ function TerminalIcon({ className }: { className?: string }) {
   );
 }
 
-function RocketIcon({ className }: { className?: string }) {
+function KeyIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className ?? "h-5 w-5"}
-      viewBox="0 0 16 16"
+      viewBox="0 0 20 20"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
@@ -157,9 +157,10 @@ function RocketIcon({ className }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M8 12.5s-2 .5-4-1.5c0 0-.5-2 1.5-4C7.5 5 10 3 13 1c0 0-2 3.5-4 5.5-2 2-1 6-1 6Z" />
-      <path d="M5.5 10.5l-2 2" />
-      <path d="M10 6a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z" />
+      <circle cx="7" cy="10" r="3" />
+      <line x1="10" y1="10" x2="17" y2="10" />
+      <line x1="14" y1="10" x2="14" y2="7" />
+      <line x1="17" y1="10" x2="17" y2="7" />
     </svg>
   );
 }
@@ -191,10 +192,11 @@ function Step3Content() {
   return (
     <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
       <h2 className="text-lg font-semibold text-[#fafafa]">
-        Launch your team
+        Run your agents
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-        Three things to get your agents working on your repo.
+        The website stores dashboard credentials. The agents still run from
+        your machine or server.
       </p>
 
       <div className="my-6 h-px bg-white/[0.06]" />
@@ -230,25 +232,32 @@ function Step3Content() {
           </div>
         </li>
 
-        {/* 2. Run your agents */}
+        {/* 2. Give agents credentials */}
         <li className="flex gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
-            <TerminalIcon className="h-4 w-4 text-honey-500" />
+            <KeyIcon className="h-4 w-4 text-honey-500" />
           </div>
           <div className="flex-1">
             <h3 className="text-sm font-medium text-[#fafafa]">
-              Run your agents
+              Give agents the keys they need
             </h3>
             <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-              Clone the monorepo, set your target repo and API keys, then
-              start the container.
+              Put repo scope in <code className="rounded bg-white/[0.06] px-1.5 py-0.5 text-xs text-zinc-300">plugins.github.repos</code>, use a GitHub token file for repo work, a provider key file for model execution, and a Hivemoot Agent Token for dashboard task execution and health reporting.
             </p>
             <div className="mt-2 rounded-lg bg-white/[0.03] p-3">
               <pre className="overflow-x-auto text-xs leading-relaxed text-zinc-400">
-                <code>{`git clone https://github.com/hivemoot/hivemoot.git
-cd hivemoot/agent
-cp .env.example .env   # set TARGET_REPO + API keys
-docker compose run --rm hivemoot-agent`}</code>
+                <code>{`plugins:
+  github:
+    repos:
+      - owner/repo
+    token_file: !secret github_token
+  hivemoot:
+    token_file: !secret hivemoot_agent_token
+    health:
+      enabled: true
+      repo: owner/repo
+    tasks:
+      enabled: true`}</code>
               </pre>
             </div>
             <a
@@ -263,20 +272,24 @@ docker compose run --rm hivemoot-agent`}</code>
           </div>
         </li>
 
-        {/* 3. Watch them work */}
+        {/* 3. Start the container */}
         <li className="flex gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
-            <RocketIcon className="h-4 w-4 text-honey-500" />
+            <TerminalIcon className="h-4 w-4 text-honey-500" />
           </div>
           <div className="flex-1">
             <h3 className="text-sm font-medium text-[#fafafa]">
-              Watch them work
+              Start the runner
             </h3>
             <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-              Your agents show up as real GitHub contributors — opening issues,
-              writing code, reviewing PRs. Check your repo&apos;s Issues and Pull
-              Requests to see them in action.
+              Mount your secrets directory and run one agent. Use
+              <code className="ml-1 rounded bg-white/[0.06] px-1.5 py-0.5 text-xs text-zinc-300">docker compose up</code> later for a long-running worker.
             </p>
+            <div className="mt-2 rounded-lg bg-white/[0.03] p-3">
+              <pre className="overflow-x-auto text-xs leading-relaxed text-zinc-400">
+                <code>{`docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent`}</code>
+              </pre>
+            </div>
           </div>
         </li>
       </ol>

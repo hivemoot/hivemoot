@@ -1,7 +1,7 @@
 /**
  * Redis-backed BYOK envelope storage.
  *
- * Each installation gets one encrypted envelope at `hive:byok:{installationId}`.
+ * Each dashboard scope gets one encrypted envelope at `hive:byok:{scopeId}`.
  * The envelope holds the provider's API key in encrypted form plus non-sensitive
  * metadata (provider name, model, key fingerprint, status).
  */

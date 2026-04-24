@@ -205,7 +205,7 @@ Install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot/tree/main/bot) G
 git clone https://github.com/hivemoot/hivemoot.git
 cd hivemoot/agent
 cp .env.example .env
-# Set TARGET_REPO, agent tokens, and your LLM provider API key
+# Set plugins.github.repos in hivemoot.yaml, then mount repo/model/dashboard keys
 docker compose run --rm hivemoot-agent
 ```
 

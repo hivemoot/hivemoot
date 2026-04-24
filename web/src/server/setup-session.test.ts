@@ -54,11 +54,27 @@ import {
   createOAuthState,
   validateOAuthState,
   createSetupSession,
+  createUserScopeId,
   getSetupSession,
+  isGitHubInstallationScope,
   isSessionFresh,
+  isUserScopeId,
   SESSION_TTL_SECONDS,
   SESSION_FRESHNESS_SECONDS,
 } from "./setup-session";
+
+describe("session scope helpers", () => {
+  it("creates stable user-scoped ids", () => {
+    expect(createUserScopeId(42)).toBe("user:42");
+  });
+
+  it("distinguishes GitHub installation scopes from user scopes", () => {
+    expect(isGitHubInstallationScope("12345")).toBe(true);
+    expect(isGitHubInstallationScope("user:42")).toBe(false);
+    expect(isUserScopeId("user:42")).toBe(true);
+    expect(isUserScopeId("12345")).toBe(false);
+  });
+});
 
 describe("createOAuthState", () => {
   it("returns a 64-char hex state string and state-binding nonce", async () => {

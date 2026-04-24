@@ -4,6 +4,7 @@ import { getRedisClient } from "@/server/redis";
 import { validateEnv } from "@/server/env";
 import {
   getSetupSession,
+  isGitHubInstallationScope,
   isSessionFresh,
   SETUP_SESSION_COOKIE,
 } from "@/server/setup-session";
@@ -28,11 +29,13 @@ export default async function CredentialsPage() {
         const session = await getSetupSession(token, redis);
         if (session) {
           fresh = isSessionFresh(session);
-          // Route re-auth through /start with the known installationId so the
-          // callback skips discovery and stays pinned to the current installation.
-          // Using start-discover would pick installations[0], silently switching
-          // multi-install users to the wrong installation.
-          reAuthUrl = `/api/auth/github/start?installation_id=${encodeURIComponent(session.installationId)}&next=/dashboard/credentials`;
+          if (isGitHubInstallationScope(session.installationId)) {
+            // Route re-auth through /start with the known installationId so the
+            // callback skips discovery and stays pinned to the current installation.
+            // Using start-discover would pick installations[0], silently switching
+            // multi-install users to the wrong installation.
+            reAuthUrl = `/api/auth/github/start?installation_id=${encodeURIComponent(session.installationId)}&next=/dashboard/credentials`;
+          }
         }
       } catch {
         // Treat as stale on Redis error. Fall back to the discovery path.

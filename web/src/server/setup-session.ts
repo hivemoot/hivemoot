@@ -7,8 +7,13 @@
  *    Validated on callback to prevent CSRF. Deleted after single use.
  *
  * 2. **Setup session token** — an opaque random token issued after successful
- *    OAuth + admin verification. Stored in Redis with a 24-hour TTL. Required
- *    on all subsequent /api/byok/* calls (Phase 3).
+ *    OAuth. Stored in Redis with a 24-hour TTL. Required on dashboard routes.
+ *
+ * Sessions are scoped either to a GitHub App installation id (numeric string)
+ * or to the authenticated GitHub user (`user:<id>`) when the user has not
+ * installed the GitHub App yet. Dashboard credentials, tasks, and health
+ * reporting can use either scope; GitHub repo automation requires a numeric
+ * installation scope.
  */
 
 import { randomBytes } from "crypto";
@@ -23,6 +28,7 @@ export const SESSION_FRESHNESS_SECONDS = 15 * 60;
 
 const STATE_KEY_PREFIX = "oauth-state:";
 const SESSION_KEY_PREFIX = "setup-session:";
+const USER_SCOPE_PREFIX = "user:";
 
 /**
  * Sentinel value used as the installationId in OAuth state when the user
@@ -30,6 +36,18 @@ const SESSION_KEY_PREFIX = "setup-session:";
  * and resolves the real installationId via `GET /user/installations`.
  */
 export const DISCOVER_SENTINEL = "discover";
+
+export function createUserScopeId(userId: number): string {
+  return `${USER_SCOPE_PREFIX}${userId}`;
+}
+
+export function isUserScopeId(scopeId: string): boolean {
+  return scopeId.startsWith(USER_SCOPE_PREFIX);
+}
+
+export function isGitHubInstallationScope(scopeId: string): boolean {
+  return /^\d+$/.test(scopeId);
+}
 
 interface OAuthStatePayload {
   installationId: string;
@@ -90,6 +108,11 @@ export async function validateOAuthState(
 }
 
 export interface SetupSessionPayload {
+  /**
+   * Dashboard scope id. Numeric strings are GitHub App installation ids.
+   * `user:<github-id>` means the user authenticated with GitHub OAuth but has
+   * not connected a GitHub App installation.
+   */
   installationId: string;
   userId: number;
   userLogin: string;

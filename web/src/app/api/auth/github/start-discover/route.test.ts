@@ -16,6 +16,7 @@ vi.mock("@/server/redis", () => ({
 vi.mock("@/server/setup-session", () => ({
   createOAuthState: vi.fn(),
   getSetupSession: vi.fn(),
+  isGitHubInstallationScope: vi.fn((scopeId: string) => /^\d+$/.test(scopeId)),
   DISCOVER_SENTINEL: "discover",
   OAUTH_STATE_BINDING_COOKIE: "oauth_state_binding",
   SETUP_SESSION_COOKIE: "setup_session",
@@ -63,11 +64,16 @@ function makeRequestWithCookie(cookie: string, search = "") {
 }
 
 const VALID_SESSION = {
-  installationId: "inst-1",
+  installationId: "123",
   userId: 42,
   userLogin: "alice",
   expiresAt: Date.now() + 86400 * 1000,
   iat: Date.now(),
+};
+
+const USER_SCOPE_SESSION = {
+  ...VALID_SESSION,
+  installationId: "user:42",
 };
 
 beforeEach(() => {
@@ -194,6 +200,21 @@ describe("GET /api/auth/github/start-discover — fast-path (valid session)", ()
     expect(res.status).toBe(307);
     const location = res.headers.get("location")!;
     expect(location).toContain("/setup");
+    expect(location).toContain("installation_id=123");
+    expect(createOAuthState).not.toHaveBeenCalled();
+  });
+
+  it("redirects user-scoped sessions to credentials when BYOK is not configured", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue(USER_SCOPE_SESSION);
+    vi.mocked(hasByokEnvelope).mockResolvedValue(false);
+
+    const req = makeRequestWithCookie("setup_session=valid-token");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/dashboard/credentials");
+    expect(location.searchParams.has("installation_id")).toBe(false);
     expect(createOAuthState).not.toHaveBeenCalled();
   });
 

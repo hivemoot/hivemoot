@@ -6,11 +6,12 @@
  * Security sequence:
  * 1. Validate `state` against Redis — reject if unknown/expired (CSRF protection)
  * 2. Exchange `code` for a user access token
- * 2b. If state held the "discover" sentinel (user started from the "already installed"
- *     flow), resolve the real installationId via GET /user/installations
+ * 2b. If state held the "discover" sentinel, resolve a GitHub App installation
+ *     via GET /user/installations. If none exists, create a dashboard-only
+ *     user scope so credentials, task execution, and health reporting still work.
  * 3. Fetch authenticated user identity
- * 4. Fetch installation metadata (via App JWT)
- * 5. Authorization check:
+ * 4. Fetch installation metadata (via App JWT) only for installation-scoped sessions
+ * 5. Authorization check for installation-scoped sessions:
  *    - Org installations: caller must have admin role in the org
  *    - User installations: authenticated login must match installation account
  * 6. Issue setup session token, store in Redis, set as HttpOnly cookie
@@ -34,7 +35,9 @@ import {
 import {
   validateOAuthState,
   createSetupSession,
+  createUserScopeId,
   DISCOVER_SENTINEL,
+  isGitHubInstallationScope,
   OAUTH_STATE_BINDING_COOKIE,
   SETUP_SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -61,6 +64,10 @@ function setupErrorRedirect(
   url.searchParams.set("code", code);
   if (installationId) url.searchParams.set("installation_id", installationId);
   return NextResponse.redirect(url.toString());
+}
+
+function setupErrorInstallationParam(installationId: string): string | undefined {
+  return isGitHubInstallationScope(installationId) ? installationId : undefined;
 }
 
 export async function GET(request: NextRequest) {
@@ -107,7 +114,7 @@ export async function GET(request: NextRequest) {
     if (state) {
       try {
         const deniedResult = await validateOAuthState(state, oauthStateBinding, redis);
-        if (deniedResult && deniedResult.installationId !== DISCOVER_SENTINEL) {
+        if (deniedResult && isGitHubInstallationScope(deniedResult.installationId)) {
           deniedUrl.searchParams.set("installation_id", deniedResult.installationId);
         }
       } catch (err) {
@@ -152,23 +159,31 @@ export async function GET(request: NextRequest) {
     userToken = await exchangeOAuthCode(code, githubClientId, githubClientSecret);
   } catch (err) {
     console.error("[oauth-callback] Failed to exchange OAuth code", { error: err });
-    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    const errResponse = setupErrorRedirect(
+      siteUrl,
+      "server_error",
+      setupErrorInstallationParam(installationId),
+    );
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
   }
 
-  // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
+  let user: { login: string; id: number } | null = null;
+  let installation: { account: { login: string; type: string } } | null = null;
+
+  // --- Step 2b: Discover installation if the user started from the discovery flow ---
   if (installationId === DISCOVER_SENTINEL) {
     try {
-      const installations = await getUserInstallations(userToken, githubAppId!);
+      const [authenticatedUser, installations] = await Promise.all([
+        getAuthenticatedUser(userToken),
+        getUserInstallations(userToken, githubAppId!),
+      ]);
+      user = authenticatedUser;
       if (installations.length === 0) {
-        const notInstalledUrl = new URL(`${siteUrl}/setup`);
-        notInstalledUrl.searchParams.set("auth", "not_installed");
-        const response = NextResponse.redirect(notInstalledUrl.toString());
-        clearOAuthStateBindingCookie(response);
-        return response;
+        installationId = createUserScopeId(user.id);
+      } else {
+        installationId = String(installations[0].id);
       }
-      installationId = String(installations[0].id);
     } catch (err) {
       console.error("[oauth-callback] Failed to discover user installations", { error: err });
       const errResponse = setupErrorRedirect(siteUrl, "server_error");
@@ -177,58 +192,78 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  let user: { login: string; id: number };
-  let installation: { account: { login: string; type: string } };
-
-  try {
-    // --- Step 3 & 4: Fetch user identity and installation in parallel ---
-    const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
-    [user, installation] = await Promise.all([
-      getAuthenticatedUser(userToken),
-      getInstallation(installationId, appJwt),
-    ]);
-  } catch (err) {
-    console.error("[oauth-callback] Failed to fetch user/installation", { installationId, error: err });
-    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
-    clearOAuthStateBindingCookie(errResponse);
-    return errResponse;
-  }
-
-  // --- Step 5: Authorization check ---
-  const accountType = installation.account.type;
-  const accountLogin = installation.account.login;
-
-  if (accountType === "Organization") {
-    // Org installation: caller must be an org admin
-    let isAdmin: boolean;
+  if (isGitHubInstallationScope(installationId)) {
     try {
-      isAdmin = await checkOrgAdmin(userToken, accountLogin);
+      // --- Step 3 & 4: Fetch user identity and installation metadata ---
+      const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
+      if (user) {
+        installation = await getInstallation(installationId, appJwt);
+      } else {
+        [user, installation] = await Promise.all([
+          getAuthenticatedUser(userToken),
+          getInstallation(installationId, appJwt),
+        ]);
+      }
     } catch (err) {
-      console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
+      console.error("[oauth-callback] Failed to fetch user/installation", { installationId, error: err });
       const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
       clearOAuthStateBindingCookie(errResponse);
       return errResponse;
     }
-    if (!isAdmin) {
-      const forbiddenUrl = new URL(`${siteUrl}/setup`);
-      forbiddenUrl.searchParams.set("installation_id", installationId);
-      forbiddenUrl.searchParams.set("auth", "forbidden");
-      forbiddenUrl.searchParams.set("reason", "not_org_admin");
-      const response = NextResponse.redirect(forbiddenUrl.toString());
-      clearOAuthStateBindingCookie(response);
-      return response;
+    if (!user || !installation) {
+      console.error("[oauth-callback] Missing user or installation after GitHub lookup", { installationId });
+      const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+      clearOAuthStateBindingCookie(errResponse);
+      return errResponse;
     }
-  } else {
-    // User installation: authenticated user must be the installer
-    if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
-      const forbiddenUrl = new URL(`${siteUrl}/setup`);
-      forbiddenUrl.searchParams.set("installation_id", installationId);
-      forbiddenUrl.searchParams.set("auth", "forbidden");
-      forbiddenUrl.searchParams.set("reason", "user_mismatch");
-      const response = NextResponse.redirect(forbiddenUrl.toString());
-      clearOAuthStateBindingCookie(response);
-      return response;
+
+    // --- Step 5: Authorization check ---
+    const accountType = installation.account.type;
+    const accountLogin = installation.account.login;
+
+    if (accountType === "Organization") {
+      // Org installation: caller must be an org admin
+      let isAdmin: boolean;
+      try {
+        isAdmin = await checkOrgAdmin(userToken, accountLogin);
+      } catch (err) {
+        console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
+        const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+        clearOAuthStateBindingCookie(errResponse);
+        return errResponse;
+      }
+      if (!isAdmin) {
+        const forbiddenUrl = new URL(`${siteUrl}/setup`);
+        forbiddenUrl.searchParams.set("installation_id", installationId);
+        forbiddenUrl.searchParams.set("auth", "forbidden");
+        forbiddenUrl.searchParams.set("reason", "not_org_admin");
+        const response = NextResponse.redirect(forbiddenUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
+    } else {
+      // User installation: authenticated user must be the installer
+      if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
+        const forbiddenUrl = new URL(`${siteUrl}/setup`);
+        forbiddenUrl.searchParams.set("installation_id", installationId);
+        forbiddenUrl.searchParams.set("auth", "forbidden");
+        forbiddenUrl.searchParams.set("reason", "user_mismatch");
+        const response = NextResponse.redirect(forbiddenUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
     }
+  }
+
+  if (!user) {
+    console.error("[oauth-callback] Missing authenticated user after OAuth callback", { installationId });
+    const errResponse = setupErrorRedirect(
+      siteUrl,
+      "server_error",
+      setupErrorInstallationParam(installationId),
+    );
+    clearOAuthStateBindingCookie(errResponse);
+    return errResponse;
   }
 
   // --- Step 6: Issue setup session token ---
@@ -263,10 +298,14 @@ export async function GET(request: NextRequest) {
   if (setupComplete) {
     const destination = oauthNext ?? "/dashboard";
     successUrl = new URL(`${siteUrl}${destination}`);
-  } else {
+  } else if (oauthNext) {
+    successUrl = new URL(`${siteUrl}${oauthNext}`);
+  } else if (isGitHubInstallationScope(installationId)) {
     successUrl = new URL(`${siteUrl}/setup`);
     successUrl.searchParams.set("installation_id", installationId);
     successUrl.searchParams.set("auth", "ok");
+  } else {
+    successUrl = new URL(`${siteUrl}/dashboard/credentials`);
   }
   const response = NextResponse.redirect(successUrl.toString());
 

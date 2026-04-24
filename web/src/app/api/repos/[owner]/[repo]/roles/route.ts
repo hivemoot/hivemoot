@@ -20,6 +20,7 @@ import { parse as parseYaml, parseDocument } from "yaml";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { validateEnv } from "@/server/env";
 import { generateAppJwt, generateInstallationToken } from "@/server/github-auth";
+import { isGitHubInstallationScope } from "@/server/setup-session";
 import {
   readRepoFile,
   getBranchSha,
@@ -153,6 +154,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
   const { owner, repo } = parsed;
 
+  if (!isGitHubInstallationScope(auth.session.installationId)) {
+    return repoError(
+      "github_app_required",
+      "Install the GitHub App to manage repo roles.",
+      403,
+    );
+  }
+
   const env = validateEnv();
   if (!env.ok) {
     return repoError("server_misconfiguration", "Server misconfiguration", 503);
@@ -218,6 +227,14 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     return repoError("invalid_path", "Invalid repository path", 400);
   }
   const { owner, repo } = parsed;
+
+  if (!isGitHubInstallationScope(auth.session.installationId)) {
+    return repoError(
+      "github_app_required",
+      "Install the GitHub App to manage repo roles.",
+      403,
+    );
+  }
 
   let body: PutRoleBody;
   try {

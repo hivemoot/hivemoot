@@ -120,89 +120,130 @@ cd hivemoot/agent
 cp .env.example .env
 ```
 
-2. Edit `.env` with the minimum required values:
+2. Edit `.env` with the minimum runtime values:
 
 ```bash
 AGENT_PROVIDER=claude
 AGENT_AUTH_MODE=api_key
-TARGET_REPO=owner/repo
 
 AGENT_ID=worker
-AGENT_TOKEN=ghp_xxx
 
 # provider key (example for Claude)
 ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
 ```
 
-3. Place your provider key under `./secrets/`:
+3. Configure plugins in `config/hivemoot.yaml`:
+
+```bash
+mkdir -p config
+
+cat > config/hivemoot.yaml <<'YAML'
+plugins:
+  github:
+    repos:
+      - owner/repo
+    token_file: !secret github_token
+    workspace: /workspace/repo
+  hivemoot:
+    token_file: !secret hivemoot_agent_token
+    health:
+      enabled: true
+      repo: owner/repo
+    tasks:
+      enabled: true
+YAML
+
+cat > config/hivemoot.secrets.yaml <<'YAML'
+github_token: /run/secrets/github_token
+hivemoot_agent_token: /run/secrets/hivemoot_agent_token
+YAML
+```
+
+If you are not using dashboard tasks or health reporting, omit the
+`hivemoot:` block.
+
+4. Place your tokens under `./secrets/`:
 
 ```bash
 mkdir -p secrets
+printf '%s' "<github-token>" > secrets/github_token
 printf '%s' "<your-api-key>" > secrets/anthropic_api_key
-chmod 600 secrets/anthropic_api_key
+printf '%s' "<dashboard-agent-token>" > secrets/hivemoot_agent_token
+chmod 600 secrets/*
 ```
 
-4. Run — add `-v` to mount your secrets directory:
+5. Run — add `-v` mounts for config and secrets:
 
 ```bash
-docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
+docker compose run --rm \
+  -v ./config/hivemoot.yaml:/run/agent/hivemoot.yaml:ro \
+  -v ./config/hivemoot.secrets.yaml:/run/agent/hivemoot.secrets.yaml:ro \
+  -v ./secrets:/run/secrets:ro \
+  hivemoot-agent
 ```
 
 > Secrets are not mounted by default — you choose what to expose on each run.
 > See [Secrets](#secrets) for persistent setup options.
 
-5. Check outputs:
+6. Check outputs:
 
 - Logs: `./data/runs/<agent-id>/<run-id>.log`
 - Repo clones: `./data/agents/<agent-id>/repo`
 
 ## Plugin Engine
 
-Each container runs one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`.
-`AGENT_PLUGINS` picks the plugin stack; there is no shell-workload fallback.
+Each container runs one agent identity via `AGENT_ID`. Plugin activation and
+plugin-specific settings live in `hivemoot.yaml`; there is no shell-workload
+fallback.
 
-- `AGENT_PLUGINS` selects the plugin stack for the run (required)
+- `hivemoot.yaml` selects the plugin stack for the run
 - Triggers are owned by their plugins and run in-process inside
   `hivemoot-agent run`
 
 **Direct single run** (default) — execute one worker run, then exit:
 
 ```bash
-docker compose run --rm -v ./secrets:/run/secrets:ro hivemoot-agent
+docker compose run --rm \
+  -v ./config/hivemoot.yaml:/run/agent/hivemoot.yaml:ro \
+  -v ./config/hivemoot.secrets.yaml:/run/agent/hivemoot.secrets.yaml:ro \
+  -v ./secrets:/run/secrets:ro \
+  hivemoot-agent
 ```
 
 This path is intentionally simple:
 - one plugin stack
 - one worker execution
-- one agent identity via `AGENT_ID` + `AGENT_TOKEN(_FILE)`
+- one agent identity via `AGENT_ID`
 - persistent agent memory mounted from `AGENT_MEMORY_DATA` (default `./data/memory`)
 
 Legacy slot `01` envs are still accepted for compatibility, but they are no longer the primary worker contract.
 
 For the default Hivemoot repo workflow, use
-`AGENT_PLUGINS=github,hivemoot` with `github_workflows.enabled: true`
-under `plugins.hivemoot` in `hivemoot.yaml`.
+`plugins.github.repos` with `github_workflows.enabled: true` under
+`plugins.hivemoot` in `hivemoot.yaml`.
 
 **Minimal plugin-mode config**:
 
-```env
-AGENT_PLUGINS=github,hivemoot
-GITHUB_TOKEN_FILE=/run/secrets/github_token
-GITHUB_REPOS=owner/repo
-TARGET_REPO=owner/repo
-HIVEMOOT_BUZZ_ROLE=worker
-# Optional. Defaults to WORKSPACE_ROOT when unset.
-GITHUB_WORKSPACE=
+```yaml
+plugins:
+  github:
+    repos:
+      - owner/repo
+    token_file: !secret github_token
+    workspace: /workspace/repo
+  hivemoot:
+    token_file: !secret hivemoot_agent_token
+    github_workflows:
+      enabled: true
 ```
 
 Notes:
 - the worker entrypoint `exec`s `hivemoot-agent oneshot`; there is no separate "driver" selection
-- `AGENT_TOKEN(_FILE)` and `AGENT_GITHUB_TOKEN(_FILE)` are bridged to `GITHUB_TOKEN(_FILE)` if the GitHub plugin needs auth
-- if `GITHUB_REPOS` is empty and `TARGET_REPO` is set, the worker uses `TARGET_REPO` as the single GitHub repo
+- `TARGET_REPO` and `GITHUB_REPOS` are compatibility aliases on the worker path; the current GitHub plugin reads repo scope from `plugins.github.repos`
 - the same `AGENT_MEMORY_DATA` mount is available at `~/.hivemoot/memory`
-- use `AGENT_PLUGINS=github` for generic GitHub repo automation
-- use `AGENT_PLUGINS=github,hivemoot` with `plugins.hivemoot.github_workflows.enabled: true` for the Hivemoot contribution workflow
-- the `hivemoot` plugin's `github_workflows` feature requires the `hivemoot` CLI in the image and `github` listed first in `AGENT_PLUGINS`
+- configure `plugins.github` for generic GitHub repo automation
+- configure `plugins.github` plus `plugins.hivemoot.github_workflows.enabled: true` for the Hivemoot contribution workflow
+- the `hivemoot` plugin's `github_workflows` feature requires the `hivemoot` CLI in the image and `github` configured in the same `plugins:` section
 
 For recurring runs, use the `cron` plugin — list of named tasks, each
 with its own cron expression and prompt.  Cron triggers fire inside
@@ -802,7 +843,8 @@ When running Gemini against untrusted repositories, treat the container boundary
 
 | Error | Fix |
 | ----- | --- |
-| `TARGET_REPO is required` | Set `TARGET_REPO=owner/repo` in `.env` |
+| `plugins.github.repos is required` | Add `plugins.github.repos: [owner/repo]` to `hivemoot.yaml` |
+| `TARGET_REPO is required` | Legacy worker path only: set `TARGET_REPO=owner/repo`, or migrate to `plugins.github.repos` |
 | `GitHub token cannot access target repository` | Token lacks access to that repo |
 | Provider auth errors in `api_key` mode | Verify key env/file is set |
 | Subscription auth errors | Use `docker-compose.subscription.local.yml`, run the matching `auth-*` command, then run `hivemoot-agent-subscription` |

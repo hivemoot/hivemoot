@@ -5,8 +5,8 @@
  *
  * Unlike /api/auth/github/start, this route does NOT require an installation_id.
  * It stores a "discover" sentinel in the OAuth state. After the user authorizes,
- * the callback detects the sentinel and resolves the real installation_id via
- * GET /user/installations.
+ * the callback detects the sentinel and either resolves a real installation_id
+ * via GET /user/installations or creates a dashboard-only user scope.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -18,6 +18,7 @@ import {
   OAUTH_STATE_BINDING_COOKIE,
   SETUP_SESSION_COOKIE,
   getSetupSession,
+  isGitHubInstallationScope,
 } from "@/server/setup-session";
 import { hasByokEnvelope } from "@/server/byok-store";
 import { buildOAuthAuthorizeUrl, getOAuthStateCookieOptions, isSafeNextPath } from "@/server/github-auth";
@@ -70,7 +71,9 @@ export async function GET(request: NextRequest) {
               // Fall through to dashboard on BYOK check failure.
             }
             if (!setupComplete) {
-              destination = `/setup?installation_id=${encodeURIComponent(session.installationId)}&auth=ok`;
+              destination = isGitHubInstallationScope(session.installationId)
+                ? `/setup?installation_id=${encodeURIComponent(session.installationId)}&auth=ok`
+                : "/dashboard/credentials";
             }
           }
           return NextResponse.redirect(new URL(`${siteUrl}${destination}`).toString());

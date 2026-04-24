@@ -1,8 +1,9 @@
 /**
  * POST / GET / DELETE  /api/agent-token
  *
- * Manages per-installation agent bearer tokens used to authenticate health
- * reports. All three methods require a valid setup session (cookie auth).
+ * Manages per-dashboard-scope agent bearer tokens used to authenticate health
+ * reports and task execution. All three methods require a valid setup session
+ * (cookie auth), but do not require a GitHub App installation.
  *
  * POST   — Generate a new token (rotates if one exists).
  * GET    — Return the current token and metadata so admins can copy/recover it.
