@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { parseContentLength } from "@/server/request-utils";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
@@ -12,6 +13,10 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   try {
     const { pathname } = new URL(request.url);
     const taskId = extractTaskId(pathname);
@@ -19,13 +24,13 @@ export async function GET(request: NextRequest) {
       return taskError(TASK_ERROR.INVALID_TASK_ID, "Invalid task id", 400);
     }
 
-    const task = await getTask(auth.session.installationId, taskId, auth.redis);
+    const task = await getTask(installationId, taskId, auth.redis);
     if (!task) {
       return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
     }
 
     const messages = await getTaskMessages(
-      auth.session.installationId,
+      installationId,
       taskId,
       auth.redis,
     );
@@ -33,7 +38,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ messages });
   } catch (error) {
     console.error("[tasks] Failed to fetch task messages", {
-      installationId: auth.session.installationId,
+      installationId,
       error,
     });
     return taskError(
@@ -47,6 +52,10 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
 
   try {
     const { pathname } = new URL(request.url);
@@ -88,7 +97,7 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await addUserMessage(
-      auth.session.installationId,
+      installationId,
       taskId,
       obj.message.trim(),
       auth.redis,
@@ -115,7 +124,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ task: result.task });
   } catch (error) {
     console.error("[tasks] Failed to add user message", {
-      installationId: auth.session.installationId,
+      installationId,
       error,
     });
     return taskError(

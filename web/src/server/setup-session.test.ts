@@ -226,6 +226,19 @@ describe("getSetupSession", () => {
     expect(session!.iat).toBeGreaterThanOrEqual(before);
   });
 
+  it("round-trips a null installationId (user signed in without installing the app)", async () => {
+    const redis = makeMockRedis();
+    const token = await createSetupSession(
+      { installationId: null, userId: 55, userLogin: "no-install" },
+      redis,
+    );
+    const session = await getSetupSession(token, redis);
+    expect(session).not.toBeNull();
+    expect(session!.installationId).toBeNull();
+    expect(session!.userId).toBe(55);
+    expect(session!.userLogin).toBe("no-install");
+  });
+
   it("returns null for an unknown token", async () => {
     const redis = makeMockRedis();
     const session = await getSetupSession("x".repeat(64), redis);

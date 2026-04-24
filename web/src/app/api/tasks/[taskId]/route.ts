@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
 import { deleteTask, getTask, TASK_ID_PATTERN } from "@/server/task-store";
@@ -7,6 +8,10 @@ import { deleteTask, getTask, TASK_ID_PATTERN } from "@/server/task-store";
 export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
 
   const { pathname } = new URL(request.url);
   const taskId = extractTaskId(pathname);
@@ -16,14 +21,14 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const task = await getTask(auth.session.installationId, taskId, auth.redis);
+    const task = await getTask(installationId, taskId, auth.redis);
     if (!task) {
       return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
     }
     return NextResponse.json({ task });
   } catch (error) {
     console.error("[tasks] Failed to fetch task", {
-      installationId: auth.session.installationId,
+      installationId,
       taskId,
       error,
     });
@@ -36,6 +41,10 @@ export async function DELETE(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   const { pathname } = new URL(request.url);
   const taskId = extractTaskId(pathname);
 
@@ -44,7 +53,7 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const result = await deleteTask(auth.session.installationId, taskId, auth.redis);
+    const result = await deleteTask(installationId, taskId, auth.redis);
 
     if (!result.ok) {
       if (result.reason === "not_found") {
@@ -60,7 +69,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ deleted: true });
   } catch (error) {
     console.error("[tasks] Failed to delete task", {
-      installationId: auth.session.installationId,
+      installationId,
       taskId,
       error,
     });

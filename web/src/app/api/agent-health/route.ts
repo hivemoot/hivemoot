@@ -214,11 +214,22 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationId = auth.session.installationId;
+
   const { searchParams } = new URL(request.url);
   const agentId = searchParams.get("agent_id");
   const repo = searchParams.get("repo");
   const historyFlag = searchParams.get("history");
   const wantsHistory = historyFlag === "true";
+
+  // Null-installation sessions have no agents reporting. Return the same
+  // empty shape the dashboard already renders gracefully.
+  if (installationId === null) {
+    if (wantsHistory || agentId || repo) {
+      return NextResponse.json({ agent_id: agentId ?? "", repo: repo ?? "", history: [], runs: [] });
+    }
+    return NextResponse.json({ agents: [] });
+  }
 
   if (wantsHistory && (!agentId || !repo)) {
     return agentHealthError(
@@ -246,7 +257,7 @@ export async function GET(request: NextRequest) {
 
     try {
       const history = await getHistory(
-        auth.session.installationId,
+        installationId,
         agentId,
         repo,
         auth.redis,
@@ -260,7 +271,7 @@ export async function GET(request: NextRequest) {
       });
     } catch (err) {
       console.error("[agent-health] Failed to fetch history", {
-        installationId: auth.session.installationId,
+        installationId,
         agentId,
         repo,
         error: err,
@@ -282,11 +293,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const overview = await getOverview(auth.session.installationId, auth.redis);
+    const overview = await getOverview(installationId, auth.redis);
     return NextResponse.json({ agents: overview });
   } catch (err) {
     console.error("[agent-health] Failed to fetch overview", {
-      installationId: auth.session.installationId,
+      installationId,
       error: err,
     });
     return agentHealthError(

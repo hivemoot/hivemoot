@@ -367,6 +367,13 @@ export default async function SetupPage({
                     >
                       Already installed? Authorize to continue
                     </Link>
+
+                    <Link
+                      href="/api/auth/github/start-discover?allow_empty=1"
+                      className="mt-1 flex w-full items-center justify-center rounded-lg px-5 py-2 text-xs text-zinc-600 transition-colors hover:text-zinc-400"
+                    >
+                      Skip for now — just sign me in
+                    </Link>
                   </>
                 )}
 

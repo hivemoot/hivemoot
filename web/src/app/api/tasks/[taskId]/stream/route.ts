@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
 import { getTask, TASK_ID_PATTERN, type TaskStatus } from "@/server/task-store";
@@ -26,6 +27,10 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   const { pathname } = new URL(request.url);
   const taskId = extractTaskId(pathname);
 
@@ -33,12 +38,11 @@ export async function GET(request: NextRequest) {
     return taskError(TASK_ERROR.INVALID_TASK_ID, "Invalid task id", 400);
   }
 
-  const initialTask = await getTask(auth.session.installationId, taskId, auth.redis);
+  const initialTask = await getTask(installationId, taskId, auth.redis);
   if (!initialTask) {
     return taskError(TASK_ERROR.TASK_NOT_FOUND, "Task not found", 404);
   }
 
-  const installationId = auth.session.installationId;
   const redis = auth.redis;
   const encoder = new TextEncoder();
 

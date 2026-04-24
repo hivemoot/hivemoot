@@ -128,6 +128,7 @@ export async function GET(request: NextRequest) {
   // --- Step 1: Validate state (CSRF check) ---
   let installationId: string;
   let oauthNext: string | undefined;
+  let allowEmpty = false;
   try {
     const stateResult = await validateOAuthState(state, oauthStateBinding, redis);
     if (!stateResult) {
@@ -139,6 +140,7 @@ export async function GET(request: NextRequest) {
     }
     installationId = stateResult.installationId;
     oauthNext = stateResult.next;
+    allowEmpty = stateResult.allowEmpty === true;
   } catch (err) {
     console.error("[oauth-callback] Failed to validate OAuth state", { error: err });
     const errResponse = setupErrorRedirect(siteUrl, "oauth_state_read_failed");
@@ -158,17 +160,25 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Step 2b: Discover installation if the user started from the "already installed" flow ---
+  // After this block, `resolvedInstallationId` is either a real GitHub
+  // installation id or null (when the user signed in via the "skip install"
+  // path and has no installations yet — gated on `allowEmpty`).
+  let resolvedInstallationId: string | null = installationId;
   if (installationId === DISCOVER_SENTINEL) {
     try {
       const installations = await getUserInstallations(userToken, githubAppId!);
       if (installations.length === 0) {
-        const notInstalledUrl = new URL(`${siteUrl}/setup`);
-        notInstalledUrl.searchParams.set("auth", "not_installed");
-        const response = NextResponse.redirect(notInstalledUrl.toString());
-        clearOAuthStateBindingCookie(response);
-        return response;
+        if (!allowEmpty) {
+          const notInstalledUrl = new URL(`${siteUrl}/setup`);
+          notInstalledUrl.searchParams.set("auth", "not_installed");
+          const response = NextResponse.redirect(notInstalledUrl.toString());
+          clearOAuthStateBindingCookie(response);
+          return response;
+        }
+        resolvedInstallationId = null;
+      } else {
+        resolvedInstallationId = String(installations[0].id);
       }
-      installationId = String(installations[0].id);
     } catch (err) {
       console.error("[oauth-callback] Failed to discover user installations", { error: err });
       const errResponse = setupErrorRedirect(siteUrl, "server_error");
@@ -178,56 +188,65 @@ export async function GET(request: NextRequest) {
   }
 
   let user: { login: string; id: number };
-  let installation: { account: { login: string; type: string } };
+  let installation: { account: { login: string; type: string } } | null = null;
 
   try {
-    // --- Step 3 & 4: Fetch user identity and installation in parallel ---
-    const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
-    [user, installation] = await Promise.all([
-      getAuthenticatedUser(userToken),
-      getInstallation(installationId, appJwt),
-    ]);
+    // --- Step 3 & 4: Fetch user identity, and installation metadata when attached ---
+    if (resolvedInstallationId !== null) {
+      const appJwt = generateAppJwt(githubAppId!, githubAppPrivateKey!);
+      [user, installation] = await Promise.all([
+        getAuthenticatedUser(userToken),
+        getInstallation(resolvedInstallationId, appJwt),
+      ]);
+    } else {
+      user = await getAuthenticatedUser(userToken);
+    }
   } catch (err) {
-    console.error("[oauth-callback] Failed to fetch user/installation", { installationId, error: err });
-    const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
+    console.error("[oauth-callback] Failed to fetch user/installation", {
+      installationId: resolvedInstallationId,
+      error: err,
+    });
+    const errResponse = setupErrorRedirect(siteUrl, "server_error", resolvedInstallationId);
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
   }
 
-  // --- Step 5: Authorization check ---
-  const accountType = installation.account.type;
-  const accountLogin = installation.account.login;
+  // --- Step 5: Authorization check (only when the session is tied to an installation) ---
+  if (installation !== null && resolvedInstallationId !== null) {
+    const accountType = installation.account.type;
+    const accountLogin = installation.account.login;
 
-  if (accountType === "Organization") {
-    // Org installation: caller must be an org admin
-    let isAdmin: boolean;
-    try {
-      isAdmin = await checkOrgAdmin(userToken, accountLogin);
-    } catch (err) {
-      console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
-      const errResponse = setupErrorRedirect(siteUrl, "server_error", installationId);
-      clearOAuthStateBindingCookie(errResponse);
-      return errResponse;
-    }
-    if (!isAdmin) {
-      const forbiddenUrl = new URL(`${siteUrl}/setup`);
-      forbiddenUrl.searchParams.set("installation_id", installationId);
-      forbiddenUrl.searchParams.set("auth", "forbidden");
-      forbiddenUrl.searchParams.set("reason", "not_org_admin");
-      const response = NextResponse.redirect(forbiddenUrl.toString());
-      clearOAuthStateBindingCookie(response);
-      return response;
-    }
-  } else {
-    // User installation: authenticated user must be the installer
-    if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
-      const forbiddenUrl = new URL(`${siteUrl}/setup`);
-      forbiddenUrl.searchParams.set("installation_id", installationId);
-      forbiddenUrl.searchParams.set("auth", "forbidden");
-      forbiddenUrl.searchParams.set("reason", "user_mismatch");
-      const response = NextResponse.redirect(forbiddenUrl.toString());
-      clearOAuthStateBindingCookie(response);
-      return response;
+    if (accountType === "Organization") {
+      // Org installation: caller must be an org admin
+      let isAdmin: boolean;
+      try {
+        isAdmin = await checkOrgAdmin(userToken, accountLogin);
+      } catch (err) {
+        console.error("[oauth-callback] Failed to check org admin status", { accountLogin, error: err });
+        const errResponse = setupErrorRedirect(siteUrl, "server_error", resolvedInstallationId);
+        clearOAuthStateBindingCookie(errResponse);
+        return errResponse;
+      }
+      if (!isAdmin) {
+        const forbiddenUrl = new URL(`${siteUrl}/setup`);
+        forbiddenUrl.searchParams.set("installation_id", resolvedInstallationId);
+        forbiddenUrl.searchParams.set("auth", "forbidden");
+        forbiddenUrl.searchParams.set("reason", "not_org_admin");
+        const response = NextResponse.redirect(forbiddenUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
+    } else {
+      // User installation: authenticated user must be the installer
+      if (user.login.toLowerCase() !== accountLogin.toLowerCase()) {
+        const forbiddenUrl = new URL(`${siteUrl}/setup`);
+        forbiddenUrl.searchParams.set("installation_id", resolvedInstallationId);
+        forbiddenUrl.searchParams.set("auth", "forbidden");
+        forbiddenUrl.searchParams.set("reason", "user_mismatch");
+        const response = NextResponse.redirect(forbiddenUrl.toString());
+        clearOAuthStateBindingCookie(response);
+        return response;
+      }
     }
   }
 
@@ -235,37 +254,46 @@ export async function GET(request: NextRequest) {
   let token: string;
   try {
     token = await createSetupSession(
-      { installationId, userId: user.id, userLogin: user.login },
+      { installationId: resolvedInstallationId, userId: user.id, userLogin: user.login },
       redis,
     );
   } catch (err) {
-    console.error("[oauth-callback] Failed to create setup session", { installationId, error: err });
-    const errResponse = setupErrorRedirect(siteUrl, "setup_session_create_failed", installationId);
+    console.error("[oauth-callback] Failed to create setup session", {
+      installationId: resolvedInstallationId,
+      error: err,
+    });
+    const errResponse = setupErrorRedirect(siteUrl, "setup_session_create_failed", resolvedInstallationId);
     clearOAuthStateBindingCookie(errResponse);
     return errResponse;
   }
 
   // --- Step 7: Smart redirect based on setup completion ---
-  // Returning users who already configured BYOK go straight to the dashboard
-  // (or the `next` URL from OAuth state if present and safe).
-  // New users (or failed checks) go to the setup wizard.
+  // No-installation sessions go straight to the dashboard, which renders a
+  // "Connect a repo" CTA. Returning users who already configured BYOK go
+  // straight to the dashboard (or the `next` URL from OAuth state if present
+  // and safe). New users go to the setup wizard.
   let setupComplete = false;
-  try {
-    setupComplete = await hasByokEnvelope(installationId, redis);
-  } catch (err) {
-    console.warn("[oauth-callback] BYOK check failed, defaulting to setup wizard", {
-      installationId,
-      error: err,
-    });
+  if (resolvedInstallationId !== null) {
+    try {
+      setupComplete = await hasByokEnvelope(resolvedInstallationId, redis);
+    } catch (err) {
+      console.warn("[oauth-callback] BYOK check failed, defaulting to setup wizard", {
+        installationId: resolvedInstallationId,
+        error: err,
+      });
+    }
   }
 
   let successUrl: URL;
-  if (setupComplete) {
+  if (resolvedInstallationId === null) {
+    successUrl = new URL(`${siteUrl}/dashboard`);
+    successUrl.searchParams.set("no_install", "1");
+  } else if (setupComplete) {
     const destination = oauthNext ?? "/dashboard";
     successUrl = new URL(`${siteUrl}${destination}`);
   } else {
     successUrl = new URL(`${siteUrl}/setup`);
-    successUrl.searchParams.set("installation_id", installationId);
+    successUrl.searchParams.set("installation_id", resolvedInstallationId);
     successUrl.searchParams.set("auth", "ok");
   }
   const response = NextResponse.redirect(successUrl.toString());

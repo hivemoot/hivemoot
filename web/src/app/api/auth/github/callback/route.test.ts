@@ -390,6 +390,62 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     expect(location).not.toContain("installation_id=");
   });
 
+  it("issues a null-installation session and redirects to dashboard when allowEmpty is set and user has no installations", async () => {
+    vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+      stateBinding === "binding-cookie"
+        ? { installationId: "discover", allowEmpty: true }
+        : null
+    ));
+    vi.mocked(getUserInstallations).mockResolvedValue([]);
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/dashboard");
+    expect(location.searchParams.get("no_install")).toBe("1");
+
+    // Installation-specific calls must not have run.
+    expect(getInstallation).not.toHaveBeenCalled();
+    expect(checkOrgAdmin).not.toHaveBeenCalled();
+
+    // Session is created with a null installationId.
+    expect(createSetupSession).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: null, userLogin: "alice" }),
+      expect.anything(),
+    );
+  });
+
+  it("still picks the first installation when allowEmpty is set but the user has installations", async () => {
+    vi.mocked(validateOAuthState).mockImplementation(async (_state, stateBinding) => (
+      stateBinding === "binding-cookie"
+        ? { installationId: "discover", allowEmpty: true }
+        : null
+    ));
+    vi.mocked(getUserInstallations).mockResolvedValue([
+      { id: 4242, app_id: 99, account: { login: "alice", type: "User" } },
+    ]);
+    vi.mocked(getInstallation).mockResolvedValue({
+      account: { login: "alice", type: "User" },
+    });
+
+    const req = makeRequestWithCookie(
+      { code: "gh-code", state: "valid-state" },
+      "binding-cookie",
+    );
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(createSetupSession).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "4242" }),
+      expect.anything(),
+    );
+  });
+
   it("uses the first installation when multiple exist", async () => {
     vi.mocked(getUserInstallations).mockResolvedValue([
       { id: 111, app_id: 99, account: { login: "alice", type: "User" } },

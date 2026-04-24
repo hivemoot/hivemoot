@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { parseContentLength } from "@/server/request-utils";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import {
@@ -28,6 +29,10 @@ function isSameOriginRequest(request: NextRequest): boolean {
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
 
   if (!isSameOriginRequest(request)) {
     return taskError(
@@ -67,7 +72,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const rateLimit = await checkTaskCreateRateLimit(
-      auth.session.installationId,
+      installationId,
       auth.session.userId,
       auth.redis,
     );
@@ -82,7 +87,7 @@ export async function POST(request: NextRequest) {
     }
 
     const created = await createTask(
-      auth.session.installationId,
+      installationId,
       auth.session.userLogin,
       validation.request,
       auth.redis,
@@ -108,7 +113,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("[tasks] Failed to create task", {
-      installationId: auth.session.installationId,
+      installationId,
       error,
     });
 

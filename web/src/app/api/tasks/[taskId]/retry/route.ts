@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { extractTaskId } from "@/server/task-route-utils";
 import { checkTaskCreateRateLimit, retryTask, TASK_ID_PATTERN } from "@/server/task-store";
@@ -7,6 +8,10 @@ import { checkTaskCreateRateLimit, retryTask, TASK_ID_PATTERN } from "@/server/t
 export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
 
   const { pathname } = new URL(request.url);
   const taskId = extractTaskId(pathname);
@@ -17,7 +22,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const rateLimit = await checkTaskCreateRateLimit(
-      auth.session.installationId,
+      installationId,
       auth.session.userId,
       auth.redis,
     );
@@ -31,7 +36,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await retryTask(auth.session.installationId, taskId, auth.redis);
+    const result = await retryTask(installationId, taskId, auth.redis);
 
     if (!result.ok) {
       if (result.reason === "not_found") {
@@ -63,7 +68,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("[tasks] Failed to retry task", {
-      installationId: auth.session.installationId,
+      installationId,
       taskId,
       error,
     });

@@ -7,6 +7,12 @@
  * It stores a "discover" sentinel in the OAuth state. After the user authorizes,
  * the callback detects the sentinel and resolves the real installation_id via
  * GET /user/installations.
+ *
+ * When called with `?allow_empty=1`, this is the "skip install, just sign in"
+ * path: if the user has zero installations, the callback issues a session with
+ * `installationId: null` (rather than redirecting with auth=not_installed).
+ * That session lets the user browse the dashboard; governance features stay
+ * gated with a "Connect a repo" CTA until the user installs the App.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -47,6 +53,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const force = searchParams.get("force");
+  const allowEmpty = searchParams.get("allow_empty") === "1";
   const nextParam = searchParams.get("next");
   const safeNext = nextParam && isSafeNextPath(nextParam) ? nextParam : undefined;
 
@@ -61,8 +68,10 @@ export async function GET(request: NextRequest) {
         const session = await getSetupSession(existingToken, redis);
         if (session) {
           let destination = safeNext ?? "/dashboard";
-          if (destination === "/dashboard") {
-            // Verify BYOK to determine correct landing page.
+          if (destination === "/dashboard" && session.installationId !== null) {
+            // Verify BYOK to determine correct landing page (only when an
+            // installation is attached — null-installation sessions land on
+            // the dashboard's "Connect a repo" CTA).
             let setupComplete = false;
             try {
               setupComplete = await hasByokEnvelope(session.installationId, redis);
@@ -83,7 +92,7 @@ export async function GET(request: NextRequest) {
 
   let stateRecord: { state: string; stateBinding: string };
   try {
-    stateRecord = await createOAuthState(DISCOVER_SENTINEL, redis, safeNext);
+    stateRecord = await createOAuthState(DISCOVER_SENTINEL, redis, safeNext, { allowEmpty });
   } catch {
     return NextResponse.json(
       { error: "Failed to store OAuth state", code: OAUTH_STATE_STORE_FAILED_CODE },

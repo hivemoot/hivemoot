@@ -149,25 +149,56 @@ describe("GET /api/auth/github/start-discover", () => {
   it("passes the discover sentinel as installationId to createOAuthState", async () => {
     const req = makeRequest();
     await GET(req);
-    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+    expect(createOAuthState).toHaveBeenCalledWith(
+      "discover",
+      expect.anything(),
+      undefined,
+      { allowEmpty: false },
+    );
   });
 
   it("passes safeNext to createOAuthState when next param is provided", async () => {
     const req = makeRequest("?next=/dashboard/credentials");
     await GET(req);
-    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), "/dashboard/credentials");
+    expect(createOAuthState).toHaveBeenCalledWith(
+      "discover",
+      expect.anything(),
+      "/dashboard/credentials",
+      { allowEmpty: false },
+    );
   });
 
   it("ignores unsafe next params (protocol-relative URLs)", async () => {
     const req = makeRequest("?next=//evil.com/steal");
     await GET(req);
-    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+    expect(createOAuthState).toHaveBeenCalledWith(
+      "discover",
+      expect.anything(),
+      undefined,
+      { allowEmpty: false },
+    );
   });
 
   it("ignores unsafe next params (backslash-relative URLs)", async () => {
     const req = makeRequest("?next=/\\evil.com/steal");
     await GET(req);
-    expect(createOAuthState).toHaveBeenCalledWith("discover", expect.anything(), undefined);
+    expect(createOAuthState).toHaveBeenCalledWith(
+      "discover",
+      expect.anything(),
+      undefined,
+      { allowEmpty: false },
+    );
+  });
+
+  it("passes allowEmpty=true when allow_empty=1 is set", async () => {
+    const req = makeRequest("?allow_empty=1");
+    await GET(req);
+    expect(createOAuthState).toHaveBeenCalledWith(
+      "discover",
+      expect.anything(),
+      undefined,
+      { allowEmpty: true },
+    );
   });
 });
 
@@ -234,5 +265,17 @@ describe("GET /api/auth/github/start-discover — fast-path (valid session)", ()
 
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("github.com/login/oauth/authorize");
+  });
+
+  it("redirects null-installation sessions straight to /dashboard without a BYOK check", async () => {
+    vi.mocked(getSetupSession).mockResolvedValue({ ...VALID_SESSION, installationId: null });
+
+    const req = makeRequestWithCookie("setup_session=valid-token");
+    const res = await GET(req);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/dashboard");
+    expect(createOAuthState).not.toHaveBeenCalled();
+    expect(hasByokEnvelope).not.toHaveBeenCalled();
   });
 });
