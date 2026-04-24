@@ -211,7 +211,15 @@ COPY --chown=node:node cli /opt/hivemoot-agent/cli
 RUN chmod +x /opt/hivemoot-agent/cli/hivemoot-agent
 
 USER root
-RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent
+# WORKDIR /workspace above creates the dir owned by root even though
+# USER=node was active at that point — on this Docker engine WORKDIR
+# ignores the current USER and always uses root.  Chown it explicitly
+# so agents running as node can write to cwd.  Without this,
+# engine.py's _stage_workspace_agents_skills() raises PermissionError
+# when it creates /workspace/.agents for workqueue-dispatched runs
+# (github-mention / github-review-request / workqueue drain paths).
+RUN ln -sf /opt/hivemoot-agent/cli/hivemoot-agent /usr/local/bin/hivemoot-agent \
+  && chown node:node /workspace
 USER node
 
 # tini owns PID 1 and forwards signals to the CLI.  Default CMD is
