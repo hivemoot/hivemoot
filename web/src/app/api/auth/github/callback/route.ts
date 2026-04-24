@@ -287,7 +287,6 @@ export async function GET(request: NextRequest) {
   let successUrl: URL;
   if (resolvedInstallationId === null) {
     successUrl = new URL(`${siteUrl}/dashboard`);
-    successUrl.searchParams.set("no_install", "1");
   } else if (setupComplete) {
     const destination = oauthNext ?? "/dashboard";
     successUrl = new URL(`${siteUrl}${destination}`);

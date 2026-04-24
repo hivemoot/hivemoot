@@ -407,7 +407,7 @@ describe("GET /api/auth/github/callback — discovery flow", () => {
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location")!);
     expect(location.pathname).toBe("/dashboard");
-    expect(location.searchParams.get("no_install")).toBe("1");
+    expect(location.searchParams.has("installation_id")).toBe(false);
 
     // Installation-specific calls must not have run.
     expect(getInstallation).not.toHaveBeenCalled();

@@ -14,6 +14,9 @@ export const metadata: Metadata = {
 const INSTALL_APP_URL = "https://github.com/apps/hivemoot/installations/new";
 
 async function sessionHasInstallation(): Promise<boolean> {
+  // Default true so transient infra errors (Redis down, env unreadable) still
+  // render the normal dashboard shell. Client-side API calls surface the real
+  // error instead of the server component crashing the page.
   const cookieStore = await cookies();
   const token = cookieStore.get(SETUP_SESSION_COOKIE)?.value;
   if (!token) return true;
@@ -23,10 +26,15 @@ async function sessionHasInstallation(): Promise<boolean> {
     return true;
   }
 
-  const redis = getRedisClient(env.config.redisRestUrl, env.config.redisRestToken);
-  const session = await getSetupSession(token, redis);
-  if (!session) return true;
-  return session.installationId !== null;
+  try {
+    const redis = getRedisClient(env.config.redisRestUrl, env.config.redisRestToken);
+    const session = await getSetupSession(token, redis);
+    if (!session) return true;
+    return session.installationId !== null;
+  } catch (err) {
+    console.warn("[dashboard] Failed to resolve session; rendering normal shell", { error: err });
+    return true;
+  }
 }
 
 function ConnectRepoCta() {
