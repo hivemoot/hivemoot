@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parse as parseYaml, parseDocument } from "yaml";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { validateEnv } from "@/server/env";
 import { generateAppJwt, generateInstallationToken } from "@/server/github-auth";
 import {
@@ -146,6 +147,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   const { pathname } = new URL(request.url);
   const parsed = extractOwnerRepo(pathname);
   if (!parsed) {
@@ -166,7 +171,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const appJwt = generateAppJwt(githubAppId, githubAppPrivateKey);
     const installationToken = await generateInstallationToken(
-      auth.session.installationId,
+      installationId,
       appJwt,
     );
 
@@ -199,7 +204,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(body);
   } catch (error) {
     console.error("[repos/roles] Failed to fetch roles", {
-      installationId: auth.session.installationId,
+      installationId,
       owner,
       repo,
       error,
@@ -211,6 +216,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 export async function PUT(request: NextRequest): Promise<NextResponse> {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
 
   const { pathname } = new URL(request.url);
   const parsed = extractOwnerRepo(pathname);
@@ -257,7 +266,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
   try {
     const appJwt = generateAppJwt(githubAppId, githubAppPrivateKey);
     const installationToken = await generateInstallationToken(
-      auth.session.installationId,
+      installationId,
       appJwt,
     );
 
@@ -360,7 +369,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(responseBody, { status: editPR ? 200 : 201 });
   } catch (error) {
     console.error("[repos/roles] Failed to write role edit", {
-      installationId: auth.session.installationId,
+      installationId,
       owner,
       repo,
       roleName,

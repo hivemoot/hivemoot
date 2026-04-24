@@ -16,6 +16,12 @@ export async function GET(request: NextRequest) {
 
   const installationId = auth.session.installationId;
 
+  // Null-installation sessions never have a BYOK envelope: surface the same
+  // "not configured" response the client already handles, rather than 409ing.
+  if (installationId === null) {
+    return byokError(BYOK_ERROR.NOT_CONFIGURED, "BYOK is not configured", 404);
+  }
+
   const envelope = await getByokEnvelope(installationId, auth.redis);
   if (!envelope) {
     return byokError(

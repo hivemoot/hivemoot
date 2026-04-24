@@ -35,6 +35,13 @@ interface OAuthStatePayload {
   installationId: string;
   stateBinding: string;
   next?: string;
+  /**
+   * When true, paired with the DISCOVER_SENTINEL installationId, the callback
+   * tolerates "user has zero installations" and issues a session with
+   * `installationId: null` instead of redirecting with auth=not_installed.
+   * Used by the "skip install, just sign in" entry point.
+   */
+  allowEmpty?: boolean;
 }
 
 export interface OAuthStateRecord {
@@ -45,17 +52,20 @@ export interface OAuthStateRecord {
 export interface OAuthStateValidationResult {
   installationId: string;
   next?: string;
+  allowEmpty?: boolean;
 }
 
 export async function createOAuthState(
   installationId: string,
   redis: Redis,
   next?: string,
+  options?: { allowEmpty?: boolean },
 ): Promise<OAuthStateRecord> {
   const state = randomBytes(32).toString("hex");
   const stateBinding = randomBytes(32).toString("hex");
   const payload: OAuthStatePayload = { installationId, stateBinding };
   if (next) payload.next = next;
+  if (options?.allowEmpty) payload.allowEmpty = true;
   await redis.set(
     `${STATE_KEY_PREFIX}${state}`,
     payload,
@@ -86,11 +96,18 @@ export async function validateOAuthState(
   if (payload.stateBinding !== stateBinding) return null;
   const result: OAuthStateValidationResult = { installationId: payload.installationId };
   if (payload.next) result.next = payload.next;
+  if (payload.allowEmpty === true) result.allowEmpty = true;
   return result;
 }
 
 export interface SetupSessionPayload {
-  installationId: string;
+  /**
+   * null when the user signed in via OAuth without having the GitHub App
+   * installed on any repo. Governance features that require repo access
+   * (BYOK config, roles editing, task dispatch) should return
+   * "installation_required" until the user installs the app.
+   */
+  installationId: string | null;
   userId: number;
   userLogin: string;
 }

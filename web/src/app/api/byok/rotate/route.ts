@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import { encrypt } from "@/server/crypto";
 import { setByokEnvelope } from "@/server/byok-store";
 import { validateProviderKey } from "@/server/provider-validation";
@@ -24,6 +25,10 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   let body: RotateRequestBody;
   try {
     body = (await request.json()) as RotateRequestBody;
@@ -32,7 +37,6 @@ export async function POST(request: NextRequest) {
   }
 
   const { provider, model, apiKey } = body;
-  const installationId = auth.session.installationId;
 
   if (!provider || !model || !apiKey) {
     return byokError(

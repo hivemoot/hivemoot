@@ -19,15 +19,23 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request);
   if (!auth.ok) return auth.response;
 
+  const installationId = auth.session.installationId;
+
+  // Null-installation sessions never own tasks — return an empty list so the
+  // dashboard renders its "no tasks yet" state instead of an error.
+  if (installationId === null) {
+    return NextResponse.json({ tasks: [] });
+  }
+
   const { searchParams } = new URL(request.url);
   const limit = parseLimit(searchParams.get("limit"));
 
   try {
-    const tasks = await listRecentTasks(auth.session.installationId, limit, auth.redis);
+    const tasks = await listRecentTasks(installationId, limit, auth.redis);
     return NextResponse.json({ tasks });
   } catch (error) {
     console.error("[tasks] Failed to list tasks", {
-      installationId: auth.session.installationId,
+      installationId,
       error,
     });
     return taskError(

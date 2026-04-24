@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
 import {
   generateAgentToken,
   getAgentToken,
@@ -23,9 +24,13 @@ export async function POST(request: NextRequest) {
   const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   try {
     const token = await generateAgentToken(
-      auth.session.installationId,
+      installationId,
       auth.session.userLogin,
       auth.activeKeyVersion,
       auth.keyring,
@@ -46,7 +51,7 @@ export async function POST(request: NextRequest) {
       );
     }
     console.error("[agent-token] Failed to generate token", {
-      installationId: auth.session.installationId,
+      installationId,
       error: err,
     });
     return agentHealthError(
@@ -61,8 +66,12 @@ export async function GET(request: NextRequest) {
   const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   try {
-    const record = await getAgentToken(auth.session.installationId, auth.keyring, auth.redis);
+    const record = await getAgentToken(installationId, auth.keyring, auth.redis);
     if (!record) {
       return agentHealthError(
         AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
@@ -74,7 +83,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(record);
   } catch (err) {
     console.error("[agent-token] Failed to retrieve token", {
-      installationId: auth.session.installationId,
+      installationId,
       error: err,
     });
     return agentHealthError(
@@ -89,8 +98,12 @@ export async function DELETE(request: NextRequest) {
   const auth = await authenticateByokRequest(request, { requireFresh: true });
   if (!auth.ok) return auth.response;
 
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
   try {
-    const revoked = await revokeAgentToken(auth.session.installationId, auth.redis);
+    const revoked = await revokeAgentToken(installationId, auth.redis);
     if (!revoked) {
       return agentHealthError(
         AGENT_HEALTH_ERROR.TOKEN_NOT_FOUND,
@@ -109,7 +122,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
     console.error("[agent-token] Failed to revoke token", {
-      installationId: auth.session.installationId,
+      installationId,
       error: err,
     });
     return agentHealthError(
