@@ -1,3 +1,4 @@
+import { INSTALL_APP_URL } from "@/lib/constants";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
@@ -11,7 +12,6 @@ export const metadata: Metadata = {
   description: "Monitor your autonomous agent fleet.",
 };
 
-const INSTALL_APP_URL = "https://github.com/apps/hivemoot/installations/new";
 
 async function sessionHasInstallation(): Promise<boolean> {
   // Default true so transient infra errors (Redis down, env unreadable) still

@@ -1,3 +1,4 @@
+import { INSTALL_APP_URL } from "@/lib/constants";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
@@ -15,7 +16,6 @@ export const metadata: Metadata = {
   description: "Manage LLM API keys and agent tokens.",
 };
 
-const INSTALL_APP_URL = "https://github.com/apps/hivemoot/installations/new";
 
 export default async function CredentialsPage() {
   const cookieStore = await cookies();
