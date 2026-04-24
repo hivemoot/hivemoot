@@ -9,7 +9,7 @@ FROM golang:1.26.2-bookworm AS gh-builder
 ARG GH_VERSION
 RUN GOBIN=/tmp/gh-bin go install github.com/cli/cli/v2/cmd/gh@v${GH_VERSION}
 
-FROM node:24-slim AS base
+FROM node:25-slim AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG NPM_VERSION=11.11.1
