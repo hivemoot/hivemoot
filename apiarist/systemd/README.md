@@ -25,6 +25,23 @@ The `apiarist ∈ agent` group membership is required so the daemon
 can `chgrp` the socket file to `agent` for cross-container access.
 Without it, the chgrp call inside `Server.bind()` returns EPERM.
 
+Two pieces have to be in place for that membership to actually
+reach the daemon's runtime:
+
+1. `usermod -aG agent apiarist` (install.sh) — adds the user to
+   the group in `/etc/group`.
+2. `SupplementaryGroups=agent` in `apiarist.service` — tells systemd
+   to honor that membership when spawning the daemon process.
+   systemd's `User=` directive does NOT automatically include
+   supplementary groups from `/etc/group`; without (2), the daemon
+   would have only the `apiarist` primary group at runtime even
+   though `id apiarist` correctly shows membership in `agent`.
+
+Both pieces are present in this PR. If you ever see an EPERM on
+the socket chown despite `id apiarist` listing `agent`, check that
+`systemctl show apiarist.service -p SupplementaryGroups` returns
+`SupplementaryGroups=agent` and not the empty string.
+
 ## Why the socket is inside a directory, not directly in /run/
 
 A previous draft used `/run/apiarist.sock` directly. That doesn't work
