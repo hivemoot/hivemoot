@@ -1,0 +1,61 @@
+name: Apiarist CI
+
+# Path-scoped to apiarist/** so unrelated edits (agent/, bot/, web/,
+# cli/, docs/) don't fire this pipeline. DESIGN.md §14 (Phase B+)
+# requires this workflow to land with or before the first phase that
+# adds real subsystem code, so the ruff/mypy/pytest promises in
+# pyproject.toml are actually enforced from then on.
+#
+# Security note: this workflow does NOT consume any untrusted GitHub
+# event input (no github.event.* expressions in run: blocks). The
+# only `run:` inputs are checked-out source files and the matrix
+# python version, both repository-controlled. Reviewer fleet should
+# flag any future change that introduces github.event.*.
+
+on:
+  pull_request:
+    paths:
+      - 'apiarist/**'
+      - '.github/workflows/apiarist-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apiarist/**'
+      - '.github/workflows/apiarist-ci.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # All `run:` steps execute inside apiarist/ so commands match how
+    # contributors run them locally (per AGENTS.md). `uses:` actions
+    # don't respect this; they take explicit paths.
+    working-directory: apiarist
+
+jobs:
+  lint-types-tests:
+    name: Lint, Types, Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin 3.11 to start (the floor declared in pyproject.toml).
+        # Add 3.12 / 3.13 when explicit support is promised in the
+        # package classifiers.
+        python: ['3.11']
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: apiarist/pyproject.toml
+      - name: Install (editable + dev extras)
+        run: pip install -e '.[dev]'
+      - name: Ruff (lint)
+        run: ruff check src tests
+      - name: Mypy (strict)
+        run: mypy src
+      - name: Pytest
+        run: pytest -v
