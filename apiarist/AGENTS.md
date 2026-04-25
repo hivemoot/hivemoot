@@ -50,8 +50,7 @@ ruff check src tests        # style + simplification rules
 mypy src                    # strict mode; configured in pyproject.toml
 ```
 
-All three checks must pass on every PR. CI integration (`.github/workflows/apiarist-ci.yml`)
-lands with **Phase B** per `DESIGN.md` §14 — until then, run them locally.
+All three checks must pass on every PR. CI is enforced on every push via `.github/workflows/apiarist-ci.yml` (landed in Phase B+).
 
 ## Layout & Conventions
 
@@ -136,7 +135,7 @@ A-O (in this directory) do not modify the runtime.
 
 V1 requires one new endpoint on hivemoot.dev:
 `POST /api/github/installation-tokens` (see `DESIGN.md` §11). The route
-ships in this PR (Phase C) as a 501 stub with real auth + body
+shipped in Phase C as a 501 stub with real auth + body
 validation, paired with the apiarist client. The actual GitHub App
 handoff (sign JWT with `.pem`, exchange at api.github.com, return
 `ghs_`) is a follow-up PR — Phase N (foxstoria pilot) is what

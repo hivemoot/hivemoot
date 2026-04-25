@@ -1,6 +1,6 @@
 # apiarist
 
-> **Status:** Phase A — project skeleton only. The daemon does not yet
+> **Status:** Phases A–C landed (scaffold, config/logging/CI, backend client). The daemon does not yet
 > do anything useful. See [DESIGN.md](./DESIGN.md) for the full V1
 > architecture and phase plan.
 
@@ -31,9 +31,9 @@ See [DESIGN.md](./DESIGN.md) for:
 - §10 Security model (threats and mitigations)
 - §11 Backend dependencies (the new `/api/installation-token` endpoint)
 - §12 Integration with existing apiary (cross-repo touch points)
-- §14 Implementation phases (this skeleton is Phase A)
+- §14 Implementation phases (Phases A–C landed)
 
-## Try it (Phase A)
+## Try it
 
 ```bash
 # From the apiarist/ directory
