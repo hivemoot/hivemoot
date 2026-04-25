@@ -77,6 +77,10 @@ function mockAgentAuthSuccess(installationId = "inst-1") {
   vi.mocked(authenticateAgentRequest).mockResolvedValue({
     ok: true,
     installationId,
+    // Legacy-permissive token (no policy field) — agent-health route
+    // doesn't enforce policy, only the mint endpoint does. Either
+    // shape is fine here.
+    policy: undefined,
     redis: {} as never,
   });
 }
