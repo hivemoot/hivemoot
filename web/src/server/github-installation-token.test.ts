@@ -72,6 +72,23 @@ describe("mintInstallationToken — happy path", () => {
     expect(result.repositories).toEqual([{ id: 12345, full_name: "owner/repo" }]);
   });
 
+  it("computes hashed_token as base64 SHA-256 of the token", async () => {
+    // Audit-correlation hash. Deterministic for a fixed token; lets
+    // backend audit logs and apiarist mint logs cross-reference the
+    // same token without either side holding the secret.
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+
+    const result = await mintInstallationToken(VALID_OPTIONS, fetcher);
+
+    const { createHash } = await import("crypto");
+    const expected = createHash("sha256")
+      .update("ghs_test_minted_token_value", "utf8")
+      .digest("base64");
+    expect(result.hashed_token).toBe(expected);
+    // Sanity-check the shape: SHA-256 base64 is 44 chars, ends in "=".
+    expect(result.hashed_token).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+  });
+
   it("calls GitHub with App JWT, narrowed perms, narrowed repo", async () => {
     const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
 
@@ -189,6 +206,51 @@ describe("mintInstallationToken — HTTP error mapping", () => {
     await expect(
       mintInstallationToken(VALID_OPTIONS, fetcher),
     ).rejects.toBeInstanceOf(AppCredentialError);
+  });
+
+  it("AppCredentialError keeps GitHub error text in internalDetail, not message", async () => {
+    // Defense-in-depth: GitHub's response body (and any future
+    // upstream error that grows a sensitive field) goes to
+    // internalDetail for server-side logging; the public .message
+    // is a fixed string the wire is allowed to see.
+    const fetcher = vi.fn().mockResolvedValue(
+      fakeResponse(401, { message: "this would be a leaky upstream error" }),
+    );
+
+    const err = await mintInstallationToken(VALID_OPTIONS, fetcher).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(AppCredentialError);
+    expect(err.message).toBe(
+      "Hivemoot Bot App credential rejected; see backend logs for details.",
+    );
+    expect(err.internalDetail).toMatch(/401/);
+  });
+
+  it("AppCredentialError from generateAppJwt also keeps detail server-side", async () => {
+    // Same separation for the JWT-generation path. Imagine a future
+    // Node openssl error echoing PEM bytes in `.message` — that text
+    // ends up in internalDetail (logged server-side, never on the
+    // wire), and the public .message stays the fixed string.
+    mockJwt.mockImplementation(() => {
+      throw new Error(
+        "ASN1 parse error: -----BEGIN RSA PRIVATE KEY----- malformed",
+      );
+    });
+    const fetcher = vi.fn();
+
+    const err = await mintInstallationToken(VALID_OPTIONS, fetcher).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(AppCredentialError);
+    expect(err.message).toBe(
+      "Hivemoot Bot App credential rejected; see backend logs for details.",
+    );
+    expect(err.internalDetail).toContain("ASN1 parse error");
+    // Critically: the wire-visible `.message` does NOT contain any
+    // of the would-be-leaky fragments.
+    expect(err.message).not.toContain("ASN1");
+    expect(err.message).not.toContain("PRIVATE KEY");
   });
 
   it("403 → InstallationNotCoverageError (policy or repo not covered)", async () => {

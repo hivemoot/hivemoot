@@ -21,6 +21,7 @@
  * shape apiarist's daemon expects (see `apiarist/DESIGN.md` §11).
  */
 
+import { createHash } from "crypto";
 import { generateAppJwt } from "@/server/github-auth";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,16 @@ export interface InstallationAccessTokenResponse {
   /** Repos this token can act on. Always exactly one for V1 per the
    * single-repo narrow we requested. */
   repositories: Array<{ full_name: string; id: number }>;
+  /**
+   * Base64-encoded SHA-256 of `token`. Per DESIGN.md §11 audit-hash
+   * pattern (mirrors `vault-plugin-secrets-github`): lets audit logs
+   * correlate "this token was issued for this installation" without
+   * ever logging the token itself. Apiarist treats this as opaque
+   * pass-through metadata; the backend's audit log emits the same
+   * hash so cross-system correlation is possible without either side
+   * holding the secret value.
+   */
+  hashed_token: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,17 +94,34 @@ export interface InstallationAccessTokenResponse {
 //   502 → BACKEND_UNAVAILABLE  (GitHub 5xx, network error, malformed response)
 //   503 → BACKEND_UNAVAILABLE  (App credential rejected — server misconfig)
 //
-// `MintError` is the base type the route catches uniformly.
+// `MintError` is the base type the route catches uniformly. Errors
+// that may carry detail an attacker could mine (App credential errors
+// in particular — Node's createSign / GitHub's 401 body could in
+// principle contain PEM bytes or other internal-only state in some
+// future Node version) keep the detail server-side via the
+// `internalDetail` field. The route logs `internalDetail` server-side
+// (operator debugging) but emits only `.message` on the wire (apiarist
+// debugging). Subclasses that don't accept arbitrary upstream strings
+// can leave `internalDetail` as the same as `.message` — defense in
+// depth, no harm.
 
 export class MintError extends Error {
   public readonly httpStatus: number;
   public readonly errorCode: string;
+  /** Server-side-only detail. Logged but never surfaced on the wire. */
+  public readonly internalDetail: string;
 
-  constructor(message: string, httpStatus: number, errorCode: string) {
+  constructor(
+    message: string,
+    httpStatus: number,
+    errorCode: string,
+    internalDetail?: string,
+  ) {
     super(message);
     this.name = this.constructor.name;
     this.httpStatus = httpStatus;
     this.errorCode = errorCode;
+    this.internalDetail = internalDetail ?? message;
   }
 }
 
@@ -120,8 +148,21 @@ export class GitHubRateLimitedError extends MintError {
 }
 
 export class AppCredentialError extends MintError {
+  /**
+   * @param detail Server-side-only context (e.g. raw error from
+   *               createSign or GitHub's 401 body). Logged via
+   *               `internalDetail`; NEVER surfaced on the wire.
+   *               Defense in depth: even if a future Node openssl
+   *               error puts PEM bytes in its `.message`, the wire
+   *               response stays a fixed string.
+   */
   constructor(detail: string) {
-    super(`Hivemoot Bot App credential rejected by GitHub: ${detail}`, 503, "app_credential_invalid");
+    super(
+      "Hivemoot Bot App credential rejected; see backend logs for details.",
+      503,
+      "app_credential_invalid",
+      `Hivemoot Bot App credential rejected by GitHub: ${detail}`,
+    );
   }
 }
 
@@ -287,6 +328,12 @@ export async function mintInstallationToken(
       full_name: r.full_name,
       id: r.id,
     })),
+    // Audit-correlation hash. SHA-256 over the raw token bytes; base64
+    // encoded for log readability. Computed here so the route can emit
+    // it in audit logs without re-hashing — single source of truth.
+    hashed_token: createHash("sha256")
+      .update(body.token, "utf8")
+      .digest("base64"),
   };
 }
 

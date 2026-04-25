@@ -75,6 +75,7 @@ function successMint() {
     installation_id: "67890",
     permissions: { contents: "read", pull_requests: "write" },
     repositories: [{ full_name: "owner/repo", id: 12345 }],
+    hashed_token: "FAKE_BASE64_SHA256_HASH=",
   };
 }
 
@@ -237,6 +238,7 @@ describe("POST /api/github/installation-tokens — happy path", () => {
       pull_requests: "write",
     });
     expect(body.repositories).toEqual([{ full_name: "owner/repo", id: 12345 }]);
+    expect(body.hashed_token).toBe("FAKE_BASE64_SHA256_HASH=");
   });
 
   it("passes installation_id from auth + repo from body to mintInstallationToken", async () => {

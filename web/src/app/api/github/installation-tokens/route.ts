@@ -117,12 +117,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       appPrivateKeyPem: githubAppPrivateKey,
     });
     // Audit log: success. Token VALUE never logged — only metadata.
-    // expires_at is logged so operators can correlate with cache TTL
-    // observations downstream.
+    // hashed_token is the audit-correlation handle (sha256/base64 of
+    // the token); operators can match this log line to apiarist's
+    // mint logs without either side holding the secret. expires_at
+    // is logged so operators can correlate with cache TTL observations
+    // downstream.
     console.log("[installation-tokens] minted", {
       installationId: auth.installationId,
       repo,
       agentId,
+      hashedToken: tokenResponse.hashed_token,
       expiresAt: tokenResponse.expires_at,
       latencyMs: Date.now() - start,
     });
@@ -132,12 +136,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // Audit log: typed mint failure. Structured fields make it easy
       // to alert on specific failure classes (e.g. spike in
       // installation_not_coverage = an operator misconfigured an agent).
+      // Logs `internalDetail` (server-side context — may carry raw
+      // upstream error text including, in principle, PEM bytes if a
+      // future Node openssl error puts them in `.message`) rather
+      // than `message` (the sanitized wire-safe string emitted in
+      // the response below). Defense in depth: even if the upstream
+      // error grows a sensitive field, the wire response stays a
+      // fixed string and only the backend journal sees the detail.
       console.warn("[installation-tokens] mint failed", {
         installationId: auth.installationId,
         repo,
         agentId,
         errorCode: err.errorCode,
-        errorMessage: err.message,
+        internalDetail: err.internalDetail,
         httpStatus: err.httpStatus,
         latencyMs: Date.now() - start,
       });
