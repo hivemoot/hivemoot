@@ -1453,12 +1453,18 @@ Phase L′ therefore includes a real refactor of github plugin's
 
   All five move into a NEW github plugin lifecycle subscriber (the
   github plugin becomes its OWN `LifecycleSubscriber` in addition to
-  a tool provider) whose `on_active` runs them in that order. An
-  idempotency guard at the subscriber level skips the work after
-  the first successful on_active per process — subsequent
-  IDLE→ACTIVE cycles re-mint the token but don't re-clone (clone
-  output is process-stable, only the env value cycles per
-  ACTIVE/IDLE).
+  a tool provider) whose `on_active` runs them in that order.
+  **Token source: the subscriber reads the token from
+  `os.environ[token_env]` at on_active entry** — the hivemoot auth
+  subscriber registered before us (per the load-bearing
+  registration-order contract in §12.3.2's `subscribe()` docstring)
+  has populated env by the time our `on_active` fires. The github
+  subscriber doesn't take a token in its constructor; it's an
+  ambient-env read inside on_active. An idempotency guard at the
+  subscriber level skips the clone work after the first successful
+  on_active per process — subsequent IDLE→ACTIVE cycles re-mint the
+  token but don't re-clone (clone output is process-stable, only
+  the env value cycles per ACTIVE/IDLE).
 
 **2. Subscriber registration order matters.**
 
@@ -1706,7 +1712,7 @@ in `apiary.secrets.yaml`.
 | **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
 | **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
 | **K.** Apiary integration — deploy script | `apiary/deploy-apiary.sh` patch (§12.2): when `refresh_token: true`, skip static token staging, bind-mount `/run/apiarist/apiarist.sock` (host) → `/run/apiarist.sock` (container), emit `APIARIST_TOKEN_ENV=<env_var>`, omit github plugin's `token_file:` line, emit a new `hivemoot.apiarist:` block (enabled, socket_path, repo, env_var) for Phase L′ to consume. Two new validating helpers (`get_repo_refresh_token`, `get_repo_token_env`) reject malformed inputs at parse time. Fail-fast deploy if the host apiarist socket isn't present. PR opened against `hivemoot/apiary` (no fleet review there, self-merge per CLAUDE.md memory). **Shipped** in `hivemoot/apiary` PR #67. | 0.5d | — (parallel) |
-| **L′.** Engine lifecycle FSM + hivemoot auth subscriber + github plugin refactor | Four layered changes: (a) **engine.py** gains `ContainerLifecycle` (generic IDLE/ACTIVE FSM with subscriber pattern) and a `LifecycleSubscriber` interface, with engine's job-dispatch loop calling `on_job_starting`/`on_job_finished` around each job; (b) new `plugins_builtin/hivemoot/auth/` submodule with `HivemootGithubAuthSubscriber` (implements `LifecycleSubscriber`, owns mint/refresh/env management) and `apiarist_client.py` (~50 LOC UDS client); (c) hivemoot plugin's `setup` reads per-repo config (`refresh_token: true`, `token_env: GITHUB_TOKEN`) and conditionally registers the subscriber; (d) **github plugin refactor**: split `setup()` into auth-free (workspace bootstrap, `gh` CLI discovery) + auth-required (`_validate_repo_access`, `clone_or_sync`); the auth-required half moves to a github-plugin-owned `LifecycleSubscriber` whose `on_active` runs after the hivemoot auth subscriber has populated env. `validate()` grows a `token_source: subscriber` opt that permits absent `token_file:` (deploy-apiary.sh emits this for `refresh_token: true`). Engine knows lifecycle, doesn't know auth. Auth subscriber knows auth, doesn't know lifecycle internals. Github plugin's tooling-provider runtime contract is unchanged; only its plugin-load model splits. **Hard precondition for opt-in: target repo must have the Hivemoot Bot GitHub App installed** — non-installed repos stay on static-PAT (the default). | 2.5d | D, E |
+| **L′.** Engine lifecycle FSM + hivemoot auth subscriber + github plugin refactor | Four layered changes: (a) **engine.py** gains `ContainerLifecycle` (generic IDLE/ACTIVE FSM with subscriber pattern) and a `LifecycleSubscriber` interface, with engine's job-dispatch loop calling `on_job_starting`/`on_job_finished` around each job; (b) new `plugins_builtin/hivemoot/auth/` submodule with `HivemootGithubAuthSubscriber` (implements `LifecycleSubscriber`, owns mint/refresh/env management) and `apiarist_client.py` (~50 LOC UDS client); (c) hivemoot plugin's `setup` reads per-repo config (`refresh_token: true`, `token_env: GITHUB_TOKEN`) and conditionally registers the subscriber; (d) **github plugin refactor**: split `setup()` into auth-free (workspace bootstrap, `gh` CLI discovery) + the **full auth-required sequence per §12.3.5a** — `resolve_github_user`, `_configure_git_auth`, `_validate_repo_access`, `clone_or_sync`, `configure_git_user` (in that exact order; see §12.3.5a for file:line references). The auth-required half moves to a github-plugin-owned `LifecycleSubscriber` whose `on_active` reads the token from `os.environ[token_env]` (populated by the hivemoot subscriber that registered before us per the load-bearing registration-order contract) and runs the five operations idempotently — clone happens once per process, env reads cycle per ACTIVE/IDLE. `validate()` grows a `token_source: subscriber` opt that permits absent `token_file:` (deploy-apiary.sh emits this for `refresh_token: true`). Engine knows lifecycle, doesn't know auth. Auth subscriber knows auth, doesn't know lifecycle internals. Github plugin's tooling-provider runtime contract is unchanged; only its plugin-load model splits. **Hard precondition for opt-in: target repo must have the Hivemoot Bot GitHub App installed** — non-installed repos stay on static-PAT (the default). | 2.5d | D, E |
 | **M.** Shadow deploy on Hive | rsync, install, verify socket creation, exercise via examples/client.py without flagging any service. | 0.5d | J, K, L′ |
 | **N.** Drone pilot | The V1 pilot is **drone**, not foxstoria — drone is a fleet member on `hivemoot/hivemoot` (which already has the bot installed) AND its existing PAT is invalid as of 2026-04-25 so migrating it can't regress anything. Flag drone's repo block (`hivemoot:` in `apiary.yaml`) with `refresh_token: true`, deploy, observe one full review cycle. Verify a `ghs_` token reaches GitHub successfully and zero token files appear on disk. Foxstoria opt-in is deferred to Phase 1.5 (see §13) — it works under the engine-lifecycle architecture but is shipped after the drone pilot validates the path. | 0.5d | M, **backend endpoint live** |
 | **O.** Runbook + metrics | `apiarist/README.md` ops guide. Document `journalctl -u apiarist`, common failure modes, how to validate a service is using App auth vs PAT. | 0.5d | N |
