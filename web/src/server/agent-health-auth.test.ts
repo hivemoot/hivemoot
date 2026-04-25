@@ -12,11 +12,11 @@ vi.mock("@/server/redis", () => ({
   getRedisClient: vi.fn(() => ({} as never)),
 }));
 vi.mock("@/server/agent-token", () => ({
-  resolveTokenToInstallation: vi.fn(),
+  resolveTokenToInstallationAndPolicy: vi.fn(),
 }));
 
 import { validateEnv } from "@/server/env";
-import { resolveTokenToInstallation } from "@/server/agent-token";
+import { resolveTokenToInstallationAndPolicy } from "@/server/agent-token";
 import { authenticateAgentRequest } from "./agent-health-auth";
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ describe("authenticateAgentRequest", () => {
   });
 
   it("returns 401 when token is not recognized", async () => {
-    vi.mocked(resolveTokenToInstallation).mockResolvedValue(null);
+    vi.mocked(resolveTokenToInstallationAndPolicy).mockResolvedValue(null);
 
     const result = await authenticateAgentRequest(makeRequest("Bearer unknown-token"));
     expect(result.ok).toBe(false);
@@ -141,7 +141,7 @@ describe("authenticateAgentRequest", () => {
   });
 
   it("returns identical 401 response body for all auth failures", async () => {
-    vi.mocked(resolveTokenToInstallation).mockResolvedValue(null);
+    vi.mocked(resolveTokenToInstallationAndPolicy).mockResolvedValue(null);
 
     const missingHeader = await authenticateAgentRequest(makeRequest());
     const wrongScheme = await authenticateAgentRequest(makeRequest("Basic abc"));
@@ -166,7 +166,10 @@ describe("authenticateAgentRequest", () => {
   });
 
   it("returns success with installationId when token is valid", async () => {
-    vi.mocked(resolveTokenToInstallation).mockResolvedValue("inst-42");
+    vi.mocked(resolveTokenToInstallationAndPolicy).mockResolvedValue({
+      installationId: "inst-42",
+      policy: undefined,
+    });
 
     const result = await authenticateAgentRequest(makeRequest("Bearer valid-token"));
     expect(result.ok).toBe(true);

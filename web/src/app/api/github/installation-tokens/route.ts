@@ -85,6 +85,57 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   const agentId = typeof agentIdRaw === "string" ? agentIdRaw : null;
 
+  // ---------------------------------------------------------------------
+  // Token-policy enforcement (V1.5)
+  //
+  // Per apiarist DESIGN.md §10's "V1 token-policy gap" row: the agent
+  // token's policy (if set) constrains which repos this token may mint
+  // for. Three cases:
+  //
+  //   1. policy === undefined (legacy token, created pre-V1.5) →
+  //      log a warning so operators see we're running with a
+  //      legacy-permissive token, then defer to GitHub's installation
+  //      grant for the coverage check (current V1 behavior). Preserves
+  //      compatibility with existing tokens during the migration window.
+  //
+  //   2. policy.allowed_repos includes `repo` → proceed with mint.
+  //
+  //   3. policy.allowed_repos does NOT include `repo` → reject 403
+  //      with policy_violation so apiarist's daemon surfaces it as
+  //      BACKEND_FORBIDDEN with a clear remediation message.
+  //
+  // Request scope ⊆ token policy is enforced HERE; the
+  // (token policy) ⊆ (installation grant) check still happens at
+  // GitHub (mint endpoint will return 403 if the policy somehow grants
+  // more than the installation does — defense in depth, not expected
+  // in practice if policies are set sensibly).
+  if (auth.policy === undefined) {
+    console.warn("[installation-tokens] legacy-permissive token used (no policy)", {
+      installationId: auth.installationId,
+      repo,
+      agentId,
+      remediation:
+        "set a per-token policy via setAgentTokenPolicy to enforce request ⊆ policy ⊆ installation grant",
+    });
+  } else if (!auth.policy.allowed_repos.includes(repo)) {
+    console.warn("[installation-tokens] policy violation: repo not in allowed_repos", {
+      installationId: auth.installationId,
+      repo,
+      agentId,
+      allowedReposCount: auth.policy.allowed_repos.length,
+    });
+    return NextResponse.json(
+      {
+        error: "policy_violation",
+        message:
+          `Repo '${repo}' is not in the agent token's allowed_repos policy. ` +
+          "Either add it to the token's policy via setAgentTokenPolicy, " +
+          "or rotate to a token whose policy includes this repo.",
+      },
+      { status: 403 },
+    );
+  }
+
   // Verify backend credentials are present BEFORE attempting the mint
   // so a server misconfig surfaces as 503 (apiarist sees it as
   // BACKEND_UNAVAILABLE) rather than as a 502 from the upstream call.

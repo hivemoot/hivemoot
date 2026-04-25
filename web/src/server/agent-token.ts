@@ -45,6 +45,40 @@ return 1
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-token authorization policy. Constrains what the token holder can
+ * request from token-minting endpoints (currently:
+ * `POST /api/github/installation-tokens`).
+ *
+ * V1.5 enforcement model (apiarist DESIGN.md §10 "V1 token-policy gap"):
+ *
+ *   (request scope) ⊆ (token policy) ⊆ (installation grant)
+ *
+ * The middle containment ⊆ is what `policy` provides. Without it (legacy
+ * tokens, `policy: null`), the middle ⊆ collapses to identity and a leaked
+ * agent token can mint for any repo covered by the installation grant.
+ *
+ * `allowed_repos` is the set of `owner/name` strings the token may request
+ * tokens for. Empty array `[]` rejects all (intentional — distinct from
+ * `null`/undefined which means legacy permissive). If the field is absent
+ * on the envelope (legacy tokens created before V1.5), the mint endpoint
+ * logs a warning and defers to the installation grant — this preserves
+ * compatibility with existing tokens during the V1.5 migration window.
+ *
+ * `allowed_permissions` is intentionally DEFERRED to V1.6: V1 already
+ * hard-codes a narrow permission set (`V1_PERMISSIONS` in
+ * `github-installation-token.ts`); per-token permission narrowing is a
+ * second layer of defense that hasn't been needed yet. When added,
+ * enforcement: passed permissions ∩ V1_PERMISSIONS, then validated
+ * against the installation grant by GitHub.
+ */
+export interface AgentTokenPolicy {
+  /** `owner/name` strings the token may request mints for. Empty array
+   * = reject everything (intentional). Field absence on the envelope =
+   * legacy permissive (defer to installation grant). */
+  allowed_repos: string[];
+}
+
 export interface AgentTokenEnvelope {
   ciphertext: string; // base64
   iv: string; // base64
@@ -54,6 +88,11 @@ export interface AgentTokenEnvelope {
   fingerprint: string; // last 8 chars of token for display
   createdAt: string; // ISO 8601
   createdBy: string; // GitHub login
+  /** V1.5+: per-token authorization policy. Absent on legacy tokens
+   * (created pre-V1.5); set via `setAgentTokenPolicy`. Mint endpoint
+   * treats absence as legacy-permissive (logged warning) and presence
+   * as authoritative. */
+  policy?: AgentTokenPolicy;
 }
 
 export interface AgentTokenMeta {
@@ -283,6 +322,11 @@ export async function reEncryptAgentToken(
 /**
  * Resolves a raw Bearer token to an installationId via the hash index.
  * Returns null if the token is unknown.
+ *
+ * Note: returns ONLY the installationId — does NOT load the envelope or
+ * policy. Existing callers (`/api/agent-health`, `/api/tasks/*`) only
+ * need the installation id. Token-minting endpoints that need the policy
+ * use `resolveTokenToInstallationAndPolicy` instead.
  */
 export async function resolveTokenToInstallation(
   rawToken: string,
@@ -292,4 +336,68 @@ export async function resolveTokenToInstallation(
   const record = await redis.get<{ installationId: string }>(redisHashKey(hash));
   if (!record || typeof record.installationId !== "string") return null;
   return record.installationId;
+}
+
+/**
+ * Resolves a Bearer token to its installationId AND the per-token policy
+ * (if set). Used by token-minting endpoints that need to enforce the
+ * `(request) ⊆ (token policy)` containment per `AgentTokenPolicy`.
+ *
+ * Two Redis reads (hash index → envelope) instead of one — slightly more
+ * expensive than `resolveTokenToInstallation`. Use that helper when the
+ * caller doesn't need the policy.
+ *
+ * Returns null if the token is unknown. Returns `policy: undefined` for
+ * legacy tokens (created pre-V1.5, no policy field on the envelope) —
+ * callers must distinguish legacy-permissive (`undefined`) from
+ * empty-allow-list (`{ allowed_repos: [] }`, intentional reject-all).
+ */
+export async function resolveTokenToInstallationAndPolicy(
+  rawToken: string,
+  redis: Redis,
+): Promise<{ installationId: string; policy: AgentTokenPolicy | undefined } | null> {
+  const installationId = await resolveTokenToInstallation(rawToken, redis);
+  if (installationId === null) return null;
+
+  const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+  // Defensive: hash index exists but envelope doesn't. Should not happen
+  // (atomic rotate keeps both in sync), but if it does treat as unknown
+  // rather than fail-open with no policy.
+  if (!envelope) return null;
+
+  return { installationId, policy: envelope.policy };
+}
+
+/**
+ * Sets (or clears) the per-token policy on an existing agent token.
+ * Operator-only; called from CLI script `web/scripts/set-agent-policy.ts`
+ * or future dashboard UI. Holds the per-installation lock to serialize
+ * with rotate/revoke.
+ *
+ * Pass `null` to clear the policy (revert to legacy-permissive).
+ *
+ * Returns true on success, false if no token exists for that installation.
+ */
+export async function setAgentTokenPolicy(
+  installationId: string,
+  policy: AgentTokenPolicy | null,
+  redis: Redis,
+): Promise<boolean> {
+  return withInstallationLock(installationId, redis, async () => {
+    const envelope = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
+    if (!envelope) return false;
+
+    const updated: AgentTokenEnvelope = { ...envelope };
+    if (policy === null) {
+      // Explicit clear: drop the field entirely so the envelope shape
+      // matches a legacy token (vs storing `policy: null` which would be
+      // ambiguous with "explicit reject all").
+      delete updated.policy;
+    } else {
+      updated.policy = policy;
+    }
+
+    await redis.set(redisTokenKey(installationId), updated);
+    return true;
+  });
 }

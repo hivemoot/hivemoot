@@ -29,6 +29,8 @@ import {
   revokeAgentToken,
   reEncryptAgentToken,
   resolveTokenToInstallation,
+  resolveTokenToInstallationAndPolicy,
+  setAgentTokenPolicy,
 } from "./agent-token";
 
 // ---------------------------------------------------------------------------
@@ -370,5 +372,125 @@ describe("resolveTokenToInstallation", () => {
     const token = await generateAgentToken("inst-42", "bob", "v1", MOCK_KEYRING, redis);
     const resolved = await resolveTokenToInstallation(token, redis);
     expect(resolved).toBe("inst-42");
+  });
+});
+
+describe("resolveTokenToInstallationAndPolicy", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  it("returns null for unknown tokens", async () => {
+    const result = await resolveTokenToInstallationAndPolicy(
+      "deadbeef".repeat(8),
+      redis,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("returns installationId + policy: undefined for legacy tokens (no policy field)", async () => {
+    // generateAgentToken doesn't set a policy field — legacy shape.
+    const token = await generateAgentToken("inst-99", "alice", "v1", MOCK_KEYRING, redis);
+
+    const result = await resolveTokenToInstallationAndPolicy(token, redis);
+    expect(result).toEqual({ installationId: "inst-99", policy: undefined });
+  });
+
+  it("returns the policy after setAgentTokenPolicy sets one", async () => {
+    const token = await generateAgentToken("inst-42", "bob", "v1", MOCK_KEYRING, redis);
+    await setAgentTokenPolicy(
+      "inst-42",
+      { allowed_repos: ["owner/repo-1", "owner/repo-2"] },
+      redis,
+    );
+
+    const result = await resolveTokenToInstallationAndPolicy(token, redis);
+    expect(result).toEqual({
+      installationId: "inst-42",
+      policy: { allowed_repos: ["owner/repo-1", "owner/repo-2"] },
+    });
+  });
+
+  it("returns null when hash index exists but envelope was deleted (defensive)", async () => {
+    // Pathological state: shouldn't happen under normal rotate flow,
+    // but if it does (manual Redis poking, bad migration), treat as
+    // unknown rather than fail-open with null policy.
+    const token = await generateAgentToken("inst-7", "carol", "v1", MOCK_KEYRING, redis);
+    // Delete the envelope but leave the hash index dangling.
+    await redis.del("hive:agent-token:inst-7");
+
+    const result = await resolveTokenToInstallationAndPolicy(token, redis);
+    expect(result).toBeNull();
+  });
+});
+
+describe("setAgentTokenPolicy", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redis = makeMockRedis();
+  });
+
+  it("returns false when no token exists for the installation", async () => {
+    const ok = await setAgentTokenPolicy(
+      "inst-nonexistent",
+      { allowed_repos: ["a/b"] },
+      redis,
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("sets a policy on an existing token", async () => {
+    const token = await generateAgentToken("inst-1", "bob", "v1", MOCK_KEYRING, redis);
+
+    const ok = await setAgentTokenPolicy(
+      "inst-1",
+      { allowed_repos: ["owner/repo"] },
+      redis,
+    );
+    expect(ok).toBe(true);
+
+    // Verify via the resolver.
+    const resolved = await resolveTokenToInstallationAndPolicy(token, redis);
+    expect(resolved?.policy).toEqual({ allowed_repos: ["owner/repo"] });
+  });
+
+  it("clears the policy when called with null (back to legacy permissive)", async () => {
+    const token = await generateAgentToken("inst-1", "bob", "v1", MOCK_KEYRING, redis);
+    await setAgentTokenPolicy("inst-1", { allowed_repos: ["a/b"] }, redis);
+
+    const ok = await setAgentTokenPolicy("inst-1", null, redis);
+    expect(ok).toBe(true);
+
+    // Resolver should now return policy: undefined (legacy).
+    const resolved = await resolveTokenToInstallationAndPolicy(token, redis);
+    expect(resolved?.policy).toBeUndefined();
+  });
+
+  it("preserves all other envelope fields (rotate-safe)", async () => {
+    // Setting policy must NOT touch ciphertext/iv/tag/etc — otherwise
+    // we'd accidentally invalidate the token. Round-trip: generate,
+    // set policy, decrypt the token via getAgentToken, confirm same.
+    const token = await generateAgentToken("inst-1", "bob", "v1", MOCK_KEYRING, redis);
+    await setAgentTokenPolicy("inst-1", { allowed_repos: ["a/b"] }, redis);
+
+    const recovered = await getAgentToken("inst-1", MOCK_KEYRING, redis);
+    expect(recovered?.token).toBe(token);
+    expect(recovered?.fingerprint).toBe(token.slice(-8));
+    expect(recovered?.createdBy).toBe("bob");
+  });
+
+  it("supports empty allowed_repos (intentional reject-all distinct from null)", async () => {
+    const token = await generateAgentToken("inst-1", "bob", "v1", MOCK_KEYRING, redis);
+    await setAgentTokenPolicy("inst-1", { allowed_repos: [] }, redis);
+
+    const resolved = await resolveTokenToInstallationAndPolicy(token, redis);
+    // Policy is set with empty array (NOT undefined). Mint endpoint
+    // will reject every request — operator's intent.
+    expect(resolved?.policy).toEqual({ allowed_repos: [] });
   });
 });

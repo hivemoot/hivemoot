@@ -10,12 +10,20 @@ import { type Redis } from "@upstash/redis";
 import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { resolveTokenToInstallation } from "@/server/agent-token";
+import {
+  resolveTokenToInstallationAndPolicy,
+  type AgentTokenPolicy,
+} from "@/server/agent-token";
 import { AGENT_HEALTH_ERROR, agentHealthError } from "@/server/agent-health-error";
 
 type AgentAuthSuccess = {
   ok: true;
   installationId: string;
+  /** Per-token policy, or `undefined` for legacy tokens (created
+   * pre-V1.5, no policy field). Callers that gate authorization on
+   * the policy must distinguish `undefined` (legacy permissive) from
+   * `{ allowed_repos: [] }` (explicit reject-all). */
+  policy: AgentTokenPolicy | undefined;
   redis: Redis;
 };
 
@@ -75,9 +83,14 @@ export async function authenticateAgentRequest(
   if (!rawToken) return unauthenticatedResponse();
 
   const redis = getRedisClient(redisRestUrl, redisRestToken);
-  const installationId = await resolveTokenToInstallation(rawToken, redis);
+  const resolved = await resolveTokenToInstallationAndPolicy(rawToken, redis);
 
-  if (!installationId) return unauthenticatedResponse();
+  if (resolved === null) return unauthenticatedResponse();
 
-  return { ok: true, installationId, redis };
+  return {
+    ok: true,
+    installationId: resolved.installationId,
+    policy: resolved.policy,
+    redis,
+  };
 }

@@ -53,10 +53,14 @@ function makeRequest(body: unknown, opts: { json?: boolean } = {}): NextRequest 
   );
 }
 
-function authOk(installationId = "67890") {
+function authOk(
+  installationId = "67890",
+  policy: { allowed_repos: string[] } | undefined = undefined,
+) {
   return {
     ok: true as const,
     installationId,
+    policy,
     redis: {} as never,
   };
 }
@@ -214,6 +218,83 @@ describe("POST /api/github/installation-tokens — server config", () => {
     const res = await POST(makeRequest({ repo: "owner/repo" }));
 
     expect(res.status).toBe(503);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token-policy enforcement (V1.5)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/github/installation-tokens — token-policy enforcement", () => {
+  it("rejects 403 with policy_violation when repo not in allowed_repos", async () => {
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["other-owner/other-repo"] }),
+    );
+
+    const res = await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("policy_violation");
+    expect(body.message).toContain("owner/repo");
+    expect(body.message).toMatch(/allowed_repos/);
+    expect(mockedMint).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with mint when repo IS in allowed_repos", async () => {
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["owner/repo", "another/repo"] }),
+    );
+    mockedMint.mockResolvedValue(successMint());
+
+    const res = await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(res.status).toBe(200);
+    expect(mockedMint).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects 403 when policy.allowed_repos is empty (intentional reject-all)", async () => {
+    // Empty array distinguishes from `undefined` (legacy permissive).
+    // Operator deliberately set "no repos" to disable minting on this
+    // token without revoking it.
+    mockedAuth.mockResolvedValue(authOk("67890", { allowed_repos: [] }));
+
+    const res = await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("policy_violation");
+  });
+
+  it("legacy token (policy: undefined) is permissive — mint proceeds", async () => {
+    // Pre-V1.5 tokens have no policy field on the envelope. They MUST
+    // continue working (legacy-permissive) so existing agents don't
+    // break on V1.5 ship. The route logs a console.warn pointing at
+    // setAgentTokenPolicy as the remediation.
+    mockedAuth.mockResolvedValue(authOk("67890", undefined));
+    mockedMint.mockResolvedValue(successMint());
+
+    const res = await POST(makeRequest({ repo: "any/repo" }));
+
+    expect(res.status).toBe(200);
+    expect(mockedMint).toHaveBeenCalledTimes(1);
+  });
+
+  it("policy check runs BEFORE env validation — wrong env still rejects on policy", async () => {
+    // Defense-in-depth ordering: policy violation rejects before we
+    // leak any signal about server config (env-missing → 503).
+    delete process.env.GITHUB_APP_ID;
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["other/repo"] }),
+    );
+
+    const res = await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("policy_violation");
+    // NOT 503 server_misconfiguration — caller doesn't get to
+    // distinguish based on a request they're not authorized to make.
   });
 });
 
