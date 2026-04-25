@@ -899,31 +899,183 @@ or privileged flag is needed.
 
 ### 12.3 Agent runtime change (monorepo, not apiary)
 
-In `agent/cli/hivemoot_agent/plugins_builtin/.../github` (Phase L′
-PR against `hivemoot/hivemoot`): wherever the agent currently reads
-`GH_TOKEN` from env or a file, branch on the presence of
-`AGENT_SERVICE` (set by apiary deploy when App auth is on). When
-present, replace the static token read with a UDS round-trip to
-`/run/apiarist.sock`:
+A small auth plugin in `agent/cli/hivemoot_agent/plugins_builtin/github_auth/`
+(Phase L′ PR against `hivemoot/hivemoot`) implementing a two-state
+machine driven by **whether the agent has any active work**.
+
+States: ACTIVE (count of in-flight work units ≥ 1) or IDLE (count = 0).
+The plugin keeps a generic reference counter that any work source in
+the runtime can increment — provider runs, task executions, scheduled
+jobs, future work types — they all contribute uniformly. Only the
+0↔1 boundary triggers a state transition; intermediate counter
+movements are no-ops.
+
+- **IDLE → ACTIVE** (counter goes 0→1, first work unit started):
+  mint `GITHUB_TOKEN`, start a background refresh loop that re-mints
+  at `expires_at - 5min`.
+- **ACTIVE → IDLE** (counter goes 1→0, **last** work unit ended —
+  i.e., all overlapping/chained work is fully drained): cancel the
+  refresh loop, clear `GITHUB_TOKEN` from env.
+
+The "fully idle" definition is critical: a single task ending is just
+a decrement (`count--`); the state only transitions to IDLE when
+**every** work source has released the wake lock. This matters for
+chained or overlapping work — task A ending while scheduled job B is
+still running does NOT trigger cleanup, because the agent is still
+busy from B's perspective.
+
+While ACTIVE, all the agent's existing tooling (`gh`, `git` via
+askpass, `octokit`, `PyGithub`) reads `GITHUB_TOKEN` from env and
+just works. While IDLE, no token is minted, no token sits in env,
+no refresh runs.
+
+**Why activity-gated refresh (not container-startup, not per-trigger,
+not always-on):**
+
+- *Container-startup mint is wrong*: a standing-agent container can
+  boot at 09:00 and sit idle until the first trigger arrives at
+  11:00 — the boot-minted token would have expired before any work
+  began.
+- *Always-on refresh is wasteful*: a periodic agent that runs once
+  a day would burn a refresh mint every ~55 min, 24 mints per
+  idle day, all unused.
+- *Per-trigger mint is needlessly chatty*: rapid-fire chained tasks
+  (one trigger spawns another) would each mint, even though they
+  could share the env value.
+- *Activity-gated FSM is the right shape*: token exists only while
+  work is happening. Cost (mint + env exposure) is exactly aligned
+  to actual work activity, not to wall-clock or trigger volume.
+- *Reference counting + "fully idle" definition handles overlapping
+  and chained work cleanly*: the counter abstracts away "what kind of
+  work is happening." Provider run + scheduled job + future work
+  types can all overlap arbitrarily; the FSM only transitions when
+  all of them have released the wake lock.
+
+**The whole plugin** (Phase L′):
 
 ```python
-# pseudocode — actual implementation lands in Phase L′
-def get_github_token(repo: str) -> str:
-    if os.environ.get("AGENT_SERVICE"):
-        return apiarist_client.mint_token(
-            service=os.environ["AGENT_SERVICE"],
-            repo=repo,
-        ).token
-    return os.environ["GH_TOKEN"]  # legacy PAT path
+# pseudocode — ~30 LOC final shape
+import asyncio
+import os
+from datetime import UTC, datetime
+
+REFRESH_SAFETY_MARGIN_SECONDS = 300
+
+class GitHubAuthPlugin:
+    def __init__(self, apiarist_client, repo: str):
+        self._apiarist = apiarist_client
+        self._repo = repo
+        # Generic active-work counter. Anything that represents
+        # in-flight work (provider runs, tasks, scheduled jobs,
+        # future work types) increments this. The plugin doesn't
+        # care WHAT kind of work; only whether the agent has
+        # anything active right now.
+        self._active = 0
+        self._refresh_task: asyncio.Task | None = None
+
+    async def on_work_start(self, _source) -> None:
+        self._active += 1
+        if self._active == 1:
+            await self._wake_up()  # IDLE → ACTIVE (first work in)
+
+    async def on_work_end(self, _source) -> None:
+        self._active -= 1
+        if self._active == 0:
+            await self._go_idle()  # ACTIVE → IDLE (fully drained)
+
+    async def _wake_up(self) -> None:
+        token = await self._apiarist.mint_token(repo=self._repo)
+        os.environ["GITHUB_TOKEN"] = token.value
+        self._refresh_task = asyncio.create_task(
+            self._refresh_loop(token.expires_at)
+        )
+
+    async def _go_idle(self) -> None:
+        if self._refresh_task:
+            self._refresh_task.cancel()
+            self._refresh_task = None
+        os.environ.pop("GITHUB_TOKEN", None)
+
+    async def _refresh_loop(self, expires_at: datetime) -> None:
+        while True:
+            sleep_s = (
+                expires_at - datetime.now(UTC)
+            ).total_seconds() - REFRESH_SAFETY_MARGIN_SECONDS
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
+            new = await self._apiarist.mint_token(repo=self._repo)
+            os.environ["GITHUB_TOKEN"] = new.value
+            expires_at = new.expires_at
 ```
 
-The token returned is held in agent process memory only for the
-duration of the immediate API call(s); no caching at the agent
-layer (apiarist's cache is the right place for that).
+**Lifecycle (showing overlapping mixed work types):**
 
-Failure modes (apiarist unreachable, mint rejected, token expired
-mid-job): fail-closed — surface the error to the trigger and
-abort the job rather than fall back to a stale or wrong-scope token.
+| Event | Count | State | Action |
+|---|---|---|---|
+| Container boot | 0 | IDLE | nothing |
+| Task A starts | 0→1 | IDLE→ACTIVE | mint, set env, start refresh loop |
+| Task B starts (overlapping, different work source) | 1→2 | ACTIVE | no-op (loop already running) |
+| Task A ends | 2→1 | ACTIVE | no-op (B still running, agent not idle) |
+| Scheduled job C starts (chained from B) | 1→2 | ACTIVE | no-op |
+| Refresh loop fires (~55 min in) | 2 | ACTIVE | re-mint, update env |
+| Task B ends | 2→1 | ACTIVE | no-op (C still running) |
+| Job C ends (last work unit) | 1→0 | ACTIVE→**IDLE** | cancel refresh, clear env |
+| Long idle (e.g. 5h) | 0 | IDLE | zero mints, zero env |
+| New task arrives | 0→1 | IDLE→ACTIVE | mint fresh, set env, start refresh |
+| Container exits (eventually) | — | — | process dies, env evaporates |
+
+The "Task A ends" and "Task B ends" rows in the middle are critical:
+neither triggers a state change because the counter is still ≥ 1.
+Only the **last** ending — Job C, where count finally reaches 0 —
+triggers the IDLE transition. This is the "fully idle" definition.
+
+**What the agent runtime needs to expose:**
+
+Generic hooks: `on_work_start(source)` and `on_work_end(source)`,
+fired around every work unit (provider run, scheduled task, future
+work types). The plugin doesn't introspect `source` — it just
+maintains the counter. If the runtime already exposes per-task or
+per-provider lifecycle events (most plugin systems do), this is a
+thin adapter; if not, adding generic work-lifecycle hooks is a
+one-time investment that pays off across all plugins that need
+active/idle tracking (metrics, logging, secret rotation, etc.).
+
+**Failure modes:**
+
+- *Apiarist unreachable when waking up* → `_wake_up` raises,
+  the work unit that triggered the 0→1 transition fails to start.
+  Agent runtime treats it as a transient failure and retries per
+  its existing policy. The next work-start re-attempts the wake-up.
+  Counter stays at 0 since the failed start never incremented it.
+- *Refresh fails mid-active* → exception in the background task;
+  agent runtime should treat unhandled task exceptions as fatal to
+  the active period (trigger an idle transition + restart). The
+  next work-start mints fresh.
+- *401 mid-work* (clock skew, manual revocation via App admin UI)
+  → agent's current GitHub call fails with normal HTTP error,
+  surfaces as a work-unit failure. Agent runtime retries; the retry
+  hits the still-active state, re-uses the env value (or the refresh
+  loop has already updated it, depending on timing).
+
+**Escape hatch for tasks that genuinely span >1h with no provider
+boundaries:** the task can call `apiarist_client.mint_token(repo)`
+inline at the point it knows the env token may have aged out.
+Opt-in, no plugin change required. Rare in practice — the refresh
+loop covers steady-state ACTIVE periods regardless of duration.
+
+**What this design does NOT do** (intentionally):
+
+- Mint at container startup. Wrong moment — work hasn't arrived.
+- Run a perpetual background refresh loop. The loop only runs
+  during ACTIVE periods; idle = zero burn.
+- Reactively re-mint on 401. The refresh loop covers steady-state
+  expiry; if a 401 still slips through (clock skew, revocation),
+  the task fails loud and the runtime retry path kicks in.
+- Restrict in-process token lifetime during ACTIVE. Once
+  `GITHUB_TOKEN` is in env, agent code and subprocesses can read
+  it. Strong enforcement of "no token in agent memory" would
+  require the V3+ HTTPS proxy model (§11 future hardening). V1
+  enforcement is `(time + scope + audit)` per §10.
 
 ## 13. Migration plan
 
