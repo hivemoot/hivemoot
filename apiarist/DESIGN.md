@@ -366,7 +366,7 @@ what `repositories` and `permissions` say.
 | `BACKEND_UNAUTHORIZED` | hivemoot.dev returned 401 — agent token invalid |
 | `BACKEND_FORBIDDEN` | hivemoot.dev returned 403 — repo not in token's installation |
 | `BACKEND_RATE_LIMITED` | hivemoot.dev returned 429 — token-creation rate limit hit |
-| `BACKEND_NOT_IMPLEMENTED` | hivemoot.dev returned 501 — endpoint scaffolded but minting not yet wired (initial deploy state) |
+| `BACKEND_NOT_IMPLEMENTED` | hivemoot.dev returned 501 — historical: endpoint was scaffold-only during early phases. Production now returns real tokens; a 501 today would indicate a feature-flag rollback or a brand-new endpoint not yet enabled. Code retained for that case. |
 | `BACKEND_PROTOCOL_ERROR` | hivemoot.dev returned 200 with malformed body, or `expires_at` already in the past |
 | `BACKEND_UNAVAILABLE` | hivemoot.dev returned 5xx or timed out after retries |
 | `INTERNAL` | Unexpected daemon-side error (logged with traceback) |
@@ -602,9 +602,19 @@ which the fail-closed posture in §12.3 cannot detect on its own.
     "pull_requests": "write",
     "issues": "write",
     "metadata": "read"
-  }
+  },
+  "repositories": [
+    {"full_name": "dkjazz/the-storytimes-firebase", "id": 12345}
+  ]
 }
 ```
+
+`repositories` is the array of repos the token can act on, scoped
+exactly to the request (V1 narrows to the single requested repo via
+GitHub's `repositories: [<short-name>]` parameter on the
+`/access_tokens` call). Apiarist passes the array through to its
+client unchanged so the agent has the actual GitHub repo IDs for
+audit + cache-key purposes (IDs survive renames; names don't).
 
 **Response (error):**
 
