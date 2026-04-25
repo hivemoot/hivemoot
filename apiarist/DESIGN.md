@@ -383,8 +383,8 @@ daemon-specific file. **No new mandatory config files** for V1.
    own env.
 3. **Optional config file:** `/etc/apiarist/apiarist.yaml` (or path from `--config`):
    ```yaml
-   socket_path: /run/apiarist.sock
-   socket_group: apiarist          # group that gets read access
+   socket_path: /run/apiarist/apiarist.sock   # host path; container sees /run/apiarist.sock via bind-mount
+   socket_group: agent             # group that gets read access (set by Phase J install.sh; daemon-default is "apiarist" for dev)
    backend_url: https://www.hivemoot.dev
    apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
    apiary_config_path: /opt/apiary/apiary.yaml
@@ -520,19 +520,25 @@ denies write access to root-owned `/run/`. The
 location it owns. Agent containers see the socket at `/run/apiarist.sock`
 inside the container — that's the bind-mount target, not the host path.
 
-**Process attributes** (systemd unit):
+**Process attributes** (systemd unit): see
+[`apiarist/systemd/apiarist.service`](systemd/apiarist.service) for
+the source of truth — that file is the deploy contract and what
+`systemd-analyze security` actually measures (currently scoring
+1.4/10, bordering "exemplary"). Snippets here would just drift.
 
-```ini
-User=apiarist
-Group=apiarist
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-NoNewPrivileges=true
-ReadWritePaths=/run /var/lib/apiarist
-ReadOnlyPaths=/opt/apiary
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-```
+Headline directives (the full set is in the unit):
+
+| Concern | Directive |
+|---|---|
+| Identity | `User=apiarist`, `Group=apiarist` (member of `agent`) |
+| FS isolation | `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true` |
+| Writable surface | `RuntimeDirectory=apiarist`, `StateDirectory=apiarist` (only these two dirs) |
+| Privilege | `NoNewPrivileges=true`, empty `CapabilityBoundingSet=` and `AmbientCapabilities=` |
+| Memory | `MemoryDenyWriteExecute=true`, `LimitCORE=0` |
+| Network | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` |
+| Syscalls | `SystemCallFilter=@system-service ~@privileged`, `SystemCallErrorNumber=EPERM` |
+| /proc | `ProtectProc=invisible`, `ProcSubset=pid` |
+| File creation | `UMask=0077` |
 
 ## 11. Backend dependencies
 

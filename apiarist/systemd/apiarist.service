@@ -45,7 +45,15 @@ EnvironmentFile=/etc/apiarist/agent-token.env
 # Daemon entry point. The package's console_script is installed at
 # /usr/local/bin/apiarist by deploy/install.sh (or wherever the venv
 # wheel lands — see install.sh for the canonical path).
-ExecStart=/usr/local/bin/apiarist --config /etc/apiarist/apiarist.yaml
+#
+# --socket-group=agent is passed explicitly so the unit is the
+# production contract for cross-container access. Even if a future
+# operator stages a stale or empty apiarist.yaml, the daemon still
+# chgrp's the socket to 'agent' and containers in that group keep
+# working. (Daemon's own Config.socket_group default is "apiarist"
+# — fine for dev/CI, wrong for Hive — and CLI args trump config in
+# the precedence chain so this flag wins regardless.)
+ExecStart=/usr/local/bin/apiarist --config /etc/apiarist/apiarist.yaml --socket-group=agent
 
 # Reload signal: we don't currently support live config reload, but
 # SIGHUP is the conventional answer; future feature can wire it.
@@ -123,10 +131,15 @@ SystemCallArchitectures=native
 
 # Conservative syscall allowlist — @system-service is systemd's
 # "general-purpose service" set, then strip @privileged on top.
-# If a future feature trips this, the resulting EPERM is loud and
-# obvious (vs the silent-corruption alternative of an open allowlist).
+# If a future feature trips this, the daemon gets EPERM on the
+# blocked syscall (Python raises OSError, the daemon's structured
+# logger surfaces it before exit). EPERM is more debuggable than
+# systemd's default action of SIGSYS-killing the process — the
+# kill leaves operators with only "code=killed, status=31/SYS"
+# in the journal and no Python-level traceback.
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
 
 # Lock the personality syscall (prevents emulating older ABIs).
 LockPersonality=true
