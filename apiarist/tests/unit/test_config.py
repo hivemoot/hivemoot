@@ -172,3 +172,46 @@ def test_config_construct_directly_for_unit_tests() -> None:
     cfg = Config(log_level="warning", backend_retries=5)
     assert cfg.log_level == "warning"
     assert cfg.backend_retries == 5
+
+
+# ---------------------------------------------------------------------------
+# APIARIST_CONFIG env var: file-path selector, NOT a Config field.
+# DESIGN.md §9 reserves it as the env-level equivalent of --config; it must
+# be resolved into the file-load path, not pushed into the field overlay
+# (which would raise extra_forbidden because Config has no `config` field).
+# ---------------------------------------------------------------------------
+
+
+def test_apiarist_config_env_selects_file(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "from-env.yaml"
+    cfg_file.write_text("log_level: warning\n")
+    cfg = load_config(env={"APIARIST_CONFIG": str(cfg_file)})
+    assert cfg.log_level == "warning"
+
+
+def test_apiarist_config_env_does_not_become_field(tmp_path: Path) -> None:
+    # Regression for the bug builder caught in PR #479: the env var was
+    # being pushed into the Config overlay and tripping extra_forbidden.
+    cfg = load_config(env={"APIARIST_CONFIG": str(tmp_path / "missing.yaml")})
+    assert cfg.log_level == "info"  # default — no exception raised
+
+
+def test_cli_config_overrides_apiarist_config_env(tmp_path: Path) -> None:
+    cli_file = tmp_path / "cli.yaml"
+    cli_file.write_text("log_level: debug\n")
+    env_file = tmp_path / "env.yaml"
+    env_file.write_text("log_level: warning\n")
+    cfg = load_config(
+        env={"APIARIST_CONFIG": str(env_file)},
+        config_path=cli_file,
+    )
+    assert cfg.log_level == "debug"
+
+
+def test_empty_apiarist_config_env_falls_back_to_default(tmp_path: Path) -> None:
+    # An empty string in env should not be interpreted as Path("") — it
+    # means "no override," same as the env var being unset entirely.
+    # Falls through to caller-provided default (None here, so loader's
+    # built-in DEFAULT_CONFIG_PATH).
+    cfg = load_config(env={"APIARIST_CONFIG": ""})
+    assert cfg.log_level == "info"

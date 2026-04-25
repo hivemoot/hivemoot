@@ -23,6 +23,13 @@ from pydantic import BaseModel, Field, ValidationError
 DEFAULT_CONFIG_PATH = Path("/etc/apiarist/apiarist.yaml")
 ENV_PREFIX = "APIARIST_"
 
+# APIARIST_CONFIG is the env-level config-file selector per DESIGN.md
+# §9 — it points at the YAML file to load, NOT at a Config field.
+# Treating it as a field would raise extra_forbidden because Config
+# has no `config` attribute. Keep it (and any future non-field env
+# selectors) out of the field overlay.
+_NON_FIELD_ENV_KEYS: frozenset[str] = frozenset({"config"})
+
 LogLevel = str  # validated to one of {debug, info, warning, error, critical}
 _VALID_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
 
@@ -68,10 +75,15 @@ def load_config(
     `cli_overlay` values that are None are dropped — that lets the caller
     pass an argparse Namespace as a dict where unset flags are None
     without those Nones overriding values from env or file.
-    """
-    layered: dict[str, Any] = {}
 
-    layered.update(_load_file_overlay(config_path))
+    The YAML file path is resolved separately from the field overlays:
+    `config_path` arg (typically from `--config`) > `APIARIST_CONFIG`
+    env var > `DEFAULT_CONFIG_PATH`.
+    """
+    resolved_config_path = _resolve_config_path(config_path, env)
+
+    layered: dict[str, Any] = {}
+    layered.update(_load_file_overlay(resolved_config_path))
     layered.update(_load_env_overlay(env))
     if cli_overlay:
         layered.update({k: v for k, v in cli_overlay.items() if v is not None})
@@ -80,6 +92,24 @@ def load_config(
         return Config(**layered)
     except ValidationError as e:
         raise ConfigError(f"Config validation failed:\n{e}") from e
+
+
+def _resolve_config_path(
+    cli_path: Path | None,
+    env: dict[str, str] | None,
+) -> Path | None:
+    """CLI > env (APIARIST_CONFIG) > caller-provided default.
+
+    Returns None when neither CLI nor env specifies a path; callers
+    fall back to ``DEFAULT_CONFIG_PATH`` via ``_load_file_overlay``.
+    """
+    if cli_path is not None:
+        return cli_path
+    env_dict = env if env is not None else dict(os.environ)
+    env_path = env_dict.get(f"{ENV_PREFIX}CONFIG")
+    if env_path:
+        return Path(env_path)
+    return None
 
 
 def _load_file_overlay(config_path: Path | None) -> dict[str, Any]:
@@ -109,7 +139,12 @@ def _load_file_overlay(config_path: Path | None) -> dict[str, Any]:
 
 
 def _load_env_overlay(env: dict[str, str] | None) -> dict[str, Any]:
-    """Extract APIARIST_* env vars and normalize keys to Config field names."""
+    """Extract APIARIST_* env vars and normalize keys to Config field names.
+
+    Excludes keys reserved for non-field purposes (currently
+    APIARIST_CONFIG, which is the YAML-file selector resolved by
+    `_resolve_config_path` instead).
+    """
     if env is None:
         env = dict(os.environ)
     overlay: dict[str, Any] = {}
@@ -117,5 +152,7 @@ def _load_env_overlay(env: dict[str, str] | None) -> dict[str, Any]:
         if not key.startswith(ENV_PREFIX):
             continue
         field = key[len(ENV_PREFIX) :].lower()
+        if field in _NON_FIELD_ENV_KEYS:
+            continue
         overlay[field] = value
     return overlay
