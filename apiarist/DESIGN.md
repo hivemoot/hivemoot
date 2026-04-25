@@ -82,20 +82,28 @@ all of the above without restructuring.**
 **In scope (V1):**
 
 - Long-running daemon, systemd-managed (Linux) and launchd-managed (macOS).
-- Reads `apiary.secrets.yaml` for the agent token (existing field).
-- Calls hivemoot.dev backend's `POST /api/installation-token` (a new
+- Reads `apiary.secrets.yaml` for the agent token(s) (multi-token schema:
+  one per scope policy — see §9).
+- Calls hivemoot.dev backend's `POST /api/github/installation-tokens` (a new
   endpoint — see §11) to mint short-lived GitHub installation tokens.
 - Exposes a Unix-domain socket at `/run/apiarist.sock` accepting JSON-RPC
-  style requests from local clients (`controller.sh` initially).
-- One operation: `mint_token` — given a service name (or a (repo, agent
-  token slot) pair), returns a fresh installation token. Caches results
-  per-installation for ~50 min to amortize roundtrips.
-- `controller.sh` integration: before each `docker run`, controller calls
-  apiarist to refresh the per-service `github-token` file. Container code
-  unchanged.
-- Structured JSON logging to stderr (captured by journald).
-- Health check operation (`GET /health` over the socket) returning
-  daemon liveness + last successful backend roundtrip.
+  style requests from **agent containers** (the long-running
+  `hivemoot-agent run` daemons that serve the apiary fleet).
+- One operation: `mint_token` — given a `service` (the requesting agent's
+  identity, taken from the `AGENT_SERVICE` env apiary deploy sets) and a
+  `repo`, returns a fresh installation token. Apiarist looks up which
+  agent-token slot to use for that service, mints with that bearer (or
+  returns a cached token), and replies. Cache is in-memory only, default
+  TTL 5 min, keyed by `(installation_id, repo, permissions_hash)`.
+- Apiary deploy integration: `apiary/deploy-apiary.sh` bind-mounts
+  `/run/apiarist.sock` into agent containers and sets `AGENT_SERVICE` in
+  their env. Container runtime change (Phase L′) replaces static GH_TOKEN
+  reads with mint-via-UDS calls. Containers using the existing PAT path
+  (no `auth: github-app` flag in their repo block) are unaffected.
+- Structured JSON logging to stderr (captured by journald), with token-
+  shape redaction per §10.
+- Health check operation (`health` op over the socket) returning daemon
+  liveness + last successful backend roundtrip.
 - Graceful shutdown on SIGTERM; in-flight requests complete.
 
 **Out of scope (V1, deferred to later phases):**
@@ -111,65 +119,86 @@ all of the above without restructuring.**
 ## 6. Architecture overview
 
 ```
-┌─────────────────────────── HIVE HOST ────────────────────────────┐
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │ apiarist.service (systemd, runs as user `apiarist`)      │    │
-│  │                                                          │    │
-│  │  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   │    │
-│  │  │ IPC server  │   │ Backend      │   │ Feature      │   │    │
-│  │  │ (UDS)       │◄─►│ client       │◄─►│ plugins      │   │    │
-│  │  │             │   │ (httpx)      │   │              │   │    │
-│  │  └─────┬───────┘   └──────────────┘   └─────┬────────┘   │    │
-│  │        │                                    │            │    │
-│  │        │                              tokens: mint_token │    │
-│  │        │                              spawn:  reconcile  │    │
-│  │        │                                                 │    │
-│  └────────┼─────────────────────────────────────────────────┘    │
-│           │                                                      │
-│           │ /run/apiarist.sock (chmod 660, group: hive-clients)  │
-│           ▼                                                      │
-│  ┌────────────────────────┐                                      │
-│  │ controller.sh          │                                      │
-│  │  pre-job: ask apiarist │                                      │
-│  │   to refresh token     │                                      │
-│  │  then: docker run      │                                      │
-│  └────────────────────────┘                                      │
-│           │                                                      │
-│           ▼                                                      │
-│  ┌────────────────────────┐                                      │
-│  │ docker container       │                                      │
-│  │  reads /run/secrets/   │                                      │
-│  │   github-token (fresh) │                                      │
-│  │  unchanged code        │                                      │
-│  └────────────────────────┘                                      │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────── HIVE HOST ───────────────────────────────┐
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ apiarist.service (systemd, runs as user `apiarist`)              │   │
+│  │                                                                  │   │
+│  │  ┌─────────────┐   ┌──────────────┐   ┌──────────────────────┐   │   │
+│  │  │ IPC server  │   │ Backend      │   │ Feature plugins      │   │   │
+│  │  │ (UDS)       │◄─►│ client       │◄─►│  tokens: mint_token  │   │   │
+│  │  │             │   │ (httpx)      │   │  spawn:  reconcile   │   │   │
+│  │  └─────┬───────┘   └──────────────┘   └──────────────────────┘   │   │
+│  │        │           in-memory cache only — token never on disk    │   │
+│  └────────┼──────────────────────────────────────────────────────────┘   │
+│           │                                                             │
+│           │ /run/apiarist.sock (chmod 660, group: agent)                │
+│           │ bind-mounted into every agent container                     │
+│           ▼                                                             │
+│  ┌──────────────────────────────────────────┐                           │
+│  │ long-running agent container             │                           │
+│  │   (hivemoot-agent run; daemon mode)      │                           │
+│  │                                          │                           │
+│  │  internal triggers fire on their own     │                           │
+│  │  schedule (cron, github polls, mentions) │                           │
+│  │                                          │                           │
+│  │  when GitHub call needed:                │                           │
+│  │   1. open /run/apiarist.sock             │                           │
+│  │   2. send: {service, repo}               │                           │
+│  │   3. receive: {token, expires_at}        │                           │
+│  │   4. use ghs_xxx in memory ─────────────────► api.github.com         │
+│  │   5. token GC'd when call completes      │                           │
+│  └──────────────────────────────────────────┘                           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
                           │
-                          │ HTTPS
+                          │ HTTPS (apiarist → hivemoot.dev on cache miss)
                           ▼
-                ┌──────────────────────────────────┐
-                │ hivemoot.dev (Vercel)            │
-                │  POST /api/installation-token    │
-                │   Bearer <agent_token>           │
-                │   → resolves to installation     │
-                │   → mints via App .pem           │
-                │   → returns ghs_xxx              │
-                └──────────────────────────────────┘
+                ┌──────────────────────────────────────────┐
+                │ hivemoot.dev (Vercel)                    │
+                │  POST /api/github/installation-tokens    │
+                │   Bearer <agent_token>                   │
+                │   {repo: "owner/name"}                   │
+                │   → resolveTokenToInstallation           │
+                │   → enforce token policy (allowed_repos) │
+                │   → sign JWT with App .pem               │
+                │   → POST api.github.com/app/installations│
+                │     /<id>/access_tokens                  │
+                │     with permissions + repository_ids    │
+                │     narrowed per policy                  │
+                │   → return {token, expires_at,           │
+                │             permissions, repositories}   │
+                └──────────────────────────────────────────┘
 ```
 
 **Key boundaries:**
 
-- The App private key never touches the Hive. Only the agent token (already
-  on the Hive in `apiary.secrets.yaml`) does.
-- `controller.sh` is the only local client allowed to talk to apiarist in
-  V1. Filesystem permissions on `/run/apiarist.sock` enforce this.
-- Agent containers don't talk to apiarist directly in V1. They read tokens
-  from the existing `/run/secrets/github-token` mount, whose content is
-  refreshed by the controller-apiarist handshake.
-- All secrets at rest on the Hive: agent token (existing,
-  `apiary.secrets.yaml`, chmod 600), and short-lived `ghs_xxx` tokens (in
-  the per-service `data/<svc>/secrets/github-token`, chmod 600, ≤ 1h TTL).
+- The App private key never touches the Hive — lives only in Vercel
+  env vars on hivemoot.dev. Apiarist holds only the *agent token*, a
+  bearer credential to hivemoot.dev that's already on the Hive in
+  `apiary.secrets.yaml`.
+- **Agent containers talk to apiarist directly via the bind-mounted
+  UDS.** This is a deliberate design choice: agent containers run in
+  daemon mode (`hivemoot-agent run`) with internal trigger schedules
+  that the host cannot observe. There is no controller pre-spawn hook
+  to mediate token requests. The agent is the trigger source, so the
+  agent makes the request.
+- **Tokens NEVER touch disk.** Apiarist holds them in process memory
+  for a short cache window (default 5 min); the agent receives them
+  over the socket and holds them in process memory for the duration
+  of one or a few GitHub API calls, then they're garbage-collected.
+  No on-disk file at any layer.
+- Filesystem permissions on `/run/apiarist.sock` (chmod 660, group
+  `agent`) gate which processes can request mints. Apiary deploy adds
+  the agent container's user to the `agent` group.
+- Per-service identity: each agent container is launched with an
+  `AGENT_SERVICE` env var (set by `apiary/deploy-apiary.sh`); agent
+  passes it in mint requests so apiarist can apply per-service token
+  policy (look up which agent token slot to use, enforce allowed_repos).
+- All secrets at rest on the Hive: only the agent token (existing,
+  `apiary.secrets.yaml`, chmod 600). `ghs_` installation tokens are
+  ephemeral and exist only in apiarist's memory cache + agent's
+  process memory while in use.
 
 ## 7. Component layout
 
@@ -240,15 +269,17 @@ apiarist/                            # path is monorepo-relative (hivemoot/hivem
 │       └── test_controller_handshake.py
 │
 └── examples/
-    ├── controller-mint-snippet.sh  # bash snippet showing controller integration
-    └── client.py                   # minimal Python IPC client for ad-hoc testing
+    ├── apiarist_client.py          # minimal Python UDS client (vendored into monorepo agent runtime in Phase L′)
+    └── client.py                   # ad-hoc CLI for ops/debug — `python -m apiarist.examples.client mint <service> <repo>`
 ```
 
 ## 8. IPC protocol (UDS)
 
 **Transport:** Unix-domain socket at `/run/apiarist.sock`, mode 660,
-owner `apiarist:apiarist`. Group `apiarist` (or a separate `hive-clients`
-group) is granted to `controller.sh`'s effective user.
+owner `apiarist:agent`. Group `agent` is the unprivileged user that
+agent containers run as (matches the existing apiary docker-run uid),
+so all bind-mounted-into-container processes can read/write the socket
+without granting apiarist's own user to others.
 
 **Framing:** Length-prefixed JSON. Each message is 4 bytes big-endian
 unsigned int (length N), followed by N bytes of UTF-8 JSON.
@@ -266,6 +297,12 @@ unsigned int (length N), followed by N bytes of UTF-8 JSON.
 }
 ```
 
+`service` is the agent's identity, taken from its `AGENT_SERVICE` env
+(set by `apiary/deploy-apiary.sh` per service). Apiarist uses it to
+look up which agent-token slot to authenticate against the backend.
+`repo` is `owner/name`; apiarist forwards it to the backend, where
+the token's policy decides whether the repo is in the allowed set.
+
 **Response shape (success):**
 
 ```json
@@ -274,10 +311,25 @@ unsigned int (length N), followed by N bytes of UTF-8 JSON.
   "ok": true,
   "data": {
     "token": "ghs_...",
-    "expires_at": "2026-04-24T18:30:00Z"
+    "expires_at": "2026-04-24T18:30:00Z",
+    "installation_id": "67890",
+    "permissions": {
+      "contents": "read",
+      "pull_requests": "write",
+      "issues": "write",
+      "metadata": "read"
+    },
+    "repositories": [
+      { "full_name": "dkjazz/the-storytimes-firebase", "id": 12345 }
+    ]
   }
 }
 ```
+
+`permissions` and `repositories` are echoed from the backend response
+so the agent can verify it actually got the scope it expected.
+GitHub-side narrowing means a leaked token can only access exactly
+what `repositories` and `permissions` say.
 
 **Response shape (error):**
 
@@ -300,7 +352,8 @@ unsigned int (length N), followed by N bytes of UTF-8 JSON.
 | `UNKNOWN_OP` | Op not registered |
 | `BACKEND_UNAUTHORIZED` | hivemoot.dev returned 401 — agent token invalid |
 | `BACKEND_FORBIDDEN` | hivemoot.dev returned 403 — repo not in token's installation |
-| `BACKEND_RATE_LIMITED` | hivemoot.dev returned 429 — per-token mint bucket exhausted |
+| `BACKEND_RATE_LIMITED` | hivemoot.dev returned 429 — token-creation rate limit hit |
+| `BACKEND_NOT_IMPLEMENTED` | hivemoot.dev returned 501 — endpoint scaffolded but minting not yet wired (initial deploy state) |
 | `BACKEND_PROTOCOL_ERROR` | hivemoot.dev returned 200 with malformed body, or `expires_at` already in the past |
 | `BACKEND_UNAVAILABLE` | hivemoot.dev returned 5xx or timed out after retries |
 | `INTERNAL` | Unexpected daemon-side error (logged with traceback) |
@@ -335,22 +388,42 @@ daemon-specific file. **No new mandatory config files** for V1.
    apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
    apiary_config_path: /opt/apiary/apiary.yaml
    token_cache_safety_margin_seconds: 600   # evict at min(expires_at - 600, max_cache)
-   token_cache_max_seconds: 3000            # hard ceiling regardless of upstream expiry
+   token_cache_max_seconds: 300             # 5 min ceiling — bursts amortize, tail exposure shrinks 10x vs full TTL
    backend_timeout_seconds: 10
    backend_retries: 3
    log_level: info
    ```
 4. **Built-in defaults** (above values).
 
-**Cache eviction.** The cache key is `installation_id`; the value is the
-minted `ghs_xxx` plus its `expires_at` from the backend response. Eviction
-time is `min(expires_at - safety_margin, now + max_cache)`. The
-`expires_at` from the backend is the source of truth — never assume the
-configured `max_cache` matches the upstream lifetime. GitHub usually
-returns 1h tokens but can return shorter ones during App permission
-churn; using the response value as the floor keeps the cache from
-serving an already-expired token. The configured `max_cache` is just a
-ceiling for defense-in-depth.
+**Cache lives in apiarist process memory ONLY. No on-disk cache, no
+file write of any token at any layer of the stack** — agent containers
+receive tokens over UDS and hold them in their own process memory only
+for the immediate API call(s).
+
+**Cache key:** `(installation_id, repo, permissions_hash)` — NOT
+installation_id alone. Two agents asking for the same installation but
+different scopes (different repos within a multi-repo installation, or
+different permission sets when narrowing is requested) need different
+tokens, so they must hit different cache slots. Backstage's owner-only
+cache key is a known footgun; this design avoids it by including the
+requested scope in the key.
+
+**Cached value:** the minted `ghs_xxx` plus its `expires_at` from the
+backend response. Eviction time is
+`min(expires_at - safety_margin, now + max_cache)`. The `expires_at`
+from the backend is the source of truth — never assume the configured
+`max_cache` matches the upstream lifetime. GitHub usually returns 1h
+tokens but can return shorter ones during App permission churn; using
+the response value as the floor keeps the cache from serving an
+already-expired token.
+
+**Cache TTL ceiling (`token_cache_max_seconds`) defaults to 300 (5 min)
+rather than 3000 (50 min)** as a deliberate tail-exposure tradeoff:
+per-installation single-flight already prevents thundering-herd, so
+bursts of agent requests within 5 min still amortize to one mint;
+anything sparser pays the mint cost in exchange for shorter cache
+residency. If you have a heavily mint-bound deployment, raise the
+ceiling — but never above the upstream `expires_at` value.
 
 **Reading the agent token:**
 
@@ -360,23 +433,43 @@ renamed to `agent_token` in a future cleanup). File must be readable by
 the `apiarist` user (chmod 640, group `apiarist`). The deploy step (§10)
 adds the apiarist user to the right group.
 
-**Future multi-installation support:**
+**Multi-token / multi-scope support (V1 contract; full schema lands
+incrementally):**
 
-When the apiary schema grows to support multiple agent tokens (one per
-installation), apiarist's config will gain a mapping like:
+The token-policy scoping model (§11) means an operator generates
+multiple agent tokens — one per scope policy — and apiarist needs a
+way to select the right one per service. The `apiary.secrets.yaml`
+schema grows from a single `health_token` field to a keyed map; the
+`apiary.yaml` repo block gains an `agent_token` selector that names
+which slot to use:
 
 ```yaml
+# apiary.secrets.yaml
 agent_tokens:
-  default: !secret health_token
-  foxstoria: !secret foxstoria_agent_token
-service_token_map:
-  hivemoot-claude-opus-4-7: default
-  foxstoria-codex-gpt-5-5-xhigh: foxstoria
+  default: hm_xxx        # broad, used by services that don't pin one
+  foxstoria-builder: hm_yyy
+  foxstoria-guard: hm_zzz
 ```
 
-The IPC `mint_token` request already includes `service` so apiarist can
-look up which token slot to use. **For V1, only the single `default`
-token is supported.**
+```yaml
+# apiary.yaml — service-level selector
+repos:
+  foxstoria:
+    repo: dkjazz/the-storytimes-firebase
+    auth: github-app
+    agents:
+      - foxstoria-dev
+    overrides:
+      foxstoria-dev:
+        agent_token: foxstoria-builder   # which slot from secrets
+```
+
+`apiary/deploy-apiary.sh` resolves `service → token_slot` at deploy
+time and stages the mapping in the per-service env so apiarist can
+look it up by `AGENT_SERVICE` on each mint request. Phase A-B's
+single-token assumption stays compatible: if an `agent_token`
+selector is absent, apiarist falls through to the `default` slot
+(which the existing `health_token` value can populate).
 
 ## 10. Security model
 
@@ -388,16 +481,20 @@ token is supported.**
 4. Backend-to-Hive spoofing (attacker on the network impersonates hivemoot.dev).
 5. Token-shaped strings ending up in logs/journal.
 6. Socket-permission misconfiguration silently widening access.
+7. Apiarist process memory dump exposing cached `ghs_` tokens.
+8. Cross-service token theft (agent A requesting tokens scoped to agent B's repos).
 
 **Mitigations:**
 
 | Threat | Defense |
 |---|---|
-| Container compromise | Token in container is short-lived (1h), narrow-scope (one installation, no admin scopes). Container can't reach apiarist socket (not mounted into containers in V1). |
-| Local user escalation | Socket is `chmod 660`, owned by `apiarist:apiarist`. Only members of group `apiarist` (just `controller.sh`'s user) can connect. Non-controller users get EACCES. The daemon `chown`s the socket and asserts the configured `socket_group` exists at startup; mismatch logs loudly to stderr and refuses to start. asyncio's `start_unix_server` does NOT set group ownership automatically — explicit chown is required after bind. |
-| Agent-token leak | Token already exists on the Hive today; apiarist doesn't widen the surface. File permissions: `chmod 640`, `apiary:apiarist`. Apiarist's own user can read; nothing else can. Backend enforces a per-token rate limit (60 mints/hour, see §11) so a leaked token cannot be abused at scale. |
+| Container compromise | Token in container is short-lived (1h max from GitHub, but only resident in agent process memory while in active use — typically seconds). GitHub-side narrowing via `repository_ids` + `permissions` means even a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into all containers using App auth) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. |
+| Cross-service token theft | An agent claiming `service: builder-claude` in its UDS request still authenticates against the **builder-claude token's policy** server-side. Apiarist trusts `AGENT_SERVICE` env (set by deploy, not by container code), and the broker→backend flow uses the bearer keyed off that. A compromised builder container cannot trick apiarist into minting against guard's token by lying about its service — apiarist's per-service policy lookup is the gate. (This does mean a fully-compromised container can mint within its OWN policy without bound — which is exactly the policy-shrink mitigation: don't grant a token broader scope than the agent legitimately needs.) |
+| Apiarist process memory dump | Disable core dumps via systemd `LimitCORE=0`. Lock pages with `mlock`-equivalent (`MemoryDenyWriteExecute=true`). Restart-on-crash is already systemd's default, so a transient crash doesn't leak the cache to disk via core file. Cache TTL of 5 min (default) bounds the in-memory residency window. |
+| Local user escalation | Socket is `chmod 660`, owned by `apiarist:agent`. Only members of group `agent` (the unprivileged uid the apiary docker-run gives containers) can connect. Other local users get EACCES. The daemon `chown`s the socket and asserts the configured `socket_group` exists at startup; mismatch logs loudly to stderr and refuses to start. asyncio's `start_unix_server` does NOT set group ownership automatically — explicit chown is required after bind. |
+| Agent-token leak | Token already exists on the Hive today; apiarist doesn't widen the surface. File permissions: `chmod 640`, `apiary:apiarist`. Apiarist's own user can read; nothing else can. Backend enforces GitHub's documented secondary rate limits on token creation (~2,000/hr OAuth+App combined), and the broker caches per-installation tokens for their full ~1h TTL — a healthy fleet uses single-digit mints/hour. |
 | Backend spoofing | All backend calls go over HTTPS. `httpx` validates certs with the system trust store. No way to disable cert validation in code. |
-| Apiarist process compromise (worst case) | Worst attacker leverage is "request unbounded mint_token calls." Backend rate-limits by token (60/hr). App-level damage capped to whatever the agent token's installation grants. **Apiarist does NOT hold the App `.pem`** — that's the whole point of this architecture. |
+| Apiarist process compromise (worst case) | Worst attacker leverage is "request unbounded mint calls." GitHub's secondary rate limit on token-creation endpoints caps blast radius to ~2,000 calls/hr globally. App-level damage capped to whatever the agent token's installation grants. **Apiarist does NOT hold the App `.pem`** — that's the whole point of this architecture. |
 | Tokens leaking into logs | The structured logger (Phase B) MUST redact token-shaped strings before emitting. Pattern set: `^ghs_[A-Za-z0-9]+`, `^gho_[A-Za-z0-9]+`, `^github_pat_[A-Za-z0-9_]+`, anything matching the `Authorization` header value. Phase G ships a unit test that asserts a token-shaped string fed through the logger comes out redacted. Reference pattern: `cli/tests/test_hivemoot_sanitize.py` in the agent runtime. |
 | Socket permission drift | Startup self-check: the daemon refuses to start if `socket_group` doesn't exist, if the socket cannot be `chown`ed to it, or if the resulting socket is world-readable/writable (`other` bits set). All three states are loud errors to stderr, not warnings. |
 
@@ -429,12 +526,12 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 Apiarist requires **one new endpoint** on hivemoot.dev:
 
-### `POST /api/installation-token`
+### `POST /api/github/installation-tokens`
 
 **Request:**
 
 ```http
-POST /api/installation-token HTTP/1.1
+POST /api/github/installation-tokens HTTP/1.1
 Host: www.hivemoot.dev
 Authorization: Bearer <agent_token>
 Content-Type: application/json
@@ -480,13 +577,19 @@ which the fail-closed posture in §12.3 cannot detect on its own.
 | 502 | GitHub API failure during minting (retry safe) |
 | 503 | Backend overloaded, lock contention, or App misconfigured |
 
-**Rate limiting (per-token):** The endpoint enforces a token bucket of
-**60 mints/hour with burst 10** per agent token. Above the bucket → `429`.
-This caps the worst-case abuse surface from a compromised agent token
-(unbounded `mint_token` calls would otherwise burn the App's GitHub rate
-budget) and keeps the Hive's retry logic from amplifying abuse. The
-broker on Hive caches tokens for ~50 min, so a healthy fleet stays well
-under the bucket; bursts up to 10 absorb concurrent service starts.
+**Rate limiting:** GitHub's documented limits on token *creation* are the
+operative ceiling — not a custom per-token bucket. Specifically: ~2,000
+OAuth+App token-creation requests per hour (combined across all of an
+App's installations) under the secondary-rate-limit umbrella, plus the
+general ~80 content-generating requests/min secondary limit. The broker
+caches each installation's token for its full ~1h TTL with single-flight
+deduplication (per-installation `asyncio.Lock`), so a healthy fleet
+mints single-digit times per hour even with many concurrent agent runs.
+A returned `429` from the backend is reflected to the client as
+`BACKEND_RATE_LIMITED` (no automatic retry within the window — the
+client surfaces and waits). **Note: an earlier draft of this section
+specified a "60/hr per-token bucket" — that figure was not from GitHub
+docs; the documented limits above replace it.**
 
 **Permissions narrowing:** `mintInstallationToken` MUST pass an explicit
 `permissions` argument to `octokit/auth-app` matching the response
@@ -496,7 +599,57 @@ silently widen Hive tokens if the App's installation permissions are
 ever broadened for other purposes (Queen's webhook scopes, etc.). The
 narrowed scopes are the V1 contract.
 
-**Implementation skeleton (TypeScript, in `web/src/app/api/installation-token/route.ts`):**
+**Repo identification:** The `repo` field in the request body is
+`owner/name` for human readability + log auditability. Server-side, the
+membership check should resolve `repo` to a numeric `repository_id`
+against the `installation.repositories` webhook data and use the IDs
+when calling GitHub. Repository names are mutable (rename / transfer);
+IDs are immutable. Mirrors the documented gotcha from
+`martinbaillie/vault-plugin-secrets-github`.
+
+**Clock-skew baseline:** The backend's JWT signing uses `iat = now - 30s`
+(matches `@octokit/auth-app` default). Apiarist's cache evicts tokens
+at `min(expires_at - 60s, now + token_cache_max_seconds)` — the 60s
+shave matches `@octokit/auth-app`'s 1-minute margin and absorbs both
+clock skew between Hive and api.github.com plus in-flight request
+latency.
+
+**Audit hash:** Following `vault-plugin-secrets-github`'s pattern, the
+backend response includes a `hashed_token` field — base64 SHA-256 of
+the returned `token` — so audit logs can correlate "this token was
+issued for this installation" without ever logging the secret itself.
+The broker emits the hash (never the token) in its log lines.
+
+**Revocation:** GitHub provides `DELETE /installation/token` for
+explicit token revocation (the token revokes itself by presenting
+itself as bearer). V1 does NOT expose a corresponding apiarist or
+backend operation — the 1h TTL is the only revocation mechanism. If a
+specific compromise scenario emerges, a `DELETE /api/github/installation-tokens/<token-hash>`
+endpoint can be added later that wraps GitHub's revoke call.
+
+**JWT vs token contract clarity:** Two distinct credential formats live
+in this flow and they must not be confused. The **App JWT** (signed
+with the App's `.pem`, ≤ 10-minute TTL, no `ghs_` prefix) is a
+backend-internal artifact used to authenticate to GitHub's
+`/app/installations/{id}/access_tokens` endpoint — it never appears in
+the response to apiarist. The **GitHub installation access token** (the
+`ghs_` value, ~1h TTL) is what apiarist receives and **holds in memory
+only** until the requesting agent retrieves it over UDS. No on-disk
+file is written. The `token` field in the API response is always the
+latter.
+
+**Token-policy scoping model:** Each agent token in
+`apiary.secrets.yaml` is bound server-side to a policy of
+`{ allowed_repos[], allowed_permissions{} }` set when the operator
+generates the token via the dashboard. The backend enforces
+(request scope) ⊆ (token policy) ⊆ (installation grant) on every
+mint. A compromised agent token's blast radius is exactly its policy
+— never the full installation. The minted `ghs_` token is then
+*cryptographically* narrowed to that scope via GitHub's
+`repository_ids` + `permissions` arguments, so even token leakage at
+the agent process boundary is bounded by GitHub's own enforcement.
+
+**Implementation skeleton (TypeScript, in `web/src/app/api/github/installation-tokens/route.ts`):**
 
 ```typescript
 import { resolveTokenToInstallation } from "@/server/agent-token";
@@ -516,20 +669,18 @@ export async function POST(request: NextRequest) {
 
   // REQUIRED: verify body.repo is in this installation's repo list.
   // installationRepos is populated by GitHub installation.repositories
-  // webhooks (already received by the bot).
+  // webhooks (already received by the bot). Resolve owner/name → id
+  // and pass IDs to GitHub (immutable across renames).
   const repos = await getInstallationRepos(installationId, redis);
-  if (!repos.includes(body.repo)) {
+  const repoEntry = repos.find((r) => r.fullName === body.repo);
+  if (!repoEntry) {
     return new Response(null, { status: 403 });
-  }
-
-  // Per-token rate limit (60/hour, burst 10).
-  if (!(await consumeMintBucket(auth, redis))) {
-    return new Response(null, { status: 429 });
   }
 
   try {
     const minted = await mintInstallationToken(installationId, {
       // Explicit narrowing — do NOT inherit App defaults.
+      repository_ids: [repoEntry.id],
       permissions: {
         contents: "read",
         pull_requests: "write",
@@ -569,9 +720,11 @@ file.
 
 ## 12. Integration with existing apiary
 
-Three small changes to the existing apiary deployment:
+Three changes to the existing apiary deployment, plus one parallel
+change to the agent runtime in the monorepo. None of them write
+GitHub tokens to disk.
 
-### 12.1 `apiary.yaml`: opt-in flag per repo block
+### 12.1 `apiary.yaml`: opt-in flag per repo block + token slot per service
 
 ```yaml
 repos:
@@ -579,59 +732,78 @@ repos:
     repo: dkjazz/the-storytimes-firebase
     auth: github-app          # NEW — opts into apiarist-brokered tokens
     agents: [foxstoria-dev]
+    overrides:
+      foxstoria-dev:
+        agent_token: foxstoria-builder   # which slot in apiary.secrets.yaml
     defaults:
       disable_cron: true
       watch_mentions: true
       # ...
 ```
 
-When `auth: github-app` is set, `deploy-apiary.sh` skips writing a static
-PAT to `data/<svc>/secrets/github-token` and instead leaves the file
-absent — controller.sh will populate it via apiarist before each `docker
-run`.
+When `auth: github-app` is set, `deploy-apiary.sh` skips writing the
+static PAT into the container, bind-mounts the apiarist UDS, and sets
+the `AGENT_SERVICE` + `AGENT_TOKEN_SLOT` env vars so the agent runtime
+knows its identity and apiarist knows which agent-token to use.
 
-When `auth:` is unset (default `pat`), behavior is unchanged. **Existing
-fleet services keep working without modification during rollout.**
+When `auth:` is unset (default `pat`), behavior is unchanged.
+**Existing fleet services keep working without modification during
+rollout.**
 
-### 12.2 `deploy-apiary.sh`: skip static token staging when App-auth
+### 12.2 `deploy-apiary.sh`: skip static token, bind-mount socket, set env
 
-In `stage_standing_secrets`, around line 890:
+In the per-service docker-run construction (around line 890 of
+`stage_standing_secrets` and around line 1295 of `build_standing_docker_run`):
 
 ```bash
 local repo_auth
 repo_auth=$(yq ".repos.${repo_key}.auth // \"pat\"" "$CONFIG_FILE")
 if [[ "$repo_auth" == "github-app" ]]; then
-  # Apiarist will populate this file per-job. Skip static stage.
+  # Apiarist brokers tokens — no static file, no env. Mount the
+  # socket and tell the agent its identity.
   rm -f "$secrets_dir/github-token"
+  docker_run="${docker_run} -v /run/apiarist.sock:/run/apiarist.sock"
+  docker_run="${docker_run} -e AGENT_SERVICE=${service_name}"
+  docker_run="${docker_run} -e AGENT_TOKEN_SLOT=${agent_token_slot}"
 else
-  # Existing PAT staging path.
+  # Existing PAT staging path — unchanged.
   agent_github_token="$(yq ".github_tokens.\"${agent}\" // \"\"" "$SECRETS_FILE")"
   printf '%s' "$agent_github_token" > "$secrets_dir/github-token"
   chmod 600 "$secrets_dir/github-token"
 fi
 ```
 
-### 12.3 `controller.sh` (or `run-hivemoot-docker.sh`): pre-job mint
+The container's effective uid (matched to the host's `agent` group, which
+owns the apiarist socket) is what gates access. No additional capability
+or privileged flag is needed.
 
-Before each `docker run`, if the service is App-auth, ask apiarist to
-refresh the token file:
+### 12.3 Agent runtime change (monorepo, not apiary)
 
-```bash
-if [[ "$REPO_AUTH" == "github-app" ]]; then
-  apiarist_mint "$SERVICE_NAME" "$REPO" > "$SECRETS_DIR/github-token"
-  chmod 600 "$SECRETS_DIR/github-token"
-fi
+In `agent/cli/hivemoot_agent/plugins_builtin/.../github` (Phase L′
+PR against `hivemoot/hivemoot`): wherever the agent currently reads
+`GH_TOKEN` from env or a file, branch on the presence of
+`AGENT_SERVICE` (set by apiary deploy when App auth is on). When
+present, replace the static token read with a UDS round-trip to
+`/run/apiarist.sock`:
+
+```python
+# pseudocode — actual implementation lands in Phase L′
+def get_github_token(repo: str) -> str:
+    if os.environ.get("AGENT_SERVICE"):
+        return apiarist_client.mint_token(
+            service=os.environ["AGENT_SERVICE"],
+            repo=repo,
+        ).token
+    return os.environ["GH_TOKEN"]  # legacy PAT path
 ```
 
-`apiarist_mint` is a small bash function that opens the UDS, sends the
-`mint_token` request, parses the JSON response, prints the token to
-stdout. ~30 lines using `socat` + `jq`. Reference implementation in
-`apiarist/examples/controller-mint-snippet.sh` (within this monorepo;
-the bash helper is copied/vendored into the apiary repo's
-`run-hivemoot-docker.sh` integration in Phase L).
+The token returned is held in agent process memory only for the
+duration of the immediate API call(s); no caching at the agent
+layer (apiarist's cache is the right place for that).
 
-If apiarist is unreachable or returns an error, the controller logs and
-fails the job (don't fall back to a stale token; fail-closed).
+Failure modes (apiarist unreachable, mint rejected, token expired
+mid-job): fail-closed — surface the error to the trigger and
+abort the job rather than fall back to a stale or wrong-scope token.
 
 ## 13. Migration plan
 
@@ -641,7 +813,7 @@ fails the job (don't fall back to a stale token; fail-closed).
 - Deploy on Hive in shadow mode: daemon runs but **no service is flagged
   `auth: github-app` yet**. Validates startup, socket creation, backend
   reachability without touching production credential flow.
-- Verify backend `/api/installation-token` endpoint deployed to
+- Verify backend `/api/github/installation-tokens` endpoint deployed to
   hivemoot.dev (separate but coordinated piece).
 
 **Phase 1 — Foxstoria first** (week 2)
@@ -690,11 +862,11 @@ fails the job (don't fall back to a stale token; fail-closed).
 | **H.** Tests — integration | fake backend + real socket, full mint flow | 1d | E, G |
 | **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
 | **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
-| **K.** Apiary integration — deploy script | `deploy-apiary.sh` patch (§12.2) | 0.25d | — (parallel) |
-| **L.** Apiary integration — controller | `controller.sh` patch (§12.3) + bash mint helper | 0.5d | E |
-| **M.** Shadow deploy on Hive | rsync, install, verify socket and logs | 0.5d | J, K, L |
-| **N.** Foxstoria pilot | flag, deploy, monitor one cycle | 0.5d | M, **backend endpoint live** |
-| **O.** Runbook + metrics | `apiarist/README.md` ops guide | 0.5d | N |
+| **K.** Apiary integration — deploy script | `apiary/deploy-apiary.sh` patch (§12.2): when `auth: github-app`, skip static token, bind-mount `/run/apiarist.sock`, set `AGENT_SERVICE` + `AGENT_TOKEN_SLOT` env. PR opened against `hivemoot/apiary` (no fleet review there, self-merge per CLAUDE.md memory). | 0.5d | — (parallel) |
+| **L′.** Agent runtime — UDS-based mint | In `agent/cli/hivemoot_agent/plugins_builtin/.../github` (monorepo, opened as separate PR against `hivemoot/hivemoot`, fleet-reviewed): branch on `AGENT_SERVICE` env; when present, replace static `GH_TOKEN` reads with mint-via-UDS. Tiny apiarist Python client lib (~50 lines) lives in monorepo so the agent can import it. | 1.5d | D, E |
+| **M.** Shadow deploy on Hive | rsync, install, verify socket creation, exercise via examples/client.py without flagging any service. | 0.5d | J, K, L′ |
+| **N.** Foxstoria pilot | flag foxstoria's repo block with `auth: github-app` + `agent_token: foxstoria-builder`, deploy, observe one full agent run cycle. Verify ghs_ token reaches GitHub successfully and zero token files appear on disk. | 0.5d | M, **backend endpoint live** |
+| **O.** Runbook + metrics | `apiarist/README.md` ops guide. Document `journalctl -u apiarist`, common failure modes, how to validate a service is using App auth vs PAT. | 0.5d | N |
 
 **Total V1 estimate:** ~8 days of focused work, plus ~2 days for the
 backend endpoint (separate work stream on hivemoot.dev). Realistic
@@ -799,9 +971,10 @@ To keep V1 honest and avoid scope creep:
   arbitrary config from it; they get a token. Future features (spawning,
   config sync) will be additive features, not a generic "ask apiarist for
   anything" model.
-- ❌ Apiarist does not replace or wrap `controller.sh`. controller.sh
-  remains the per-job orchestrator; apiarist is a service controller
-  consults.
+- ❌ Apiarist does not run agent jobs or wrap the agent runtime.
+  `hivemoot-agent run` (in long-running containers) is the trigger
+  source and the workload; apiarist is a service it consults via
+  UDS for short-lived GitHub credentials.
 - ❌ Apiarist does not implement its own GitHub auth. All App-auth flow
   happens server-side at hivemoot.dev. Apiarist is a thin client.
 
