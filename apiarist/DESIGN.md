@@ -1,0 +1,724 @@
+# apiarist — host-side daemon for the Hivemoot fleet
+
+> **Status:** Design — not yet implemented. V1 scope: GitHub installation
+> token brokering. V2+ scope: dynamic agent spawning, additional fleet
+> management responsibilities.
+
+## 1. Why this exists
+
+Hivemoot is a **federated multi-Hive runtime**: many operators run their own
+Hives on their own hardware, all coordinated by the centralized backend at
+hivemoot.dev. Two facts follow from this:
+
+1. **The Hivemoot Bot GitHub App's private key cannot live on operator
+   hardware.** It is the master credential for the entire App across every
+   installation by every operator. It must stay in the centralized backend
+   (Vercel env), where only the App owner controls it.
+2. **Hives still need to talk to GitHub.** Reviewer agents need GitHub
+   tokens to read PRs, post reviews, respond to mentions. Today this is
+   solved with long-lived classic PATs in `apiary.secrets.yaml`. That model
+   is operationally viable but security-suboptimal: any compromised
+   container exfiltrates a credential that lives forever and grants broad
+   access.
+
+Apiarist solves the second by mediating between the Hive's containers and
+the centralized backend, which holds the App key. It also becomes the
+natural home for other host-side responsibilities that benefit from
+*talking to the backend* and *acting locally* — most notably, dynamic
+agent spawning driven by dashboard configuration.
+
+## 2. Naming
+
+**Daemon name:** `apiarist` — formal English for "beekeeper." Distinctive
+across the existing Hivemoot namespace (`apiary`, `bot`, `agent`, `colony`,
+`hivemoot`). Single word; clean as a systemd unit, Python package, socket
+filename, and unprivileged user account.
+
+| Concept | Name |
+|---|---|
+| Daemon binary | `apiarist` |
+| Python package | `apiarist` |
+| Systemd unit | `apiarist.service` |
+| User account | `apiarist` |
+| Group | `apiarist` |
+| IPC socket | `/run/apiarist.sock` |
+| Config dir | `/etc/apiarist/` (optional, see §6) |
+| State dir | `/var/lib/apiarist/` |
+| Log destination | systemd journald (`journalctl -u apiarist`) |
+
+## 3. Architectural analog
+
+Apiarist is structurally analogous to:
+
+- **HashiCorp Vault Agent** — runs on application hosts, holds a
+  low-privilege auth method to Vault server, fetches dynamic secrets,
+  exposes them to apps via templated files or local API. Apps don't talk to
+  Vault directly.
+- **Kubelet** — runs on each worker node, holds a node identity, polls
+  control plane for desired state, manages local containers to match.
+
+Apiarist is smaller and narrower than either, but inherits the pattern:
+**one trusted host process, with a delegated credential to the central
+authority, that does local work on the authority's behalf.**
+
+## 4. Long-term vision
+
+Apiarist will accumulate features over time. Anticipated:
+
+| Feature | Phase | Description |
+|---|---|---|
+| GitHub token brokering | **V1** | Mint short-lived installation tokens via backend; expose to local agent containers. |
+| Dynamic agent spawning | V2 | Pull desired-fleet config from backend; reconcile local agent set (start/stop docker containers, write/remove systemd units). |
+| Backend-driven config sync | V3 | Push local fleet metadata up to backend (running services, last-seen, errors); pull config changes down. |
+| Telemetry forwarding | V3 | Local metrics/logs aggregation and forwarding to backend. |
+| Health remediation | V4 | Restart wedged agents, gc stale workspaces, alert on persistent failures. |
+| Webhook receiver | V4 | Accept push notifications from backend (e.g., "spawn this agent now") rather than poll. |
+
+The V1 build is intentionally minimal but the **module layout (§7) accommodates
+all of the above without restructuring.**
+
+## 5. V1 scope
+
+**In scope (V1):**
+
+- Long-running daemon, systemd-managed (Linux) and launchd-managed (macOS).
+- Reads `apiary.secrets.yaml` for the agent token (existing field).
+- Calls hivemoot.dev backend's `POST /api/installation-token` (a new
+  endpoint — see §11) to mint short-lived GitHub installation tokens.
+- Exposes a Unix-domain socket at `/run/apiarist.sock` accepting JSON-RPC
+  style requests from local clients (`controller.sh` initially).
+- One operation: `mint_token` — given a service name (or a (repo, agent
+  token slot) pair), returns a fresh installation token. Caches results
+  per-installation for ~50 min to amortize roundtrips.
+- `controller.sh` integration: before each `docker run`, controller calls
+  apiarist to refresh the per-service `github-token` file. Container code
+  unchanged.
+- Structured JSON logging to stderr (captured by journald).
+- Health check operation (`GET /health` over the socket) returning
+  daemon liveness + last successful backend roundtrip.
+- Graceful shutdown on SIGTERM; in-flight requests complete.
+
+**Out of scope (V1, deferred to later phases):**
+
+- Dynamic agent spawning (V2).
+- Backend-initiated push (V4 — V1 is pull-only).
+- Token revocation (we rely on natural 1-hour expiry).
+- Mid-job token refresh (V1 expects jobs ≤ 1 hour, which holds today).
+- Mac launchd unit (macOS not needed for current production; Linux first).
+- Prometheus metrics endpoint (defer until we have a Prometheus to point at).
+- TUI / CLI for direct interaction (use `journalctl` + `socat` for now).
+
+## 6. Architecture overview
+
+```
+┌─────────────────────────── HIVE HOST ────────────────────────────┐
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │ apiarist.service (systemd, runs as user `apiarist`)      │    │
+│  │                                                          │    │
+│  │  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   │    │
+│  │  │ IPC server  │   │ Backend      │   │ Feature      │   │    │
+│  │  │ (UDS)       │◄─►│ client       │◄─►│ plugins      │   │    │
+│  │  │             │   │ (httpx)      │   │              │   │    │
+│  │  └─────┬───────┘   └──────────────┘   └─────┬────────┘   │    │
+│  │        │                                    │            │    │
+│  │        │                              tokens: mint_token │    │
+│  │        │                              spawn:  reconcile  │    │
+│  │        │                                                 │    │
+│  └────────┼─────────────────────────────────────────────────┘    │
+│           │                                                      │
+│           │ /run/apiarist.sock (chmod 660, group: hive-clients)  │
+│           ▼                                                      │
+│  ┌────────────────────────┐                                      │
+│  │ controller.sh          │                                      │
+│  │  pre-job: ask apiarist │                                      │
+│  │   to refresh token     │                                      │
+│  │  then: docker run      │                                      │
+│  └────────────────────────┘                                      │
+│           │                                                      │
+│           ▼                                                      │
+│  ┌────────────────────────┐                                      │
+│  │ docker container       │                                      │
+│  │  reads /run/secrets/   │                                      │
+│  │   github-token (fresh) │                                      │
+│  │  unchanged code        │                                      │
+│  └────────────────────────┘                                      │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+                          │
+                          │ HTTPS
+                          ▼
+                ┌──────────────────────────────────┐
+                │ hivemoot.dev (Vercel)            │
+                │  POST /api/installation-token    │
+                │   Bearer <agent_token>           │
+                │   → resolves to installation     │
+                │   → mints via App .pem           │
+                │   → returns ghs_xxx              │
+                └──────────────────────────────────┘
+```
+
+**Key boundaries:**
+
+- The App private key never touches the Hive. Only the agent token (already
+  on the Hive in `apiary.secrets.yaml`) does.
+- `controller.sh` is the only local client allowed to talk to apiarist in
+  V1. Filesystem permissions on `/run/apiarist.sock` enforce this.
+- Agent containers don't talk to apiarist directly in V1. They read tokens
+  from the existing `/run/secrets/github-token` mount, whose content is
+  refreshed by the controller-apiarist handshake.
+- All secrets at rest on the Hive: agent token (existing,
+  `apiary.secrets.yaml`, chmod 600), and short-lived `ghs_xxx` tokens (in
+  the per-service `data/<svc>/secrets/github-token`, chmod 600, ≤ 1h TTL).
+
+## 7. Component layout
+
+Apiarist lives at the **top level of the hivemoot monorepo** as a sibling
+to `agent/`, `bot/`, `cli/`, and `web/`. It is host-side fleet management
+code that integrates with the apiary repo's deploy scripts via a small
+IPC contract — apiarist itself ships in the monorepo so it inherits the
+existing reviewer fleet (guard / builder / drone) and CI infrastructure.
+The cross-repo integration points (`apiary/deploy-apiary.sh`,
+`apiary/run-hivemoot-docker.sh`) are touched separately as small apiary
+PRs in Phases K-L.
+
+```
+apiarist/                            # path is monorepo-relative (hivemoot/hivemoot/apiarist/)
+├── DESIGN.md                       # this file
+├── README.md                       # ops-facing docs (post-implementation)
+├── pyproject.toml                  # package metadata, deps, entry point
+├── src/
+│   └── apiarist/
+│       ├── __init__.py
+│       ├── __main__.py             # `python -m apiarist`, parses args
+│       ├── version.py              # __version__ string
+│       │
+│       ├── config.py               # config loading: apiary.yaml, apiary.secrets.yaml, env
+│       ├── logging.py              # structlog setup, JSON output
+│       ├── server.py               # asyncio UDS server, request dispatch
+│       │
+│       ├── core/
+│       │   ├── __init__.py
+│       │   ├── auth.py             # bearer-token loading, credential plumbing
+│       │   ├── backend.py          # httpx client for hivemoot.dev
+│       │   ├── ipc.py              # UDS protocol: framing, JSON, errors
+│       │   └── registry.py         # feature plugin registry
+│       │
+│       ├── features/
+│       │   ├── __init__.py
+│       │   ├── tokens/             # FEATURE 1 (V1)
+│       │   │   ├── __init__.py
+│       │   │   ├── plugin.py       # registers `mint_token` op
+│       │   │   ├── cache.py        # in-memory installation-token cache
+│       │   │   └── README.md       # feature-local docs
+│       │   └── spawning/           # FEATURE 2 (V2 — stub for now)
+│       │       └── README.md
+│       │
+│       └── lib/
+│           ├── __init__.py
+│           ├── unix_socket.py      # asyncio UDS helpers
+│           └── retry.py            # backoff, retry decorators
+│
+├── systemd/
+│   ├── apiarist.service            # main unit
+│   └── apiarist.socket             # optional socket-activation unit
+│
+├── deploy/
+│   ├── install.sh                  # one-shot installer (creates user, copies binary, enables service)
+│   └── uninstall.sh
+│
+├── tests/
+│   ├── unit/
+│   │   ├── test_config.py
+│   │   ├── test_backend.py
+│   │   ├── test_ipc.py
+│   │   └── features/
+│   │       └── test_tokens.py
+│   └── integration/
+│       ├── conftest.py             # fixtures: fake backend, fake socket
+│       ├── test_mint_flow.py       # end-to-end: client → daemon → backend (mocked) → response
+│       └── test_controller_handshake.py
+│
+└── examples/
+    ├── controller-mint-snippet.sh  # bash snippet showing controller integration
+    └── client.py                   # minimal Python IPC client for ad-hoc testing
+```
+
+## 8. IPC protocol (UDS)
+
+**Transport:** Unix-domain socket at `/run/apiarist.sock`, mode 660,
+owner `apiarist:apiarist`. Group `apiarist` (or a separate `hive-clients`
+group) is granted to `controller.sh`'s effective user.
+
+**Framing:** Length-prefixed JSON. Each message is 4 bytes big-endian
+unsigned int (length N), followed by N bytes of UTF-8 JSON.
+
+**Request shape:**
+
+```json
+{
+  "op": "mint_token",
+  "params": {
+    "service": "foxstoria-codex-gpt-5-5-xhigh",
+    "repo": "dkjazz/the-storytimes-firebase"
+  },
+  "request_id": "uuid-v4-string"
+}
+```
+
+**Response shape (success):**
+
+```json
+{
+  "request_id": "uuid-v4-string",
+  "ok": true,
+  "data": {
+    "token": "ghs_...",
+    "expires_at": "2026-04-24T18:30:00Z"
+  }
+}
+```
+
+**Response shape (error):**
+
+```json
+{
+  "request_id": "uuid-v4-string",
+  "ok": false,
+  "error": {
+    "code": "BACKEND_UNAUTHORIZED",
+    "message": "agent token rejected by hivemoot.dev (HTTP 401)"
+  }
+}
+```
+
+**Error codes (V1):**
+
+| Code | Meaning |
+|---|---|
+| `BAD_REQUEST` | Malformed JSON, missing required field |
+| `UNKNOWN_OP` | Op not registered |
+| `BACKEND_UNAUTHORIZED` | hivemoot.dev returned 401 — agent token invalid |
+| `BACKEND_FORBIDDEN` | hivemoot.dev returned 403 — token is valid but installation policy denies |
+| `BACKEND_UNAVAILABLE` | hivemoot.dev returned 5xx or timed out after retries |
+| `INTERNAL` | Unexpected daemon-side error (logged with traceback) |
+
+**Operations (V1):**
+
+| Op | Params | Returns |
+|---|---|---|
+| `mint_token` | `service: str` (required), `repo: str` (required, for clarity & future filtering) | `token, expires_at` |
+| `health` | (none) | `version, uptime_s, last_backend_roundtrip_ms, last_backend_status` |
+
+**Future operations (V2+):**
+
+- `spawn_agent`, `stop_agent`, `list_agents`, `reconcile_now`, ...
+
+## 9. Configuration
+
+Apiarist reads config from existing apiary files plus a new optional
+daemon-specific file. **No new mandatory config files** for V1.
+
+**Sources, in priority order:**
+
+1. **CLI args:** `--config`, `--socket-path`, `--log-level`, `--backend-url`.
+2. **Env vars:** `APIARIST_CONFIG`, `APIARIST_SOCKET_PATH`, `APIARIST_LOG_LEVEL`,
+   `APIARIST_BACKEND_URL`. Prefix `APIARIST_` to avoid collision with apiary's
+   own env.
+3. **Optional config file:** `/etc/apiarist/apiarist.yaml` (or path from `--config`):
+   ```yaml
+   socket_path: /run/apiarist.sock
+   socket_group: apiarist          # group that gets read access
+   backend_url: https://www.hivemoot.dev
+   apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
+   apiary_config_path: /opt/apiary/apiary.yaml
+   token_cache_seconds: 3000        # 50 min — refresh before 1h expiry
+   backend_timeout_seconds: 10
+   backend_retries: 3
+   log_level: info
+   ```
+4. **Built-in defaults** (above values).
+
+**Reading the agent token:**
+
+Apiarist does NOT have its own copy of the agent token. It reads it at
+runtime from `apiary.secrets.yaml` (`.health_token` field for V1; ideally
+renamed to `agent_token` in a future cleanup). File must be readable by
+the `apiarist` user (chmod 640, group `apiarist`). The deploy step (§10)
+adds the apiarist user to the right group.
+
+**Future multi-installation support:**
+
+When the apiary schema grows to support multiple agent tokens (one per
+installation), apiarist's config will gain a mapping like:
+
+```yaml
+agent_tokens:
+  default: !secret health_token
+  foxstoria: !secret foxstoria_agent_token
+service_token_map:
+  hivemoot-claude-opus-4-7: default
+  foxstoria-codex-gpt-5-5-xhigh: foxstoria
+```
+
+The IPC `mint_token` request already includes `service` so apiarist can
+look up which token slot to use. **For V1, only the single `default`
+token is supported.**
+
+## 10. Security model
+
+**Threats considered:**
+
+1. Container compromise (attacker gets shell in agent container).
+2. Local user escalation (non-root user on Hive tries to abuse apiarist).
+3. Agent-token leak (the bearer credential to hivemoot.dev).
+4. Backend-to-Hive spoofing (attacker on the network impersonates hivemoot.dev).
+
+**Mitigations:**
+
+| Threat | Defense |
+|---|---|
+| Container compromise | Token in container is short-lived (1h), narrow-scope (one installation, no admin scopes). Container can't reach apiarist socket (not mounted into containers in V1). |
+| Local user escalation | Socket is `chmod 660`, owned by `apiarist:apiarist`. Only members of group `apiarist` (just `controller.sh`'s user) can connect. Non-controller users get EACCES. |
+| Agent-token leak | Token already exists on the Hive today; apiarist doesn't widen the surface. File permissions: `chmod 640`, `apiary:apiarist`. Apiarist's own user can read; nothing else can. |
+| Backend spoofing | All backend calls go over HTTPS. `httpx` validates certs with the system trust store. No way to disable cert validation in code. |
+| Apiarist process compromise (worst case) | Worst attacker leverage is "request unbounded mint_token calls." Backend rate-limits by token. App-level damage capped to whatever the agent token's installation grants. **Apiarist does NOT hold the App `.pem`** — that's the whole point of this architecture. |
+
+**Filesystem layout, post-install:**
+
+```
+/etc/apiarist/apiarist.yaml         apiary:apiarist  640
+/var/lib/apiarist/                  apiarist:apiarist  750
+/run/apiarist.sock                  apiarist:apiarist  660  (created by daemon at startup)
+/opt/apiary/apiary.secrets.yaml     apiary:apiarist    640  (group adjusted at install time)
+/usr/local/bin/apiarist             root:root          755  (compiled wheel entry point)
+```
+
+**Process attributes** (systemd unit):
+
+```ini
+User=apiarist
+Group=apiarist
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/run /var/lib/apiarist
+ReadOnlyPaths=/opt/apiary
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+```
+
+## 11. Backend dependencies
+
+Apiarist requires **one new endpoint** on hivemoot.dev:
+
+### `POST /api/installation-token`
+
+**Request:**
+
+```http
+POST /api/installation-token HTTP/1.1
+Host: www.hivemoot.dev
+Authorization: Bearer <agent_token>
+Content-Type: application/json
+
+{
+  "repo": "dkjazz/the-storytimes-firebase"
+}
+```
+
+`repo` is informational/auditable in V1; the actual installation is
+determined server-side by `resolveTokenToInstallation(agent_token)`.
+
+**Response (success):**
+
+```json
+{
+  "token": "ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "expires_at": "2026-04-24T18:30:00Z",
+  "installation_id": "67890",
+  "permissions": {
+    "contents": "read",
+    "pull_requests": "write",
+    "issues": "write",
+    "metadata": "read"
+  }
+}
+```
+
+**Response (error):**
+
+| HTTP | Cause |
+|---|---|
+| 401 | Bearer token invalid or revoked |
+| 403 | Token valid but caller-requested `repo` not covered by installation |
+| 502 | GitHub API failure during minting (retry safe) |
+| 503 | Backend overloaded, lock contention, or App misconfigured |
+
+**Implementation skeleton (TypeScript, in `web/src/app/api/installation-token/route.ts`):**
+
+```typescript
+import { resolveTokenToInstallation } from "@/server/agent-token";
+import { mintInstallationToken } from "@/server/github-app";  // new helper
+
+export async function POST(request: NextRequest) {
+  const auth = extractBearer(request);
+  if (!auth) return new Response(null, { status: 401 });
+
+  const installationId = await resolveTokenToInstallation(auth, redis);
+  if (!installationId) return new Response(null, { status: 401 });
+
+  const body = await request.json().catch(() => ({}));
+  // Optional: verify body.repo is in this installation's repo list
+  // — see installations table populated by GitHub webhooks.
+
+  try {
+    const minted = await mintInstallationToken(installationId);
+    return Response.json({
+      token: minted.token,
+      expires_at: minted.expires_at,
+      installation_id: installationId,
+      permissions: minted.permissions,
+    });
+  } catch (err) {
+    if (err.code === "RATE_LIMIT") return new Response(null, { status: 429 });
+    return new Response(null, { status: 502 });
+  }
+}
+```
+
+**`mintInstallationToken` helper** wraps the standard GitHub App flow:
+sign JWT with `APP_PRIVATE_KEY` env, POST to
+`https://api.github.com/app/installations/<id>/access_tokens`, parse
+response. ~30 lines using `octokit/auth-app` or hand-rolled with `jose`.
+
+This endpoint is the **single backend dependency** for V1.
+
+## 12. Integration with existing apiary
+
+Three small changes to the existing apiary deployment:
+
+### 12.1 `apiary.yaml`: opt-in flag per repo block
+
+```yaml
+repos:
+  foxstoria:
+    repo: dkjazz/the-storytimes-firebase
+    auth: github-app          # NEW — opts into apiarist-brokered tokens
+    agents: [foxstoria-dev]
+    defaults:
+      disable_cron: true
+      watch_mentions: true
+      # ...
+```
+
+When `auth: github-app` is set, `deploy-apiary.sh` skips writing a static
+PAT to `data/<svc>/secrets/github-token` and instead leaves the file
+absent — controller.sh will populate it via apiarist before each `docker
+run`.
+
+When `auth:` is unset (default `pat`), behavior is unchanged. **Existing
+fleet services keep working without modification during rollout.**
+
+### 12.2 `deploy-apiary.sh`: skip static token staging when App-auth
+
+In `stage_standing_secrets`, around line 890:
+
+```bash
+local repo_auth
+repo_auth=$(yq ".repos.${repo_key}.auth // \"pat\"" "$CONFIG_FILE")
+if [[ "$repo_auth" == "github-app" ]]; then
+  # Apiarist will populate this file per-job. Skip static stage.
+  rm -f "$secrets_dir/github-token"
+else
+  # Existing PAT staging path.
+  agent_github_token="$(yq ".github_tokens.\"${agent}\" // \"\"" "$SECRETS_FILE")"
+  printf '%s' "$agent_github_token" > "$secrets_dir/github-token"
+  chmod 600 "$secrets_dir/github-token"
+fi
+```
+
+### 12.3 `controller.sh` (or `run-hivemoot-docker.sh`): pre-job mint
+
+Before each `docker run`, if the service is App-auth, ask apiarist to
+refresh the token file:
+
+```bash
+if [[ "$REPO_AUTH" == "github-app" ]]; then
+  apiarist_mint "$SERVICE_NAME" "$REPO" > "$SECRETS_DIR/github-token"
+  chmod 600 "$SECRETS_DIR/github-token"
+fi
+```
+
+`apiarist_mint` is a small bash function that opens the UDS, sends the
+`mint_token` request, parses the JSON response, prints the token to
+stdout. ~30 lines using `socat` + `jq`. Reference implementation in
+`apiarist/examples/controller-mint-snippet.sh` (within this monorepo;
+the bash helper is copied/vendored into the apiary repo's
+`run-hivemoot-docker.sh` integration in Phase L).
+
+If apiarist is unreachable or returns an error, the controller logs and
+fails the job (don't fall back to a stale token; fail-closed).
+
+## 13. Migration plan
+
+**Phase 0 — Build and shadow** (week 1)
+
+- Implement V1 daemon (token brokering only).
+- Deploy on Hive in shadow mode: daemon runs but **no service is flagged
+  `auth: github-app` yet**. Validates startup, socket creation, backend
+  reachability without touching production credential flow.
+- Verify backend `/api/installation-token` endpoint deployed to
+  hivemoot.dev (separate but coordinated piece).
+
+**Phase 1 — Foxstoria first** (week 2)
+
+- Install Hivemoot Bot App on `dkjazz/the-storytimes-firebase`.
+- Verify a *separate* agent token is generated for that installation
+  (requires multi-installation apiary schema, §9 future bullet).
+- Flag `foxstoria` repo block with `auth: github-app`.
+- Deploy and observe one full review cycle. Audit logs show exactly one
+  token mint per agent run, ≤1h TTL, scoped to `dkjazz/the-storytimes-firebase`.
+
+**Phase 2 — Validate, document, train** (week 3)
+
+- Write ops runbook: how to debug a failed mint, how to rotate the agent
+  token, how to revoke an installation.
+- Capture metrics: mint latency p50/p99, backend error rate, cache hit
+  rate.
+
+**Phase 3 — Migrate fleet** (week 4+)
+
+- One service at a time, flag `auth: github-app`. Observe for one full
+  cron cycle before moving to the next.
+- After all services migrated, the corresponding `github_tokens.<agent>`
+  classic PATs in `apiary.secrets.yaml` can be revoked. **Don't delete
+  the YAML field until backend has accepted token-less requests for at
+  least 7 days** (rollback safety).
+
+**Phase 4 — V2 design begins** (week 5+)
+
+- With apiarist in production for token brokering, the IPC patterns and
+  daemon architecture are validated. Begin designing the agent-spawning
+  feature (separate design doc, `apiarist/SPAWNING-DESIGN.md`).
+
+## 14. Implementation phases (V1, ordered)
+
+| Phase | Task | Effort | Dependencies |
+|---|---|---|---|
+| **A.** Project skeleton | `pyproject.toml`, package layout, `__main__`, version, basic CLI | 0.5d | — |
+| **B.** Config & logging | `config.py` (CLI/env/file/defaults), `logging.py` (structlog JSON) | 0.5d | A |
+| **C.** Backend client | `core/backend.py` — httpx, retries, error mapping | 0.5d | B, **backend endpoint stub deployed** |
+| **D.** IPC server skeleton | `server.py` + `core/ipc.py` — UDS bind, framing, dispatch | 1d | B |
+| **E.** Token feature | `features/tokens/{plugin,cache}.py` — wires C+D, `mint_token` op | 0.5d | C, D |
+| **F.** Health op | trivial dispatch on `health` op | 0.25d | D |
+| **G.** Tests — unit | pytest for config, ipc framing, cache, backend client (mocked) | 1d | C, D, E |
+| **H.** Tests — integration | fake backend + real socket, full mint flow | 1d | E, G |
+| **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
+| **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
+| **K.** Apiary integration — deploy script | `deploy-apiary.sh` patch (§12.2) | 0.25d | — (parallel) |
+| **L.** Apiary integration — controller | `controller.sh` patch (§12.3) + bash mint helper | 0.5d | E |
+| **M.** Shadow deploy on Hive | rsync, install, verify socket and logs | 0.5d | J, K, L |
+| **N.** Foxstoria pilot | flag, deploy, monitor one cycle | 0.5d | M, **backend endpoint live** |
+| **O.** Runbook + metrics | `apiarist/README.md` ops guide | 0.5d | N |
+
+**Total V1 estimate:** ~8 days of focused work, plus ~2 days for the
+backend endpoint (separate work stream on hivemoot.dev). Realistic
+calendar: 2-3 weeks with normal interruptions, code review, and
+cross-repo coordination.
+
+## 15. Testing strategy
+
+**Unit tests** (pytest, `tests/unit/`):
+
+- Config loading: precedence, missing fields, malformed YAML.
+- IPC framing: short reads, oversized payloads, malformed JSON.
+- Backend client: 200/401/403/5xx mapping, retry behavior, timeout.
+- Token cache: hit, miss, expiry boundary.
+
+**Integration tests** (pytest, `tests/integration/`, fixtures spin up a
+fake backend HTTP server + a real UDS):
+
+- End-to-end mint: client connects → request → daemon calls fake backend
+  → returns token. Verify exact JSON shapes and timing.
+- Cache reuse: second request within TTL doesn't hit backend.
+- Backend down: client gets `BACKEND_UNAVAILABLE`, no panic, daemon
+  stays alive.
+- Concurrent requests for same service: only one upstream call.
+- Concurrent requests for different services: parallel upstream calls.
+- Daemon SIGTERM during in-flight request: request completes before exit.
+
+**Manual / e2e tests** (`apiarist/examples/client.py`):
+
+- Small Python client to manually fire requests and inspect responses
+  during development.
+
+**No real GitHub or hivemoot.dev calls in CI.** Backend client is mocked
+with httpx's `MockTransport`. Real e2e validation happens in shadow mode
+on Hive (Phase 0).
+
+## 16. Open questions (decide during implementation)
+
+1. **Multi-installation schema in apiary.** Foxstoria pilot requires a
+   second agent token. Either (a) extend `apiary.secrets.yaml` schema now
+   (`agent_tokens: {default: ..., foxstoria: ...}`) or (b) ship V1 with
+   single-token assumption and add multi-token in a quick V1.1. Leaning
+   toward (a) because foxstoria is the motivating use case; not worth
+   shipping V1 without it.
+2. **Should apiarist also mint for the existing `/api/agent-health` and
+   `/api/tasks/*` calls?** Currently those are made directly by the
+   runtime hivemoot plugin using the same agent token. Could centralize
+   them through apiarist, but that's a bigger refactor with no
+   immediate security benefit. **Defer.**
+3. **Cache eviction strategy.** In-memory hashmap with TTL is fine for
+   V1. If apiarist restarts, cache is lost — first request after restart
+   is a backend roundtrip. Acceptable. Persistent cache adds complexity
+   (file or sqlite) for marginal benefit; defer until/unless we see
+   restart thrashing.
+4. **Socket activation vs daemon-managed socket.** systemd socket
+   activation has nice properties (zero-downtime reloads, lazy start)
+   but adds setup complexity. V1 ships with daemon-managed socket
+   (simpler); add socket activation in V1.1 if useful.
+5. **macOS support.** Not strictly required (Hive is Linux). But if
+   developers want to run apiarist locally for testing, a launchd plist
+   would help. **Defer**; Linux first.
+6. **Telemetry.** Emit logs only in V1. Add Prometheus metrics endpoint
+   when (a) we deploy multiple Hives and want fleet-wide visibility, or
+   (b) we have a Prometheus scraper anywhere. **Neither today.**
+
+## 17. Anti-goals
+
+To keep V1 honest and avoid scope creep:
+
+- ❌ Apiarist is not a generic IPC framework. The IPC protocol is
+  intentionally minimal and specific to apiarist's needs.
+- ❌ Apiarist is not a service mesh. It mediates a few specific calls,
+  not arbitrary traffic.
+- ❌ Apiarist is not a config server. The agent containers don't get
+  arbitrary config from it; they get a token. Future features (spawning,
+  config sync) will be additive features, not a generic "ask apiarist for
+  anything" model.
+- ❌ Apiarist does not replace or wrap `controller.sh`. controller.sh
+  remains the per-job orchestrator; apiarist is a service controller
+  consults.
+- ❌ Apiarist does not implement its own GitHub auth. All App-auth flow
+  happens server-side at hivemoot.dev. Apiarist is a thin client.
+
+## 18. Glossary
+
+| Term | Meaning |
+|---|---|
+| **Hive** | A single physical or virtual host running the apiary fleet. |
+| **Operator** | A person who runs a Hive (you, today; potentially others later). |
+| **Apiarist** | This daemon. |
+| **Agent token** | The bearer credential that authenticates a Hive to hivemoot.dev. Same value as `health_token` in `apiary.secrets.yaml`. Bound server-side to one GitHub App installation. |
+| **Installation token** | Short-lived (≤1h) GitHub credential minted from the App's private key, scoped to one installation's repos and permissions. The `ghs_xxx` value. |
+| **App private key** | RSA private key controlling the Hivemoot Bot GitHub App. Lives only in Vercel env vars at hivemoot.dev. |
+| **Service** | One systemd unit in apiary, e.g., `hivemoot-claude-opus-4-7`, `foxstoria-codex-gpt-5-5-xhigh`. Each service is one (repo × engine) pair. |
+| **Standing agent** | An agent run on a recurring or event-driven cadence per `apiary.yaml`. (Contrast with dispatch agent.) |
+| **Broker** | Generic term for a service that mints/proxies short-lived credentials. Apiarist is one. |
+
+---
+
+**End of design document.** Implementation tracked in
+`apiarist/IMPLEMENTATION.md` (created when build begins).
