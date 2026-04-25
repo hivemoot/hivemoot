@@ -22,8 +22,10 @@ def test_defaults_when_no_overrides(tmp_path: Path) -> None:
     assert cfg.socket_path == Path("/run/apiarist.sock")
     assert cfg.socket_group == "apiarist"
     assert cfg.backend_url == "https://www.hivemoot.dev"
-    assert cfg.token_cache_safety_margin_seconds == 600
-    assert cfg.token_cache_max_seconds == 3000
+    # Defaults match DESIGN.md §9: tail-exposure-bounded cache (5 min
+    # ceiling) + clock-skew safety margin (60s, matches octokit/auth-app).
+    assert cfg.token_cache_safety_margin_seconds == 60
+    assert cfg.token_cache_max_seconds == 300
     assert cfg.log_level == "info"
 
 

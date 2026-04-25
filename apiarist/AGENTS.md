@@ -109,38 +109,47 @@ any phase-specific manual exercise).
 
 ## Cross-Repo Touch Points
 
-apiarist itself ships only in this monorepo, but two later phases edit
-files in the `hivemoot/apiary` repo as separate small PRs:
+apiarist itself ships in this monorepo, but two later phases edit
+files in two other places as separate small PRs:
 
-- **Phase K** — `apiary/deploy-apiary.sh`: branch on a new `auth:`
-  field in `apiary.yaml` repo blocks. When `auth: github-app`, skip
-  writing the static `github-token` and let apiarist populate it
-  per-job.
-- **Phase L** — `apiary/run-hivemoot-docker.sh`: add a pre-job call
-  into a tiny `apiarist_mint` bash helper (socat + jq) that opens the
-  UDS, sends a `mint_token` request, writes the resulting `ghs_xxx` to
-  `data/<svc>/secrets/github-token`, then proceeds to `docker run` as
-  today.
+- **Phase K** — `apiary/deploy-apiary.sh` (in `hivemoot/apiary`):
+  branch on a new `auth:` field in `apiary.yaml` repo blocks. When
+  `auth: github-app`, skip writing the static `github-token`,
+  bind-mount `/run/apiarist.sock` into the agent container, and set
+  the `AGENT_SERVICE` + `AGENT_TOKEN_SLOT` env vars so the agent
+  runtime knows its identity and apiarist knows which agent-token to
+  use. No file write of any GitHub token at any point.
+- **Phase L′** — `agent/cli/hivemoot_agent/plugins_builtin/.../github`
+  (in this monorepo): when `AGENT_SERVICE` is set, replace the static
+  `GH_TOKEN` read with a UDS round-trip to `/run/apiarist.sock` that
+  mints a fresh token on demand. Token is held in agent process
+  memory only for the duration of the immediate API call(s); no
+  caching at the agent layer (apiarist's cache is the right place).
 
-Container code is **not** modified in any phase. Containers continue
-reading `/run/secrets/github-token`; only the file's content delivery
-mechanism changes.
+The agent runtime IS modified in Phase L′ — see `DESIGN.md` §12.3 for
+the rationale: long-running agent containers (`hivemoot-agent run`
+daemon mode) with internal trigger schedules can't be mediated by a
+host-side controller, so the agent itself must request tokens. Phases
+A-O (in this directory) do not modify the runtime.
 
 ## Backend Dependency
 
-V1 requires one new endpoint on hivemoot.dev: `POST /api/installation-token`
-(see `DESIGN.md` §11). This is a separate parallel work stream against
-`hivemoot/hivemoot/web/`, not part of the apiarist phase plan. Phase N
-(foxstoria pilot) cannot land until that endpoint is live; earlier
-phases can develop against a stub.
+V1 requires one new endpoint on hivemoot.dev:
+`POST /api/github/installation-tokens` (see `DESIGN.md` §11). The route
+ships in this PR (Phase C) as a 501 stub with real auth + body
+validation, paired with the apiarist client. The actual GitHub App
+handoff (sign JWT with `.pem`, exchange at api.github.com, return
+`ghs_`) is a follow-up PR — Phase N (foxstoria pilot) is what
+actually requires the real minting to be live.
 
 ## Anti-Goals
 
 `DESIGN.md` §17 lists what apiarist is explicitly NOT. Read it before
 proposing scope expansion. Briefly: not a generic IPC framework, not a
-service mesh, not a config server, does not replace `controller.sh`,
-does not implement its own GitHub App auth (that lives server-side at
-hivemoot.dev). Each anti-goal is load-bearing for keeping V1 honest.
+service mesh, not a config server, does not run agent jobs or wrap the
+agent runtime, does not implement its own GitHub App auth (that lives
+server-side at hivemoot.dev). Each anti-goal is load-bearing for
+keeping V1 honest.
 
 ## Governance & PR Conventions
 

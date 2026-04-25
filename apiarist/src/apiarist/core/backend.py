@@ -11,7 +11,10 @@ straight:
     time, sent in `Authorization: Bearer <agent_token>`.
   - **GitHub installation access token** (the `ghs_`-prefixed value
     returned by GitHub via the backend): the result this module
-    returns. Apiarist writes it into the per-service secrets file.
+    returns. Apiarist holds it in its in-memory cache (default 5 min
+    TTL, never written to disk) and delivers it to the requesting
+    agent over the UDS socket on demand. The agent uses it directly
+    in process memory for the immediate GitHub API call(s).
 
 The agent token is long-lived and identifies the Hive to the backend.
 The installation access token is short-lived (~1h), narrowly-scoped,

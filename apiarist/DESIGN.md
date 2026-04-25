@@ -387,7 +387,7 @@ daemon-specific file. **No new mandatory config files** for V1.
    backend_url: https://www.hivemoot.dev
    apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
    apiary_config_path: /opt/apiary/apiary.yaml
-   token_cache_safety_margin_seconds: 600   # evict at min(expires_at - 600, max_cache)
+   token_cache_safety_margin_seconds: 60    # evict at min(expires_at - 60, max_cache); matches @octokit/auth-app's 60s shave
    token_cache_max_seconds: 300             # 5 min ceiling — bursts amortize, tail exposure shrinks 10x vs full TTL
    backend_timeout_seconds: 10
    backend_retries: 3
