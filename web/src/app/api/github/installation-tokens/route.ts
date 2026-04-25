@@ -47,6 +47,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // server-side per DESIGN.md §11 (defense in depth against apiary-side
   // misrouting). The membership check itself ships in the follow-up
   // along with the actual minting.
+  //
+  // `agent_id` is OPTIONAL and audit-only in V1: a caller-asserted
+  // identifier the backend logs but does not trust for authorization.
+  // The future strong-security model (DESIGN.md §11 "Future hardening:
+  // host-attested agent identity binding") will make this mandatory
+  // and host-attested, but until then it's a forward-compatible field
+  // that adds telemetry without changing the trust model.
   let body: unknown;
   try {
     body = await request.json();
@@ -59,6 +66,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     typeof (body as { repo?: unknown }).repo !== "string" ||
     (body as { repo: string }).repo.trim() === ""
   ) {
+    return NextResponse.json(BAD_REQUEST_BODY, { status: 400 });
+  }
+
+  // Optional agent_id: type-check only. Backend doesn't trust the
+  // value; logs it once we have a logger here. Reject only on wrong
+  // TYPE so a typo (`agent_id: 123`) surfaces fast; absent is fine.
+  const agentIdRaw = (body as { agent_id?: unknown }).agent_id;
+  if (agentIdRaw !== undefined && typeof agentIdRaw !== "string") {
     return NextResponse.json(BAD_REQUEST_BODY, { status: 400 });
   }
 

@@ -126,4 +126,32 @@ describe("POST /api/github/installation-tokens", () => {
 
     expect(res.status).toBe(401);
   });
+
+  it("accepts optional agent_id field as a string", async () => {
+    mockedAuth.mockResolvedValue(authOk());
+
+    const res = await POST(
+      makeRequest({
+        repo: "dkjazz/the-storytimes-firebase",
+        agent_id: "builder-claude",
+      }),
+    );
+
+    // Field is audit-only in V1: presence is logged (eventually), never
+    // gates authorization. Same 501 as without the field.
+    expect(res.status).toBe(501);
+  });
+
+  it("rejects 400 when agent_id is the wrong type", async () => {
+    mockedAuth.mockResolvedValue(authOk());
+
+    const res = await POST(
+      makeRequest({
+        repo: "dkjazz/the-storytimes-firebase",
+        agent_id: 12345, // number instead of string — typo class
+      }),
+    );
+
+    expect(res.status).toBe(400);
+  });
 });

@@ -184,16 +184,31 @@ class BackendClient:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def mint_installation_token(self, repo: str) -> InstallationAccessToken:
+    async def mint_installation_token(
+        self,
+        repo: str,
+        *,
+        agent_id: str | None = None,
+    ) -> InstallationAccessToken:
         """Request a fresh GitHub installation access token for `repo`.
 
         `repo` is `owner/name`. The actual installation is determined
         server-side from the agent token; `repo` is for verification +
         audit logging. Raises one of the `Backend*` exceptions on
         failure (each maps to an IPC error code in DESIGN.md §8).
+
+        `agent_id` is OPTIONAL and audit-only in V1: when supplied,
+        the backend logs it for telemetry but does not trust it for
+        authorization. The future strong-security model (DESIGN.md
+        §11 "Future hardening: host-attested agent identity binding")
+        will make this mandatory and host-attested via SO_PEERCRED;
+        the field is here now so the wire shape doesn't break when
+        that lands.
         """
         url = f"{self._base_url}{INSTALLATION_TOKEN_PATH}"
-        body = {"repo": repo}
+        body: dict[str, str] = {"repo": repo}
+        if agent_id is not None:
+            body["agent_id"] = agent_id
         headers = {
             "Authorization": f"Bearer {self._agent_token}",
             "Content-Type": "application/json",

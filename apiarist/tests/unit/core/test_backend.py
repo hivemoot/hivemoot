@@ -205,7 +205,28 @@ async def test_request_shape_is_correct() -> None:
     assert captured["url"] == f"https://www.hivemoot.dev{INSTALLATION_TOKEN_PATH}"
     assert captured["auth"] == "Bearer hm_testtoken"
     assert captured["content_type"] == "application/json"
+    # No agent_id in body when omitted — keeps the wire minimal.
     assert captured["body"] == {"repo": "dkjazz/the-storytimes-firebase"}
+
+
+@pytest.mark.asyncio
+async def test_request_includes_agent_id_when_provided() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_success_body())
+
+    async with _client_with_handler(handler) as client:
+        await client.mint_installation_token(
+            "dkjazz/the-storytimes-firebase",
+            agent_id="builder-claude",
+        )
+
+    assert captured["body"] == {
+        "repo": "dkjazz/the-storytimes-firebase",
+        "agent_id": "builder-claude",
+    }
 
 
 # ---------------------------------------------------------------------------
