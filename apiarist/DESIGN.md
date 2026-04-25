@@ -164,11 +164,13 @@ all of the above without restructuring.**
                 │   → enforce token policy (allowed_repos) │
                 │   → sign JWT with App .pem               │
                 │   → POST api.github.com/app/installations│
-                │     /<id>/access_tokens                  │
-                │     with permissions + repository_ids    │
-                │     narrowed per policy                  │
+                │     /<id>/access_tokens with permissions │
+                │     narrowed (V1) — repository_ids       │
+                │     narrowing deferred to V1.5 (§10 +    │
+                │     §16 #9); V1 narrows by short-name    │
                 │   → return {token, expires_at,           │
-                │             permissions, repositories}   │
+                │             permissions, repositories,   │
+                │             hashed_token}                │
                 └──────────────────────────────────────────┘
 ```
 
@@ -582,13 +584,24 @@ Content-Type: application/json
 ```
 
 `repo` is **required and verified** server-side, even though
-`resolveTokenToInstallation(agent_token)` already determines which
-installation is being acted on. Verification: look up the installation's
-repo list (populated by GitHub `installation.repositories` webhooks) and
-reject with `403` if the requested `repo` is not covered. Defense in
-depth: catches apiary-side misrouting (wrong service → wrong repo)
-before a valid token gets written to the wrong service's secret file,
-which the fail-closed posture in §12.3 cannot detect on its own.
+`resolveTokenToInstallationAndPolicy(agent_token)` already determines
+which installation is being acted on.
+
+**V1 verification:** the mint endpoint enforces `request.repo ∈
+policy.allowed_repos` when the agent token has a policy set, then
+delegates the installation-coverage check to GitHub itself (the
+`/access_tokens` call returns `403` if the installation doesn't cover
+the requested short-name). Legacy tokens (no policy field) skip the
+first check with a `console.warn` and rely on GitHub's coverage 403.
+
+**V1.5 target** (deferred — see §10 "V1 short-name narrowing gap"
+row + §16 #9): a Redis-backed `installation:<id>:repos` cache
+populated by the bot's `installation.repositories.added/removed`
+webhooks lets the backend pre-resolve `owner/name` → numeric `id`
+and reject pre-mint with `403` if the requested `repo` isn't covered,
+without burning an RSA sign + GitHub roundtrip. Same defense-in-depth
+property; V1 lets GitHub do the check inline because the cache
+infrastructure isn't there yet.
 
 **Response (success):**
 
@@ -688,16 +701,33 @@ only** until the requesting agent retrieves it over UDS. No on-disk
 file is written. The `token` field in the API response is always the
 latter.
 
-**Token-policy scoping model:** Each agent token in
-`apiary.secrets.yaml` is bound server-side to a policy of
-`{ allowed_repos[], allowed_permissions{} }` set when the operator
-generates the token via the dashboard. The backend enforces
-(request scope) ⊆ (token policy) ⊆ (installation grant) on every
-mint. A compromised agent token's blast radius is exactly its policy
-— never the full installation. The minted `ghs_` token is then
-*cryptographically* narrowed to that scope via GitHub's
-`repository_ids` + `permissions` arguments, so even token leakage at
-the agent process boundary is bounded by GitHub's own enforcement.
+**Token-policy scoping model:** Each agent token can carry a
+server-side policy of `{ allowed_repos[], allowed_permissions{} }`
+set via the operator CLI (`web/scripts/set-agent-policy.ts`) or
+future dashboard UI. The backend enforces `(request scope) ⊆
+(token policy) ⊆ (installation grant)` on every mint.
+
+**V1.5 ship status** (per §10 row "V1 token-policy enforcement
+(allowed_repos, **shipped**)"):
+
+- `allowed_repos` enforcement is **live** — `request.repo ∈
+  policy.allowed_repos` rejected with `403 policy_violation` when
+  the policy is set; legacy tokens (pre-V1.5, no policy field)
+  defer to the installation grant with a `console.warn`.
+- `allowed_permissions` enforcement is **deferred to V1.6** — V1
+  hard-codes a fixed permission set (`V1_PERMISSIONS` in
+  `web/src/server/github-installation-token.ts`) shared across all
+  callers; per-token permission narrowing is a second layer of
+  defense and hasn't been needed yet.
+
+A compromised agent token's blast radius is bounded by its policy
+(when set) or by the installation grant (when policy is absent);
+either way never the full GitHub App's reach. The minted `ghs_`
+token is narrowed to that scope via GitHub's `permissions`
+argument; **`repository_ids` narrowing is V1.5-deferred** (see §10
+row "V1 short-name narrowing gap") — V1 narrows by short-name
+which is rename-mutable, hence the V1.5 install-repos cache work
+to switch to numeric IDs.
 
 **Optional `agent_id` field (V1 audit-only):** The request body may
 include an `agent_id` string. In V1 the backend logs it for

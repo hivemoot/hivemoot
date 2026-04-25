@@ -41,6 +41,13 @@ interface CliArgs {
   acknowledge: boolean;
 }
 
+// owner/name validation. GitHub allows letters, digits, hyphens,
+// underscores, and dots in owner+repo names. The slash separator must
+// appear exactly once. Catches the common typo `owner-name` (missing
+// slash) which would silently set a policy that rejects everything
+// (no repo can ever match a malformed entry).
+const REPO_FORMAT = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
 function parseArgs(argv: string[]): CliArgs {
   const args: Partial<CliArgs> = { acknowledge: false };
   for (let i = 0; i < argv.length; i++) {
@@ -72,6 +79,20 @@ function parseArgs(argv: string[]): CliArgs {
     console.error("missing --allowed-repos or --clear");
     printUsage();
     process.exit(2);
+  }
+  // Format-validate every entry of allowed_repos. An operator typing
+  // `hivemoot-hivemoot` instead of `hivemoot/hivemoot` would silently
+  // set a policy where every mint fails. Fail-fast here with a clear
+  // message naming the bad entry.
+  if (args.allowedRepos !== null) {
+    for (const repo of args.allowedRepos) {
+      if (!REPO_FORMAT.test(repo)) {
+        console.error(
+          `invalid repo format '${repo}': expected owner/name with no spaces (e.g. hivemoot/hivemoot)`,
+        );
+        process.exit(2);
+      }
+    }
   }
   return args as CliArgs;
 }
