@@ -30,10 +30,17 @@ Type=simple
 
 # Unprivileged dedicated user/group (created by deploy/install.sh).
 # Daemon must additionally be a member of the 'agent' group so it can
-# chgrp the socket file to 'agent' for cross-container access; that
-# membership is set up by install.sh, not here.
+# chgrp the socket file to 'agent' for cross-container access. The
+# user-side membership is set up by install.sh via `usermod -aG agent
+# apiarist`, but systemd does NOT automatically pick up the user's
+# supplementary groups from /etc/group when User= is set — it requires
+# explicit SupplementaryGroups=. Without this directive the daemon
+# would have only the 'apiarist' primary group at runtime, and the
+# os.chown(socket, -1, agent_gid) call in server.py would fail with
+# EPERM even though the user is nominally in the group.
 User=apiarist
 Group=apiarist
+SupplementaryGroups=agent
 
 # Agent-token bearer credential. Loaded from a 0640 file (root:apiarist)
 # created by the deploy script from apiary.secrets.yaml. Format:
@@ -137,8 +144,21 @@ SystemCallArchitectures=native
 # systemd's default action of SIGSYS-killing the process — the
 # kill leaves operators with only "code=killed, status=31/SYS"
 # in the journal and no Python-level traceback.
+#
+# @chown is added BACK after the @privileged subtraction. The
+# daemon legitimately needs fchown/chown to chgrp the freshly-bound
+# UDS socket from `apiarist` to `agent` for cross-container access.
+# That chgrp does NOT need CAP_CHOWN (which we don't have) — Linux
+# allows chgrp from owner to a group the owner is a member of —
+# but the seccomp filter is enforced at syscall entry and doesn't
+# know about that distinction. Without re-adding @chown the chown()
+# returns EPERM at the filter, the daemon crashes before it can
+# accept connections, and EVERY agent container gets EACCES on the
+# socket. Discovered empirically during the first Hive shadow
+# install attempt — see PR #487 review thread for context.
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
+SystemCallFilter=@chown
 SystemCallErrorNumber=EPERM
 
 # Lock the personality syscall (prevents emulating older ABIs).
