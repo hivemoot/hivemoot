@@ -390,14 +390,25 @@ def _parse_repositories(raw: object) -> list[Repository]:
 
 
 def _parse_iso8601(value: str) -> datetime:
-    """Parse the backend's ISO 8601 timestamp.
+    """Parse the backend's ISO 8601 timestamp; require explicit timezone.
 
     GitHub's installation-token responses use `YYYY-MM-DDTHH:MM:SSZ`.
     Python's `fromisoformat` accepts this from 3.11 onwards (it learned
     to handle the trailing 'Z' in 3.11), so apiarist's >= 3.11 floor is
     sufficient — no third-party parser needed.
+
+    Reject naive timestamps (no 'Z' / no offset) explicitly: cache
+    eviction compares against `_now_utc()` (tz-aware), so a naive value
+    would crash with TypeError downstream. Better to fail loud here
+    with a clear protocol error than mysteriously elsewhere.
     """
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"timestamp {value!r} has no timezone (expected trailing 'Z' or "
+            "an explicit offset like '+00:00')"
+        )
+    return parsed
 
 
 def _now_utc() -> datetime:

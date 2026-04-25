@@ -23,12 +23,15 @@ from pydantic import BaseModel, Field, ValidationError
 DEFAULT_CONFIG_PATH = Path("/etc/apiarist/apiarist.yaml")
 ENV_PREFIX = "APIARIST_"
 
-# APIARIST_CONFIG is the env-level config-file selector per DESIGN.md
-# §9 — it points at the YAML file to load, NOT at a Config field.
-# Treating it as a field would raise extra_forbidden because Config
-# has no `config` attribute. Keep it (and any future non-field env
-# selectors) out of the field overlay.
-_NON_FIELD_ENV_KEYS: frozenset[str] = frozenset({"config"})
+# Reserved env names that must NOT be pushed into the Config field
+# overlay (they'd trip extra_forbidden). Each one is consumed elsewhere
+# in the codebase:
+#   - APIARIST_CONFIG       → the YAML file path (handled by _resolve_config_path)
+#   - APIARIST_AGENT_TOKEN  → the bearer credential (read directly by __main__.py
+#                             before constructing the BackendClient; see DESIGN.md
+#                             §9 multi-token support — the secret never lives in
+#                             Config because Config is logged at startup)
+_NON_FIELD_ENV_KEYS: frozenset[str] = frozenset({"config", "agent_token"})
 
 LogLevel = str  # validated to one of {debug, info, warning, error, critical}
 _VALID_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})

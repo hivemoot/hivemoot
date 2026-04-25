@@ -447,6 +447,26 @@ async def test_200_with_malformed_iso_timestamp_raises_protocol_error() -> None:
             await client.mint_installation_token("owner/repo")
 
 
+@pytest.mark.asyncio
+async def test_200_with_naive_timestamp_raises_protocol_error() -> None:
+    """A backend bug that drops the trailing 'Z' would yield a naive
+    datetime; cache eviction (tz-aware comparisons) would then crash
+    with TypeError. Reject at parse time so the failure is named."""
+    def handler(_: httpx.Request) -> httpx.Response:
+        body = _success_body()
+        # Future date but no timezone — naive datetime would slip through
+        # without the explicit tz check in _parse_iso8601.
+        body["expires_at"] = (
+            (datetime.now(UTC) + timedelta(hours=1))
+            .strftime("%Y-%m-%dT%H:%M:%S")  # no trailing Z
+        )
+        return httpx.Response(200, json=body)
+
+    async with _client_with_handler(handler) as client:
+        with pytest.raises(BackendProtocolError, match="ISO 8601"):
+            await client.mint_installation_token("owner/repo")
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
