@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "apiarist"
 description = "Host-side daemon for the Hivemoot fleet — token broker, agent spawner."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dynamic = ["version"]
 authors = [{ name = "Hivemoot" }]
@@ -14,7 +14,7 @@ keywords = ["hivemoot", "apiary", "agent", "daemon", "github-app"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

@@ -56,4 +56,5 @@ apiarist/
 
 ## License
 
-MIT — same as the rest of the hivemoot monorepo.
+Apache-2.0 — see [LICENSE](./LICENSE), matching the repo root and the
+`agent/` and `bot/` subprojects.

@@ -34,13 +34,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     parser.parse_args(argv)
-    # Phase A is a scaffold. The daemon loop lands in Phase D
-    # (server.py + core/ipc.py). For now `apiarist` with no args is
-    # a no-op that exits cleanly so packaging and entry-point wiring
-    # can be verified end to end.
+    # Scaffold mode: packaging and entry-point wiring are exercised but
+    # the daemon loop is not running yet. Each phase that lands real
+    # behaviour will replace this branch with the actual subsystem
+    # bootstrap. The wording stays version-aware rather than naming a
+    # phase so it doesn't read stale as phases ship.
     print(
-        "apiarist scaffold (Phase A) — daemon loop arrives in Phase D. "
-        "See DESIGN.md.",
+        f"apiarist {__version__} — daemon scaffold; subsystems not yet "
+        "wired. See DESIGN.md.",
         file=sys.stderr,
     )
     return 0

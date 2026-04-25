@@ -209,7 +209,7 @@ apiarist/                            # path is monorepo-relative (hivemoot/hivem
 │       │   ├── tokens/             # FEATURE 1 (V1)
 │       │   │   ├── __init__.py
 │       │   │   ├── plugin.py       # registers `mint_token` op
-│       │   │   ├── cache.py        # in-memory installation-token cache
+│       │   │   ├── cache.py        # in-memory installation-token cache; per-installation asyncio.Lock for single-flight (NOT a global mutex)
 │       │   │   └── README.md       # feature-local docs
 │       │   └── spawning/           # FEATURE 2 (V2 — stub for now)
 │       │       └── README.md
@@ -299,7 +299,9 @@ unsigned int (length N), followed by N bytes of UTF-8 JSON.
 | `BAD_REQUEST` | Malformed JSON, missing required field |
 | `UNKNOWN_OP` | Op not registered |
 | `BACKEND_UNAUTHORIZED` | hivemoot.dev returned 401 — agent token invalid |
-| `BACKEND_FORBIDDEN` | hivemoot.dev returned 403 — token is valid but installation policy denies |
+| `BACKEND_FORBIDDEN` | hivemoot.dev returned 403 — repo not in token's installation |
+| `BACKEND_RATE_LIMITED` | hivemoot.dev returned 429 — per-token mint bucket exhausted |
+| `BACKEND_PROTOCOL_ERROR` | hivemoot.dev returned 200 with malformed body, or `expires_at` already in the past |
 | `BACKEND_UNAVAILABLE` | hivemoot.dev returned 5xx or timed out after retries |
 | `INTERNAL` | Unexpected daemon-side error (logged with traceback) |
 
@@ -332,12 +334,23 @@ daemon-specific file. **No new mandatory config files** for V1.
    backend_url: https://www.hivemoot.dev
    apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
    apiary_config_path: /opt/apiary/apiary.yaml
-   token_cache_seconds: 3000        # 50 min — refresh before 1h expiry
+   token_cache_safety_margin_seconds: 600   # evict at min(expires_at - 600, max_cache)
+   token_cache_max_seconds: 3000            # hard ceiling regardless of upstream expiry
    backend_timeout_seconds: 10
    backend_retries: 3
    log_level: info
    ```
 4. **Built-in defaults** (above values).
+
+**Cache eviction.** The cache key is `installation_id`; the value is the
+minted `ghs_xxx` plus its `expires_at` from the backend response. Eviction
+time is `min(expires_at - safety_margin, now + max_cache)`. The
+`expires_at` from the backend is the source of truth — never assume the
+configured `max_cache` matches the upstream lifetime. GitHub usually
+returns 1h tokens but can return shorter ones during App permission
+churn; using the response value as the floor keeps the cache from
+serving an already-expired token. The configured `max_cache` is just a
+ceiling for defense-in-depth.
 
 **Reading the agent token:**
 
@@ -373,16 +386,20 @@ token is supported.**
 2. Local user escalation (non-root user on Hive tries to abuse apiarist).
 3. Agent-token leak (the bearer credential to hivemoot.dev).
 4. Backend-to-Hive spoofing (attacker on the network impersonates hivemoot.dev).
+5. Token-shaped strings ending up in logs/journal.
+6. Socket-permission misconfiguration silently widening access.
 
 **Mitigations:**
 
 | Threat | Defense |
 |---|---|
 | Container compromise | Token in container is short-lived (1h), narrow-scope (one installation, no admin scopes). Container can't reach apiarist socket (not mounted into containers in V1). |
-| Local user escalation | Socket is `chmod 660`, owned by `apiarist:apiarist`. Only members of group `apiarist` (just `controller.sh`'s user) can connect. Non-controller users get EACCES. |
-| Agent-token leak | Token already exists on the Hive today; apiarist doesn't widen the surface. File permissions: `chmod 640`, `apiary:apiarist`. Apiarist's own user can read; nothing else can. |
+| Local user escalation | Socket is `chmod 660`, owned by `apiarist:apiarist`. Only members of group `apiarist` (just `controller.sh`'s user) can connect. Non-controller users get EACCES. The daemon `chown`s the socket and asserts the configured `socket_group` exists at startup; mismatch logs loudly to stderr and refuses to start. asyncio's `start_unix_server` does NOT set group ownership automatically — explicit chown is required after bind. |
+| Agent-token leak | Token already exists on the Hive today; apiarist doesn't widen the surface. File permissions: `chmod 640`, `apiary:apiarist`. Apiarist's own user can read; nothing else can. Backend enforces a per-token rate limit (60 mints/hour, see §11) so a leaked token cannot be abused at scale. |
 | Backend spoofing | All backend calls go over HTTPS. `httpx` validates certs with the system trust store. No way to disable cert validation in code. |
-| Apiarist process compromise (worst case) | Worst attacker leverage is "request unbounded mint_token calls." Backend rate-limits by token. App-level damage capped to whatever the agent token's installation grants. **Apiarist does NOT hold the App `.pem`** — that's the whole point of this architecture. |
+| Apiarist process compromise (worst case) | Worst attacker leverage is "request unbounded mint_token calls." Backend rate-limits by token (60/hr). App-level damage capped to whatever the agent token's installation grants. **Apiarist does NOT hold the App `.pem`** — that's the whole point of this architecture. |
+| Tokens leaking into logs | The structured logger (Phase B) MUST redact token-shaped strings before emitting. Pattern set: `^ghs_[A-Za-z0-9]+`, `^gho_[A-Za-z0-9]+`, `^github_pat_[A-Za-z0-9_]+`, anything matching the `Authorization` header value. Phase G ships a unit test that asserts a token-shaped string fed through the logger comes out redacted. Reference pattern: `cli/tests/test_hivemoot_sanitize.py` in the agent runtime. |
+| Socket permission drift | Startup self-check: the daemon refuses to start if `socket_group` doesn't exist, if the socket cannot be `chown`ed to it, or if the resulting socket is world-readable/writable (`other` bits set). All three states are loud errors to stderr, not warnings. |
 
 **Filesystem layout, post-install:**
 
@@ -427,8 +444,14 @@ Content-Type: application/json
 }
 ```
 
-`repo` is informational/auditable in V1; the actual installation is
-determined server-side by `resolveTokenToInstallation(agent_token)`.
+`repo` is **required and verified** server-side, even though
+`resolveTokenToInstallation(agent_token)` already determines which
+installation is being acted on. Verification: look up the installation's
+repo list (populated by GitHub `installation.repositories` webhooks) and
+reject with `403` if the requested `repo` is not covered. Defense in
+depth: catches apiary-side misrouting (wrong service → wrong repo)
+before a valid token gets written to the wrong service's secret file,
+which the fail-closed posture in §12.3 cannot detect on its own.
 
 **Response (success):**
 
@@ -450,10 +473,28 @@ determined server-side by `resolveTokenToInstallation(agent_token)`.
 
 | HTTP | Cause |
 |---|---|
+| 400 | `repo` missing or malformed in request body |
 | 401 | Bearer token invalid or revoked |
 | 403 | Token valid but caller-requested `repo` not covered by installation |
+| 429 | Per-token rate limit exceeded (see Rate limiting below) |
 | 502 | GitHub API failure during minting (retry safe) |
 | 503 | Backend overloaded, lock contention, or App misconfigured |
+
+**Rate limiting (per-token):** The endpoint enforces a token bucket of
+**60 mints/hour with burst 10** per agent token. Above the bucket → `429`.
+This caps the worst-case abuse surface from a compromised agent token
+(unbounded `mint_token` calls would otherwise burn the App's GitHub rate
+budget) and keeps the Hive's retry logic from amplifying abuse. The
+broker on Hive caches tokens for ~50 min, so a healthy fleet stays well
+under the bucket; bursts up to 10 absorb concurrent service starts.
+
+**Permissions narrowing:** `mintInstallationToken` MUST pass an explicit
+`permissions` argument to `octokit/auth-app` matching the response
+example above (`contents:read, pull_requests:write, issues:write,
+metadata:read`). Do not inherit App-default permissions — that would
+silently widen Hive tokens if the App's installation permissions are
+ever broadened for other purposes (Queen's webhook scopes, etc.). The
+narrowed scopes are the V1 contract.
 
 **Implementation skeleton (TypeScript, in `web/src/app/api/installation-token/route.ts`):**
 
@@ -469,11 +510,33 @@ export async function POST(request: NextRequest) {
   if (!installationId) return new Response(null, { status: 401 });
 
   const body = await request.json().catch(() => ({}));
-  // Optional: verify body.repo is in this installation's repo list
-  // — see installations table populated by GitHub webhooks.
+  if (!body.repo || typeof body.repo !== "string") {
+    return new Response(null, { status: 400 });
+  }
+
+  // REQUIRED: verify body.repo is in this installation's repo list.
+  // installationRepos is populated by GitHub installation.repositories
+  // webhooks (already received by the bot).
+  const repos = await getInstallationRepos(installationId, redis);
+  if (!repos.includes(body.repo)) {
+    return new Response(null, { status: 403 });
+  }
+
+  // Per-token rate limit (60/hour, burst 10).
+  if (!(await consumeMintBucket(auth, redis))) {
+    return new Response(null, { status: 429 });
+  }
 
   try {
-    const minted = await mintInstallationToken(installationId);
+    const minted = await mintInstallationToken(installationId, {
+      // Explicit narrowing — do NOT inherit App defaults.
+      permissions: {
+        contents: "read",
+        pull_requests: "write",
+        issues: "write",
+        metadata: "read",
+      },
+    });
     return Response.json({
       token: minted.token,
       expires_at: minted.expires_at,
@@ -481,7 +544,6 @@ export async function POST(request: NextRequest) {
       permissions: minted.permissions,
     });
   } catch (err) {
-    if (err.code === "RATE_LIMIT") return new Response(null, { status: 429 });
     return new Response(null, { status: 502 });
   }
 }
@@ -489,10 +551,21 @@ export async function POST(request: NextRequest) {
 
 **`mintInstallationToken` helper** wraps the standard GitHub App flow:
 sign JWT with `APP_PRIVATE_KEY` env, POST to
-`https://api.github.com/app/installations/<id>/access_tokens`, parse
-response. ~30 lines using `octokit/auth-app` or hand-rolled with `jose`.
+`https://api.github.com/app/installations/<id>/access_tokens` with the
+caller-supplied `permissions` body (narrowing scopes below the App's
+defaults), parse response. ~30 lines using `octokit/auth-app` (which
+takes a `permissions` argument natively) or hand-rolled with `jose`.
 
 This endpoint is the **single backend dependency** for V1.
+
+**Cross-stream tracking.** Per drone's PR #478 review, the backend
+endpoint should have its own tracking issue in `hivemoot/hivemoot` so
+the dependency is visible to anyone reading the apiarist phase plan
+without having to read DESIGN.md cover-to-cover. The build session that
+starts Phase C should open that issue (or confirm it exists) before
+beginning, and link both directions: the apiarist Phase C PR references
+the backend tracking issue, and the backend PR references this DESIGN
+file.
 
 ## 12. Integration with existing apiary
 
@@ -607,7 +680,8 @@ fails the job (don't fall back to a stale token; fail-closed).
 | Phase | Task | Effort | Dependencies |
 |---|---|---|---|
 | **A.** Project skeleton | `pyproject.toml`, package layout, `__main__`, version, basic CLI | 0.5d | — |
-| **B.** Config & logging | `config.py` (CLI/env/file/defaults), `logging.py` (structlog JSON) | 0.5d | A |
+| **B.** Config & logging | `config.py` (CLI/env/file/defaults), `logging.py` (structlog JSON, with token-shape redaction per §10) | 0.5d | A |
+| **B+.** CI workflow | `.github/workflows/apiarist-ci.yml` path-scoped to `apiarist/**`: `pip install -e '.[dev]'`, `ruff check src tests`, `mypy src` (strict), `pytest -v`. Pin Python 3.11 for the matrix initially. **Must land with or before Phase B** per guard's PR #478 review — Phase A's tooling promises (ruff/mypy/pytest green) are not yet enforced by any workflow. | 0.25d | A |
 | **C.** Backend client | `core/backend.py` — httpx, retries, error mapping | 0.5d | B, **backend endpoint stub deployed** |
 | **D.** IPC server skeleton | `server.py` + `core/ipc.py` — UDS bind, framing, dispatch | 1d | B |
 | **E.** Token feature | `features/tokens/{plugin,cache}.py` — wires C+D, `mint_token` op | 0.5d | C, D |
@@ -644,9 +718,29 @@ fake backend HTTP server + a real UDS):
 - Cache reuse: second request within TTL doesn't hit backend.
 - Backend down: client gets `BACKEND_UNAVAILABLE`, no panic, daemon
   stays alive.
-- Concurrent requests for same service: only one upstream call.
+- Concurrent requests for same service: only one upstream call (verifies
+  per-installation `asyncio.Lock`, not a global mutex — concurrent
+  requests for *different* services must run in parallel).
 - Concurrent requests for different services: parallel upstream calls.
 - Daemon SIGTERM during in-flight request: request completes before exit.
+
+**Adversarial integration cases** (most likely to surface first in
+production, cheapest to test now):
+
+- Backend returns `200 OK` with malformed JSON body → client gets
+  `BACKEND_UNAVAILABLE` (or a more specific `BACKEND_PROTOCOL_ERROR`),
+  no crash, no cache poisoning.
+- Backend returns a valid token whose `expires_at` is already in the
+  past → cache rejects on insert (does not store), client gets fresh
+  mint on next request rather than serving expired data.
+- Clock skew between Hive and backend: cache says token still valid by
+  Hive wall clock, but GitHub rejects it as expired at API call time.
+  Test with mocked clock: cache eviction uses backend `expires_at`
+  (server-authoritative timestamp), and a 401 from GitHub triggers a
+  forced cache eviction + retry.
+- Backend returns `429` (rate limit) → client surfaces
+  `BACKEND_RATE_LIMITED`, does not retry within the window, does not
+  serve stale cached value as a fallback.
 
 **Manual / e2e tests** (`apiarist/examples/client.py`):
 
