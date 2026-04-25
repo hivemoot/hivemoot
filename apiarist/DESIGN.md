@@ -902,47 +902,81 @@ or privileged flag is needed.
 
 ### 12.3 Agent runtime change (monorepo, not apiary)
 
-An activity-gated FSM lives in a **shared module** at
-`agent/cli/hivemoot_agent/lib/github_auth_fsm.py`, instantiated as a
-process-singleton, **driven by both** `plugins_builtin/github/` and
-`plugins_builtin/hivemoot/` (and any future plugin that triggers
-GitHub-touching work).
+An activity-gated FSM lives **inside the hivemoot plugin** at
+`agent/cli/hivemoot_agent/plugins_builtin/hivemoot/auth/`. Internal
+implementation detail of the hivemoot plugin; not imported by any
+other plugin.
 
-**Engine constraint that shapes this design**: daemon-mode
+**Why hivemoot owns it (not github plugin, not a shared module, not
+the engine):** apiarist-brokered token minting is a hivemoot-
+architecture-specific feature. The agent_token bearer credential,
+the per-installation policy on the backend, the UDS protocol to
+apiarist, the `AGENT_SERVICE` binding — none of these exist in a
+generic GitHub workflow. They're all hivemoot-architecture concepts.
+So the plugin that owns hivemoot-architecture concerns owns them.
+
+The github plugin remains a **tool provider** — it ships
+`gh`/`octokit`/git wrappers that read `GITHUB_TOKEN` from env.
+That contract doesn't change between the static-PAT path and the
+apiarist-minted path; only who populates the env changes. The
+github plugin doesn't import hivemoot, doesn't import apiarist,
+doesn't know auth exists. Putting hivemoot-specific behavior into
+a tool plugin would invert the dependency direction (hivemoot
+architecture forcing tool changes); keeping the boundary clean
+preserves the rule "tools depend on infrastructure, not the other
+way around."
+
+**V1 scope coverage:** the hivemoot plugin's lifecycle hooks fire
+for **fleet-member agents** (`hivemoot-builder`, `hivemoot-guard`,
+`hivemoot-queen`, `hivemoot-drone`, `hivemoot-forager`, etc. —
+anything triggered by hivemoot.tasks). That's the entire V1 target
+population for apiarist. Per-repo agents triggered by the github
+plugin's PR-watcher (e.g. `foxstoria-builder` watching one repo)
+**stay on the existing static-PAT path** in V1; their auth comes
+from `apiary.secrets.yaml.github_tokens.<agent>` populating
+`GITHUB_TOKEN` at deploy time, unchanged from today. Migrating
+per-repo agents to apiarist is deferred — V1 doesn't need it (the
+drone pilot is a fleet member), and when it does become a need,
+the right answer is either to unify trigger paths through
+hivemoot.tasks or to ship an engine-level AuthManager that doesn't
+depend on plugin ownership.
+
+**Hard precondition: repo must have the Hivemoot Bot GitHub App
+installed.** Apiarist mints **installation access tokens** (the
+`ghs_`-prefixed kind), which by definition only exist where the
+App is installed. A mint request for a repo without the bot
+installed returns `BACKEND_FORBIDDEN` from the daemon (mapped from
+the backend's HTTP 403 — "repo X not covered by the token's
+installation"). This fail-closes correctly: the job that triggered
+the mint sees the error, fails, and the agent runtime escalates
+per its retry policy. It does **not** silently fall back to any
+other credential path.
+
+Operationally this means **before flagging a repo for apiarist
+auth, the operator must verify the Hivemoot Bot is installed on
+it** (via the App admin UI at `https://github.com/apps/<bot>` →
+Configure → Repository access). Repos without the bot installed
+are not eligible for apiarist auth and must stay on the static-PAT
+path. The fleet-member targets for V1 (`hivemoot/hivemoot`,
+`hivemoot/colony`, `hivemoot/apiary`, etc.) all have the bot
+installed today — verified during the §13 shadow-deploy phase by
+hitting the apiarist socket from a fleet-member container against
+each repo and observing successful mints.
+
+**Engine constraint** (verified at
+`agent/cli/hivemoot_agent/engine.py:1208,1316`): daemon-mode
 `run_agent` fires lifecycle hooks only on the *triggering* plugin,
-not on every enabled plugin broadcast-style (verified at
-`agent/cli/hivemoot_agent/engine.py:1208` and `:1316`). Two distinct
-trigger sources need to drive the auth state:
+not on every enabled plugin broadcast-style. Hivemoot.tasks-
+triggered jobs fire **only** the hivemoot plugin's hooks, which is
+exactly what we want for fleet-member auth — the FSM lives where
+the hooks fire, with no broadcast and no cross-plugin wiring.
 
-1. **`plugins_builtin/github/`** triggers per-repo agents (e.g.
-   `foxstoria-builder` watching one repo for PR events) via its own
-   PR-watcher work. Its hooks fire for these jobs.
-2. **`plugins_builtin/hivemoot/`** (hivemoot.tasks) triggers
-   fleet-member agents (`hivemoot-builder`, `hivemoot-guard`,
-   `hivemoot-queen`, `hivemoot-drone` — the bulk of the apiarist
-   target population) via task-claim work. *Its* hooks fire for
-   these jobs, and the github plugin's hooks **do not** fire even
-   though the github plugin is enabled (it's a hard requirement of
-   `hivemoot.github_workflows`, validated at
-   `plugins_builtin/hivemoot/__init__.py:233-238`).
-
-Putting the FSM inside *either* plugin would only cover its own
-work source, breaking auth for the other. A shared-singleton FSM
-that both plugins import and drive via their respective hooks
-covers both trigger paths without needing engine-level broadcast.
-(Engine-level broadcast — moving the FSM into `engine.run_agent`
-itself, options 1 vs 2 in the PR #486 review — is cleaner
-architecturally but a much bigger change touching the engine for
-all plugins; deferred to a future engine refactor when more plugins
-need active/idle awareness.)
-
-States: ACTIVE (count of in-flight GitHub-touching work units ≥ 1)
-or IDLE (count = 0). The shared FSM keeps a reference counter that
-each driving plugin increments on its own work-start hook and
-decrements on its own work-end hook. Only the 0↔1 boundary
-triggers a state transition; intermediate counter movements (and
-all interleavings of github-plugin hooks with hivemoot-plugin
-hooks) are no-ops.
+States: ACTIVE (count of in-flight fleet-member jobs ≥ 1) or IDLE
+(count = 0). The hivemoot plugin's FSM keeps a reference counter
+incremented on the plugin's own `on_job_started` hook and
+decremented on its own `on_job_finished` hook. Only the 0↔1
+boundary triggers a state transition; intermediate counter
+movements are no-ops.
 
 - **IDLE → ACTIVE** (counter goes 0→1, first work unit started):
   mint `GITHUB_TOKEN`, set env, start a background refresh loop
@@ -999,20 +1033,21 @@ not always-on):**
   types can all overlap arbitrarily; the FSM only transitions when
   all of them have released the wake lock.
 
-**The shared FSM** (Phase L′, lives at
-`agent/cli/hivemoot_agent/lib/github_auth_fsm.py`):
+**The FSM** (Phase L′, lives at
+`agent/cli/hivemoot_agent/plugins_builtin/hivemoot/auth/fsm.py`,
+internal to the hivemoot plugin):
 
 ```python
 # pseudocode — final implementation lands in Phase L′. This shape
-# satisfies the four invariants the prose claims:
+# satisfies five invariants the prose claims:
 #   I1. While ACTIVE, GITHUB_TOKEN is always populated by the time
-#       any work unit's start-hook returns.
+#       any job-start hook returns.
 #   I2. While IDLE, GITHUB_TOKEN is not in env and no refresh runs.
 #   I3. A failed wake-up leaves the counter at 0 so the next
-#       work-start retries cleanly (not stuck at count > 0 with no
+#       job-start retries cleanly (not stuck at count > 0 with no
 #       token).
 #   I4. A refresh-loop crash drives an idle transition + log so the
-#       next work-start re-mints from scratch.
+#       next job-start re-mints from scratch.
 #   I5. Every asyncio.create_task gets add_done_callback so unhandled
 #       exceptions surface instead of being silently swallowed.
 import asyncio
@@ -1022,26 +1057,26 @@ from datetime import UTC, datetime
 
 REFRESH_SAFETY_MARGIN_SECONDS = 300
 
-class GitHubAuthFSM:
-    """Activity-gated reference-counted FSM. Process singleton.
+class HivemootAgentAuthFSM:
+    """Activity-gated reference-counted FSM owned by the hivemoot plugin.
 
-    Driven by ANY plugin whose hooks correspond to GitHub-touching
-    work — currently github/ (per-repo) and hivemoot/ (fleet tasks).
-    Each driving plugin's on_job_started/on_job_finished translates
-    to fsm.on_work_start(plugin_name) / on_work_end(plugin_name).
-    The plugin name is opaque — the FSM only needs the start/end
-    pairing to maintain the counter.
+    Drives GITHUB_TOKEN env management around fleet-member jobs
+    (anything triggered by hivemoot.tasks). The hivemoot plugin
+    instantiates this once at startup and routes its own
+    on_job_started/on_job_finished into on_work_start/on_work_end.
+    Internal to the hivemoot plugin — not imported by github plugin
+    or any other plugin.
     """
 
     def __init__(self, apiarist_client, repo: str):
         self._apiarist = apiarist_client
         self._repo = repo
-        # Counter of GitHub-touching work units in flight, summed
-        # across ALL driving plugins. github/ contributes its own
-        # PR-watcher work, hivemoot/ contributes fleet tasks; both
-        # increments target the same counter. Multi-repo single-
-        # process agents are out of scope V1 (process-global env
-        # discussion above) — bound to a single repo at construction.
+        # Counter of in-flight fleet-member jobs. Only incremented
+        # by the hivemoot plugin's own lifecycle hooks (see wiring
+        # below); per-repo agents triggered by other plugins are on
+        # the static-PAT path in V1 and don't drive this FSM.
+        # Multi-repo single-process agents out of scope V1 — bound
+        # to a single repo at construction.
         self._active = 0
         self._refresh_task: asyncio.Task | None = None
         # Transition lock: serializes IDLE↔ACTIVE state changes so a
@@ -1135,43 +1170,44 @@ class GitHubAuthFSM:
             self._active = 0
 ```
 
-**Plugin drivers** (Phase L′) — each plugin hooks its own
-lifecycle events into the shared FSM:
-
-```python
-# In agent/cli/hivemoot_agent/plugins_builtin/github/__init__.py
-from hivemoot_agent.lib.github_auth_fsm import get_fsm
-
-class GithubPlugin:
-    async def on_job_started(self, job) -> None:
-        if _is_github_touching(job):
-            await get_fsm().on_work_start("github")
-
-    async def on_job_finished(self, job) -> None:
-        if _is_github_touching(job):
-            await get_fsm().on_work_end("github")
-```
+**Plugin wiring** (Phase L′) — only the hivemoot plugin touches
+the FSM. The github plugin remains completely unchanged.
 
 ```python
 # In agent/cli/hivemoot_agent/plugins_builtin/hivemoot/__init__.py
-from hivemoot_agent.lib.github_auth_fsm import get_fsm
+from .auth.fsm import HivemootAgentAuthFSM
+from .auth.apiarist_client import ApiaristClient
 
 class HivemootPlugin:
+    async def setup(self, ctx) -> None:
+        # Instantiated once per agent process at plugin setup.
+        # Bound to one repo via AGENT_SERVICE → repo lookup (apiary
+        # deploy populates this). The apiarist UDS path comes from
+        # the deploy-staged config (default /run/apiarist.sock
+        # inside the container, bind-mounted from the host).
+        self._auth = HivemootAgentAuthFSM(
+            apiarist_client=ApiaristClient(
+                socket_path=ctx.config.apiarist_socket_path,
+            ),
+            repo=ctx.config.agent_repo,
+        )
+
     async def on_job_started(self, job) -> None:
         # All hivemoot.tasks-triggered jobs are GitHub-touching by
         # nature (the agent will use gh/git for PR review, commit,
-        # etc.) — drive the FSM unconditionally for these jobs.
-        await get_fsm().on_work_start("hivemoot.tasks")
+        # etc.). Drive the FSM unconditionally — the FSM tolerates
+        # extra start/end pairs gracefully via the reference counter.
+        await self._auth.on_work_start("hivemoot.tasks")
 
     async def on_job_finished(self, job) -> None:
-        await get_fsm().on_work_end("hivemoot.tasks")
+        await self._auth.on_work_end("hivemoot.tasks")
 ```
 
-`get_fsm()` returns the process-singleton FSM instance, lazily
-initialized on first call from the active plugin's wiring (it
-needs the apiarist client and repo binding from `AGENT_SERVICE`).
-Both plugins import the same module, so both increments target the
-same counter; the FSM lock serializes interleavings between them.
+The github plugin (`plugins_builtin/github/`) is untouched —
+`gh`/`octokit`/git wrappers continue to read `GITHUB_TOKEN` from
+env. Whether the env value comes from a static PAT (deploy-staged,
+non-bot repos) or from the hivemoot plugin's FSM (apiarist-minted,
+bot-installed repos) is invisible to the github plugin.
 
 **Lifecycle (showing overlapping mixed work types):**
 
@@ -1221,6 +1257,14 @@ rotation, etc. would all benefit).
   stays at 0 (invariant I3). Agent runtime treats it as a transient
   failure and retries per its existing policy. The next work-start
   re-attempts the wake-up cleanly.
+- *Repo not covered by an installation* (`BACKEND_FORBIDDEN` from
+  the daemon, mapped from backend HTTP 403) → `_wake_up` raises
+  the same way as the unreachable case; the job fails, runtime
+  escalates. This is the operationally-most-likely failure mode
+  for a misconfigured repo (operator forgot to install the bot
+  before flagging the agent for `auth: github-app`). The error
+  message includes the repo name so the operator sees immediately
+  what to fix; no silent fallback to a stale token or static PAT.
 - *Refresh fails mid-active* → `_on_refresh_died` callback fires,
   logs the exception loudly, schedules `_reset_after_refresh_crash`
   which clears env + zeroes the counter. Any work units still
@@ -1290,6 +1334,19 @@ reach them.
 
 ## 13. Migration plan
 
+**Pre-flight (every phase, every repo):**
+
+Before flagging ANY repo for apiarist auth, **verify the Hivemoot
+Bot GitHub App is installed on it**. Apiarist mints installation
+access tokens; without an installation, the mint returns
+`BACKEND_FORBIDDEN` and the affected agent jobs fail immediately.
+Check via the App admin UI (`https://github.com/apps/<bot-name>`
+→ Configure → Repository access). For org-wide installs, "All
+repositories" covers everything; for per-repo installs, each repo
+needs to be added explicitly. Repos without the bot installed must
+remain on the static-PAT path. Skipping this check is the single
+most common failure mode for an apiarist rollout.
+
 **Phase 0 — Build and shadow** (week 1)
 
 - Implement V1 daemon (token brokering only).
@@ -1299,14 +1356,30 @@ reach them.
 - Verify backend `/api/github/installation-tokens` endpoint deployed to
   hivemoot.dev (separate but coordinated piece).
 
-**Phase 1 — Foxstoria first** (week 2)
+**Phase 1 — Drone pilot** (week 2)
 
-- Install Hivemoot Bot App on `dkjazz/the-storytimes-firebase`.
-- Verify a *separate* agent token is generated for that installation
-  (requires multi-installation apiary schema, §9 future bullet).
-- Flag `foxstoria` repo block with `auth: github-app`.
-- Deploy and observe one full review cycle. Audit logs show exactly one
-  token mint per agent run, ≤1h TTL, scoped to `dkjazz/the-storytimes-firebase`.
+Drone is the V1 pilot target (its existing PAT is already invalid
+as of 2026-04-25, so it's broken anyway and migration won't
+regress anything). Drone runs on `hivemoot/hivemoot`, which has
+the Hivemoot Bot installed already.
+
+- Confirm Hivemoot Bot is installed on `hivemoot/hivemoot` (should
+  be — check via App admin UI).
+- Wire the hivemoot plugin's auth FSM (Phase L′ — see §12.3).
+- Flag drone's repo block in `apiary.yaml` with `auth: github-app`.
+- Deploy and observe one full review cycle. Audit logs should show
+  exactly one token mint per ACTIVE period, ≤1h TTL, scoped to
+  `hivemoot/hivemoot`.
+
+**Phase 1.5 — Foxstoria** (week 2-3)
+
+Foxstoria is a per-repo agent (triggered by github plugin, not
+hivemoot.tasks), so under the V1 architecture it stays on the
+static-PAT path (see §12.3). Migrating per-repo agents to apiarist
+is deferred — see the V1.1 considerations note below. For now:
+keep foxstoria on static PAT in `apiary.secrets.yaml` until
+either (a) we ship the engine-level AuthManager option, or
+(b) per-repo agents are unified into hivemoot.tasks triggers.
 
 **Phase 2 — Validate, document, train** (week 3)
 
@@ -1346,7 +1419,7 @@ reach them.
 | **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
 | **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
 | **K.** Apiary integration — deploy script | `apiary/deploy-apiary.sh` patch (§12.2): when `auth: github-app`, skip static token, bind-mount `/run/apiarist.sock`, set `AGENT_SERVICE` + `AGENT_TOKEN_SLOT` env. PR opened against `hivemoot/apiary` (no fleet review there, self-merge per CLAUDE.md memory). | 0.5d | — (parallel) |
-| **L′.** Agent runtime — activity-gated GitHub auth | New shared FSM module at `agent/cli/hivemoot_agent/lib/github_auth_fsm.py` implementing the activity-gated state machine (§12.3) — reference-counted IDLE/ACTIVE state, mint+set `GITHUB_TOKEN` on 0→1 transition with proactive refresh loop, clear env on 1→0 transition. Wired into both `plugins_builtin/github/` (per-repo agents) and `plugins_builtin/hivemoot/` (fleet members) — both plugins drive the same singleton FSM via their respective `on_job_started`/`on_job_finished` hooks because the engine fires lifecycle hooks only on the triggering plugin (per `engine.py:1208,1316`), and these are the two trigger sources covering apiarist's full target population. Tiny apiarist Python client lib (~50 lines) lives alongside for the UDS round-trip. | 1.5d | D, E |
+| **L′.** Hivemoot plugin — activity-gated GitHub auth | New `agent/cli/hivemoot_agent/plugins_builtin/hivemoot/auth/` submodule containing the FSM (`fsm.py`, the activity-gated state machine from §12.3) and the apiarist UDS client (`apiarist_client.py`, ~50 LOC). The hivemoot plugin instantiates one FSM at startup and routes its own `on_job_started`/`on_job_finished` hooks into the FSM. Apiarist auth is a hivemoot-architecture-specific feature (apiarist itself, agent_token bearers, per-installation policy), so it lives where hivemoot architecture lives. The github plugin is **not touched** — it remains a tool provider, reading `GITHUB_TOKEN` from env regardless of whether the value is a static PAT or apiarist-minted token. **Hard precondition: target repo must have the Hivemoot Bot GitHub App installed** — apiarist mints installation tokens, which only exist where the App is installed; non-installed repos stay on the static-PAT path forever (or until the operator installs the bot). | 1.5d | D, E |
 | **M.** Shadow deploy on Hive | rsync, install, verify socket creation, exercise via examples/client.py without flagging any service. | 0.5d | J, K, L′ |
 | **N.** Foxstoria pilot | flag foxstoria's repo block with `auth: github-app` + `agent_token: foxstoria-builder`, deploy, observe one full agent run cycle. Verify ghs_ token reaches GitHub successfully and zero token files appear on disk. | 0.5d | M, **backend endpoint live** |
 | **O.** Runbook + metrics | `apiarist/README.md` ops guide. Document `journalctl -u apiarist`, common failure modes, how to validate a service is using App auth vs PAT. | 0.5d | N |
