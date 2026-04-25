@@ -186,8 +186,11 @@ all of the above without restructuring.**
   agent makes the request.
 - **Tokens NEVER touch disk.** Apiarist holds them in process memory
   for a short cache window (default 5 min); the agent receives them
-  over the socket and holds them in process memory for the duration
-  of one or a few GitHub API calls, then they're garbage-collected.
+  over the socket and exposes them to its tooling via the
+  `GITHUB_TOKEN` env var for the duration of the agent's ACTIVE
+  period (any GitHub-touching work in flight). When the agent
+  becomes fully idle, the env var is cleared. See §12.3 for the
+  activity-gated FSM and what "ACTIVE period" means in practice.
   No on-disk file at any layer.
 - Filesystem permissions on `/run/apiarist.sock` (chmod 660, group
   `agent`) gate which processes can request mints. Apiary deploy adds
@@ -489,7 +492,7 @@ selector is absent, apiarist falls through to the `default` slot
 
 | Threat | Defense |
 |---|---|
-| Container compromise | Token in container is short-lived (1h max from GitHub, but only resident in agent process memory while in active use — typically seconds). GitHub-side narrowing via `repository_ids` + `permissions` means even a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into all containers using App auth) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. |
+| Container compromise | Token in container is short-lived (1h max from GitHub) and resident in `os.environ["GITHUB_TOKEN"]` only during the agent's ACTIVE period (any GitHub-touching work in flight; see §12.3). When the agent goes IDLE, the env var is cleared. Realistic ACTIVE periods are minutes to a few hours; never the container's full uptime. GitHub-side narrowing via `repository_ids` + `permissions` means even a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into all containers using App auth) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. **Subprocess caveat:** subprocesses spawned during ACTIVE inherit the env at fork time and retain `GITHUB_TOKEN` until they exit; the parent's IDLE-time cleanup doesn't reach them. Short-lived `gh`/`git` invocations (the common case) are fine. Long-running spawned processes inheriting the env need to be explicitly bounded by the caller. |
 | Cross-service token theft | An agent claiming `service: builder-claude` in its UDS request still authenticates against the **builder-claude token's policy** server-side. Apiarist trusts `AGENT_SERVICE` env (set by deploy, not by container code), and the broker→backend flow uses the bearer keyed off that. A compromised builder container cannot trick apiarist into minting against guard's token by lying about its service — apiarist's per-service policy lookup is the gate. (This does mean a fully-compromised container can mint within its OWN policy without bound — which is exactly the policy-shrink mitigation: don't grant a token broader scope than the agent legitimately needs.) |
 | Apiarist process memory dump | Disable core dumps via systemd `LimitCORE=0`. Lock pages with `mlock`-equivalent (`MemoryDenyWriteExecute=true`). Restart-on-crash is already systemd's default, so a transient crash doesn't leak the cache to disk via core file. Cache TTL of 5 min (default) bounds the in-memory residency window. |
 | Local user escalation | Socket is `chmod 660`, owned by `apiarist:agent`. Only members of group `agent` (the unprivileged uid the apiary docker-run gives containers) can connect. Other local users get EACCES. The daemon `chown`s the socket and asserts the configured `socket_group` exists at startup; mismatch logs loudly to stderr and refuses to start. asyncio's `start_unix_server` does NOT set group ownership automatically — explicit chown is required after bind. |
@@ -899,35 +902,53 @@ or privileged flag is needed.
 
 ### 12.3 Agent runtime change (monorepo, not apiary)
 
-A small auth plugin in `agent/cli/hivemoot_agent/plugins_builtin/github_auth/`
-(Phase L′ PR against `hivemoot/hivemoot`) implementing a two-state
-machine driven by **whether the agent has any active work**.
+An activity-gated FSM lives **inside the existing GitHub plugin** at
+`agent/cli/hivemoot_agent/plugins_builtin/.../github` (not a new
+plugin). Engine constraint: daemon-mode `run_agent` fires lifecycle
+hooks only on the *triggering* plugin, not on every enabled plugin
+broadcast-style. Putting the FSM inside the existing plugin avoids
+needing to change the engine first; the plugin's hooks already fire
+exactly when its own GitHub-touching work runs, which is the only
+time `GITHUB_TOKEN` actually needs to be in env.
 
-States: ACTIVE (count of in-flight work units ≥ 1) or IDLE (count = 0).
-The plugin keeps a generic reference counter that any work source in
-the runtime can increment — provider runs, task executions, scheduled
-jobs, future work types — they all contribute uniformly. Only the
-0↔1 boundary triggers a state transition; intermediate counter
-movements are no-ops.
+States: ACTIVE (count of in-flight GitHub-touching work units ≥ 1)
+or IDLE (count = 0). The plugin keeps a reference counter that
+increments on every work-start hook the engine fires and decrements
+on every work-end hook. Only the 0↔1 boundary triggers a state
+transition; intermediate counter movements are no-ops.
 
 - **IDLE → ACTIVE** (counter goes 0→1, first work unit started):
-  mint `GITHUB_TOKEN`, start a background refresh loop that re-mints
-  at `expires_at - 5min`.
+  mint `GITHUB_TOKEN`, set env, start a background refresh loop
+  that re-mints at `expires_at - 5min`.
 - **ACTIVE → IDLE** (counter goes 1→0, **last** work unit ended —
-  i.e., all overlapping/chained work is fully drained): cancel the
-  refresh loop, clear `GITHUB_TOKEN` from env.
+  i.e., all overlapping/chained GitHub work is fully drained):
+  cancel the refresh loop (and await it to drain), clear
+  `GITHUB_TOKEN` from env.
 
 The "fully idle" definition is critical: a single task ending is just
 a decrement (`count--`); the state only transitions to IDLE when
-**every** work source has released the wake lock. This matters for
-chained or overlapping work — task A ending while scheduled job B is
-still running does NOT trigger cleanup, because the agent is still
-busy from B's perspective.
+**every** GitHub-touching work source has released the wake lock.
+This matters for chained or overlapping work — task A ending while
+task B is still running does NOT trigger cleanup, because the agent
+is still busy from B's perspective.
 
 While ACTIVE, all the agent's existing tooling (`gh`, `git` via
 askpass, `octokit`, `PyGithub`) reads `GITHUB_TOKEN` from env and
 just works. While IDLE, no token is minted, no token sits in env,
 no refresh runs.
+
+**Single-instance, single-repo invariant (V1):** one plugin instance
+per agent process, bound to one repo via `AGENT_SERVICE` lookup.
+`os.environ["GITHUB_TOKEN"]` is process-global — there is one slot,
+not one per repo — so an agent process running concurrent work for
+two different repos would have the two repo's tokens stomp each
+other in env, last-writer-wins. Multi-repo agents in a single
+process are out of scope for V1 and the runtime should refuse to
+register a second plugin instance. (Multi-repo agents today already
+run as separate containers per the apiary model, so this constraint
+matches existing reality.) Future V2+ option: per-work-unit env
+injection via `subprocess.run(env=...)` rather than process-global
+mutation, when/if multi-repo single-process agents become a need.
 
 **Why activity-gated refresh (not container-startup, not per-trigger,
 not always-on):**
@@ -954,8 +975,18 @@ not always-on):**
 **The whole plugin** (Phase L′):
 
 ```python
-# pseudocode — ~30 LOC final shape
+# pseudocode — final implementation lands in Phase L′. This shape
+# satisfies the four invariants the prose claims:
+#   I1. While ACTIVE, GITHUB_TOKEN is always populated by the time
+#       any work unit's start-hook returns.
+#   I2. While IDLE, GITHUB_TOKEN is not in env and no refresh runs.
+#   I3. A failed wake-up leaves the counter at 0 so the next
+#       work-start retries cleanly (not stuck at count > 0 with no
+#       token).
+#   I4. A refresh-loop crash drives an idle transition + log so the
+#       next work-start re-mints from scratch.
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime
 
@@ -965,34 +996,65 @@ class GitHubAuthPlugin:
     def __init__(self, apiarist_client, repo: str):
         self._apiarist = apiarist_client
         self._repo = repo
-        # Generic active-work counter. Anything that represents
-        # in-flight work (provider runs, tasks, scheduled jobs,
-        # future work types) increments this. The plugin doesn't
-        # care WHAT kind of work; only whether the agent has
-        # anything active right now.
+        # Counter of GitHub-touching work units in flight. Incremented
+        # by on_work_start, decremented by on_work_end. Multi-repo
+        # agents are out of scope for V1 (see process-global env
+        # discussion above), so this is per-process and counts only
+        # this plugin's hook firings.
         self._active = 0
         self._refresh_task: asyncio.Task | None = None
+        # Transition lock: serializes IDLE↔ACTIVE state changes so a
+        # second on_work_start arriving during wake-up cannot return
+        # to its caller before GITHUB_TOKEN is set (invariant I1).
+        # Wraps both on_work_start and on_work_end so the cleanup
+        # path is also serialized against new work arrivals.
+        self._lock = asyncio.Lock()
 
     async def on_work_start(self, _source) -> None:
-        self._active += 1
-        if self._active == 1:
-            await self._wake_up()  # IDLE → ACTIVE (first work in)
+        async with self._lock:
+            if self._active == 0:
+                # IDLE → ACTIVE: wake-up MUST complete before
+                # incrementing. If wake-up raises, counter stays at 0
+                # so the runtime's retry of this work-start re-attempts
+                # cleanly rather than stranding count > 0 with no token
+                # (invariant I3 — addresses builder's gap and aligns
+                # with the failure-mode prose below).
+                await self._wake_up()
+            self._active += 1
 
     async def on_work_end(self, _source) -> None:
-        self._active -= 1
-        if self._active == 0:
-            await self._go_idle()  # ACTIVE → IDLE (fully drained)
+        async with self._lock:
+            # max(0, ...) clamp defends against a buggy work source
+            # that fires on_work_end without a matching on_work_start.
+            # Without this, _active goes negative and the 0→1
+            # transition never re-fires; the agent stops minting.
+            self._active = max(0, self._active - 1)
+            if self._active == 0:
+                await self._go_idle()  # ACTIVE → IDLE (fully drained)
 
     async def _wake_up(self) -> None:
         token = await self._apiarist.mint_token(repo=self._repo)
         os.environ["GITHUB_TOKEN"] = token.value
-        self._refresh_task = asyncio.create_task(
-            self._refresh_loop(token.expires_at)
-        )
+        task = asyncio.create_task(self._refresh_loop(token.expires_at))
+        # Surface refresh-loop crashes as state transitions instead
+        # of letting asyncio's default exception handler swallow them
+        # silently (invariant I4). Without add_done_callback the
+        # refresh chain dies invisibly and tokens stop being renewed.
+        task.add_done_callback(self._on_refresh_died)
+        self._refresh_task = task
 
     async def _go_idle(self) -> None:
-        if self._refresh_task:
+        if self._refresh_task is not None:
             self._refresh_task.cancel()
+            # AWAIT the cancelled task before popping env so a refresh
+            # in flight can't write env AFTER our pop (invariant I2).
+            # Task.cancel() is synchronous — only requests cancellation
+            # at the next checkpoint. If the loop is mid-await on
+            # mint_token, the mint return + os.environ assignment
+            # both run before cancellation reaches it; we'd lose the
+            # race and leave a token in env post-IDLE.
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._refresh_task
             self._refresh_task = None
         os.environ.pop("GITHUB_TOKEN", None)
 
@@ -1006,6 +1068,29 @@ class GitHubAuthPlugin:
             new = await self._apiarist.mint_token(repo=self._repo)
             os.environ["GITHUB_TOKEN"] = new.value
             expires_at = new.expires_at
+
+    def _on_refresh_died(self, task: asyncio.Task) -> None:
+        # Cancellation = normal _go_idle path, no-op.
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return  # refresh_loop is infinite, won't reach here normally
+        log.error("refresh loop crashed", exc_info=exc)
+        # Schedule the idle transition asynchronously (the callback
+        # is a sync context). The next on_work_start will re-wake.
+        asyncio.create_task(self._reset_after_refresh_crash())
+
+    async def _reset_after_refresh_crash(self) -> None:
+        async with self._lock:
+            os.environ.pop("GITHUB_TOKEN", None)
+            self._refresh_task = None
+            # Force the next on_work_start to re-wake even if work
+            # units are still nominally in flight. They'll see env
+            # cleared, fail with 401, runtime retries them — and
+            # the retry's on_work_start finds _active = 0 and mints
+            # fresh.
+            self._active = 0
 ```
 
 **Lifecycle (showing overlapping mixed work types):**
@@ -1031,37 +1116,64 @@ triggers the IDLE transition. This is the "fully idle" definition.
 
 **What the agent runtime needs to expose:**
 
-Generic hooks: `on_work_start(source)` and `on_work_end(source)`,
-fired around every work unit (provider run, scheduled task, future
-work types). The plugin doesn't introspect `source` — it just
-maintains the counter. If the runtime already exposes per-task or
-per-provider lifecycle events (most plugin systems do), this is a
-thin adapter; if not, adding generic work-lifecycle hooks is a
-one-time investment that pays off across all plugins that need
-active/idle tracking (metrics, logging, secret rotation, etc.).
+Per-plugin lifecycle hooks: `on_work_start(source)` and
+`on_work_end(source)`, fired on this plugin around every work unit
+the plugin is involved in. The hooks are called **only on the
+triggering plugin** (the existing `run_agent` daemon-mode behavior),
+not broadcast to every enabled plugin. That's why the FSM lives
+inside the existing GitHub plugin: the plugin's own hook firings
+correspond exactly to GitHub-touching work, which is the only time
+`GITHUB_TOKEN` actually needs to be in env.
+
+This means the plugin doesn't track *all* agent work — only its own.
+A non-GitHub work unit running concurrently with GitHub work doesn't
+contribute to the counter, which is fine: it doesn't need
+`GITHUB_TOKEN` either. Future engine change (broadcast hooks) would
+allow splitting the FSM into a dedicated `github_auth` plugin and
+narrowing the GitHub plugin's responsibilities, but isn't needed for
+V1 correctness.
 
 **Failure modes:**
 
-- *Apiarist unreachable when waking up* → `_wake_up` raises,
-  the work unit that triggered the 0→1 transition fails to start.
-  Agent runtime treats it as a transient failure and retries per
-  its existing policy. The next work-start re-attempts the wake-up.
-  Counter stays at 0 since the failed start never incremented it.
-- *Refresh fails mid-active* → exception in the background task;
-  agent runtime should treat unhandled task exceptions as fatal to
-  the active period (trigger an idle transition + restart). The
-  next work-start mints fresh.
+- *Apiarist unreachable when waking up* → `_wake_up` raises inside
+  the lock held by `on_work_start`; the work unit that triggered
+  the 0→1 transition fails to start. The lock is released, counter
+  stays at 0 (invariant I3). Agent runtime treats it as a transient
+  failure and retries per its existing policy. The next work-start
+  re-attempts the wake-up cleanly.
+- *Refresh fails mid-active* → `_on_refresh_died` callback fires,
+  logs the exception loudly, schedules `_reset_after_refresh_crash`
+  which clears env + zeroes the counter. Any work units still
+  nominally in flight will see env cleared on their next GitHub
+  call, fail with 401, and the runtime retries them. The retry's
+  `on_work_start` finds `_active = 0` and mints fresh (invariant I4).
 - *401 mid-work* (clock skew, manual revocation via App admin UI)
   → agent's current GitHub call fails with normal HTTP error,
   surfaces as a work-unit failure. Agent runtime retries; the retry
   hits the still-active state, re-uses the env value (or the refresh
-  loop has already updated it, depending on timing).
+  loop has already updated it, depending on timing). If the 401
+  recurs the work unit fails permanently and the runtime escalates
+  per its retry policy.
 
-**Escape hatch for tasks that genuinely span >1h with no provider
+**Escape hatch for tasks that genuinely span >1h with no work-unit
 boundaries:** the task can call `apiarist_client.mint_token(repo)`
-inline at the point it knows the env token may have aged out.
-Opt-in, no plugin change required. Rare in practice — the refresh
-loop covers steady-state ACTIVE periods regardless of duration.
+inline at the point it knows the env token may have aged out. The
+inline mint call should also update `os.environ["GITHUB_TOKEN"]` if
+the task expects sibling tooling (subprocesses, other libraries
+reading env) to see the fresh value. Opt-in, no plugin change
+required. Rare in practice — the refresh loop covers steady-state
+ACTIVE periods regardless of duration.
+
+**Subprocess env inheritance** (V1 trust model honesty): when the
+agent spawns subprocesses during ACTIVE — `gh`, `git` (via
+askpass), anything else exec'd — those subprocesses receive a
+fork-time copy of env including `GITHUB_TOKEN`. The token persists
+in the subprocess until **the subprocess** exits, not until the
+parent transitions to IDLE. Short-lived `gh`/`git` invocations
+(the common case) are fine. Long-running spawned processes (a
+watch loop, a wrapper that never exits) need to be explicitly
+bounded by the caller; the parent's `os.environ.pop` doesn't
+reach them.
 
 **What this design does NOT do** (intentionally):
 
@@ -1070,12 +1182,23 @@ loop covers steady-state ACTIVE periods regardless of duration.
   during ACTIVE periods; idle = zero burn.
 - Reactively re-mint on 401. The refresh loop covers steady-state
   expiry; if a 401 still slips through (clock skew, revocation),
-  the task fails loud and the runtime retry path kicks in.
+  the work unit fails loud and the runtime retry path kicks in.
+- Mint per-work-unit. Overlapping/chained work units share the
+  active token via the FSM; per-unit minting would burn redundant
+  mints during chained work and tear down env between rapid-fire
+  triggers.
 - Restrict in-process token lifetime during ACTIVE. Once
   `GITHUB_TOKEN` is in env, agent code and subprocesses can read
   it. Strong enforcement of "no token in agent memory" would
   require the V3+ HTTPS proxy model (§11 future hardening). V1
   enforcement is `(time + scope + audit)` per §10.
+- Restrict subprocess token lifetime once spawned. See subprocess
+  inheritance note above. Token leaves the parent's control at
+  fork time; the parent's IDLE cleanup doesn't reach already-running
+  subprocesses.
+- Track non-GitHub work. The FSM increments only on this plugin's
+  own hooks. Non-GitHub work running concurrently doesn't
+  contribute to the counter and doesn't need `GITHUB_TOKEN` either.
 
 ## 13. Migration plan
 
@@ -1135,7 +1258,7 @@ loop covers steady-state ACTIVE periods regardless of duration.
 | **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
 | **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
 | **K.** Apiary integration — deploy script | `apiary/deploy-apiary.sh` patch (§12.2): when `auth: github-app`, skip static token, bind-mount `/run/apiarist.sock`, set `AGENT_SERVICE` + `AGENT_TOKEN_SLOT` env. PR opened against `hivemoot/apiary` (no fleet review there, self-merge per CLAUDE.md memory). | 0.5d | — (parallel) |
-| **L′.** Agent runtime — UDS-based mint | In `agent/cli/hivemoot_agent/plugins_builtin/.../github` (monorepo, opened as separate PR against `hivemoot/hivemoot`, fleet-reviewed): branch on `AGENT_SERVICE` env; when present, replace static `GH_TOKEN` reads with mint-via-UDS. Tiny apiarist Python client lib (~50 lines) lives in monorepo so the agent can import it. | 1.5d | D, E |
+| **L′.** Agent runtime — activity-gated GitHub auth | In the existing `agent/cli/hivemoot_agent/plugins_builtin/.../github` plugin (monorepo, opened as separate PR against `hivemoot/hivemoot`, fleet-reviewed): add the activity-gated FSM described in §12.3 — reference-counted IDLE/ACTIVE state, mint+set `GITHUB_TOKEN` on 0→1 transition with proactive refresh loop, clear env on 1→0 transition. The FSM lives inside the existing plugin (not a new one) because the agent engine fires lifecycle hooks only on the triggering plugin. Tiny apiarist Python client lib (~50 lines) lives alongside it for the UDS round-trip. | 1.5d | D, E |
 | **M.** Shadow deploy on Hive | rsync, install, verify socket creation, exercise via examples/client.py without flagging any service. | 0.5d | J, K, L′ |
 | **N.** Foxstoria pilot | flag foxstoria's repo block with `auth: github-app` + `agent_token: foxstoria-builder`, deploy, observe one full agent run cycle. Verify ghs_ token reaches GitHub successfully and zero token files appear on disk. | 0.5d | M, **backend endpoint live** |
 | **O.** Runbook + metrics | `apiarist/README.md` ops guide. Document `journalctl -u apiarist`, common failure modes, how to validate a service is using App auth vs PAT. | 0.5d | N |
