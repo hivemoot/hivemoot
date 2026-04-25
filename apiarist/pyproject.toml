@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apiarist"
+description = "Host-side daemon for the Hivemoot fleet — token broker, agent spawner."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dynamic = ["version"]
+authors = [{ name = "Hivemoot" }]
+keywords = ["hivemoot", "apiary", "agent", "daemon", "github-app"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+]
+# Runtime dependencies are intentionally empty in Phase A.
+# Each subsequent phase adds only what it needs:
+#   Phase B → structlog, pydantic, pyyaml
+#   Phase C → httpx
+#   Phase D → (stdlib asyncio is enough)
+# See DESIGN.md §14 for the full phase plan.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+apiarist = "apiarist.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hivemoot/hivemoot"
+Source = "https://github.com/hivemoot/hivemoot/tree/main/apiarist"
+
+[tool.hatch.version]
+path = "src/apiarist/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apiarist"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
