@@ -20,13 +20,15 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: System :: Systems Administration",
 ]
-# Runtime dependencies are intentionally empty in Phase A.
-# Each subsequent phase adds only what it needs:
-#   Phase B → structlog, pydantic, pyyaml
+# Runtime dependencies grow per phase per DESIGN.md §14:
+#   Phase B → structlog, pydantic, pyyaml  (this PR)
 #   Phase C → httpx
 #   Phase D → (stdlib asyncio is enough)
-# See DESIGN.md §14 for the full phase plan.
-dependencies = []
+dependencies = [
+    "structlog>=24.1",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -34,6 +36,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "mypy>=1.10",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
