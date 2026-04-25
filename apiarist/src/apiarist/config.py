@@ -40,7 +40,13 @@ _VALID_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
 class Config(BaseModel):
     """All apiarist runtime knobs (DESIGN.md §9)."""
 
-    socket_path: Path = Path("/run/apiarist.sock")
+    # Default socket path lives inside /run/apiarist/, which the systemd
+    # unit creates via RuntimeDirectory=apiarist (owned by the apiarist
+    # user, mode 0755 — agent containers traverse it via +x to reach the
+    # socket inside). Using /run/apiarist.sock directly would require
+    # the daemon to write into root-owned /run/, which the hardened unit
+    # explicitly forbids via ProtectSystem=strict.
+    socket_path: Path = Path("/run/apiarist/apiarist.sock")
     socket_group: str = "apiarist"
     backend_url: str = "https://www.hivemoot.dev"
     apiary_secrets_path: Path = Path("/opt/apiary/apiary.secrets.yaml")

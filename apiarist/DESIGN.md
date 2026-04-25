@@ -41,7 +41,8 @@ filename, and unprivileged user account.
 | Systemd unit | `apiarist.service` |
 | User account | `apiarist` |
 | Group | `apiarist` |
-| IPC socket | `/run/apiarist.sock` |
+| IPC socket (host path) | `/run/apiarist/apiarist.sock` |
+| IPC socket (container path, post bind-mount) | `/run/apiarist.sock` |
 | Config dir | `/etc/apiarist/` (optional, see §6) |
 | State dir | `/var/lib/apiarist/` |
 | Log destination | systemd journald (`journalctl -u apiarist`) |
@@ -382,8 +383,8 @@ daemon-specific file. **No new mandatory config files** for V1.
    own env.
 3. **Optional config file:** `/etc/apiarist/apiarist.yaml` (or path from `--config`):
    ```yaml
-   socket_path: /run/apiarist.sock
-   socket_group: apiarist          # group that gets read access
+   socket_path: /run/apiarist/apiarist.sock   # host path; container sees /run/apiarist.sock via bind-mount
+   socket_group: agent             # group that gets read access (set by Phase J install.sh; daemon-default is "apiarist" for dev)
    backend_url: https://www.hivemoot.dev
    apiary_secrets_path: /opt/apiary/apiary.secrets.yaml
    apiary_config_path: /opt/apiary/apiary.yaml
@@ -501,26 +502,43 @@ selector is absent, apiarist falls through to the `default` slot
 **Filesystem layout, post-install:**
 
 ```
-/etc/apiarist/apiarist.yaml         apiary:apiarist  640
-/var/lib/apiarist/                  apiarist:apiarist  750
-/run/apiarist.sock                  apiarist:apiarist  660  (created by daemon at startup)
+/etc/apiarist/apiarist.yaml         root:apiarist      640
+/etc/apiarist/agent-token.env       root:apiarist      640  (env file with APIARIST_AGENT_TOKEN)
+/var/lib/apiarist/                  apiarist:apiarist  750  (created by systemd: StateDirectory)
+/run/apiarist/                      apiarist:apiarist  755  (created by systemd: RuntimeDirectory)
+/run/apiarist/apiarist.sock         apiarist:agent     660  (created by daemon; chgrp'd to agent
+                                                              for cross-container access — relies on
+                                                              apiarist user being in the 'agent' group)
 /opt/apiary/apiary.secrets.yaml     apiary:apiarist    640  (group adjusted at install time)
 /usr/local/bin/apiarist             root:root          755  (compiled wheel entry point)
 ```
 
-**Process attributes** (systemd unit):
+The socket lives **inside** `/run/apiarist/` rather than directly at
+`/run/apiarist.sock` because the systemd unit's `ProtectSystem=strict`
+denies write access to root-owned `/run/`. The
+`RuntimeDirectory=apiarist` directive gives the daemon a writable
+location it owns. Agent containers see the socket at `/run/apiarist.sock`
+inside the container — that's the bind-mount target, not the host path.
 
-```ini
-User=apiarist
-Group=apiarist
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-NoNewPrivileges=true
-ReadWritePaths=/run /var/lib/apiarist
-ReadOnlyPaths=/opt/apiary
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-```
+**Process attributes** (systemd unit): see
+[`apiarist/systemd/apiarist.service`](systemd/apiarist.service) for
+the source of truth — that file is the deploy contract and what
+`systemd-analyze security` actually measures (currently scoring
+1.4/10, bordering "exemplary"). Snippets here would just drift.
+
+Headline directives (the full set is in the unit):
+
+| Concern | Directive |
+|---|---|
+| Identity | `User=apiarist`, `Group=apiarist` (member of `agent`) |
+| FS isolation | `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `PrivateDevices=true` |
+| Writable surface | `RuntimeDirectory=apiarist`, `StateDirectory=apiarist` (only these two dirs) |
+| Privilege | `NoNewPrivileges=true`, empty `CapabilityBoundingSet=` and `AmbientCapabilities=` |
+| Memory | `MemoryDenyWriteExecute=true`, `LimitCORE=0` |
+| Network | `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` |
+| Syscalls | `SystemCallFilter=@system-service ~@privileged`, `SystemCallErrorNumber=EPERM` |
+| /proc | `ProtectProc=invisible`, `ProcSubset=pid` |
+| File creation | `UMask=0077` |
 
 ## 11. Backend dependencies
 
@@ -862,7 +880,9 @@ if [[ "$repo_auth" == "github-app" ]]; then
   # Apiarist brokers tokens — no static file, no env. Mount the
   # socket and tell the agent its identity.
   rm -f "$secrets_dir/github-token"
-  docker_run="${docker_run} -v /run/apiarist.sock:/run/apiarist.sock"
+  # Host-side socket lives in /run/apiarist/ (created by systemd's
+  # RuntimeDirectory directive); container sees it as /run/apiarist.sock.
+  docker_run="${docker_run} -v /run/apiarist/apiarist.sock:/run/apiarist.sock"
   docker_run="${docker_run} -e AGENT_SERVICE=${service_name}"
   docker_run="${docker_run} -e AGENT_TOKEN_SLOT=${agent_token_slot}"
 else
