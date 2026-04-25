@@ -1155,9 +1155,10 @@ class ContainerLifecycle:
             if self._active_jobs == 1:
                 # IDLE → ACTIVE — block on subscribers (invariant I1).
                 # Sequential not gather() so partial-success cleanup is
-                # ordered (cleanup runs in setup-order, ensures earlier
-                # subscribers' state is torn down BEFORE later ones'
-                # failure error is re-raised).
+                # ordered: rollback uses `reversed(completed)` (reverse
+                # setup order) so a later subscriber's state is torn
+                # down BEFORE the earlier subscriber it depends on —
+                # mirrors typical setup-time dependency direction.
                 completed: list[LifecycleSubscriber] = []
                 try:
                     for sub in self._subscribers:
@@ -1395,23 +1396,37 @@ class HivemootPlugin:
 #### 12.3.5a Required github plugin refactor for `refresh_token: true` repos
 
 The github plugin's current `setup()` does materially more than env
-population. Verified at `agent/cli/hivemoot_agent/plugins_builtin/github/__init__.py`:
+population. Full audit of token-dependent operations in
+`agent/cli/hivemoot_agent/plugins_builtin/github/__init__.py` and
+the `repo_manager.py` it calls into:
 
-- `:131-145` `validate()` — requires non-empty `plugins.github.token_file`
-- `:177` reads the token from that file
-- `:196` writes `GH_TOKEN` / `GITHUB_TOKEN` to env (the part the
-  subscriber would also do)
-- `:205-206` `_validate_repo_access(repo, token)` — fails closed if
-  the token doesn't grant repo access (needs token at setup time)
-- `:211-214` `clone_or_sync(repo, workspace, token, ...)` — clones
-  or fetches the repo into the workspace (needs token at setup time)
+- `__init__.py:131-145` `validate()` — requires non-empty `plugins.github.token_file`
+- `__init__.py:177` reads the token from that file
+- `__init__.py:185-186` `resolve_github_user(token)` (in
+  `repo_manager.py:230-249`) — runs `gh api user` with the token
+  in env to derive git identity (`name`, `email`). Skipped if
+  `cfg.git_name` is set, but the lookup itself needs a token.
+- `__init__.py:196` writes `GH_TOKEN` / `GITHUB_TOKEN` to env
+- `__init__.py:198-199` `_configure_git_auth()` (at `:38-60`) —
+  runs `gh auth setup-git` as a subprocess to register `gh` as
+  git's credential helper. Subprocess needs `GH_TOKEN` /
+  `GITHUB_TOKEN` populated when it runs (otherwise `gh` exits
+  unauthenticated).
+- `__init__.py:205-206` `_validate_repo_access(repo, token)` — fails
+  closed if the token doesn't grant repo access
+- `__init__.py:211-214` `clone_or_sync(repo, workspace, token, ...)`
+  — clones or fetches the repo into the workspace
+- `__init__.py:217` `configure_git_user(info.path, git_name, git_email)`
+  (in `repo_manager.py:218-227`) — sets git config in the cloned
+  workspace. Doesn't itself need a token but logically follows the
+  clone (depends on the cloned `info.path` existing).
 
 Plugin `setup()` runs once at engine boot, **before any job is
 dispatched**. The lifecycle subscriber's `on_active` hook fires only
-when the engine starts dispatching the first job. So the naive
-short-circuit ("setup() becomes a no-op") leaves `_validate_repo_access`
-and `clone_or_sync` un-run, and the workspace isn't ready when the
-first job actually starts.
+when the engine starts dispatching the first job. So everything
+that needs a token (lookup, env-set, gh-auth-setup, repo-access
+validation, clone/sync) and everything that depends on the clone
+output (configure_git_user) must defer to `on_active`.
 
 Phase L′ therefore includes a real refactor of github plugin's
 `setup()` (not just an env-population short-circuit). Two pieces:
@@ -1419,15 +1434,31 @@ Phase L′ therefore includes a real refactor of github plugin's
 **1. Split `setup()` into auth-free + auth-required halves.**
 
 - *auth-free* (always runs at engine boot): typed-config validation,
-  workspace-directory bootstrap, `gh` CLI binary discovery, etc.
-  Anything that doesn't need a token to complete.
-- *auth-required* (deferred to first ACTIVE): `_validate_repo_access`,
-  `clone_or_sync`. These move into a NEW github plugin lifecycle
-  subscriber (the github plugin becomes its OWN `LifecycleSubscriber`
-  in addition to a tool provider) whose `on_active` runs them
-  exactly once per ACTIVE period — guarded by an idempotency check
-  so subsequent on_active calls (from later ACTIVE periods) re-sync
-  if the workspace exists, or full-clone if not.
+  workspace-directory bootstrap (`mkdir -p`), `gh` CLI binary
+  discovery (which path), reading the typed config. Anything that
+  doesn't need a token to complete.
+- *auth-required* (deferred to first ACTIVE, runs in this exact
+  order):
+  1. `resolve_github_user(token)` — derive git identity (skip if
+     `cfg.git_name` set)
+  2. `_configure_git_auth()` — `gh auth setup-git`, needs env
+     populated (which the hivemoot auth subscriber's prior
+     on_active has done — see registration order)
+  3. `_validate_repo_access(repo, token)` — fail-closed access
+     check
+  4. `clone_or_sync(repo, workspace, token, ...)` — clone or fetch
+     into the workspace
+  5. `configure_git_user(info.path, git_name, git_email)` — git
+     config in the cloned workspace
+
+  All five move into a NEW github plugin lifecycle subscriber (the
+  github plugin becomes its OWN `LifecycleSubscriber` in addition to
+  a tool provider) whose `on_active` runs them in that order. An
+  idempotency guard at the subscriber level skips the work after
+  the first successful on_active per process — subsequent
+  IDLE→ACTIVE cycles re-mint the token but don't re-clone (clone
+  output is process-stable, only the env value cycles per
+  ACTIVE/IDLE).
 
 **2. Subscriber registration order matters.**
 
