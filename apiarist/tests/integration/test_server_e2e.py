@@ -14,6 +14,7 @@ import asyncio
 import grp
 import json
 import os
+import stat
 import struct
 import sys
 import tempfile
@@ -29,6 +30,7 @@ from apiarist.core.backend import BackendClient
 from apiarist.core.ipc import (
     LENGTH_PREFIX_BYTES,
     LENGTH_PREFIX_FORMAT,
+    MAX_PAYLOAD_BYTES,
     encode_message,
 )
 from apiarist.core.registry import Registry
@@ -524,6 +526,136 @@ async def test_bind_clears_stale_socket_file(sock_path: Path) -> None:
     )
     await server.stop()
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_socket_has_mode_660_and_correct_group(sock_path: Path) -> None:
+    """Positive contract: bind() leaves the socket at exactly 0o660 with
+    the configured group. Pairs with the umask fix in bind() — without
+    it, the brief world-writable window between bind and chmod could
+    let an unprivileged process connect (guard P3 #2).
+    """
+    server, backend = await _build_server(
+        sock_path,
+        lambda r: httpx.Response(200, json=_success_body()),
+    )
+    try:
+        st = sock_path.stat()
+        assert stat.S_IMODE(st.st_mode) == 0o660, (
+            f"socket mode should be 0o660 (group rw, others none); "
+            f"got {oct(stat.S_IMODE(st.st_mode))}"
+        )
+        expected_gid = grp.getgrnam(_current_user_group()).gr_gid
+        assert st.st_gid == expected_gid, (
+            f"socket group ownership wrong: expected gid {expected_gid} "
+            f"({_current_user_group()}), got {st.st_gid}"
+        )
+    finally:
+        await server.stop()
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_oversize_length_prefix_returns_bad_request(sock_path: Path) -> None:
+    """A client declaring a payload over MAX_PAYLOAD_BYTES must get a
+    BAD_REQUEST envelope, not have the server allocate a giant buffer
+    or hang reading bytes that will never arrive (guard P3 #3).
+    """
+    server, backend = await _build_server(
+        sock_path,
+        lambda r: httpx.Response(200, json=_success_body()),
+    )
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        reader, writer = await asyncio.open_unix_connection(
+            path=str(sock_path)
+        )
+        try:
+            # Length prefix declaring a body 1 byte over the cap; send
+            # NO body — the server must reject on the prefix alone, so
+            # whether or not the body would have arrived is moot.
+            oversize = MAX_PAYLOAD_BYTES + 1
+            writer.write(struct.pack(LENGTH_PREFIX_FORMAT, oversize))
+            await writer.drain()
+            prefix = await reader.readexactly(LENGTH_PREFIX_BYTES)
+            (length,) = struct.unpack(LENGTH_PREFIX_FORMAT, prefix)
+            resp_body = await reader.readexactly(length)
+            resp = json.loads(resp_body)
+            assert resp["ok"] is False
+            assert resp["error"]["code"] == "BAD_REQUEST"
+            assert "exceeds cap" in resp["error"]["message"]
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_slow_client_hits_read_timeout(sock_path: Path) -> None:
+    """A client that opens the socket but never writes must be hung up
+    on (with a BAD_REQUEST error envelope) within the configured read
+    timeout. Guard P3 #4 — defends against slowloris parking many
+    accepted-but-idle connections.
+
+    Override the timeout to 0.1s so the test runs quickly; the
+    behaviour is identical to the production 30s default.
+    """
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, json=_success_body())
+    )
+    backend = BackendClient(
+        backend_url="https://www.hivemoot.dev",
+        agent_token="hm_test",
+        client=httpx.AsyncClient(transport=transport),
+    )
+    cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
+    registry = Registry()
+    health_state = health_feature.HealthState()
+    health_feature.register(registry, state=health_state)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_state,
+        agent_token="hm_test",
+    )
+    server = Server(
+        socket_path=sock_path,
+        socket_group=_current_user_group(),
+        registry=registry,
+        read_timeout_seconds=0.1,
+    )
+    await server.bind()
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        reader, writer = await asyncio.open_unix_connection(
+            path=str(sock_path)
+        )
+        try:
+            # Don't write anything; just wait for the server to give up.
+            # If the response doesn't arrive within ~1s, the timeout
+            # logic is broken.
+            prefix = await asyncio.wait_for(
+                reader.readexactly(LENGTH_PREFIX_BYTES), timeout=1.0
+            )
+            (length,) = struct.unpack(LENGTH_PREFIX_FORMAT, prefix)
+            resp_body = await reader.readexactly(length)
+            resp = json.loads(resp_body)
+            assert resp["ok"] is False
+            assert resp["error"]["code"] == "BAD_REQUEST"
+            assert "no complete request" in resp["error"]["message"]
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+        await backend.aclose()
 
 
 @pytest.mark.asyncio

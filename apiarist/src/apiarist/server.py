@@ -67,10 +67,18 @@ class Server:
         socket_path: Path,
         socket_group: str,
         registry: Registry,
+        read_timeout_seconds: float = 30.0,
     ) -> None:
         self._socket_path = socket_path
         self._socket_group = socket_group
         self._registry = registry
+        # Bound the time a client can hold an accepted connection without
+        # finishing a request. Defends against slowloris-style attackers
+        # parking many sockets under our connection limit. 30s is well
+        # above expected p99 (clients fire one request immediately on
+        # connect; the round-trip is bounded by backend timeout, not by
+        # client behaviour).
+        self._read_timeout = read_timeout_seconds
         self._server: asyncio.base_events.Server | None = None
 
     async def bind(self) -> None:
@@ -118,14 +126,29 @@ class Server:
         # Make sure the parent dir exists before binding.
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=str(self._socket_path)
-        )
+        # Close the TOCTOU window between socket creation and chmod by
+        # tightening umask BEFORE bind. Linux creates the socket with
+        # mode `0o777 & ~umask`; with a typical operator umask of 022
+        # that produces a world-readable+writable socket for the
+        # microseconds between start_unix_server returning and our
+        # explicit chmod below. A racing inotify watcher inside the
+        # socket-group user could connect in that window. Tightening
+        # umask to 0o117 guarantees the socket is born with mode 0o660.
+        # We restore the prior umask immediately so this binding step
+        # doesn't bleed into the rest of the process. The explicit
+        # chown + chmod below is belt-and-braces.
+        old_umask = os.umask(0o117)
+        try:
+            self._server = await asyncio.start_unix_server(
+                self._handle_connection, path=str(self._socket_path)
+            )
+        finally:
+            os.umask(old_umask)
 
-        # asyncio doesn't set group/mode on the socket file — we have to.
-        # SO_PEERCRED-based attestation (DESIGN.md §11 future hardening)
-        # is the only thing that gates per-caller identity beyond this;
-        # for V1 the group permission IS the gate.
+        # asyncio doesn't set group ownership on the socket file — we
+        # have to. SO_PEERCRED-based attestation (DESIGN.md §11 future
+        # hardening) is the only thing that gates per-caller identity
+        # beyond this; for V1 the group permission IS the gate.
         os.chown(self._socket_path, -1, group_info.gr_gid)
         os.chmod(self._socket_path, 0o660)
 
@@ -175,7 +198,9 @@ class Server:
         """
         request_id: str | None = None
         try:
-            request = await self._read_request(reader)
+            request = await asyncio.wait_for(
+                self._read_request(reader), timeout=self._read_timeout
+            )
             request_id = request.request_id
             log.debug("request received", op=request.op, request_id=request_id)
 
@@ -221,6 +246,20 @@ class Server:
         except ProtocolError as exc:
             log.info("protocol error from client", error=str(exc))
             await self._send_error(writer, request_id, ErrorCode.BAD_REQUEST, str(exc))
+        except TimeoutError:
+            # Client opened the connection but didn't finish a complete
+            # request within self._read_timeout. Reply with BAD_REQUEST
+            # so a well-behaved (just slow) client still sees a useful
+            # error envelope before we hang up.
+            log.info(
+                "client read timeout",
+                request_id=request_id,
+                timeout_seconds=self._read_timeout,
+            )
+            await self._send_error(
+                writer, request_id, ErrorCode.BAD_REQUEST,
+                f"no complete request within {self._read_timeout}s",
+            )
         except (ConnectionResetError, BrokenPipeError):
             # Client hung up mid-request — nothing useful to log beyond debug.
             log.debug("client disconnected mid-request", request_id=request_id)

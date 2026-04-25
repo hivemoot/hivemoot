@@ -69,6 +69,15 @@ class TokenCache:
         self._entries: dict[_CacheKey, _CacheEntry] = {}
         # Per-installation locks for single-flight. Created lazily on
         # first use. Different installations get different locks.
+        #
+        # Bounded growth: the keys here are token fingerprints (V1: one
+        # agent token → one entry forever) or installation IDs (V2
+        # multi-installation: one per token slot, still O(installations)).
+        # No unbounded growth from request volume — it's a small fixed
+        # set per host. Reviewed in PR #485 (guard P3 #5); revisit if a
+        # future variant ever lets caller-controlled strings into the
+        # key (e.g. per-request namespaces) where an attacker could
+        # blow up the dict.
         self._locks: dict[str, asyncio.Lock] = {}
         self._safety_margin = timedelta(seconds=safety_margin_seconds)
         self._max = timedelta(seconds=max_seconds)
