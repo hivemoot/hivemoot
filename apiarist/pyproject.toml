@@ -21,13 +21,14 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 # Runtime dependencies grow per phase per DESIGN.md §14:
-#   Phase B → structlog, pydantic, pyyaml  (this PR)
-#   Phase C → httpx
+#   Phase B → structlog, pydantic, pyyaml
+#   Phase C → httpx                          (this PR)
 #   Phase D → (stdlib asyncio is enough)
 dependencies = [
     "structlog>=24.1",
     "pydantic>=2.6",
     "PyYAML>=6.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

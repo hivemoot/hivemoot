@@ -43,9 +43,12 @@ class Config(BaseModel):
     apiary_secrets_path: Path = Path("/opt/apiary/apiary.secrets.yaml")
     apiary_config_path: Path = Path("/opt/apiary/apiary.yaml")
     # Cache eviction = min(expires_at - safety_margin, now + max_seconds).
-    # See DESIGN.md §9 for why expires_at is source of truth, max is ceiling only.
-    token_cache_safety_margin_seconds: int = Field(default=600, ge=0)
-    token_cache_max_seconds: int = Field(default=3000, ge=60)
+    # max_seconds default is 300 (5 min), NOT the upstream 1h TTL — see
+    # DESIGN.md §9 for the tail-exposure-vs-burst-amortization rationale.
+    # safety_margin is the budget for clock skew + in-flight latency
+    # (matches @octokit/auth-app's 60s shave).
+    token_cache_safety_margin_seconds: int = Field(default=60, ge=0)
+    token_cache_max_seconds: int = Field(default=300, ge=60)
     backend_timeout_seconds: int = Field(default=10, ge=1)
     backend_retries: int = Field(default=3, ge=0)
     log_level: LogLevel = "info"
