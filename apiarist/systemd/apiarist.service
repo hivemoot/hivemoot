@@ -1,0 +1,173 @@
+# apiarist — host-side broker daemon for the Hivemoot fleet.
+#
+# Installed by deploy/install.sh into /etc/systemd/system/apiarist.service.
+# Enable and start with:
+#   systemctl enable --now apiarist.service
+# Inspect with:
+#   systemctl status apiarist.service
+#   journalctl -u apiarist -f
+#
+# All hardening directives below trace back to DESIGN.md §10 (security
+# model). Do not relax any of them without updating the design doc and
+# explaining why in the same change — the unit's job is not just to run
+# the daemon, it's to constrain the daemon's blast radius if the daemon
+# itself is compromised.
+
+[Unit]
+Description=Apiarist - host-side GitHub-token broker for the Hivemoot fleet
+Documentation=https://github.com/hivemoot/hivemoot/tree/main/apiarist
+# Backend calls go to hivemoot.dev; need network reachable before start.
+After=network-online.target
+Wants=network-online.target
+# Crash-loop guard: at most 5 starts in any 60s window. Prevents a
+# misconfigured daemon from saturating the journal.
+# (StartLimit* live in [Unit] in modern systemd, not [Service].)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# Unprivileged dedicated user/group (created by deploy/install.sh).
+# Daemon must additionally be a member of the 'agent' group so it can
+# chgrp the socket file to 'agent' for cross-container access; that
+# membership is set up by install.sh, not here.
+User=apiarist
+Group=apiarist
+
+# Agent-token bearer credential. Loaded from a 0640 file (root:apiarist)
+# created by the deploy script from apiary.secrets.yaml. Format:
+#   APIARIST_AGENT_TOKEN=hm_xxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Kept out of the unit file so secrets never enter the systemd graph
+# (which is world-readable via `systemctl show`).
+EnvironmentFile=/etc/apiarist/agent-token.env
+
+# Daemon entry point. The package's console_script is installed at
+# /usr/local/bin/apiarist by deploy/install.sh (or wherever the venv
+# wheel lands — see install.sh for the canonical path).
+ExecStart=/usr/local/bin/apiarist --config /etc/apiarist/apiarist.yaml
+
+# Reload signal: we don't currently support live config reload, but
+# SIGHUP is the conventional answer; future feature can wire it.
+# (Restart for now via `systemctl restart apiarist`.)
+
+# Restart policy: daemon is a stateless broker, safe to restart freely.
+# RestartSec=5 prevents tight crash loops from saturating the journal.
+Restart=on-failure
+RestartSec=5
+
+# --- Filesystem layout -----------------------------------------------------
+
+# Creates /run/apiarist/ owned by User:Group, mode 0755. The socket file
+# (apiarist.sock) lives inside; +x on the dir lets agent-group containers
+# traverse to reach the socket without listing the directory contents.
+RuntimeDirectory=apiarist
+RuntimeDirectoryMode=0755
+
+# Creates /var/lib/apiarist/ for any future on-disk state (currently
+# unused; reserved). Mode 0750 means only the apiarist user can read,
+# defense in depth against future mistakes that put secrets there.
+StateDirectory=apiarist
+StateDirectoryMode=0750
+
+# Logs go to journald (default for Type=simple, made explicit here so
+# anyone reading this file sees where to look).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apiarist
+
+# --- Hardening (DESIGN.md §10) ---------------------------------------------
+
+# Disable core dumps. A core file from a daemon holding cached `ghs_`
+# tokens in memory would put those tokens on disk — exactly the leak
+# vector apiarist's in-memory-only cache is designed to avoid.
+LimitCORE=0
+
+# Disallow writable+executable memory — blocks JIT-style RCE primitives.
+# Python doesn't need W^X; if a future feature does, drop this AND
+# document the threat-model change in DESIGN.md §10.
+MemoryDenyWriteExecute=true
+
+# Whole filesystem read-only EXCEPT what RuntimeDirectory + StateDirectory
+# make writable for us. Even if the daemon is RCE'd, the attacker can't
+# write to /etc, /usr, /home, /opt, etc.
+ProtectSystem=strict
+ProtectHome=true
+
+# Private mount namespaces for /tmp and /dev — daemon sees only its
+# own ephemeral tmp and a minimal /dev (no raw block devices, etc.).
+PrivateTmp=true
+PrivateDevices=true
+
+# No setuid/setgid escalation, ever.
+NoNewPrivileges=true
+
+# Restrict the address families the daemon can use. AF_UNIX is the
+# socket we serve on; AF_INET/AF_INET6 are for outbound httpx calls
+# to hivemoot.dev. Nothing else (AF_NETLINK, AF_PACKET, AF_BLUETOOTH,
+# etc.) is needed.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Block namespace creation (would let a compromised daemon set up
+# user-namespace tricks).
+RestrictNamespaces=true
+
+# Block real-time scheduling (potential DoS lever).
+RestrictRealtime=true
+
+# Block creation of setuid/setgid files.
+RestrictSUIDSGID=true
+
+# Native syscall ABI only (blocks i386-on-x86_64 syscall confusion).
+SystemCallArchitectures=native
+
+# Conservative syscall allowlist — @system-service is systemd's
+# "general-purpose service" set, then strip @privileged on top.
+# If a future feature trips this, the resulting EPERM is loud and
+# obvious (vs the silent-corruption alternative of an open allowlist).
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+# Lock the personality syscall (prevents emulating older ABIs).
+LockPersonality=true
+
+# Kernel-surface protection — cgroup, kernel logs, modules, sysctls,
+# clock all read-only or hidden.
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+
+# File-descriptor limit. The daemon serves one connection per request
+# (no keepalive), so 4096 is a 50× headroom over expected peak load
+# while bounding the impact of any FD-leak bug.
+LimitNOFILE=4096
+
+# Process limit. The daemon doesn't fork; this caps the impact of any
+# bug that would spawn subprocesses (it shouldn't).
+LimitNPROC=64
+
+# Drop ALL Linux capabilities. The daemon runs as an unprivileged user
+# so it has no caps to start with, but the explicit empty bounding set
+# documents the intent: this process should never need any capability.
+# Future code that suddenly requires one (e.g., CAP_NET_BIND_SERVICE
+# for binding port < 1024) will fail loudly here, prompting a design
+# review rather than silently picking up a privilege.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# /proc hardening: only see our own process tree (`hidepid=invisible`),
+# and only the pid subset of /proc (no /proc/cpuinfo etc.). The daemon
+# doesn't need any of that.
+ProtectProc=invisible
+ProcSubset=pid
+
+# Default umask for any file the daemon creates (state files, future
+# cache files in /var/lib/apiarist/). 0077 means files default to
+# 0600 — owner read/write only, no group, no other.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

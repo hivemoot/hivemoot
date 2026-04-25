@@ -41,7 +41,8 @@ filename, and unprivileged user account.
 | Systemd unit | `apiarist.service` |
 | User account | `apiarist` |
 | Group | `apiarist` |
-| IPC socket | `/run/apiarist.sock` |
+| IPC socket (host path) | `/run/apiarist/apiarist.sock` |
+| IPC socket (container path, post bind-mount) | `/run/apiarist.sock` |
 | Config dir | `/etc/apiarist/` (optional, see §6) |
 | State dir | `/var/lib/apiarist/` |
 | Log destination | systemd journald (`journalctl -u apiarist`) |
@@ -501,12 +502,23 @@ selector is absent, apiarist falls through to the `default` slot
 **Filesystem layout, post-install:**
 
 ```
-/etc/apiarist/apiarist.yaml         apiary:apiarist  640
-/var/lib/apiarist/                  apiarist:apiarist  750
-/run/apiarist.sock                  apiarist:apiarist  660  (created by daemon at startup)
+/etc/apiarist/apiarist.yaml         root:apiarist      640
+/etc/apiarist/agent-token.env       root:apiarist      640  (env file with APIARIST_AGENT_TOKEN)
+/var/lib/apiarist/                  apiarist:apiarist  750  (created by systemd: StateDirectory)
+/run/apiarist/                      apiarist:apiarist  755  (created by systemd: RuntimeDirectory)
+/run/apiarist/apiarist.sock         apiarist:agent     660  (created by daemon; chgrp'd to agent
+                                                              for cross-container access — relies on
+                                                              apiarist user being in the 'agent' group)
 /opt/apiary/apiary.secrets.yaml     apiary:apiarist    640  (group adjusted at install time)
 /usr/local/bin/apiarist             root:root          755  (compiled wheel entry point)
 ```
+
+The socket lives **inside** `/run/apiarist/` rather than directly at
+`/run/apiarist.sock` because the systemd unit's `ProtectSystem=strict`
+denies write access to root-owned `/run/`. The
+`RuntimeDirectory=apiarist` directive gives the daemon a writable
+location it owns. Agent containers see the socket at `/run/apiarist.sock`
+inside the container — that's the bind-mount target, not the host path.
 
 **Process attributes** (systemd unit):
 
@@ -862,7 +874,9 @@ if [[ "$repo_auth" == "github-app" ]]; then
   # Apiarist brokers tokens — no static file, no env. Mount the
   # socket and tell the agent its identity.
   rm -f "$secrets_dir/github-token"
-  docker_run="${docker_run} -v /run/apiarist.sock:/run/apiarist.sock"
+  # Host-side socket lives in /run/apiarist/ (created by systemd's
+  # RuntimeDirectory directive); container sees it as /run/apiarist.sock.
+  docker_run="${docker_run} -v /run/apiarist/apiarist.sock:/run/apiarist.sock"
   docker_run="${docker_run} -e AGENT_SERVICE=${service_name}"
   docker_run="${docker_run} -e AGENT_TOKEN_SLOT=${agent_token_slot}"
 else

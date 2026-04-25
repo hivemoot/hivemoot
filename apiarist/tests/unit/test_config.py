@@ -19,7 +19,7 @@ def test_defaults_when_no_overrides(tmp_path: Path) -> None:
     # (/etc/apiarist/apiarist.yaml) doesn't accidentally apply if a
     # developer happens to have it on their machine.
     cfg = load_config(env={}, config_path=tmp_path / "missing.yaml")
-    assert cfg.socket_path == Path("/run/apiarist.sock")
+    assert cfg.socket_path == Path("/run/apiarist/apiarist.sock")
     assert cfg.socket_group == "apiarist"
     assert cfg.backend_url == "https://www.hivemoot.dev"
     # Defaults match DESIGN.md §9: tail-exposure-bounded cache (5 min
