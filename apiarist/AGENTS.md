@@ -151,10 +151,11 @@ Follow the monorepo conventions in the root `AGENTS.md` and
   owner — see how recent PRs are structured).
 - PR descriptions follow `.github/PULL_REQUEST_TEMPLATE.md`. Include a
   "What it looks like" section with terminal output for CLI changes.
-- Issue linking via `Fixes #N` is the norm; for fast-moving infra work
-  on apiarist where each phase is small and well-scoped, the project
-  owner may approve squash-merge without an issue link — but only
-  after all reviewer-fleet feedback is addressed.
+- Issue linking via `Fixes #N` follows the root governance contract
+  (`AGENTS.md`, `CONTRIBUTING.md`, `docs/architecture/HOW-IT-WORKS.md`).
+  No apiarist-local exception exists; if the contract evolves to admit
+  infra/maintenance carve-outs, that change belongs in the root docs
+  and Queen's preflight, not here.
 - Reviews come from the listen-only fleet on the monorepo:
   `hivemoot-guard` (security), `hivemoot-builder` (implementation),
   `hivemoot-drone` (consistency / architecture). After addressing

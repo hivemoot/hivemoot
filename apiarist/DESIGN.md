@@ -733,11 +733,18 @@ production, cheapest to test now):
 - Backend returns a valid token whose `expires_at` is already in the
   past → cache rejects on insert (does not store), client gets fresh
   mint on next request rather than serving expired data.
-- Clock skew between Hive and backend: cache says token still valid by
-  Hive wall clock, but GitHub rejects it as expired at API call time.
-  Test with mocked clock: cache eviction uses backend `expires_at`
-  (server-authoritative timestamp), and a 401 from GitHub triggers a
-  forced cache eviction + retry.
+- Clock skew / safety margin: apiarist cannot observe downstream
+  GitHub 401s in V1 (the agent container talks to GitHub directly with
+  the minted token; apiarist sees no feedback path). Defense is
+  conservative *eviction*, not reactive retry. Test with mocked clock
+  that the cache evicts at `expires_at - safety_margin` even when the
+  Hive wall clock thinks the token is still well within its lifetime;
+  the `safety_margin` (default 600s) is the explicit budget for
+  Hive↔GitHub clock skew plus in-flight request latency. If a
+  feedback path from agent containers back to apiarist is ever added
+  (out of V1 scope), reactive eviction on observed 401 becomes
+  possible — until then, conservative eviction is the only defense
+  apiarist itself can enforce.
 - Backend returns `429` (rate limit) → client surfaces
   `BACKEND_RATE_LIMITED`, does not retry within the window, does not
   serve stale cached value as a fallback.
