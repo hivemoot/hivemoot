@@ -91,8 +91,17 @@ async def _build_server(socket_path: Path, handler) -> tuple[Server, BackendClie
     )
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    health_feature.register(registry, state=health_feature.HealthState())
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    # Share one HealthState across health and tokens features so the
+    # health op surfaces telemetry the tokens path records (builder #1).
+    health_state = health_feature.HealthState()
+    health_feature.register(registry, state=health_state)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_state,
+        agent_token="hm_test",
+    )
 
     server = Server(
         socket_path=socket_path,
@@ -313,6 +322,125 @@ async def test_concurrent_mints_for_different_services(sock_path: Path) -> None:
         await backend.aclose()
 
 
+@pytest.mark.asyncio
+async def test_concurrent_mints_across_services_share_single_flight(
+    sock_path: Path,
+) -> None:
+    """Builder #2 regression: services backed by the same agent token
+    must serialize on the same single-flight lock.
+
+    Without the fingerprint-keyed cache namespace, two services would
+    independently race the backend. With it, they share the cache slot
+    + lock and only one upstream call happens.
+    """
+    backend_call_count = 0
+    in_flight = 0
+    max_in_flight = 0
+
+    async def slow_handler(_req: httpx.Request) -> httpx.Response:
+        nonlocal backend_call_count, in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        backend_call_count += 1
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return httpx.Response(200, json=_success_body())
+
+    server, backend = await _build_server(sock_path, slow_handler)
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        # Two DIFFERENT services, SAME repo (so they'd share a cache
+        # slot once fingerprint-keyed). Without single-flight they'd
+        # both hit the backend; with it, only one upstream call.
+        results = await asyncio.gather(
+            _request(
+                sock_path,
+                {"op": "mint_token", "request_id": "a",
+                 "params": {"service": "svc-a", "repo": "owner/repo"}},
+            ),
+            _request(
+                sock_path,
+                {"op": "mint_token", "request_id": "b",
+                 "params": {"service": "svc-b", "repo": "owner/repo"}},
+            ),
+        )
+        assert all(r["ok"] for r in results)
+        assert max_in_flight == 1, (
+            "two services backed by same token must single-flight; "
+            f"observed max_in_flight={max_in_flight} (cache namespace bug?)"
+        )
+        # Cache hit on the second one — only one upstream call total.
+        assert backend_call_count == 1
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_health_records_after_mint(sock_path: Path) -> None:
+    """Builder #1 regression: health op surfaces last-call telemetry.
+
+    Before this fix, last_backend_status and last_backend_roundtrip_ms
+    stayed null forever. Mint then health → both fields populated.
+    """
+    server, backend = await _build_server(
+        sock_path,
+        lambda r: httpx.Response(200, json=_success_body()),
+    )
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        # First a mint to populate the recorder.
+        await _request(
+            sock_path,
+            {"op": "mint_token", "request_id": "m",
+             "params": {"service": "svc", "repo": "owner/repo"}},
+        )
+        # Then health — last_backend_* must be populated.
+        h = await _request(
+            sock_path, {"op": "health", "request_id": "h"},
+        )
+        assert h["data"]["last_backend_status"] == "ok"
+        assert isinstance(h["data"]["last_backend_roundtrip_ms"], (int, float))
+        assert h["data"]["last_backend_roundtrip_ms"] >= 0
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_health_records_after_mint_error(sock_path: Path) -> None:
+    """Same as above but for the error path — last_backend_status
+    captures the BackendError class name."""
+    server, backend = await _build_server(
+        sock_path,
+        lambda r: httpx.Response(501, json={"error": "not_implemented"}),
+    )
+    serve_task = asyncio.create_task(server.serve_forever())
+    try:
+        # Mint that fails server-side.
+        await _request(
+            sock_path,
+            {"op": "mint_token", "request_id": "m",
+             "params": {"service": "svc", "repo": "owner/repo"}},
+        )
+        h = await _request(
+            sock_path, {"op": "health", "request_id": "h"},
+        )
+        # Status carries the exception class name so operators see at
+        # a glance which failure mode hit (vs just "error").
+        assert h["data"]["last_backend_status"] == "BackendNotImplementedError"
+        assert isinstance(h["data"]["last_backend_roundtrip_ms"], (int, float))
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+        await backend.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
@@ -374,14 +502,59 @@ async def test_stop_is_idempotent(sock_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_bind_clears_stale_socket_file(sock_path: Path) -> None:
-    """Pre-existing socket file (from prior crashed daemon) is removed."""
-    socket_path = sock_path
-    socket_path.touch()  # simulate stale socket
+    """Pre-existing socket file (from prior crashed daemon) is removed.
+
+    Stand up a real socket via socket.socket(), close it without
+    unlinking, then call bind() — it should detect the stale socket
+    via S_ISSOCK and clear it. Touching a regular file would be
+    refused per the safety check below.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(sock_path))
+    finally:
+        sock.close()
+    # Don't unlink; the socket file remains on disk as a stale leftover.
+
     server, backend = await _build_server(
-        socket_path,
+        sock_path,
         lambda r: httpx.Response(200, json=_success_body()),
     )
-    # If bind didn't clear the stale file, asyncio.start_unix_server would
-    # have raised. Clean up.
     await server.stop()
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bind_refuses_non_socket_file(sock_path: Path) -> None:
+    """Defense against typo'd socket_path pointing at a real file.
+
+    Builder caught this in PR #485 review: an unconditional unlink of
+    whatever is at socket_path would silently destroy /etc/passwd if
+    the deploy config had a typo. bind() must check S_ISSOCK first
+    and refuse anything else.
+    """
+    sock_path.write_text("important data the operator does NOT want deleted")
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_success_body()))
+    backend = BackendClient(
+        backend_url="https://www.hivemoot.dev",
+        agent_token="hm_test",
+        client=httpx.AsyncClient(transport=transport),
+    )
+    try:
+        registry = Registry()
+        health_feature.register(registry, state=health_feature.HealthState())
+        server = Server(
+            socket_path=sock_path,
+            socket_group=_current_user_group(),
+            registry=registry,
+        )
+        with pytest.raises(RuntimeError, match="not a Unix socket"):
+            await server.bind()
+        # The original file content must be preserved.
+        assert sock_path.read_text() == (
+            "important data the operator does NOT want deleted"
+        )
+    finally:
+        await backend.aclose()

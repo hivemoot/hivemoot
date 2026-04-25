@@ -133,7 +133,13 @@ async def _run(config: Config, agent_token: str) -> int:
         safety_margin_seconds=config.token_cache_safety_margin_seconds,
         max_seconds=config.token_cache_max_seconds,
     )
-    tokens_feature.register(registry, backend=backend, cache=cache)
+    tokens_feature.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_state,
+        agent_token=agent_token,
+    )
 
     server = Server(
         socket_path=config.socket_path,

@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import grp
 import os
+import stat as stat_module
 import struct
 import traceback
 from pathlib import Path
@@ -98,7 +99,19 @@ class Server:
         # its socket, the bind would fail with EADDRINUSE. Removing a
         # stale stream socket file is safe — there can be no in-flight
         # process holding it (we'd be that process).
-        if self._socket_path.exists():
+        #
+        # Refuse to delete anything that ISN'T a socket: if a typo in
+        # the deploy config points apiarist at, say, /etc/passwd, an
+        # unconditional unlink would silently destroy it. Use lstat
+        # (not stat) so a symlink to a non-socket also fails closed.
+        if self._socket_path.exists() or self._socket_path.is_symlink():
+            existing_mode = self._socket_path.lstat().st_mode
+            if not stat_module.S_ISSOCK(existing_mode):
+                raise RuntimeError(
+                    f"socket_path {self._socket_path} exists but is not a Unix "
+                    f"socket (mode={oct(existing_mode)}); refusing to overwrite. "
+                    "Check apiarist.yaml's socket_path or remove the file manually."
+                )
             log.info("removing stale socket file", path=str(self._socket_path))
             self._socket_path.unlink()
 

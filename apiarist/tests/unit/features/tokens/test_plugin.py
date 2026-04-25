@@ -14,6 +14,7 @@ from apiarist.core.backend import (
     BackendNotImplementedError,
 )
 from apiarist.core.registry import Registry
+from apiarist.features import health as health_feature
 from apiarist.features.tokens import plugin as tokens_plugin
 from apiarist.features.tokens.cache import TokenCache
 
@@ -48,7 +49,13 @@ async def test_mint_token_happy_path() -> None:
     backend = _client_with_handler(handler)
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     assert op is not None
@@ -74,7 +81,13 @@ async def test_mint_token_uses_cache_on_repeat() -> None:
     backend = _client_with_handler(handler)
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     assert op is not None
@@ -90,7 +103,13 @@ async def test_mint_token_rejects_missing_required_param(missing: str) -> None:
     backend = _client_with_handler(lambda r: httpx.Response(200, json=_success_body()))
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     params: dict[str, Any] = {"service": "builder", "repo": "owner/repo"}
@@ -105,7 +124,13 @@ async def test_mint_token_rejects_wrong_type_agent_id() -> None:
     backend = _client_with_handler(lambda r: httpx.Response(200, json=_success_body()))
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     with pytest.raises(ValueError, match="agent_id"):
@@ -125,7 +150,13 @@ async def test_mint_token_passes_agent_id_through() -> None:
     backend = _client_with_handler(handler)
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     await op({"service": "builder", "repo": "owner/repo", "agent_id": "builder-claude"})
@@ -147,7 +178,13 @@ async def test_mint_token_propagates_backend_501() -> None:
     backend = _client_with_handler(handler)
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     with pytest.raises(BackendNotImplementedError):
@@ -163,7 +200,13 @@ async def test_mint_token_propagates_backend_403() -> None:
     backend = _client_with_handler(handler)
     cache = TokenCache(safety_margin_seconds=60, max_seconds=300)
     registry = Registry()
-    tokens_plugin.register(registry, backend=backend, cache=cache)
+    tokens_plugin.register(
+        registry,
+        backend=backend,
+        cache=cache,
+        health_state=health_feature.HealthState(),
+        agent_token="hm_test",
+    )
 
     op = registry.get("mint_token")
     with pytest.raises(BackendForbiddenError):
