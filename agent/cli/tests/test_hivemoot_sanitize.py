@@ -42,7 +42,7 @@ class RedactSecretsTests(unittest.TestCase):
         self.assertNotIn("sk-ant-abcdef1234567890", out)
 
     def test_github_token_redacted(self) -> None:
-        for prefix in ("ghp_", "ghs_", "gho_", "ghu_"):
+        for prefix in ("ghp_", "ghs_", "gho_", "ghu_", "ghr_"):
             token = f"{prefix}ABCDEFGHIJKLMNOPQRSTUVWX"
             text = f"git push failed: bad credentials {token}"
             out = redact_secrets(text)
