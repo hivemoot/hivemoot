@@ -145,6 +145,11 @@ class HivemootPlugin:
         # triggers/system_prompt methods don't re-read from the registry.
         self._cfg: "HivemootConfig | None" = None
 
+        # Apiarist auth subscriber, populated in setup_lifecycle() when
+        # cfg.apiarist.enabled is true. Cached for diagnostics and
+        # tests; runtime path goes through engine.lifecycle directly.
+        self._auth_subscriber: Any = None
+
     # ── Validation / setup ─────────────────────────────────────────
 
     def validate(self, config: PluginConfig) -> list[str]:
@@ -221,31 +226,27 @@ class HivemootPlugin:
     def _validate_github_workflows(self, cfg: "HivemootConfig") -> list[str]:
         """Mirrors the previous hivemoot-github plugin's validation.
 
-        Requires the ``github`` plugin to be activated BEFORE
-        ``hivemoot`` in the YAML so repos are cloned by the time our
-        setup runs.
+        Order-tolerant since apiarist DESIGN.md §12.3 (Phase L'): the
+        github plugin can be listed AFTER hivemoot in plugins: when
+        ``github.token_source: subscriber`` (so hivemoot's auth
+        subscriber registers first and fires before github's auth
+        subscriber). The legacy file-mode order (``github`` first so
+        its setup() clones repos before hivemoot.github_workflows
+        reads them) still works — both orders are accepted.
+
+        We skip the "github already configured" check here because:
+
+        - validate() runs BEFORE the engine calls
+          ``registry.configure(name, config)``, so when hivemoot is
+          listed first, github hasn't been configured yet even though
+          it WILL be configured by the time setup() runs. The check
+          was a sequencing artifact, not a real precondition.
+        - Cross-plugin presence is checked in :meth:`_setup_github_workflows`
+          via ``registry.config_for_or_none("github")`` — by setup
+          time all plugins have been validated and configured, so the
+          check is order-independent.
         """
         errors: list[str] = []
-
-        from hivemoot_agent.plugins import registry as _registry
-        already_configured = _registry.configured_names()
-        if "github" not in already_configured:
-            errors.append(
-                "hivemoot.github_workflows requires the ``github`` plugin "
-                "to be activated AND listed BEFORE ``hivemoot`` in "
-                "plugins: of hivemoot.yaml so repos are cloned before "
-                "this plugin's setup runs.  Currently configured before "
-                f"us: {already_configured or '(none)'}."
-            )
-            return errors
-
-        target_repo = self._resolve_github_target_repo()
-        if not target_repo:
-            errors.append(
-                "hivemoot.github_workflows could not determine the "
-                "target repository from the github plugin's typed config "
-                "(plugins.github.repos is empty)."
-            )
 
         if shutil.which("hivemoot") is None:
             errors.append(
@@ -264,14 +265,104 @@ class HivemootPlugin:
         if cfg.github_workflows.enabled:
             self._setup_github_workflows(cfg)
 
+    def setup_lifecycle(
+        self, lifecycle: Any, config: PluginConfig,
+    ) -> None:
+        """Optional engine hook: register the apiarist auth subscriber.
+
+        Called by the engine after every plugin's ``setup()`` completes
+        (apiarist DESIGN.md §12.3). When ``apiarist.enabled`` is true,
+        this builds the apiarist UDS client and registers a
+        :class:`HivemootGithubAuthSubscriber` on the engine's container
+        lifecycle so every IDLE→ACTIVE transition mints a fresh
+        GitHub installation token into ``GH_TOKEN`` / ``GITHUB_TOKEN``.
+
+        No-op when apiarist is disabled — fleets running on long-lived
+        PATs see this method but it returns silently.
+
+        Subscriber registration ordering is load-bearing: list the
+        hivemoot plugin BEFORE the github plugin in ``hivemoot.yaml``
+        so the env this subscriber populates is in place when the
+        github plugin's clone subscriber fires.
+        """
+        cfg = config.typed
+        if cfg is None or not cfg.apiarist.enabled:
+            return
+
+        from hivemoot_agent.apiarist_client import ApiaristClient
+        from hivemoot_agent.plugins_builtin.hivemoot.auth_subscriber import (
+            HivemootGithubAuthSubscriber,
+        )
+
+        service = cfg.apiarist.service or self.resolved_agent_id()
+        if not service:
+            raise RuntimeError(
+                "plugins.hivemoot.apiarist.service is required (or set "
+                "AGENT_ID env) when apiarist.enabled is true — apiarist "
+                "uses it as the caller-identifier in its audit log."
+            )
+
+        repo = cfg.apiarist.repo or self._resolve_github_target_repo()
+        if not repo:
+            raise RuntimeError(
+                "plugins.hivemoot.apiarist.repo is required (or "
+                "configure plugins.github.repos[0]) when apiarist.enabled "
+                "is true — apiarist's token policy scopes the minted "
+                "token to a single repo."
+            )
+
+        client = ApiaristClient(
+            socket_path=str(cfg.apiarist.socket_path),
+            timeout_seconds=cfg.apiarist.timeout_seconds,
+        )
+        subscriber = HivemootGithubAuthSubscriber(
+            client,
+            service=service,
+            repo=repo,
+            agent_id=self.resolved_agent_id() or None,
+        )
+        lifecycle.subscribe(subscriber)
+        # Cache for diagnostics + tests; not load-bearing for runtime.
+        self._auth_subscriber = subscriber
+        print(
+            f"[hivemoot-auth] registered apiarist auth subscriber "
+            f"(socket={cfg.apiarist.socket_path}, service={service}, "
+            f"repo={repo})",
+            file=sys.stderr, flush=True,
+        )
+
     def _setup_github_workflows(self, cfg: "HivemootConfig") -> None:
-        """Resolve target repo path + optional role prompt block."""
+        """Resolve target repo path + optional role prompt block.
+
+        Order-tolerant per apiarist DESIGN.md §12.3 (Phase L'). When
+        ``github.token_source: subscriber`` the github plugin's
+        setup() runs only the auth-free half — the actual clone
+        happens at first IDLE→ACTIVE in the github auth subscriber.
+        We still resolve target_repo + repo_path deterministically
+        here (the path is computable from cfg.workspace + repo name);
+        we just SKIP the dir-exists check that the file-mode path
+        relies on for fail-fast clone-failure detection.
+
+        Role prompt loading was already best-effort (try/except on
+        RoleLoadError) so it's resilient either way.
+        """
+        from hivemoot_agent.plugins import registry as _registry
         from hivemoot_agent.plugins_builtin.github.repo_manager import (
             repo_checkout_path,
         )
         from hivemoot_agent.plugins_builtin.hivemoot.github_workflows.role_loader import (
             RoleLoadError,
             load_role_prompt_block,
+        )
+
+        gh_cfg = _registry.config_for_or_none("github")
+        if gh_cfg is None or gh_cfg.typed is None:
+            raise RuntimeError(
+                "hivemoot.github_workflows requires the 'github' plugin "
+                "to be enabled in plugins: of hivemoot.yaml."
+            )
+        github_subscriber_mode = (
+            getattr(gh_cfg.typed, "token_source", "file") == "subscriber"
         )
 
         target_repo = self._resolve_github_target_repo()
@@ -285,13 +376,24 @@ class HivemootPlugin:
         repo_path = repo_checkout_path(
             str(cfg.github_workflows.workspace), target_repo,
         )
-        if not repo_path or not os.path.isdir(repo_path):
+        if not repo_path:
             raise RuntimeError(
-                "hivemoot.github_workflows expected the github plugin to "
-                f"clone {target_repo} at "
-                f"{repo_path or '(unknown path)'}"
+                "hivemoot.github_workflows could not derive a checkout "
+                f"path for {target_repo} under "
+                f"{cfg.github_workflows.workspace}"
             )
         self._repo_path = repo_path
+
+        # Dir-exists check is meaningful only in file mode (clone
+        # synchronously runs in github.setup before this). In subscriber
+        # mode the clone happens at first on_active; checking here would
+        # always fail. The deterministic path is still cached so
+        # system_prompt() can reference it.
+        if not github_subscriber_mode and not os.path.isdir(repo_path):
+            raise RuntimeError(
+                "hivemoot.github_workflows expected the github plugin to "
+                f"clone {target_repo} at {repo_path}"
+            )
 
         self._role_name = self._resolve_role_name(cfg)
         self._role_prompt_block = ""

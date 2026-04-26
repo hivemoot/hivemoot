@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
@@ -23,11 +24,31 @@ class GitHubConfig(StrictPluginConfig):
             "entry IS the canonical 'primary'."
         ),
     )
+    token_source: Literal["file", "subscriber"] = Field(
+        default="file",
+        description=(
+            "Where the GitHub token comes from at runtime:\n"
+            "- ``file`` (default): read once at setup() from "
+            "``token_file``.  Existing long-lived-PAT path.\n"
+            "- ``subscriber``: read from ``GH_TOKEN`` / ``GITHUB_TOKEN`` "
+            "env on every job, populated by another plugin's lifecycle "
+            "subscriber (e.g. apiarist via the hivemoot plugin's "
+            "auth subscriber).  When set to ``subscriber``, the github "
+            "plugin's setup() does NOT run its auth-required steps "
+            "(clone, validate access, configure git user) — those move "
+            "into a github-owned subscriber that fires on every "
+            "IDLE→ACTIVE boundary AFTER the upstream subscriber has "
+            "populated env (registration order is load-bearing; list "
+            "the upstream plugin BEFORE github in plugins:)."
+        ),
+    )
     token_file: Path | None = Field(
         default=None,
         description=(
             "Path to file containing the GitHub token.  Deployer writes "
-            "`!secret github_token` in hivemoot.yaml."
+            "`!secret github_token` in hivemoot.yaml.  Required when "
+            "``token_source`` is ``file`` (default); ignored when "
+            "``token_source`` is ``subscriber``."
         ),
     )
     workspace: Path = Field(
