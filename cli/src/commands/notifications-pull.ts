@@ -1,4 +1,5 @@
 import { CliError } from "../config/types.js";
+import { rejectAppInstallationToken } from "../github/auth-guard.js";
 import { fetchNotificationsPull, type NotificationsPullResult } from "../github/fetch-notifications.js";
 
 export interface NotificationsPullOptions {
@@ -36,6 +37,11 @@ function formatResult(result: NotificationsPullResult): string {
 export async function notificationsPullCommand(
   options: NotificationsPullOptions,
 ): Promise<void> {
+  // App installation tokens cannot list /notifications — surface this
+  // before any backend call so the operator gets an actionable error
+  // instead of GitHub's raw 403.
+  rejectAppInstallationToken("notifications-pull");
+
   const rawReasons = options.reason ?? "*";
   const reasons = rawReasons
     .split(",")

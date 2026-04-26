@@ -1,4 +1,5 @@
 import { CliError, type AckOptions } from "../config/types.js";
+import { rejectAppInstallationToken } from "../github/auth-guard.js";
 import { markNotificationRead } from "../github/notifications.js";
 import { appendAck } from "../watch/state.js";
 
@@ -7,6 +8,10 @@ function log(message: string): void {
 }
 
 export async function ackCommand(key: string, options: AckOptions): Promise<void> {
+  // App installation tokens cannot PATCH /notifications/threads/:id —
+  // surface this with an actionable error before we touch GitHub.
+  rejectAppInstallationToken("ack");
+
   const colonIndex = key.indexOf(":");
   if (colonIndex < 1) {
     throw new CliError(

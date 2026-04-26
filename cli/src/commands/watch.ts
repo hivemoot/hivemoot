@@ -1,5 +1,6 @@
 import type { WatchOptions } from "../config/types.js";
 import { CliError } from "../config/types.js";
+import { rejectAppInstallationToken } from "../github/auth-guard.js";
 import { fetchCurrentUser } from "../github/user.js";
 import type { CommentDetail } from "../github/notifications.js";
 import {
@@ -118,29 +119,12 @@ export async function watchCommand(options: WatchOptions): Promise<void> {
   const reasons = (options.reasons ?? "mention").split(",").map((r) => r.trim());
 
   // App installation tokens (ghs_*) can't reach GitHub's
-  // /notifications API — it's user-scoped and returns 403 for App
-  // auth — so this command can't function with one. Detect the prefix
-  // and fail fast with an actionable message rather than letting
-  // fetchCurrentUser() emit the misleading "Could not determine
-  // GitHub user" error (which sounds like a token-validity bug).
-  // See apiarist DESIGN.md §12.3.7 for the App-token / notifications
-  // incompatibility background.
-  const tokenForAuth = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
-  if (tokenForAuth.startsWith("ghs_")) {
-    throw new CliError(
-      "App installation tokens (ghs_*) cannot access GitHub's " +
-        "/notifications API and so cannot be used with `hivemoot watch`. " +
-        "For App-token-compatible PR watching use the `watch_new_prs` " +
-        "trigger (polls /repos/{owner}/{repo}/pulls directly). " +
-        "Mention-based or review-request workflows for App tokens need " +
-        "a routing layer (bot-mediated dispatch via the task queue, or " +
-        "label-based polling) since all App-authed agents share the " +
-        "single bot identity. See apiarist/DESIGN.md §12.3.7 for the " +
-        "architectural rationale.",
-      "GH_APP_TOKEN_UNSUPPORTED",
-      2,
-    );
-  }
+  // /notifications API — fail fast with an actionable message before
+  // letting fetchCurrentUser() emit the misleading "Could not determine
+  // GitHub user" error. Shared helper covers `watch`,
+  // `notifications-pull`, and `ack` uniformly. See apiarist
+  // DESIGN.md §12.3.7 for the App-token / notifications incompatibility.
+  rejectAppInstallationToken("watch");
 
   // Resolve authenticated user login (used as agent name in events)
   let agent: string;
