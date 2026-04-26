@@ -264,6 +264,7 @@ export type ErrorCode =
   | "ROLE_NOT_FOUND"
   | "INVALID_CONFIG"
   | "RATE_LIMITED"
+  | "GH_APP_TOKEN_UNSUPPORTED"
   | "GH_ERROR";
 
 export class CliError extends Error {
