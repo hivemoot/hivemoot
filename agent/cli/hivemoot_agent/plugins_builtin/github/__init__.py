@@ -89,6 +89,12 @@ def _read_token(cfg: "GitHubConfig") -> str:
     Returns empty string if no token_file is set or the file isn't
     readable — validate() reports the error upstream.  Kept as a tiny
     helper so setup/trigger/ack all resolve the token the same way.
+
+    NOTE: Does NOT consult env. Subscriber-mode callers should use
+    :func:`_read_token_runtime` which falls back to env. We keep this
+    helper file-only because validate-time checks need a deterministic
+    "is the file readable?" answer, separate from "is there a token
+    available right now?".
     """
     if cfg.token_file is None:
         return ""
@@ -96,6 +102,27 @@ def _read_token(cfg: "GitHubConfig") -> str:
         return Path(cfg.token_file).read_text().strip()
     except OSError:
         return ""
+
+
+def _read_token_runtime(cfg: "GitHubConfig") -> str:
+    """Resolve the GitHub token at runtime, file or env per token_source.
+
+    Two-mode resolution (apiarist Phase L'):
+
+    - ``token_source: file`` — read from ``cfg.token_file`` (existing
+      long-lived-PAT path).
+    - ``token_source: subscriber`` — read from ``GH_TOKEN`` /
+      ``GITHUB_TOKEN`` env, populated by the hivemoot apiarist auth
+      subscriber.
+
+    Used by hot paths (notification ack, gh API calls, etc.) that need
+    "the currently valid token, whatever its source." Validate-time
+    checks should keep using :func:`_read_token` because env state at
+    validate time isn't representative of runtime.
+    """
+    if cfg.token_source == "subscriber":
+        return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    return _read_token(cfg)
 
 
 class GitHubPlugin:
@@ -336,6 +363,36 @@ class GitHubPlugin:
 
         cfg: GitHubConfig | None = config.typed or self._cfg
         clone_depth = cfg.clone_depth if cfg else 50
+
+        # Subscriber mode: setup() runs the auth-free half + sets
+        # _setup_attempted, but _repos stays empty until first
+        # IDLE→ACTIVE clones them. Without this branch the gate below
+        # would take the empty-repos path for the first job's prompt
+        # ("No repositories were pre-cloned"), since system_prompt() is
+        # called once after setup() and reused across jobs. Falling
+        # through to the placeholder builder gives the first job a
+        # correct prompt with the deterministic repo paths; subsequent
+        # process restarts (when _repos is populated) use the real
+        # values via the next branch.
+        if (
+            cfg is not None
+            and cfg.token_source == "subscriber"
+            and not self._repos
+        ):
+            workspace = str(cfg.workspace)
+            placeholder_repos = [
+                RepoInfo(
+                    repo=r,
+                    path=repo_checkout_path(workspace, r),
+                    default_branch="main",
+                )
+                for r in cfg.repos
+            ]
+            return build_system_prompt(
+                placeholder_repos, clone_depth,
+                git_user=self._git_name,
+            )
+
         if self._repos or self._setup_attempted:
             return build_system_prompt(
                 self._repos, clone_depth,
@@ -418,7 +475,14 @@ class GitHubPlugin:
 
         try:
             if ack_strategy == "notification":
-                gh_token = _read_token(config.typed) if config.typed else ""
+                # Hot path — use the runtime resolver so subscriber-mode
+                # services read the env-injected token rather than the
+                # absent token_file. Without this, ack_event would skip
+                # on empty token and the notification would replay
+                # forever.
+                gh_token = (
+                    _read_token_runtime(config.typed) if config.typed else ""
+                )
                 ack_module.ack_event(ack_key, state_file, gh_token)
                 return
             if ack_strategy == "new_pr":

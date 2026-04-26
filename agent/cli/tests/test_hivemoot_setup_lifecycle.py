@@ -22,10 +22,12 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from hivemoot_agent.apiarist_client import MintedToken
 from hivemoot_agent.lifecycle import ContainerLifecycle
 from hivemoot_agent.plugins.interfaces import PluginConfig
 from hivemoot_agent.plugins_builtin.hivemoot import HivemootPlugin
@@ -44,27 +46,92 @@ def _make_plugin_config(apiarist: HivemootApiaristConfig | None = None) -> Plugi
     return PluginConfig(name="hivemoot", typed=typed)
 
 
-class DisabledNoOpTest(unittest.TestCase):
+def _fake_token_response() -> MintedToken:
+    """A long-expiring fake token so the refresh thread sleeps quietly."""
+    return MintedToken(
+        token="ghs_test_token",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        installation_id="11111",
+        permissions={},
+        repositories=[],
+    )
+
+
+class _LifecycleTestBase(unittest.TestCase):
+    """Patches ApiaristClient so subscriber.start() doesn't try to
+    open a real socket. Cleans up subscribers (and their refresh
+    threads) after each test.
+    """
+
+    def setUp(self) -> None:
+        self._spawned_subs: list[HivemootGithubAuthSubscriber] = []
+        # Patch ApiaristClient at the source so the local import inside
+        # hivemoot.setup_lifecycle picks up the mock instead of the
+        # real class. Each call to setup_lifecycle re-imports, but the
+        # name resolution still goes through hivemoot_agent.apiarist_client
+        # so patching at the source covers both.
+        patcher = patch(
+            "hivemoot_agent.apiarist_client.ApiaristClient",
+        )
+        self._mock_client_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        # Configure the fake client so mint_token returns a valid
+        # token; no real socket needed.
+        self._mock_client = MagicMock()
+        self._mock_client.mint_token.return_value = _fake_token_response()
+        self._mock_client_cls.return_value = self._mock_client
+        # Clear env so previous tests don't pollute current.
+        for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(var, None)
+
+    def tearDown(self) -> None:
+        # Stop refresh threads from any subscribers spawned during
+        # the test so they don't outlive the test.
+        for sub in self._spawned_subs:
+            try:
+                sub.stop()
+            except Exception:
+                pass
+        for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(var, None)
+
+    def _setup_lifecycle(
+        self, plugin: HivemootPlugin, lifecycle: ContainerLifecycle,
+        cfg: PluginConfig,
+    ) -> None:
+        plugin.setup_lifecycle(lifecycle, cfg)
+        if plugin._auth_subscriber is not None:
+            self._spawned_subs.append(plugin._auth_subscriber)
+
+
+class DisabledNoOpTest(_LifecycleTestBase):
     def test_apiarist_disabled_does_not_subscribe(self) -> None:
-        """Default config (apiarist.enabled=False) is a no-op."""
+        """Default config (apiarist.enabled=False) is a no-op.
+
+        ApiaristClient must NOT be constructed when disabled — no
+        subscriber, no thread, no socket touched.
+        """
         plugin = HivemootPlugin()
         lifecycle = ContainerLifecycle()
         cfg = _make_plugin_config()  # all defaults
 
-        plugin.setup_lifecycle(lifecycle, cfg)
+        self._setup_lifecycle(plugin, lifecycle, cfg)
 
         self.assertEqual(lifecycle.subscriber_count, 0)
         self.assertIsNone(plugin._auth_subscriber)
+        self._mock_client_cls.assert_not_called()
 
 
-class EnabledRegistersSubscriberTest(unittest.TestCase):
-    """When fully configured, a subscriber registers correctly."""
+class EnabledRegistersSubscriberTest(_LifecycleTestBase):
+    """When fully configured, a subscriber registers + start()s correctly."""
 
     def setUp(self) -> None:
+        super().setUp()
         os.environ.pop("AGENT_ID", None)
 
     def tearDown(self) -> None:
         os.environ.pop("AGENT_ID", None)
+        super().tearDown()
 
     def test_full_config_registers_subscriber(self) -> None:
         plugin = HivemootPlugin()
@@ -77,13 +144,20 @@ class EnabledRegistersSubscriberTest(unittest.TestCase):
             )
         )
 
-        plugin.setup_lifecycle(lifecycle, cfg)
+        self._setup_lifecycle(plugin, lifecycle, cfg)
 
         self.assertEqual(lifecycle.subscriber_count, 1)
         sub = plugin._auth_subscriber
         self.assertIsInstance(sub, HivemootGithubAuthSubscriber)
         self.assertEqual(sub.service, "drone-zai")
         self.assertEqual(sub.repo, "hivemoot/colony")
+        # start() was called → subscriber is started + initial mint fired.
+        self.assertTrue(sub.is_started)
+        self._mock_client.mint_token.assert_called_once_with(
+            service="drone-zai",
+            repo="hivemoot/colony",
+            agent_id=None,
+        )
 
     def test_service_falls_back_to_agent_id(self) -> None:
         os.environ["AGENT_ID"] = "drone"
@@ -97,7 +171,7 @@ class EnabledRegistersSubscriberTest(unittest.TestCase):
             )
         )
 
-        plugin.setup_lifecycle(lifecycle, cfg)
+        self._setup_lifecycle(plugin, lifecycle, cfg)
 
         sub = plugin._auth_subscriber
         self.assertEqual(sub.service, "drone")
@@ -114,18 +188,20 @@ class EnabledRegistersSubscriberTest(unittest.TestCase):
             )
         )
 
-        plugin.setup_lifecycle(lifecycle, cfg)
+        self._setup_lifecycle(plugin, lifecycle, cfg)
         self.assertEqual(plugin._auth_subscriber.service, "custom-service")
 
 
-class FailureModeTest(unittest.TestCase):
+class FailureModeTest(_LifecycleTestBase):
     """Misconfiguration raises clearly at setup time, not job-dispatch time."""
 
     def setUp(self) -> None:
+        super().setUp()
         os.environ.pop("AGENT_ID", None)
 
     def tearDown(self) -> None:
         os.environ.pop("AGENT_ID", None)
+        super().tearDown()
 
     def test_no_service_and_no_agent_id_raises(self) -> None:
         plugin = HivemootPlugin()

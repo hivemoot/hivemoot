@@ -79,6 +79,16 @@ jobs:
         run: python3 cli/tests/test_engine.py
       - name: Verify engine lifecycle contract tests
         run: python3 cli/tests/test_engine_lifecycle.py
+      - name: Verify container lifecycle FSM (apiarist Phase L' invariants I1-I5)
+        run: python3 cli/tests/test_lifecycle.py
+      - name: Verify apiarist UDS client (framing + transport/protocol/remote errors)
+        run: python3 cli/tests/test_apiarist_client.py
+      - name: Verify hivemoot apiarist auth subscriber (mint, env, fail-closed)
+        run: python3 cli/tests/test_hivemoot_auth_subscriber.py
+      - name: Verify hivemoot setup_lifecycle wiring + two-phase ordering
+        run: python3 cli/tests/test_hivemoot_setup_lifecycle.py
+      - name: Verify github token_source subscriber mode + end-to-end auth chain
+        run: python3 cli/tests/test_github_token_source_subscriber.py
       - name: Verify worker entrypoint tests
         run: python3 cli/tests/test_worker_cli.py
       - name: Verify hivemoot plugin config schema

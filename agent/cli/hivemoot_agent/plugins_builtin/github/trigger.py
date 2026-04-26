@@ -73,7 +73,26 @@ def _resolve_state_dir(cfg: "GitHubConfig") -> str:
 
 
 def _resolve_gh_token(cfg: "GitHubConfig") -> str:
-    """Read the token from cfg.token_file (empty string on any failure)."""
+    """Read the token for trigger polls, returning ``""`` on failure.
+
+    Two-mode resolution (apiarist Phase L'):
+
+    - ``token_source: file`` — read once per call from ``cfg.token_file``.
+      Existing long-lived-PAT path; the file is local + cheap to re-read.
+    - ``token_source: subscriber`` — read from ``GH_TOKEN`` /
+      ``GITHUB_TOKEN`` env, populated by the hivemoot apiarist auth
+      subscriber. The subscriber mints a token in ``setup_lifecycle``
+      (so env is populated before triggers' first poll) and refreshes
+      it via a background thread (so env stays populated during long
+      idle periods between jobs — critical for trigger services like
+      drone that have NO work source but the watch triggers).
+
+    Called per-poll-iteration (not just at ``start()``) so a token
+    rotation in either mode takes effect within one poll interval
+    instead of waiting for container restart.
+    """
+    if cfg.token_source == "subscriber":
+        return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     if cfg.token_file is None:
         return ""
     try:
@@ -154,7 +173,13 @@ class _GitHubWatchTrigger:
                 f"{self.name} requires plugins.github.target_repo or "
                 "plugins.github.repos to select a repo to watch"
             )
-        if not _resolve_gh_token(cfg):
+        # Token validation is mode-dependent:
+        #   - file mode: token must be readable NOW (validate-time fail-fast).
+        #   - subscriber mode: env populated asynchronously by the hivemoot
+        #     auth subscriber after setup_lifecycle; checking at validate()
+        #     time would always fail. The trigger's poll loop re-reads
+        #     each iteration and skips empty-token cycles with a log.
+        if cfg.token_source == "file" and not _resolve_gh_token(cfg):
             errors.append(
                 f"{self.name} requires plugins.github.token_file "
                 "for GitHub API auth"
@@ -170,10 +195,19 @@ class _GitHubWatchTrigger:
             )
             return
         repo = _resolve_target_repo(cfg)
-        gh_token = _resolve_gh_token(cfg)
-        if not repo or not gh_token:
+        if not repo:
             print(
-                f"[{self.name}] disabled: missing repo or token",
+                f"[{self.name}] disabled: missing repo",
+                file=sys.stderr, flush=True,
+            )
+            return
+        # In file mode we can fail fast on missing token here. In
+        # subscriber mode the env token is populated by the hivemoot
+        # auth subscriber asynchronously; the poll loop tolerates
+        # empty-token cycles, so we proceed.
+        if cfg.token_source == "file" and not _resolve_gh_token(cfg):
+            print(
+                f"[{self.name}] disabled: missing token file",
                 file=sys.stderr, flush=True,
             )
             return
@@ -194,11 +228,40 @@ class _GitHubWatchTrigger:
         self._stop_event.clear()
         print(
             f"[{self.name}] watching {repo} every {poll_interval}s "
-            f"(state={state_file})",
+            f"(state={state_file}, token_source={cfg.token_source})",
             file=sys.stderr, flush=True,
         )
 
+        # Rate-limit the "no token this cycle" warning so a long idle
+        # period (subscriber mode, awaiting initial mint) doesn't flood
+        # stderr with one warning per poll. One warning per minute
+        # covers operator visibility without spam.
+        last_no_token_warn = 0.0
+        no_token_warn_interval = 60.0
+
         while not self._stop_event.is_set():
+            # Re-resolve token EACH poll so a rotation in either mode
+            # (file mode: file replaced on disk; subscriber mode:
+            # apiarist auth subscriber re-mints into env) takes effect
+            # within one poll interval instead of waiting for restart.
+            gh_token = _resolve_gh_token(cfg)
+            if not gh_token:
+                # In subscriber mode this happens briefly between
+                # container start and the auth subscriber's initial
+                # mint. Skip this poll cycle and retry next interval.
+                import time as _time
+                now = _time.monotonic()
+                if now - last_no_token_warn >= no_token_warn_interval:
+                    print(
+                        f"[{self.name}] no token this cycle "
+                        f"(token_source={cfg.token_source}); "
+                        "skipping poll, retry next interval",
+                        file=sys.stderr, flush=True,
+                    )
+                    last_no_token_warn = now
+                self._stop_event.wait(poll_interval)
+                continue
+
             try:
                 events = self._poll_events(
                     cfg=cfg,

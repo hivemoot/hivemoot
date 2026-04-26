@@ -321,6 +321,16 @@ class HivemootPlugin:
             repo=repo,
             agent_id=self.resolved_agent_id() or None,
         )
+        # Initial mint + start the background refresh thread BEFORE
+        # subscribing. The subscriber's start() does a synchronous
+        # mint so triggers (whose start() runs after setup_lifecycle)
+        # see env populated on their first poll, AND launches the
+        # refresh thread that keeps env populated during long idle
+        # periods between jobs (critical for watch-driven services
+        # like drone whose only work source is the trigger threads).
+        # If start() raises, the lifecycle subscribe never happens
+        # and plugin setup fails fast — fail-closed.
+        subscriber.start()
         lifecycle.subscribe(subscriber)
         # Cache for diagnostics + tests; not load-bearing for runtime.
         self._auth_subscriber = subscriber

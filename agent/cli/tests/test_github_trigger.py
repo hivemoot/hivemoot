@@ -149,6 +149,146 @@ class TriggerValidationTests(unittest.TestCase):
             self.assertEqual(trig.validate(_plugin_config(cfg)), [])
 
 
+# ── token_source: subscriber compatibility (PR #490 R2 fix) ────────
+
+
+class TriggerSubscriberModeTests(unittest.TestCase):
+    """Watch triggers in token_source: subscriber mode.
+
+    Validates Builder's PR #490 R2 blocker fix: triggers must not bail
+    on missing token_file when token_source is subscriber, because the
+    env-injected token from the hivemoot apiarist auth subscriber is
+    populated asynchronously after setup_lifecycle.
+    """
+
+    def setUp(self) -> None:
+        for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(var, None)
+
+    def tearDown(self) -> None:
+        for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(var, None)
+
+    def test_validate_does_not_require_token_file_in_subscriber_mode(self) -> None:
+        trig = GitHubMentionsTrigger(MagicMock())
+        cfg = GitHubConfig(
+            repos=["owner/repo"],
+            token_source="subscriber",  # token_file None is OK
+        )
+        self.assertEqual(trig.validate(_plugin_config(cfg)), [])
+
+    def test_validate_still_requires_token_file_in_file_mode(self) -> None:
+        """File mode keeps the existing fail-fast contract."""
+        trig = GitHubMentionsTrigger(MagicMock())
+        cfg = GitHubConfig(
+            repos=["owner/repo"],
+            token_source="file",  # default — token_file required
+        )
+        errors = trig.validate(_plugin_config(cfg))
+        self.assertTrue(any("token_file" in e for e in errors))
+
+    def test_subscriber_mode_skips_poll_when_env_empty(self) -> None:
+        """First poll(s) before the upstream subscriber's start() lands —
+        env is empty, trigger logs a "no token this cycle" warning and
+        waits for the next interval. Critically: trigger does NOT crash
+        and does NOT call _poll_events with an empty token."""
+        trig = GitHubMentionsTrigger(MagicMock())
+        with tempfile.TemporaryDirectory(prefix="hm-gh-trig-sub-") as tmpdir:
+            cfg = GitHubConfig(
+                repos=["owner/repo"],
+                token_source="subscriber",
+                watch_state_dir=tmpdir,
+                watch_poll_interval_secs=30,  # schema minimum
+            )
+
+            captured: dict = {}
+            def fake_poll_events(**kwargs):
+                captured["called"] = True
+                return []
+
+            # Stop the trigger after a short delay so the poll loop
+            # exits without waiting the full interval.
+            def stop_soon():
+                time.sleep(0.3)
+                trig.stop()
+            threading.Thread(target=stop_soon, daemon=True).start()
+
+            stderr_buf = io.StringIO()
+            with patch.object(trig, "_poll_events", side_effect=fake_poll_events), \
+                    patch("sys.stderr", stderr_buf):
+                trig.start(_plugin_config(cfg), MagicMock())
+
+            # No poll attempted because env was empty.
+            self.assertNotIn("called", captured)
+            log = stderr_buf.getvalue()
+            self.assertIn("no token this cycle", log)
+            self.assertIn("token_source=subscriber", log)
+
+    def test_subscriber_mode_polls_when_env_populated(self) -> None:
+        """Once GH_TOKEN is populated (by the hivemoot subscriber),
+        the trigger reads it from env and polls successfully."""
+        os.environ["GH_TOKEN"] = "ghs_from_subscriber"
+
+        trig = GitHubMentionsTrigger(MagicMock())
+        with tempfile.TemporaryDirectory(prefix="hm-gh-trig-sub-") as tmpdir:
+            cfg = GitHubConfig(
+                repos=["owner/repo"],
+                token_source="subscriber",
+                watch_state_dir=tmpdir,
+                watch_poll_interval_secs=30,
+            )
+
+            captured: dict[str, str] = {}
+            def fake_poll_events(**kwargs):
+                captured["gh_token"] = kwargs["gh_token"]
+                trig.stop()  # quit the loop after one successful poll
+                return []
+
+            with patch.object(trig, "_poll_events", side_effect=fake_poll_events):
+                trig.start(_plugin_config(cfg), MagicMock())
+
+            # The trigger read the env-populated token.
+            self.assertEqual(captured.get("gh_token"), "ghs_from_subscriber")
+
+    def test_subscriber_mode_picks_up_rotated_token_per_poll(self) -> None:
+        """Token rotation in env is picked up within one poll interval —
+        because we re-resolve in the loop, not just at start()."""
+        os.environ["GH_TOKEN"] = "ghs_v1"
+
+        trig = GitHubMentionsTrigger(MagicMock())
+        with tempfile.TemporaryDirectory(prefix="hm-gh-trig-sub-") as tmpdir:
+            cfg = GitHubConfig(
+                repos=["owner/repo"],
+                token_source="subscriber",
+                watch_state_dir=tmpdir,
+                watch_poll_interval_secs=30,
+            )
+
+            seen: list[str] = []
+            def fake_poll_events(**kwargs):
+                seen.append(kwargs["gh_token"])
+                if len(seen) == 1:
+                    # Simulate the refresh thread rotating the env.
+                    os.environ["GH_TOKEN"] = "ghs_v2_rotated"
+                if len(seen) >= 2:
+                    trig.stop()
+                return []
+
+            # Use a very short poll interval via _stop_event.wait
+            # patching so the second poll lands quickly.
+            orig_wait = trig._stop_event.wait
+            def fast_wait(timeout=None):
+                # Cap at 100ms so the next poll fires fast.
+                return orig_wait(min(timeout or 0.1, 0.1))
+            with patch.object(trig._stop_event, "wait", side_effect=fast_wait), \
+                    patch.object(trig, "_poll_events", side_effect=fake_poll_events):
+                trig.start(_plugin_config(cfg), MagicMock())
+
+            self.assertEqual(seen[0], "ghs_v1")
+            self.assertEqual(seen[1], "ghs_v2_rotated",
+                             "trigger must re-read token per poll iteration")
+
+
 # ── start() dispatch loop ──────────────────────────────────────────
 
 
@@ -414,6 +554,36 @@ class PluginAckLifecycleTests(unittest.TestCase):
         self.assertEqual(args[0], "t1:ts")
         self.assertEqual(args[1], "/state/mentions.json")
         self.assertEqual(args[2], "tok")
+
+    def test_notification_success_uses_env_token_in_subscriber_mode(self) -> None:
+        """PR #490 R2 fix: when token_source: subscriber, the ack must
+        read GH_TOKEN from env (populated by the hivemoot apiarist auth
+        subscriber), not try to read an absent token_file."""
+        plugin = create_plugin()
+        job = self._mention_job()
+        result = AgentResult(exit_code=0, response="ok")
+        # Simulate the hivemoot subscriber having populated env.
+        os.environ["GH_TOKEN"] = "ghs_env_brokered"
+        try:
+            cfg = GitHubConfig(
+                repos=["owner/repo"],
+                token_source="subscriber",
+                # token_file deliberately None — subscriber mode.
+            )
+            plugin_config = _plugin_config(cfg)
+            with patch(
+                "hivemoot_agent.plugins_builtin.github.ack_module.ack_event",
+                return_value=True,
+            ) as ack:
+                plugin.on_job_finished(job, result, plugin_config)
+            ack.assert_called_once()
+            args = ack.call_args.args
+            # CRITICAL: ack received the env token, not "" — without
+            # this fix the notification would have been silently skipped
+            # and replayed forever.
+            self.assertEqual(args[2], "ghs_env_brokered")
+        finally:
+            os.environ.pop("GH_TOKEN", None)
 
     def test_new_pr_success_calls_ack_new_pr(self) -> None:
         plugin = create_plugin()

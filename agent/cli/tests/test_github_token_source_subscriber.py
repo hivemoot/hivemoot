@@ -287,6 +287,45 @@ class AuthSubscriberOnIdleTest(_EnvIsolatedTest):
         self.assertEqual(len(plugin._repos), 1)
 
 
+class SystemPromptSubscriberModeTest(_EnvIsolatedTest):
+    """PR #490 R2 fix: in subscriber mode, system_prompt must use
+    placeholder repos when _repos is empty (clone hasn't fired yet),
+    not return the empty-repos prompt.
+    """
+
+    def test_subscriber_mode_uses_placeholder_repos_before_first_active(self) -> None:
+        plugin = GitHubPlugin()
+        cfg = _mk_config(
+            token_source="subscriber",
+            token_file=None,
+            repos=["acme/repo"],
+            workspace="/workspace",
+        )
+
+        # Run setup (subscriber mode skips clone — _repos stays empty
+        # but _setup_attempted=True).
+        with patch(
+            "hivemoot_agent.plugins_builtin.github._configure_git_auth",
+        ), patch(
+            "hivemoot_agent.plugins_builtin.github._validate_repo_access",
+        ), patch(
+            "hivemoot_agent.plugins_builtin.github.clone_or_sync",
+        ):
+            plugin.setup(cfg)
+
+        # _setup_attempted=True (so we know setup ran) but _repos still empty.
+        self.assertTrue(plugin._setup_attempted)
+        self.assertEqual(plugin._repos, [])
+
+        prompt = plugin.system_prompt(cfg)
+
+        # Repo path appears in the prompt — placeholder fallback used.
+        self.assertIn("acme/repo", prompt)
+        self.assertIn("/workspace/acme/repo", prompt)
+        # Prompt is NOT the empty-repos one ("No repositories...").
+        self.assertNotIn("No repositories were pre-cloned", prompt)
+
+
 class AuthSubscriberConstructionTest(unittest.TestCase):
     def test_missing_plugin_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -346,14 +385,25 @@ class EndToEndOrderingTest(_EnvIsolatedTest):
         def capture(cfg, token):
             captured_token["value"] = token
 
-        with patch.object(plugin, "_auth_required_setup", side_effect=capture):
-            lifecycle.on_job_starting()
+        # Need to start() the upstream subscriber so its initial mint
+        # populates env — matches what the hivemoot plugin's
+        # setup_lifecycle does in production.
+        upstream.start()
+        try:
+            with patch.object(
+                plugin, "_auth_required_setup", side_effect=capture,
+            ):
+                lifecycle.on_job_starting()
 
-        self.assertEqual(captured_token["value"], "ghs_fresh_brokered")
-        # And idle order: hivemoot's on_idle clears env.
-        lifecycle.on_job_finished()
-        self.assertNotIn("GH_TOKEN", os.environ)
-        self.assertNotIn("GITHUB_TOKEN", os.environ)
+            self.assertEqual(captured_token["value"], "ghs_fresh_brokered")
+
+            # Always-on contract (PR #490 R2): on_idle does NOT clear env.
+            # Trigger threads need the token to keep polling between jobs.
+            lifecycle.on_job_finished()
+            self.assertEqual(os.environ["GH_TOKEN"], "ghs_fresh_brokered")
+            self.assertEqual(os.environ["GITHUB_TOKEN"], "ghs_fresh_brokered")
+        finally:
+            upstream.stop()
 
 
 if __name__ == "__main__":
