@@ -615,6 +615,7 @@ infrastructure isn't there yet.
 {
   "token": "ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "expires_at": "2026-04-24T18:30:00Z",
+  "hashed_token": "9pY3KbXp5RfXYqjpFoJoCFQVLkv4XfV2sZqK8iCJ7WI=",
   "installation_id": "67890",
   "permissions": {
     "contents": "read",
