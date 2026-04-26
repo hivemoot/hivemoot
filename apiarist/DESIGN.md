@@ -1532,13 +1532,21 @@ Phase L′ therefore includes a real refactor of github plugin's
   `os.environ[token_env]` at on_active entry** — the hivemoot auth
   subscriber registered before us (per the load-bearing
   registration-order contract in §12.3.2's `subscribe()` docstring)
-  has populated env by the time our `on_active` fires. The github
-  subscriber doesn't take a token in its constructor; it's an
-  ambient-env read inside on_active. An idempotency guard at the
-  subscriber level skips the clone work after the first successful
-  on_active per process — subsequent IDLE→ACTIVE cycles re-mint the
-  token but don't re-clone (clone output is process-stable, only
-  the env value cycles per ACTIVE/IDLE).
+  has populated env at its own `start()` time (called from
+  `setup_lifecycle`, before the engine starts dispatching jobs)
+  and keeps env populated for the container lifetime via a
+  background refresh thread. The github subscriber doesn't take a
+  token in its constructor; it's an ambient-env read inside
+  on_active. The clone work is itself idempotent (`clone_or_sync`
+  fetches an existing checkout instead of re-cloning), so per-job
+  re-runs are cheap (~1-2 seconds for `_validate_repo_access` +
+  `git fetch`). The value of running them per-on_active is fail-fast
+  verification of the current env token + a fresh fetch of upstream
+  changes. Note that env reads inside on_active return the same
+  value the refresh thread last wrote — under the always-on contract
+  there is no per-cycle env "rotation"; only periodic refreshes
+  driven by token expiry (see §12.3.6 lifecycle table for the
+  steady-state cadence).
 
 **2. Subscriber registration order matters.**
 
