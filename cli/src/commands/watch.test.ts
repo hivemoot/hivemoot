@@ -166,6 +166,80 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("watchCommand — App installation token rejection", () => {
+  // App tokens (ghs_*) can't reach /notifications. The command must
+  // fail fast with an actionable message instead of letting
+  // fetchCurrentUser() emit the misleading "Could not determine
+  // GitHub user" error.
+  const originalGhToken = process.env.GH_TOKEN;
+  const originalGithubToken = process.env.GITHUB_TOKEN;
+
+  afterEach(() => {
+    if (originalGhToken === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = originalGhToken;
+    if (originalGithubToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = originalGithubToken;
+  });
+
+  it("rejects ghs_-prefixed GH_TOKEN with GH_APP_TOKEN_UNSUPPORTED", async () => {
+    process.env.GH_TOKEN = "ghs_fake_installation_token_xyz";
+    delete process.env.GITHUB_TOKEN;
+
+    await expect(
+      watchCommand({ repo: "owner/repo", once: true }),
+    ).rejects.toMatchObject({
+      code: "GH_APP_TOKEN_UNSUPPORTED",
+    });
+
+    // Critically — fetchCurrentUser is NEVER called; we don't want
+    // the misleading "Could not determine GitHub user" path reachable.
+    expect(mockedFetchUser).not.toHaveBeenCalled();
+  });
+
+  it("rejects ghs_-prefixed GITHUB_TOKEN when GH_TOKEN is unset", async () => {
+    delete process.env.GH_TOKEN;
+    process.env.GITHUB_TOKEN = "ghs_another_installation_token";
+
+    await expect(
+      watchCommand({ repo: "owner/repo", once: true }),
+    ).rejects.toMatchObject({
+      code: "GH_APP_TOKEN_UNSUPPORTED",
+    });
+  });
+
+  it("error message points operators at watch_new_prs as the App-compatible alternative", async () => {
+    process.env.GH_TOKEN = "ghs_xyz";
+    delete process.env.GITHUB_TOKEN;
+
+    let captured: CliError | undefined;
+    try {
+      await watchCommand({ repo: "owner/repo", once: true });
+    } catch (err) {
+      captured = err as CliError;
+    }
+    expect(captured).toBeDefined();
+    expect(captured?.message).toMatch(/watch_new_prs/);
+    expect(captured?.message).toMatch(/App installation tokens/);
+  });
+
+  it("does NOT reject a ghp_-prefixed PAT (file-mode legacy path stays intact)", async () => {
+    process.env.GH_TOKEN = "ghp_classic_pat_value";
+    delete process.env.GITHUB_TOKEN;
+
+    // Set up minimal mocks so the command proceeds past the
+    // ghs_-check into normal fetchCurrentUser flow.
+    mockedFetchUser.mockResolvedValue("test-user");
+    mockedFetchMentions.mockResolvedValue(makeConditionalResult([]));
+
+    await watchCommand({ repo: "owner/repo", once: true });
+
+    // The ghp_ token went through the normal path — fetchCurrentUser
+    // was reached. (Whether it succeeded or failed isn't the point;
+    // the App-token short-circuit didn't trigger.)
+    expect(mockedFetchUser).toHaveBeenCalled();
+  });
+});
+
 describe("watchCommand (--once mode)", () => {
   it("emits event to stdout without marking notification as read", async () => {
     const notification = makeNotification();

@@ -1,5 +1,6 @@
 import type { WatchOptions } from "../config/types.js";
 import { CliError } from "../config/types.js";
+import { rejectAppInstallationToken } from "../github/auth-guard.js";
 import { fetchCurrentUser } from "../github/user.js";
 import type { CommentDetail } from "../github/notifications.js";
 import {
@@ -116,6 +117,14 @@ export async function watchCommand(options: WatchOptions): Promise<void> {
   const intervalMs = (options.interval ?? 300) * 1000;
   const stateFile = options.stateFile ?? ".hivemoot-watch.json";
   const reasons = (options.reasons ?? "mention").split(",").map((r) => r.trim());
+
+  // App installation tokens (ghs_*) can't reach GitHub's
+  // /notifications API — fail fast with an actionable message before
+  // letting fetchCurrentUser() emit the misleading "Could not determine
+  // GitHub user" error. Shared helper covers `watch`,
+  // `notifications-pull`, and `ack` uniformly. See apiarist
+  // DESIGN.md §12.3.7 for the App-token / notifications incompatibility.
+  rejectAppInstallationToken("watch");
 
   // Resolve authenticated user login (used as agent name in events)
   let agent: string;

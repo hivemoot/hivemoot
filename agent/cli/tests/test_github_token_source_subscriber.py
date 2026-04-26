@@ -95,6 +95,70 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GitHubConfig(repos=["a/b"], token_source="bogus")  # type: ignore[arg-type]
 
+    def test_subscriber_mode_rejects_watch_mentions(self) -> None:
+        """App tokens can't reach /notifications — fail-fast at validate."""
+        plugin = GitHubPlugin()
+        cfg_typed = GitHubConfig(
+            repos=["acme/repo"],
+            token_source="subscriber",
+            watch_mentions=True,
+        )
+        cfg = PluginConfig(name="github", typed=cfg_typed)
+        errors = plugin.validate(cfg)
+        self.assertTrue(
+            any(
+                "watch_mentions" in e and "subscriber" in e and "watch_new_prs" in e
+                for e in errors
+            ),
+            f"expected mentions+subscriber error pointing at watch_new_prs, got {errors}",
+        )
+
+    def test_subscriber_mode_rejects_watch_review_requests(self) -> None:
+        plugin = GitHubPlugin()
+        cfg_typed = GitHubConfig(
+            repos=["acme/repo"],
+            token_source="subscriber",
+            watch_review_requests=True,
+        )
+        cfg = PluginConfig(name="github", typed=cfg_typed)
+        errors = plugin.validate(cfg)
+        self.assertTrue(
+            any(
+                "watch_review_requests" in e and "subscriber" in e
+                for e in errors
+            ),
+            f"expected review-requests+subscriber error, got {errors}",
+        )
+
+    def test_subscriber_mode_allows_watch_new_prs(self) -> None:
+        """watch_new_prs is App-token compatible; should NOT error."""
+        plugin = GitHubPlugin()
+        cfg_typed = GitHubConfig(
+            repos=["acme/repo"],
+            token_source="subscriber",
+            watch_new_prs=True,
+        )
+        cfg = PluginConfig(name="github", typed=cfg_typed)
+        errors = plugin.validate(cfg)
+        self.assertEqual(errors, [])
+
+    def test_file_mode_still_allows_all_watch_types(self) -> None:
+        """The new fail-fast check is subscriber-mode-only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "tok"
+            token_file.write_text("ghp_x")
+            plugin = GitHubPlugin()
+            cfg_typed = GitHubConfig(
+                repos=["acme/repo"],
+                token_source="file",
+                token_file=token_file,
+                watch_mentions=True,
+                watch_review_requests=True,
+                watch_new_prs=True,
+            )
+            cfg = PluginConfig(name="github", typed=cfg_typed)
+            self.assertEqual(plugin.validate(cfg), [])
+
 
 # ── setup() in subscriber mode ────────────────────────────────────
 
