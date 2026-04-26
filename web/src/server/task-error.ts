@@ -9,6 +9,7 @@ export const TASK_ERROR = {
   INVALID_TRANSITION: "task_invalid_transition",
   INVALID_TASK_ID: "task_invalid_task_id",
   NOT_AUTHENTICATED: "task_not_authenticated",
+  TOKEN_EXPIRED: "task_token_expired",
   FORBIDDEN: "task_forbidden",
   TASK_NOT_FOUND: "task_not_found",
   RATE_LIMITED: "task_rate_limited",

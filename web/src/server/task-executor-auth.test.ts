@@ -7,12 +7,22 @@ vi.mock("@/server/env", () => ({
 vi.mock("@/server/redis", () => ({
   getRedisClient: vi.fn(() => ({} as never)),
 }));
-vi.mock("@/server/agent-token", () => ({
-  resolveTokenToInstallation: vi.fn(),
-}));
+vi.mock("@/server/agent-token", () => {
+  class AgentTokenExpiredError extends Error {
+    constructor() {
+      super("Agent token expired");
+      this.name = "AgentTokenExpiredError";
+    }
+  }
+
+  return {
+    AgentTokenExpiredError,
+    resolveTokenToInstallation: vi.fn(),
+  };
+});
 
 import { validateEnv } from "@/server/env";
-import { resolveTokenToInstallation } from "@/server/agent-token";
+import { AgentTokenExpiredError, resolveTokenToInstallation } from "@/server/agent-token";
 import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
 
 function makeRequest(authHeader?: string) {
@@ -66,6 +76,18 @@ describe("authenticateTaskExecutorRequest", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.response.status).toBe(401);
+    }
+  });
+
+  it("returns 401 with token-expired code when token is expired", async () => {
+    vi.mocked(resolveTokenToInstallation).mockRejectedValue(new AgentTokenExpiredError());
+
+    const result = await authenticateTaskExecutorRequest(makeRequest("Bearer expired"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+      const body = await result.response.json();
+      expect(body.code).toBe("task_token_expired");
     }
   });
 

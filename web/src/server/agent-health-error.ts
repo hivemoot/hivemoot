@@ -16,6 +16,7 @@ export const AGENT_HEALTH_ERROR = {
   LOCK_TIMEOUT: "agent_health_lock_timeout",
   TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
   TOKEN_NOT_FOUND: "agent_health_token_not_found",
+  TOKEN_EXPIRED: "agent_health_token_expired",
   IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
   IDEMPOTENCY_PENDING: "agent_health_idempotency_pending",
   RATE_LIMITED: "agent_health_rate_limited",

@@ -88,6 +88,7 @@ export interface AgentTokenEnvelope {
   fingerprint: string; // last 8 chars of token for display
   createdAt: string; // ISO 8601
   createdBy: string; // GitHub login
+  expiresAt: string | null; // ISO 8601, null for legacy/no-expiry tokens
   /** V1.5+: per-token authorization policy. Absent on legacy tokens
    * (created pre-V1.5); set via `setAgentTokenPolicy`. Mint endpoint
    * treats absence as legacy-permissive (logged warning) and presence
@@ -95,10 +96,16 @@ export interface AgentTokenEnvelope {
   policy?: AgentTokenPolicy;
 }
 
+export interface AgentTokenHashRecord {
+  installationId: string;
+  expiresAt?: string | null;
+}
+
 export interface AgentTokenMeta {
   fingerprint: string;
   createdAt: string;
   createdBy: string;
+  expiresAt: string | null;
   hasToken: true;
 }
 
@@ -107,6 +114,14 @@ export interface AgentTokenRecord {
   fingerprint: string;
   createdAt: string;
   createdBy: string;
+  expiresAt: string | null;
+}
+
+export class AgentTokenExpiredError extends Error {
+  constructor() {
+    super("Agent token expired");
+    this.name = "AgentTokenExpiredError";
+  }
 }
 
 // Re-exported so API route consumers can import from a single location.
@@ -130,6 +145,16 @@ function redisHashKey(hash: string): string {
 
 function redisLockKey(installationId: string): string {
   return `${LOCK_PREFIX}${installationId}`;
+}
+
+function assertTokenNotExpired(expiresAt: unknown): void {
+  if (expiresAt == null) return;
+  if (typeof expiresAt !== "string") throw new AgentTokenExpiredError();
+
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    throw new AgentTokenExpiredError();
+  }
 }
 
 function withInstallationLock<T>(
@@ -163,6 +188,7 @@ export async function generateAgentToken(
   activeKeyVersion: string,
   keyring: Map<string, Buffer>,
   redis: Redis,
+  expiresAt: string | null = null,
 ): Promise<string> {
   return withInstallationLock(installationId, redis, async () => {
     const existing = await redis.get<AgentTokenEnvelope>(redisTokenKey(installationId));
@@ -181,6 +207,7 @@ export async function generateAgentToken(
       fingerprint: rawToken.slice(-8),
       createdAt: new Date().toISOString(),
       createdBy,
+      expiresAt,
     };
 
     await redis.eval(
@@ -195,7 +222,7 @@ export async function generateAgentToken(
       [
         hasExisting ? "1" : "0",
         JSON.stringify(envelope),
-        JSON.stringify({ installationId }),
+        JSON.stringify({ installationId, expiresAt }),
       ],
     );
 
@@ -217,6 +244,7 @@ export async function getAgentTokenMeta(
     fingerprint: envelope.fingerprint,
     createdAt: envelope.createdAt,
     createdBy: envelope.createdBy,
+    expiresAt: envelope.expiresAt ?? null,
     hasToken: true,
   };
 }
@@ -258,6 +286,7 @@ export async function getAgentToken(
     fingerprint: envelope.fingerprint,
     createdAt: envelope.createdAt,
     createdBy: envelope.createdBy,
+    expiresAt: envelope.expiresAt ?? null,
   };
 }
 
@@ -333,8 +362,9 @@ export async function resolveTokenToInstallation(
   redis: Redis,
 ): Promise<string | null> {
   const hash = hashToken(rawToken);
-  const record = await redis.get<{ installationId: string }>(redisHashKey(hash));
+  const record = await redis.get<AgentTokenHashRecord>(redisHashKey(hash));
   if (!record || typeof record.installationId !== "string") return null;
+  assertTokenNotExpired(record.expiresAt);
   return record.installationId;
 }
 
@@ -364,6 +394,7 @@ export async function resolveTokenToInstallationAndPolicy(
   // (atomic rotate keeps both in sync), but if it does treat as unknown
   // rather than fail-open with no policy.
   if (!envelope) return null;
+  assertTokenNotExpired(envelope.expiresAt);
 
   return { installationId, policy: envelope.policy };
 }

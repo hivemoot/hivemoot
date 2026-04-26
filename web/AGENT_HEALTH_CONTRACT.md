@@ -115,6 +115,7 @@ Success:
 
 Error:
 - `401` `agent_health_not_authenticated` for missing/invalid agent token.
+- `401` `agent_health_token_expired` when a recognized agent token is past its configured expiry.
 - `409` `agent_health_idempotency_conflict` when `run_id` is reused with different payload.
 - `409` `agent_health_idempotency_pending` when the same report is still in-flight.
 - `429` `agent_health_rate_limited` when exceeding one report per 60s for installation+agent+repo.
@@ -153,11 +154,18 @@ Token format and storage:
 - Raw token is 64-char hex (32 random bytes).
 - Exactly one active token per installation.
 - On rotate, old token is revoked atomically.
+- New tokens may be generated with `POST /api/agent-token` body `{ "expiresIn": "90d" }`.
+  Supported units are `m`, `h`, and `d`, capped at 365 days. Omitted or `null` keeps
+  the existing no-expiry behavior for backward compatibility.
 
 Security model:
 - Raw token is encrypted with BYOK keyring and stored at `hive:agent-token:{installationId}`.
-- A SHA-256 hash reverse index is stored at `agent-token-hash:{hash}` -> `{ installationId }`.
+- The encrypted envelope stores `expiresAt: string | null`.
+- A SHA-256 hash reverse index is stored at `agent-token-hash:{hash}` ->
+  `{ installationId, expiresAt }`.
 - `POST /api/agent-health` resolves installation by hash lookup (O(1)); no GitHub `/user` call on write path.
+- Expired tokens are rejected during hash-index resolution. Legacy records without
+  `expiresAt` remain valid until manually rotated or revoked.
 
 Operational note:
 - `GET /api/agent-token` intentionally returns plaintext token for admin recovery/copy flows. Treat this route as sensitive and setup-session protected.
@@ -209,6 +217,7 @@ Error responses use the `agent_health_*` namespace:
 - `agent_health_lock_timeout`
 - `agent_health_token_already_exists`
 - `agent_health_token_not_found`
+- `agent_health_token_expired`
 - `agent_health_idempotency_conflict`
 - `agent_health_idempotency_pending`
 - `agent_health_rate_limited`

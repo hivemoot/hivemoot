@@ -35,6 +35,7 @@ vi.mock("@/server/agent-health-error", async () => {
       SERVER_MISCONFIGURATION: "agent_health_server_misconfiguration",
       TOKEN_ALREADY_EXISTS: "agent_health_token_already_exists",
       TOKEN_NOT_FOUND: "agent_health_token_not_found",
+      TOKEN_EXPIRED: "agent_health_token_expired",
       LOCK_TIMEOUT: "agent_health_lock_timeout",
       IDEMPOTENCY_CONFLICT: "agent_health_idempotency_conflict",
       IDEMPOTENCY_PENDING: "agent_health_idempotency_pending",
@@ -88,8 +89,24 @@ function mockAuthStale() {
   mockAuthFailure(401, "byok_session_stale", "Re-authentication required");
 }
 
-function makeRequest(method: string) {
-  return new NextRequest("https://example.com/api/agent-token", { method });
+function makeRequest(method: string, body?: unknown) {
+  return new NextRequest("https://example.com/api/agent-token", {
+    method,
+    ...(body === undefined
+      ? {}
+      : {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+  });
+}
+
+function makeRawRequest(method: string, body: string) {
+  return new NextRequest("https://example.com/api/agent-token", {
+    method,
+    headers: { "content-type": "application/json" },
+    body,
+  });
 }
 
 beforeEach(() => {
@@ -112,6 +129,7 @@ describe("POST /api/agent-token", () => {
     const body = await res.json();
     expect(body.token).toBe(fakeToken);
     expect(body.fingerprint).toBe(fakeToken.slice(-8));
+    expect(body.expiresAt).toBeNull();
     expect(body.message).toContain("Store this token securely");
   });
 
@@ -125,7 +143,48 @@ describe("POST /api/agent-token", () => {
       "v1",
       MOCK_KEYRING,
       expect.anything(),
+      null,
     );
+  });
+
+  it("accepts an optional expiresIn duration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-26T00:00:00.000Z"));
+    const expectedExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    vi.mocked(generateAgentToken).mockResolvedValue("c".repeat(64));
+
+    const res = await POST(makeRequest("POST", { expiresIn: "90d" }));
+    expect(res.status).toBe(200);
+
+    expect(generateAgentToken).toHaveBeenCalledWith(
+      "123",
+      "alice",
+      "v1",
+      MOCK_KEYRING,
+      expect.anything(),
+      expectedExpiresAt,
+    );
+    const body = await res.json();
+    expect(body.expiresAt).toBe(expectedExpiresAt);
+    vi.useRealTimers();
+  });
+
+  it("returns validation error for invalid expiresIn", async () => {
+    const res = await POST(makeRequest("POST", { expiresIn: "0d" }));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_validation_failed");
+    expect(generateAgentToken).not.toHaveBeenCalled();
+  });
+
+  it("returns invalid-json error for malformed JSON bodies", async () => {
+    const res = await POST(makeRawRequest("POST", "{not json"));
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.code).toBe("agent_health_invalid_json");
+    expect(generateAgentToken).not.toHaveBeenCalled();
   });
 
   it("returns auth error when not authenticated", async () => {
@@ -175,6 +234,7 @@ describe("GET /api/agent-token", () => {
       fingerprint: "abcd1234",
       createdAt: "2026-02-24T00:00:00Z",
       createdBy: "alice",
+      expiresAt: null,
     });
 
     const res = await GET(makeRequest("GET"));
@@ -184,6 +244,7 @@ describe("GET /api/agent-token", () => {
     expect(body.token).toBe("a".repeat(64));
     expect(body.fingerprint).toBe("abcd1234");
     expect(body.createdBy).toBe("alice");
+    expect(body.expiresAt).toBeNull();
   });
 
   it("passes keyring context to getAgentToken", async () => {
@@ -192,6 +253,7 @@ describe("GET /api/agent-token", () => {
       fingerprint: "bbbbbbbb",
       createdAt: "2026-02-24T00:00:00Z",
       createdBy: "alice",
+      expiresAt: "2026-07-25T00:00:00.000Z",
     });
 
     await GET(makeRequest("GET"));
