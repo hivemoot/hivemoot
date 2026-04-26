@@ -2,13 +2,15 @@
 setup steps every IDLE→ACTIVE boundary.
 
 Used only when ``plugins.github.token_source: subscriber`` (apiarist
-DESIGN.md §12.3). The token isn't available at process startup under
+DESIGN.md §12.3, Phase L'). The token isn't read from a file under
 that mode — an upstream lifecycle subscriber (e.g. the hivemoot
 plugin's apiarist auth subscriber) populates ``GH_TOKEN`` /
-``GITHUB_TOKEN`` env vars on each on_active. This subscriber runs
-AFTER the upstream one (registration order is load-bearing — the
-operator lists the upstream plugin BEFORE github in
-``hivemoot.yaml``) and consumes the env to perform:
+``GITHUB_TOKEN`` env vars at ``setup_lifecycle`` time and keeps
+them populated for the container lifetime via a background refresh
+thread. This subscriber registers AFTER the upstream one
+(registration order is load-bearing — the operator lists the
+upstream plugin BEFORE github in ``hivemoot.yaml``) and on each
+on_active reads the current env to perform:
 
 - Resolve the GitHub user from the token (refines git committer
   identity if not pinned in config).
@@ -28,8 +30,11 @@ fail-fast verification + a fresh fetch of upstream changes.
 
 - The cloned workspace is persistent across jobs (next on_active
   fetches incrementally; clearing it would force a slow re-clone).
-- The env vars are owned by the upstream subscriber to clear on its
-  own ``on_idle``.
+- The env vars are NOT cleared by anyone on idle in the always-on
+  contract — the upstream apiarist subscriber keeps them populated
+  for the container lifetime so trigger threads can poll between
+  jobs. See ``hivemoot/auth_subscriber.py`` module docstring for
+  the trade-off rationale.
 """
 
 from __future__ import annotations

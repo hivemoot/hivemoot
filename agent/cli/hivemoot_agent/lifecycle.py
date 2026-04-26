@@ -14,21 +14,38 @@ the 0↔1 boundary.
 
 The first user is GitHub token auth (apiarist):
 
-- Hivemoot plugin's auth subscriber mints a token via apiarist on
-  ``on_active``, sets ``GITHUB_TOKEN`` in env, and clears it on
-  ``on_idle``.
+- Hivemoot plugin's auth subscriber mints a token via apiarist at
+  ``setup_lifecycle`` time AND keeps ``GH_TOKEN`` / ``GITHUB_TOKEN``
+  populated for the container lifetime via a background refresh
+  thread. ``on_active`` is a defensive proactive-refresh
+  (re-mints when the current token is within the lead-time window);
+  ``on_idle`` is a NO-OP. Watch-driven services (drone) need env
+  populated between jobs so trigger threads can poll — clearing on
+  idle would deadlock those services.
 - Github plugin's clone subscriber runs ``_validate_repo_access``
   and ``clone_or_sync`` on ``on_active`` (after the auth subscriber
   has populated env per registration order — see
   :meth:`ContainerLifecycle.subscribe`).
 
+The "always-on env" model trades one layer of defense-in-depth
+(env-clear-when-idle) for trigger viability between jobs. The
+strong guarantee — short token TTL via apiarist's policy + the
+GitHub App 1h cap — is preserved by the refresh thread. See
+``plugins_builtin/hivemoot/auth_subscriber.py`` module docstring
+for the trade-off rationale in full.
+
 Future cross-cutting concerns reuse the same surface (metrics on
 state changes, secret rotation, audit logging, …).
 
 Synchronicity: this module is **synchronous** to match the existing
-plugin contract in `plugins/interfaces.py`. Subscribers that need
-async work (background refresh threads, etc.) spawn their own threads
-and join them in ``on_idle``. The reference-count invariant remains
+plugin contract in `plugins/interfaces.py`. Subscribers that spawn
+background threads (e.g. the hivemoot apiarist subscriber's
+refresh thread) own their thread lifecycle outside the
+``on_active`` / ``on_idle`` hooks — they may start the thread from
+their plugin's ``setup_lifecycle`` and rely on ``daemon=True``
+exit at process shutdown, OR expose an explicit ``stop()`` for
+clean test teardown. The lifecycle module doesn't track those
+subscriber-internal tasks. The reference-count invariant remains
 correct under sync dispatch because ``on_job_starting`` /
 ``on_job_finished`` calls are serialized by the engine's per-job
 sequential loop.
