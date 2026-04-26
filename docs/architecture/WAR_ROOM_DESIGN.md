@@ -237,7 +237,7 @@ Primary records:
 |---|---|---|---|
 | `hive:v1:room:{installationId}:{roomId}` | hash | None until closed; 30 days after close | Room core (status, manager, subject_ref, timing config, decision once closed) |
 | `hive:v1:room:{roomId}:events` | sorted set | Inherits room TTL | Event log; member = event JSON, score = sequence number |
-| `hive:v1:room:{roomId}:idem:{key}` | string | 90 days | Idempotency reverse index → sequence number |
+| `hive:v1:room:{roomId}:idem:{key}` | string | `max_age_secs * 2` (default 7200 s = 2 h) — TTL parameterized at write time, NOT hard-coded | Idempotency reverse index → sequence number |
 | `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
 | `hive:v1:room:{roomId}:contributions` | hash | Inherits room TTL | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
 | `hive:v1:room:{roomId}:seq` | counter | Inherits room TTL | Monotonic event sequence (`INCR` per event) |
@@ -247,9 +247,10 @@ Secondary indexes:
 
 | Key | Type | TTL | Purpose |
 |---|---|---|---|
-| `hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}` | string | None until close | Open-room uniqueness → `{roomId}` while room is in `awaiting_rsvp \| awaiting_contributions \| deciding`; deleted on close |
-| `hive:v1:idx:room:installation:{installationId}` | sorted set (roomIds, score=`opened_at`) | None | All rooms for `GET /api/rooms` filtering |
+| `hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}` | string | `max_age_secs` (default 3600 s = 1 h) — defense-in-depth so a stalled-recovery scenario can't permanently block new rooms (closes Queen R3 #3) | Open-room uniqueness → `{roomId}` while room is in `awaiting_rsvp \| awaiting_contributions \| deciding`; deleted on close |
+| `hive:v1:idx:room:installation:{installationId}` | sorted set (roomIds, score=`opened_at`) | None — closed rooms ZREM'd by `ROOM_CLOSE_SCRIPT`, NOT just the status-set membership (closes Queen R2 #2) | All rooms for `GET /api/rooms` filtering |
 | `hive:v1:idx:room:status:{installationId}:{status}` | set (roomIds) | None | Rooms at this status; updated on every transition. Used by manager loop's "rooms to advance" scan |
+| `hive:v1:idx:room:repo:{installationId}:{owner}/{repo}` | set (roomIds) | None — closed rooms SREM'd by `ROOM_CLOSE_SCRIPT` (closes guard M3) | Per-repo room filtering for dashboard |
 
 Locks (per REDIS_KEY_CONVENTION.md):
 
@@ -264,44 +265,65 @@ same TTL treatment so nothing leaks.
 
 ### Atomic operations (Lua)
 
+Six scripts; each follows the return-shape convention in
+REDIS_KEY_CONVENTION.md (`{1, ...}` success / `{0, ...}` benign
+conflict / `{-1, ...}` precondition fail / `{-2, ...}` sequence
+drift / `{-3, ...}` unrecoverable). Pin each script's `KEYS` and
+`ARGV` ordering when porting to TypeScript.
+
 **`ROOM_OPEN_SCRIPT`** — opens a room IF no open room exists for the
-subject. Prevents duplicate-open race for the same `(installationId,
-subjectType, subjectRef)`.
+subject. Prevents duplicate-open race. Initializes the sequence
+counter (closes guard B1), TTLs the subject index (closes Queen R3
+#3), and registers the per-repo index (closes guard M3).
 
 ```lua
--- KEYS: [subjectIndexKey, roomKey, eventsKey, statusSetKey, allRoomsKey]
---   subjectIndexKey  = hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}
---   roomKey          = hive:v1:room:{installationId}:{roomId}
---   eventsKey        = hive:v1:room:{roomId}:events
---   statusSetKey     = hive:v1:idx:room:status:{installationId}:awaiting_rsvp
---   allRoomsKey      = hive:v1:idx:room:installation:{installationId}
+-- KEYS: [subjectIndexKey, roomKey, seqKey, eventsKey,
+--        statusSetAwaitingRsvpKey, allRoomsKey, repoIndexKey]
+--   subjectIndexKey       = hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}
+--   roomKey               = hive:v1:room:{installationId}:{roomId}
+--   seqKey                = hive:v1:room:{roomId}:seq
+--   eventsKey             = hive:v1:room:{roomId}:events
+--   statusSetAwaitingRsvpKey = hive:v1:idx:room:status:{installationId}:awaiting_rsvp
+--   allRoomsKey           = hive:v1:idx:room:installation:{installationId}
+--   repoIndexKey          = hive:v1:idx:room:repo:{installationId}:{owner}/{repo}
 -- ARGV: [installationId, roomId, subjectType, subjectRef, roomJson,
---        roomOpenedEventJson, openedAt]
+--        roomOpenedEventJson, openedAt, maxAgeSecs]
+-- Returns: {1, roomId}    success
+--          {0, existingRoomId}  another open room covers this subject
 local existing = redis.call("get", KEYS[1])
 if existing then return {0, existing} end
-redis.call("set", KEYS[1], ARGV[2])
+
+-- Reserve subject index with TTL = max_age_secs (defense-in-depth
+-- so a stalled-recovery scenario can't permanently block new rooms)
+redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[8]))
+
+-- Initialize the sequence counter at 1, then write the room_opened
+-- event at score 1 (counter and event score agree, closes B1)
+redis.call("set", KEYS[3], 1)
 redis.call("hset", KEYS[2], "data", ARGV[5])
-redis.call("zadd", KEYS[3], 1, ARGV[6])
-redis.call("sadd", KEYS[4], ARGV[2])
-redis.call("zadd", KEYS[5], ARGV[7], ARGV[2])
+redis.call("zadd", KEYS[4], 1, ARGV[6])
+
+-- Register in status, by-installation, and by-repo indexes
+redis.call("sadd", KEYS[5], ARGV[2])
+redis.call("zadd", KEYS[6], ARGV[7], ARGV[2])
+redis.call("sadd", KEYS[7], ARGV[2])
 return {1, ARGV[2]}
 ```
 
-Returns `{1, roomId}` on success, `{0, existingRoomId}` on conflict.
-Caller maps `{0, ...}` to a 409 with `existingRoomId` in the body.
-
 **`ROOM_APPEND_EVENT_SCRIPT`** — append event idempotently with
 monotonic sequence. Updates participant or contribution materialized
-view depending on event_type. Closes G7 (background-job + status-
-transition concurrency).
+view depending on event_type. Closes G7 (watchdog vs claim race).
+Idempotency TTL is now parameterized from ARGV (closes Queen R3 #5).
 
 ```lua
--- KEYS: [seqKey, eventsKey, idemKey, roomKey, materializedKey, statusFromSetKey, statusToSetKey]
+-- KEYS: [seqKey, eventsKey, idemKey, roomKey, materializedKey,
+--        statusFromSetKey, statusToSetKey]
 -- ARGV: [eventJsonTemplate, idempotencyKey, eventType,
 --        materializedFieldName, materializedFieldJson,
---        roomStatusFrom, roomStatusTo, roomId]
--- Returns: {newSequence} on success; {-1, existingSequence} on idempotency
---          replay; {-2, currentRoomStatus} on status precondition fail.
+--        roomStatusFrom, roomStatusTo, roomId, idemTtlSecs]
+-- Returns: {seq}                     success
+--          {-1, existingSequence}    idempotency replay
+--          {-2, currentRoomStatus}   status precondition fail
 if ARGV[2] ~= "" then
   local existing = redis.call("get", KEYS[3])
   if existing then return {-1, tonumber(existing)} end
@@ -314,7 +336,7 @@ local seq = redis.call("incr", KEYS[1])
 local eventJson = string.gsub(ARGV[1], "__SEQ__", tostring(seq))
 redis.call("zadd", KEYS[2], seq, eventJson)
 if ARGV[2] ~= "" then
-  redis.call("set", KEYS[3], tostring(seq), "EX", 7776000)  -- 90d
+  redis.call("set", KEYS[3], tostring(seq), "EX", tonumber(ARGV[9]))
 end
 if ARGV[4] ~= "" then
   redis.call("hset", KEYS[5], ARGV[4], ARGV[5])
@@ -335,13 +357,16 @@ prevents the `participant_timed_out` watchdog from racing
 between watchdog scan and write, the script returns `{-2, ...}` and
 the watchdog re-scans on the next tick.
 
-**`ROOM_DECIDE_CLAIM_SCRIPT`** — atomically claim synthesis.
+**`ROOM_DECIDE_CLAIM_SCRIPT`** — atomically claim synthesis. The
+claim's 5-minute TTL is necessary but not sufficient for crash
+recovery — see `ROOM_RECOVER_DECIDING_SCRIPT` below.
 
 ```lua
 -- KEYS: [roomKey, claimKey, statusSetAwaitingKey, statusSetDecidingKey, lastSeqKey]
 -- ARGV: [roomId, queenRunner, claimTtlSecs]
--- Returns: {1, currentSeq} on claim; {0, claimingRunner} if already claimed;
---          {-1, currentStatus} if status is not awaiting_contributions.
+-- Returns: {1, currentSeq}        claim acquired
+--          {0, claimingRunner}    already claimed by another tick
+--          {-1, currentStatus}    not in awaiting_contributions
 local status = redis.call("hget", KEYS[1], "status")
 if status ~= "awaiting_contributions" then
   return {-1, status}
@@ -360,16 +385,100 @@ redis.call("sadd", KEYS[4], ARGV[1])
 return {1, seq}
 ```
 
-Closes S4 (`/decide` atomicity). The claim has a 5-minute TTL so a
-queen crash mid-synthesis auto-reverts.
-
-**`ROOM_CLOSE_SCRIPT`** — close with sequence-consistency check.
+**`ROOM_RECOVER_DECIDING_SCRIPT`** — atomically revert a `deciding`
+room to `awaiting_contributions` IF the claim has expired (or never
+existed). Closes builder R2 — the 5-minute TTL deletes the claim
+key but NOT the room hash status nor the status-set membership; this
+script is what the manager-loop recovery branch invokes per stuck
+room.
 
 ```lua
--- KEYS: [roomKey, claimKey, lastSeqKey, statusSetDecidingKey, subjectIndexKey, eventsKey,
---        participantsKey, contributionsKey, idemKey]
--- ARGV: [roomId, expectedThroughSequence, decisionJson, closedEventJson, closedAt,
---        retentionSecs]
+-- KEYS: [roomKey, claimKey, statusSetDecidingKey, statusSetAwaitingKey,
+--        seqKey, eventsKey]
+-- ARGV: [roomId, recoveryEventJson, recoveredAt]
+-- Returns: {1, sequence}    recovered (revert + recovery event emitted)
+--          {0, "claim_active"}    claim still alive — caller should NOT recover
+--          {-1, currentStatus}    room not in deciding (already moved on)
+local status = redis.call("hget", KEYS[1], "status")
+if status ~= "deciding" then
+  return {-1, status}
+end
+local claim = redis.call("get", KEYS[2])
+if claim then
+  return {0, "claim_active"}
+end
+-- Atomically revert: hash + status sets + emit recovery event
+local seq = redis.call("incr", KEYS[5])
+local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq))
+redis.call("zadd", KEYS[6], seq, eventJson)
+redis.call("hset", KEYS[1], "status", "awaiting_contributions",
+                          "deciding_through_sequence", "")
+redis.call("srem", KEYS[3], ARGV[1])
+redis.call("sadd", KEYS[4], ARGV[1])
+return {1, seq}
+```
+
+The manager loop scans `hive:v1:idx:room:status:{installationId}:deciding`
+every tick and calls this script for each room. The `{0, "claim_active"}`
+return tells the manager "queen is still working" — skip and re-check
+next tick. The `{1, ...}` return triggers an audit event and observability
+metric (`recovered_deciding_rooms_count`).
+
+**`ROOM_EXPIRE_SCRIPT`** — atomically close a room past `max_age_secs`
+without requiring a claim. Closes Queen R3 #1 — the previous
+`closeAsExpired` was undefined because `ROOM_CLOSE_SCRIPT` requires a
+valid claim (which expired rooms in `awaiting_*` never had).
+
+```lua
+-- KEYS: [roomKey, subjectIndexKey, statusSetCurrentKey, allRoomsKey, repoIndexKey,
+--        seqKey, eventsKey, participantsKey, contributionsKey]
+-- ARGV: [roomId, expiredEventJson, closedAt, retentionSecs]
+-- Returns: {1, sequence}        expired (status → closed, sibling cleanup)
+--          {-1, currentStatus}  not in an expirable status (already closed/deciding)
+local status = redis.call("hget", KEYS[1], "status")
+if status ~= "awaiting_rsvp" and status ~= "awaiting_contributions" then
+  return {-1, status}
+end
+local seq = redis.call("incr", KEYS[6])
+local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq))
+redis.call("zadd", KEYS[7], seq, eventJson)
+redis.call("hset", KEYS[1], "status", "closed",
+                          "closed_at", ARGV[3],
+                          "closed_reason", "expired")
+redis.call("del", KEYS[2])              -- subject index released
+redis.call("srem", KEYS[3], ARGV[1])    -- remove from current status set
+redis.call("zrem", KEYS[4], ARGV[1])    -- remove from per-installation index (R2 #2)
+redis.call("srem", KEYS[5], ARGV[1])    -- remove from per-repo index (M3)
+redis.call("expire", KEYS[1], tonumber(ARGV[4]))
+redis.call("expire", KEYS[6], tonumber(ARGV[4]))
+redis.call("expire", KEYS[7], tonumber(ARGV[4]))
+redis.call("expire", KEYS[8], tonumber(ARGV[4]))
+redis.call("expire", KEYS[9], tonumber(ARGV[4]))
+return {1, seq}
+```
+
+Note the per-key TTLs on the seq counter and audit/event sibling
+keys (closes Queen R2 #1 — TTL leak in CLOSE), and the explicit
+ZREM/SREM on by-installation and by-repo indexes (closes Queen R2
+#2 — sets accumulating closed room IDs).
+
+**`ROOM_CLOSE_SCRIPT`** — close after queen synthesis, with
+sequence-consistency check. R3 fixes: B2 (status-set transition on
+the `-2` drift path), B3 (sequence-stamp the closed-event JSON via
+`__SEQ__` substitution), Queen R2 #1 (TTL the seq counter), Queen R2
+#2 (ZREM from by-installation), and per-repo SREM.
+
+```lua
+-- KEYS: [roomKey, claimKey, lastSeqKey, statusSetDecidingKey,
+--        statusSetAwaitingContribKey, subjectIndexKey, eventsKey,
+--        participantsKey, contributionsKey, allRoomsKey, repoIndexKey]
+-- ARGV: [roomId, expectedThroughSequence, decisionJson, closedEventJsonTemplate,
+--        closedAt, retentionSecs]
+-- Returns: {1, sequence}            closed cleanly
+--          {-2, lastSeq}            sequence drift — claim freed, room reverted
+--                                   to awaiting_contributions; caller re-synthesizes
+--          {-3, "claim_lost"}       claim deleted out from under us (force-close)
+--          {-3, "claim_throughSeq_mismatch"}  claim's throughSequence != ARGV[2]
 local claim = redis.call("get", KEYS[2])
 if not claim then return {-3, "claim_lost"} end
 local parsed = cjson.decode(claim)
@@ -378,27 +487,68 @@ if tonumber(parsed.throughSequence) ~= tonumber(ARGV[2]) then
 end
 local lastSeq = tonumber(redis.call("get", KEYS[3])) or 0
 if lastSeq ~= tonumber(ARGV[2]) then
-  -- New events arrived during synthesis → unclaim, re-enter awaiting_contributions
+  -- New events arrived during synthesis → unclaim AND atomically
+  -- revert status-set membership (closes B2: the -2 path was
+  -- orphaning rooms from both deciding and awaiting_contributions
+  -- status sets, making them invisible to subsequent ticks)
   redis.call("del", KEYS[2])
-  redis.call("hset", KEYS[1], "status", "awaiting_contributions")
+  redis.call("hset", KEYS[1], "status", "awaiting_contributions",
+                            "deciding_through_sequence", "")
+  redis.call("srem", KEYS[4], ARGV[1])           -- remove from deciding set
+  redis.call("sadd", KEYS[5], ARGV[1])           -- restore to awaiting_contributions set
   return {-2, lastSeq}
 end
+
+-- Sequence-stamp the closed event JSON (closes B3) so the body
+-- carries the same sequence as the sorted-set score
+local closedSeq = lastSeq + 1
+local closedEventJson = string.gsub(ARGV[4], "__SEQ__", tostring(closedSeq))
+
 redis.call("hset", KEYS[1], "status", "closed",
                           "decision", ARGV[3], "closed_at", ARGV[5])
-redis.call("zadd", KEYS[6], lastSeq + 1, ARGV[4])
-redis.call("incr", KEYS[3])
+redis.call("zadd", KEYS[7], closedSeq, closedEventJson)
+redis.call("set", KEYS[3], tostring(closedSeq))
 redis.call("del", KEYS[2])
-redis.call("del", KEYS[5])
-redis.call("srem", KEYS[4], ARGV[1])
-redis.call("expire", KEYS[1], tonumber(ARGV[6]))
-redis.call("expire", KEYS[6], tonumber(ARGV[6]))
-redis.call("expire", KEYS[7], tonumber(ARGV[6]))
-redis.call("expire", KEYS[8], tonumber(ARGV[6]))
-return {1, lastSeq + 1}
+redis.call("del", KEYS[6])                       -- release subject index
+redis.call("srem", KEYS[4], ARGV[1])             -- remove from deciding status set
+redis.call("zrem", KEYS[10], ARGV[1])            -- remove from per-installation (R2 #2)
+redis.call("srem", KEYS[11], ARGV[1])            -- remove from per-repo (M3)
+redis.call("expire", KEYS[1], tonumber(ARGV[6]))  -- room core
+redis.call("expire", KEYS[3], tonumber(ARGV[6]))  -- seq counter (Queen R2 #1)
+redis.call("expire", KEYS[7], tonumber(ARGV[6]))  -- events log
+redis.call("expire", KEYS[8], tonumber(ARGV[6]))  -- participants
+redis.call("expire", KEYS[9], tonumber(ARGV[6]))  -- contributions
+return {1, closedSeq}
 ```
 
-Closes S4 (sequence-consistency on `/close`). Returns `-2` on
-sequence drift → caller (queen) re-enters synthesis.
+The per-event idempotency keys (`hive:v1:room:{roomId}:idem:{key}`)
+keep their independent TTLs set at append time. They naturally
+outlive room data only if `idemTtlSecs > retentionSecs`, which we
+prevent by deriving `idemTtlSecs = max_age_secs * 2` and
+`retentionSecs = 30 days` (closes Queen R3 #5 — TTL contradiction
+is gone).
+
+### Why Redis is sufficient for V1
+
+The relational queries the original SQL design relied on (list by
+status, filter by repo, join events + participants) decompose into
+narrow Redis lookups:
+
+- "List open rooms in installation X" → `SMEMBERS
+  hive:v1:idx:room:status:{X}:awaiting_rsvp ∪ awaiting_contributions ∪
+  deciding`, then `HMGET` per room key.
+- "List rooms by repo" → `SMEMBERS
+  hive:v1:idx:room:repo:{installationId}:{owner}/{repo}` (populated by
+  `ROOM_OPEN_SCRIPT`, cleaned up by close/expire scripts).
+- "Stuck-room watchdog" — same status set + per-room hash read.
+
+Avoiding SQL is an explicit project value (see CONCEPT.md: *"There is
+no external database, no hidden state, no admin panel"*). The
+materialized hashes (participants, contributions) replace the
+denormalized SQL tables, and the events sorted set replaces
+`war_room_events`. Foreign-key consistency moves to application
+code, same as the existing `agent-token.ts` and `task-store.ts`
+patterns.
 
 ### Why Redis is sufficient for V1
 
@@ -477,18 +627,24 @@ sha256("v1:" + roomId + ":" + serverRole + ":" + action + ":"
        + sequenceObservedByClient)
 ```
 
-Where `sequenceObservedByClient` is either the most recent sequence
-the client has acknowledged (sent in a `If-Room-Sequence-At-Or-After`
-header) OR a server-fresh `INCR`-derived counter when the client
-omits the header. Clients MAY send their own idempotency key in
-`Idempotency-Key` header for local retry safety, but the **server
-verifies it equals the canonical key** and rejects mismatches with
-`400 INVALID_IDEMPOTENCY_KEY`.
+`sequenceObservedByClient` is REQUIRED — sent via the
+`If-Room-Sequence-At-Or-After: <N>` header. **Requests omitting the
+header are rejected with `400 MISSING_SEQUENCE_HEADER`** (closes
+guard M1). The fallback "server-fresh counter" path the R2 draft
+allowed is removed: it produced unique-per-attempt keys (defeating
+idempotency) on every client retry, masking transient network
+failures as double-writes.
+
+Clients MAY additionally send their own `Idempotency-Key` header
+for local retry safety, but the **server verifies it equals the
+canonical key** and rejects mismatches with
+`400 INVALID_IDEMPOTENCY_KEY`. The dual mechanism lets clients
+detect their own caller-side bugs (mismatched keys signal logic
+errors); the server-canonical key is what's actually persisted.
 
 Why this matters: a buggy or hostile client supplying static keys
-causes 409 retry storms; supplying unique-per-attempt keys defeats
-idempotency and double-writes contributions. Server-canonical keys
-make both impossible.
+causes 409 retry storms; the required header gives the server
+ground truth on the client's view of the sequence.
 
 ### Sequence ordering with concurrent writers (Queen #3)
 
@@ -581,7 +737,32 @@ old `?role={role}` query parameter is removed (closes the original
 draft's `role={role}` vs `role=$AGENT_ID` typo + the server-side
 role-spoofing risk). Returns: open rooms in `awaiting_rsvp` or
 `awaiting_contributions` for the token's installation, EXCLUDING
-rooms where this role has already RSVP'd at the current sequence.
+rooms where this role has already RSVP'd-and-resolved at the current
+sequence.
+
+**Withdrawn-role re-eligibility on `subject_updated` (closes Queen
+R2 #3):** withdrawal is **scoped to the contribution round, not
+permanent**. Concretely:
+
+- After `participant_withdrew`, the role's record stays on the
+  participant hash with `status: "withdrew"` and a
+  `withdrew_at_sequence` field (the sequence at withdrawal).
+- A `subject_updated` event written by the bot carries a fresh
+  sequence; the watcher's `?since=N` poll surfaces the room again.
+- `GET /api/rooms/watching` re-includes the room for that role IFF
+  the room has new events past `withdrew_at_sequence` (i.e., the
+  subject changed since withdrawal). The watcher's local
+  `last_event_sequence_seen` and the server-side filter agree.
+- On a fresh re-RSVP (`POST /present`), the participant record's
+  `status` flips back to `pending`; `withdrew_at_sequence` is
+  cleared. The audit log preserves the prior `participant_withdrew`
+  event regardless.
+
+For PR-shaped subjects, this matters: a worker that withdrew from a
+"too small to matter" PR can re-RSVP if the PR doubles in size.
+For `mention_response` subjects, this matters: a worker that
+withdrew from a mention can re-RSVP if a follow-up mention adds
+context.
 
 ### Worker-token reads (closes #500-builder issue 3)
 
@@ -651,11 +832,21 @@ on disk). On each poll:
 
 Every runner has a stable `agent_id` derived as
 `sha256(installationId + ":" + agent_role + ":" + hostname +
-":" + processStartTime)`. In subscriber-mode fleets where multiple
-runners share one token: each runner still gets a distinct
-`agent_id`, but the per-(room, role) backend exclusivity gate ensures
-**only one of them wins the RSVP** (first POST `/present` succeeds,
-others get 409 + log + skip).
+":" + processStartTime)`.
+
+`processStartTime` MUST be **the integer Unix epoch milliseconds at
+process start** — `Date.now().toString()` for Node runners,
+`str(int(time.time()*1000))` for Python runners (closes Queen R2 #4).
+Pinned to one canonical format because two runners with the same
+logical start time computing different formats (ISO vs epoch vs
+hrtime) would derive different `agent_id`s and produce confusing
+phantom 409s at the per-(room, role) gate.
+
+In subscriber-mode fleets where multiple runners share one token:
+each runner still gets a distinct `agent_id`, but the
+per-(room, role) backend exclusivity gate ensures **only one of them
+wins the RSVP** (first POST `/present` succeeds, others get 409 +
+log + skip).
 
 Why hostname+processStartTime: stable across the lifetime of a
 runner's process (so retries from the same runner reuse the same id),
@@ -697,47 +888,170 @@ using a **bot-scoped agent token** (capability set:
 agent_role: "queen"}`). The token is stored in Vercel env per the
 existing pattern.
 
+**Webhook-on-deciding-room behavior (closes Queen R2 #5).** When the
+handler tries to write `subject_updated` and
+`ROOM_APPEND_EVENT_SCRIPT` returns `{-2, "deciding"}` (status
+precondition fail because queen has claimed the room), the bot:
+
+1. Logs `webhook_deferred_room_deciding` (info level).
+2. Enqueues the event to a per-room buffer
+   `hive:v1:room:{roomId}:webhook-buffer` (Redis list, TTL 1 h),
+   capped at 10 entries.
+3. After queen completes (`/close` or sequence-drift unclaim), the
+   manager loop drains the buffer atomically, emitting the buffered
+   `subject_updated` events with fresh sequences. If queen drifted
+   (`-2`), the drained events feed the next synthesis attempt
+   naturally.
+
+If the buffer fills (>10 entries during synthesis), oldest entries
+are dropped with `webhook_buffer_overflow` warning. This keeps the
+common case lossless without unbounded growth on a stuck `deciding`
+room (which the recovery branch closes via
+`ROOM_RECOVER_DECIDING_SCRIPT` within ~1 tick).
+
 ### 3. Manager loop — `is_room_ready()`
 
-Driven by Vercel Cron (or equivalent scheduler) at 30s interval.
+Driven by Vercel Cron at **60 s interval** (Hobby/Pro tier minimum;
+the prior R2 claim of 30 s is corrected per guard A2). The
+`queen_tick_lag` watchdog metric pivots accordingly: alert when
+the gap between scheduled and actual tick exceeds 180 s (= 3 ×
+tick interval).
+
 Calls a single bot endpoint `POST /api/internal/queen/tick` that
-runs the manager loop:
+runs the manager loop. Two correctness gates wrap the body:
+
+**Endpoint authentication (closes guard A1).** The route requires
+`Authorization: Bearer ${CRON_SECRET}` (Vercel Cron's documented
+pattern; the env var is provisioned by Vercel and never exposed
+publicly). Validation happens at the route boundary; missing or
+mismatched bearer → 401 with no body. This prevents external
+callers from forcing arbitrary synthesis ticks (which would burn
+the installation's BYOK key on the operator's account).
+
+**Tick serialization (closes Queen R3 #2).** Vercel Cron does not
+guarantee non-overlapping invocations; a tick that runs longer
+than 60 s could overlap with the next fire. The route acquires a
+distributed lock at entry:
 
 ```typescript
-async function queenTick() {
+// SET hive:v1:lock:queen-tick:{installationId} <runner> NX EX 55
+const acquired = await redis.set(
+  `hive:v1:lock:queen-tick:${installationId}`,
+  runnerId, "NX", { EX: 55 },
+);
+if (!acquired) {
+  log.info("queen_tick_overlap_skipped", { installationId, runnerId });
+  return new Response(null, { status: 200 });
+}
+try {
+  await queenTick(installationId);
+} finally {
+  // Release the lock IFF we still hold it (no-op if TTL expired)
+  if (acquired === runnerId) await redis.del(...);
+}
+```
+
+55 s TTL means the lock auto-releases just before the next fire,
+even if the runner crashes. Overlapping fires no-op cleanly with
+an info-level log line; no double LLM calls, no double GitHub
+posts.
+
+**The manager loop body:**
+
+```typescript
+async function queenTick(installationId: string) {
+  // 1. Recovery branch (closes builder R2): scan deciding rooms,
+  //    revert any whose claim has expired
+  for (const room of await listRoomsByStatus(installationId, "deciding")) {
+    const result = await callRecoverDecidingScript(room.id);
+    if (result[0] === 1) {
+      log.warn("recovered_stranded_deciding_room", {
+        installationId, roomId: room.id, sequence: result[1],
+      });
+    }
+    // result[0] === 0: claim still active, skip
+    // result[0] === -1: status changed, skip
+  }
+
   for (const room of await listOpenRooms(installationId)) {
+    // 2. Expire rooms past max_age_secs (closes Queen R3 #1)
     if (room.age > room.max_age_secs) {
-      await closeAsExpired(room);
+      await callExpireRoomScript(room.id);
       continue;
     }
 
+    // 3. RSVP quiet-period transition
     if (room.status === "awaiting_rsvp") {
-      const lastRsvpAt = max(room.participants.map(p => p.rsvp_at)) ?? room.opened_at;
+      const lastRsvpAt = max(room.participants.map(p => p.rsvp_at))
+                       ?? room.opened_at;
       if (now() - lastRsvpAt >= room.rsvp_quiet_period_secs * 1000) {
         await transitionToAwaitingContributions(room);
       }
       continue;
     }
 
+    // 4. Synthesis when all RSVPs resolved
     if (room.status === "awaiting_contributions") {
       const unresolved = room.participants.filter(p => p.status === "pending");
       if (unresolved.length > 0) continue;
 
+      // Per-room consecutive-failure backoff (closes guard M4)
+      if (room.consecutive_synthesis_failures >= 3) {
+        await callExpireRoomScript(room.id, "failed_synthesis");
+        log.error("room_marked_failed_synthesis", {
+          installationId, roomId: room.id,
+          failures: room.consecutive_synthesis_failures,
+        });
+        continue;
+      }
+
       const claim = await tryDecideClaim(room.id);
-      if (!claim.ok) continue;  // someone else claimed (shouldn't happen V1)
+      if (!claim.ok) continue;
 
       try {
         const synthesis = await synthesizeWithLLM(room, claim.throughSequence);
         await postOneGitHubAction(room, synthesis);
-        await closeRoom(room.id, claim.throughSequence, synthesis);
+        const closeResult = await closeRoom(
+          room.id, claim.throughSequence, synthesis,
+        );
+        if (closeResult[0] === -2) {
+          // Sequence drift — new events arrived; re-enter on next tick.
+          // ROOM_CLOSE_SCRIPT has already reverted status atomically
+          // and SREM/SADD'd the status sets (closes guard B2).
+          log.info("synthesis_drift_will_retry", {
+            installationId, roomId: room.id, latestSeq: closeResult[1],
+          });
+        }
+        // Reset failure counter on success or clean drift
+        await resetFailureCounter(room.id);
       } catch (err) {
-        await unclaim(room.id);  // free the room for the next tick
-        throw err;
+        await incrementFailureCounter(room.id);
+        await unclaim(room.id);
+        log.error("synthesis_attempt_failed", {
+          installationId, roomId: room.id, err,
+          consecutive: room.consecutive_synthesis_failures + 1,
+        });
+        // Don't rethrow — keep processing other rooms in the tick
       }
     }
   }
 }
 ```
+
+Per-room failure counter is stored on the room hash at field
+`consecutive_synthesis_failures`. After 3 consecutive failures the
+room is closed as `failed_synthesis` (the new closed-reason joins
+`decided` / `expired` / `manual` / `force_close`). This bounds the
+"persistent failure burns LLM credits forever" failure mode (closes
+guard M4).
+
+**Single-tick LLM-synthesis loop is bounded by the 5-minute Vercel
+Pro `maxDuration` ceiling** (closes guard A3). At V1 scale (one Hive,
+≤10 workers, ≤20 rooms-per-tick observed) this is fine. V1.1 fans
+out: each ready-to-synthesize room becomes an enqueued task on a
+serverless queue (Vercel Functions queue, Upstash Q, or similar);
+each consumer handles one synthesis with its own 5-minute budget.
+Documented as a known scaling inflection point, not blocking V1.
 
 ### Synthesis safety model (S2)
 
@@ -747,8 +1061,13 @@ as untrusted, and the verdict logic enforces a **structural
 DOWNGRADE-only invariant** — not an LLM-policed one:
 
 ```typescript
-function aggregateWorkerVerdicts(contributions: Contribution[]): Verdict {
+type WorkerVerdict = "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES";
+
+function aggregateWorkerVerdicts(contributions: Contribution[]): WorkerVerdict {
   const verdicts = contributions.map(c => c.body.verdict);
+  // Verdicts are validated at /contribute write time (see §Worker
+  // contribution body schema below); aggregation can rely on the
+  // enum being well-formed.
   if (verdicts.includes("REQUEST_CHANGES")) return "REQUEST_CHANGES";
   if (verdicts.includes("CONCERNS"))        return "CONCERNS";
   if (verdicts.every(v => v === "APPROVE")) return "APPROVE";
@@ -775,6 +1094,40 @@ land an explicit `bot/api/handlers/war-room/repo-trust-config.ts`
 allow-list change and pass an independent reviewer canary period
 (min 100 closed rooms in COMMENT mode with no operator override
 recorded). This is documented for §17.G as part of the V1 floor.
+
+### Worker contribution body schema (closes guard M2 + Queen R3 #4)
+
+`POST /api/rooms/{id}/contribute` rejects unknown verdicts AND
+unknown body shapes at write time, before queen synthesis ever runs.
+The contract:
+
+```typescript
+interface ContributionBody {
+  verdict: "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES";  // REQUIRED
+  summary: string;                  // REQUIRED, 1–500 chars
+  findings?: Finding[];             // OPTIONAL, ≤20 items
+  severity_counts?: {
+    blocker?: number;
+    warning?: number;
+    info?: number;
+  };
+}
+interface Finding {
+  area: string;                     // 1–80 chars
+  severity: "blocker" | "warning" | "info";
+  detail: string;                   // 1–2000 chars (subject to G2 raw_text cap)
+  code_ref?: string;                // optional file:line reference
+}
+```
+
+`POST /api/rooms/{id}/contribute` validates against this schema (Zod
+or equivalent). Violations → 400 with explicit error code per field
+(`MISSING_VERDICT`, `INVALID_VERDICT`, `SUMMARY_TOO_LONG`, etc.).
+Queen synthesis can rely on the body being well-formed.
+
+This closes the silent-downgrade trap where a missing/typo'd verdict
+field would default to COMMENT inside `aggregateWorkerVerdicts`
+without any operator-visible signal.
 
 ---
 
@@ -1034,6 +1387,18 @@ to state-bearing requires explicit allow-list change + canary
 draft's 5 min — heavy review jobs can take 2-3min just to spin up
 the agent stack; 5 min created false timeouts in dry-run thinking).
 `issue_triage`: 30 min.
+
+**Interaction with `max_age_secs` (closes Queen R3 I)**: when both
+deadlines apply to a single participant, **whichever fires first
+wins**. `max_age_secs` is room-scoped (set at open) and
+`rsvp_contribution_timeout_secs` is per-participant (counted from
+that participant's RSVP timestamp). A worker that RSVPs at T+25min
+in a 30-min room has 5 min until `max_age_secs` and a full 30 min of
+`rsvp_contribution_timeout_secs` — the room expires at T+30min,
+which terminates ALL pending participants regardless of their
+individual contribution-timer state. The watchdog and the manager
+loop both check `max_age_secs` first; participant timeouts only
+fire on rooms still within the age ceiling.
 
 ### J. Single queen instance vs sharded?
 
