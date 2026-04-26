@@ -189,6 +189,96 @@ class HivemootGithubWorkflowsConfig(StrictPluginConfig):
     )
 
 
+class HivemootApiaristConfig(StrictPluginConfig):
+    """GitHub installation-token brokering via the apiarist daemon.
+
+    Disabled by default. When enabled, the hivemoot plugin builds a
+    :class:`HivemootGithubAuthSubscriber`, calls its ``start()`` (which
+    does an initial synchronous mint AND launches a background
+    refresh thread), and registers it with the engine's container
+    lifecycle (apiarist DESIGN.md §12.3, Phase L'):
+
+    - **At setup**: initial mint populates ``GH_TOKEN`` +
+      ``GITHUB_TOKEN`` env so trigger threads (which spin up next)
+      see a valid token on their first poll.
+    - **Background refresh thread**: re-mints when within the
+      configured lead-time window of expiry (default 5 min), keeping
+      env populated for the container lifetime.
+    - **on_active** (IDLE→ACTIVE): proactively refreshes if expiring
+      soon; otherwise no-op (refresh thread handles it).
+    - **on_idle** (ACTIVE→IDLE): NO-OP. Env stays populated between
+      jobs because watch-driven services (drone with watch_mentions
+      etc.) need a valid token to poll between jobs — clearing on
+      idle would deadlock those services (no events → no jobs → no
+      on_active to repopulate).
+
+    The "always-on env" model trades one defense-in-depth layer
+    (env-clear-on-idle) for trigger viability between jobs. The
+    short-TTL guarantee (apiarist policy + GitHub App 1h cap) is
+    preserved by the refresh thread.
+
+    The github plugin must be configured with
+    ``token_source: subscriber`` so its own setup skips reading a
+    static token file. Subscriber registration order matters — list
+    the hivemoot plugin BEFORE the github plugin in
+    ``plugins:`` so the env is populated when the github plugin's
+    own clone subscriber fires.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable apiarist token brokering.  Off by default so the "
+            "feature ships idempotently; fleet YAML opts in per "
+            "container."
+        ),
+    )
+    socket_path: Path = Field(
+        default=Path("/run/apiarist.sock"),
+        description=(
+            "Path to the apiarist Unix-domain socket.  Default matches "
+            "the systemd unit's bind path; override when running "
+            "apiarist out of a non-standard location (dev / staging)."
+        ),
+    )
+    service: str = Field(
+        default="",
+        description=(
+            "Caller identifier reported to apiarist for audit logging "
+            "(typically the systemd service / container name like "
+            "``drone-zai``).  Empty = derive from ``AGENT_ID`` env."
+        ),
+    )
+    repo: str = Field(
+        default="",
+        description=(
+            "owner/name of the repo this agent works on.  apiarist's "
+            "token policy requires it for per-repo scoping.  Empty = "
+            "derive from the github plugin's ``repos[0]``; still empty "
+            "after that is a validation error.\n\n"
+            "**Multi-repo caveat**: this field scopes the minted token "
+            "to a SINGLE repo. ``plugins.github.repos`` accepts a list, "
+            "but the github plugin's auth subscriber will run "
+            "``_validate_repo_access`` and ``clone_or_sync`` for EVERY "
+            "entry against the token scoped here — non-matching repos "
+            "will fail at first IDLE→ACTIVE with a confusing 403/404. "
+            "V1 deploys (drone) are single-repo; multi-repo subscriber-"
+            "mode services need either an apiarist policy that grants "
+            "access to all configured github.repos, or a follow-up "
+            "design that mints per-repo on demand."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Per-call timeout for apiarist UDS round trips.  10s "
+            "covers the long-tail backend roundtrip; tighten for hot "
+            "paths."
+        ),
+    )
+
+
 class HivemootConfig(StrictPluginConfig):
     """Top-level typed config for the consolidated hivemoot plugin."""
 
@@ -213,4 +303,8 @@ class HivemootConfig(StrictPluginConfig):
     github_workflows: HivemootGithubWorkflowsConfig = Field(
         default_factory=HivemootGithubWorkflowsConfig,
         description="Hivemoot-specific GitHub contribution workflow.",
+    )
+    apiarist: HivemootApiaristConfig = Field(
+        default_factory=HivemootApiaristConfig,
+        description="GitHub installation-token brokering via apiarist.",
     )

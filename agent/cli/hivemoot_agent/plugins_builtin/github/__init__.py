@@ -89,6 +89,12 @@ def _read_token(cfg: "GitHubConfig") -> str:
     Returns empty string if no token_file is set or the file isn't
     readable — validate() reports the error upstream.  Kept as a tiny
     helper so setup/trigger/ack all resolve the token the same way.
+
+    NOTE: Does NOT consult env. Subscriber-mode callers should use
+    :func:`_read_token_runtime` which falls back to env. We keep this
+    helper file-only because validate-time checks need a deterministic
+    "is the file readable?" answer, separate from "is there a token
+    available right now?".
     """
     if cfg.token_file is None:
         return ""
@@ -96,6 +102,27 @@ def _read_token(cfg: "GitHubConfig") -> str:
         return Path(cfg.token_file).read_text().strip()
     except OSError:
         return ""
+
+
+def _read_token_runtime(cfg: "GitHubConfig") -> str:
+    """Resolve the GitHub token at runtime, file or env per token_source.
+
+    Two-mode resolution (apiarist Phase L'):
+
+    - ``token_source: file`` — read from ``cfg.token_file`` (existing
+      long-lived-PAT path).
+    - ``token_source: subscriber`` — read from ``GH_TOKEN`` /
+      ``GITHUB_TOKEN`` env, populated by the hivemoot apiarist auth
+      subscriber.
+
+    Used by hot paths (notification ack, gh API calls, etc.) that need
+    "the currently valid token, whatever its source." Validate-time
+    checks should keep using :func:`_read_token` because env state at
+    validate time isn't representative of runtime.
+    """
+    if cfg.token_source == "subscriber":
+        return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    return _read_token(cfg)
 
 
 class GitHubPlugin:
@@ -113,6 +140,10 @@ class GitHubPlugin:
         # protocol) can read cfg.watch_* flags without reaching into
         # the global registry.
         self._cfg: GitHubConfig | None = None
+        # Auth-dependent subscriber populated in setup_lifecycle() when
+        # token_source: subscriber. Cached for diagnostics + tests; the
+        # runtime path goes through engine.lifecycle directly.
+        self._auth_subscriber: Any = None
 
     def validate(self, config: PluginConfig) -> list[str]:
         from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
@@ -128,19 +159,28 @@ class GitHubPlugin:
         errors: list[str] = []
         if not cfg.repos:
             errors.append("plugins.github.repos is required (list of owner/repo)")
-        if cfg.token_file is None:
-            errors.append(
-                "plugins.github.token_file is required "
-                "(typically `!secret github_token`)"
-            )
-        elif not Path(cfg.token_file).is_file():
-            errors.append(
-                f"plugins.github.token_file does not exist: {cfg.token_file}"
-            )
-        elif not _read_token(cfg):
-            errors.append(
-                f"plugins.github.token_file is empty: {cfg.token_file}"
-            )
+
+        # token_file is REQUIRED only when token_source is "file" (the
+        # default — long-lived PAT in a secrets file). Under
+        # token_source: subscriber, the token arrives via env on every
+        # job from another plugin's lifecycle subscriber (apiarist via
+        # hivemoot), so an absent token_file is intentional and not an
+        # error.
+        if cfg.token_source == "file":
+            if cfg.token_file is None:
+                errors.append(
+                    "plugins.github.token_file is required when "
+                    "token_source is 'file' (typically "
+                    "`!secret github_token`)"
+                )
+            elif not Path(cfg.token_file).is_file():
+                errors.append(
+                    f"plugins.github.token_file does not exist: {cfg.token_file}"
+                )
+            elif not _read_token(cfg):
+                errors.append(
+                    f"plugins.github.token_file is empty: {cfg.token_file}"
+                )
         return errors
 
     def triggers(self) -> list[Trigger]:
@@ -163,7 +203,23 @@ class GitHubPlugin:
         return instances
 
     def setup(self, config: PluginConfig) -> None:
-        """Clone all configured repos and authenticate gh CLI."""
+        """One-time plugin setup.
+
+        Two-stage when ``token_source: subscriber`` (apiarist DESIGN.md
+        §12.3):
+
+        - ``token_source: file`` (default): runs both stages here. The
+          token from ``token_file`` is available immediately; clone +
+          validate happen synchronously. Existing PAT-based behavior.
+        - ``token_source: subscriber``: runs ONLY the auth-free stage
+          (cache config, choose git user defaults). The auth-required
+          stage (clone, validate, configure git user) moves into
+          :meth:`setup_lifecycle` which registers a subscriber that
+          runs on every IDLE→ACTIVE boundary AFTER the upstream
+          subscriber has populated env. ``self._repos`` stays empty
+          until the first job; ``system_prompt()`` falls back to the
+          placeholder path (config-derived) for the merged prompt.
+        """
         from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 
         self._setup_attempted = True
@@ -174,26 +230,59 @@ class GitHubPlugin:
             )
         self._cfg = cfg
 
+        # Auth-free defaults — git_name/email fallbacks. Don't resolve
+        # from token here in subscriber mode; the subscriber's on_active
+        # will refine these once the env is populated.
+        if cfg.git_name:
+            self._git_name = cfg.git_name
+            self._git_email = cfg.git_email
+        else:
+            self._git_name = "hivemoot-agent"
+            self._git_email = "hivemoot-agent@users.noreply.github.com"
+
+        if cfg.token_source == "subscriber":
+            # Auth-required steps deferred to setup_lifecycle / on_active.
+            return
+
+        # Legacy file-token path: auth-required steps run inline.
         token = _read_token(cfg)
+        os.environ["GH_TOKEN"] = token
+        os.environ["GITHUB_TOKEN"] = token
+        self._auth_required_setup(cfg, token)
+
+    def _auth_required_setup(
+        self, cfg: "GitHubConfig", token: str,
+    ) -> None:
+        """Auth-required half of setup.
+
+        Runs in two scenarios:
+
+        - From :meth:`setup` when ``token_source: file`` (token loaded
+          from disk; behavior unchanged from pre-subscriber refactor).
+        - From the github auth-dependent subscriber's ``on_active``
+          when ``token_source: subscriber`` (token loaded from env,
+          populated by the upstream auth subscriber).
+
+        Idempotent: ``clone_or_sync`` fetches an existing checkout
+        instead of re-cloning; ``configure_git_user`` is a no-op when
+        the values match. ``_validate_repo_access`` is one ``gh api``
+        call per repo — the cost is acceptable per-job because it
+        catches a stale/wrong token before the agent runs and burns
+        a job slot on a confusing failure.
+        """
         workspace = str(cfg.workspace)
         clone_depth = cfg.clone_depth
         repo_names = list(cfg.repos)
 
-        # Resolve git user from token for commit authorship.
-        git_name = cfg.git_name
-        git_email = cfg.git_email
-        if not git_name:
+        # Refine git user from the live token if not pinned in config.
+        # Only updates self._git_name/_email when resolve succeeds —
+        # we keep the auth-free defaults when the API call fails (the
+        # agent still gets a sane committer identity for the run).
+        if not cfg.git_name:
             login, email = resolve_github_user(token)
             if login:
-                git_name = login
-                git_email = email
-        if not git_name:
-            git_name = "hivemoot-agent"
-            git_email = "hivemoot-agent@users.noreply.github.com"
-
-        # Set GH_TOKEN so the agent's gh CLI calls are authenticated.
-        os.environ["GH_TOKEN"] = token
-        os.environ["GITHUB_TOKEN"] = token
+                self._git_name = login
+                self._git_email = email
 
         try:
             _configure_git_auth()
@@ -205,13 +294,12 @@ class GitHubPlugin:
         for repo in repo_names:
             _validate_repo_access(repo, token)
 
-        # Clone/sync each repo.
         cloned: list[RepoInfo] = []
         failures: list[str] = []
         for repo in repo_names:
             try:
                 info = clone_or_sync(repo, workspace, token, clone_depth)
-                configure_git_user(info.path, git_name, git_email)
+                configure_git_user(info.path, self._git_name, self._git_email)
                 cloned.append(info)
                 print(
                     f"[github] ready: {info.repo} → {info.path} "
@@ -226,16 +314,85 @@ class GitHubPlugin:
                 )
 
         self._repos = cloned
-        self._git_name = git_name
-        self._git_email = git_email
         if failures:
             raise RuntimeError("; ".join(failures))
+
+    def setup_lifecycle(
+        self, lifecycle: Any, config: PluginConfig,
+    ) -> None:
+        """Optional engine hook: register the auth-dependent subscriber.
+
+        Only registers when ``token_source: subscriber``. The subscriber's
+        ``on_active`` reads ``GH_TOKEN`` from env (populated by the
+        upstream auth subscriber, e.g. hivemoot's apiarist-backed one)
+        and runs :meth:`_auth_required_setup` — clone/validate/configure.
+
+        ``on_idle`` is a no-op for this subscriber: the cloned
+        workspace is intentionally persistent across jobs (next job's
+        on_active just fetches), and the env vars are owned by the
+        upstream subscriber to clear.
+
+        Registration order is load-bearing. The engine calls
+        ``setup_lifecycle`` in plugin iteration order (matching
+        ``hivemoot.yaml`` insertion order under ADR-003), and the
+        operator MUST list the upstream auth subscriber's plugin
+        BEFORE the github plugin so its ``on_active`` fires first
+        (env populated → github sees it).
+        """
+        cfg = config.typed
+        if cfg is None or cfg.token_source != "subscriber":
+            return
+
+        from hivemoot_agent.plugins_builtin.github.auth_subscriber import (
+            GithubAuthDependentSubscriber,
+        )
+
+        subscriber = GithubAuthDependentSubscriber(self, cfg)
+        lifecycle.subscribe(subscriber)
+        # Cache for diagnostics + tests; the engine drives this via
+        # lifecycle directly.
+        self._auth_subscriber = subscriber
+        print(
+            "[github] registered auth-dependent subscriber "
+            "(token_source: subscriber)",
+            file=sys.stderr, flush=True,
+        )
 
     def system_prompt(self, config: PluginConfig) -> str:
         from hivemoot_agent.plugins_builtin.github.config import GitHubConfig
 
         cfg: GitHubConfig | None = config.typed or self._cfg
         clone_depth = cfg.clone_depth if cfg else 50
+
+        # Subscriber mode: setup() runs the auth-free half + sets
+        # _setup_attempted, but _repos stays empty until first
+        # IDLE→ACTIVE clones them. Without this branch the gate below
+        # would take the empty-repos path for the first job's prompt
+        # ("No repositories were pre-cloned"), since system_prompt() is
+        # called once after setup() and reused across jobs. Falling
+        # through to the placeholder builder gives the first job a
+        # correct prompt with the deterministic repo paths; subsequent
+        # process restarts (when _repos is populated) use the real
+        # values via the next branch.
+        if (
+            cfg is not None
+            and cfg.token_source == "subscriber"
+            and not self._repos
+        ):
+            workspace = str(cfg.workspace)
+            placeholder_repos = [
+                RepoInfo(
+                    repo=r,
+                    path=repo_checkout_path(workspace, r),
+                    default_branch="main",
+                )
+                for r in cfg.repos
+            ]
+            return build_system_prompt(
+                placeholder_repos, clone_depth,
+                git_user=self._git_name,
+            )
+
         if self._repos or self._setup_attempted:
             return build_system_prompt(
                 self._repos, clone_depth,
@@ -318,7 +475,14 @@ class GitHubPlugin:
 
         try:
             if ack_strategy == "notification":
-                gh_token = _read_token(config.typed) if config.typed else ""
+                # Hot path — use the runtime resolver so subscriber-mode
+                # services read the env-injected token rather than the
+                # absent token_file. Without this, ack_event would skip
+                # on empty token and the notification would replay
+                # forever.
+                gh_token = (
+                    _read_token_runtime(config.typed) if config.typed else ""
+                )
                 ack_module.ack_event(ack_key, state_file, gh_token)
                 return
             if ack_strategy == "new_pr":

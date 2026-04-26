@@ -25,6 +25,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
+from hivemoot_agent.lifecycle import ContainerLifecycle
 from hivemoot_agent.plugins import registry
 from hivemoot_agent.plugins.interfaces import AgentEvent, AgentResult, Job, PluginConfig
 from hivemoot_agent.providers import get as get_provider
@@ -143,6 +144,14 @@ class Engine:
         # See workqueue.py for the queue semantics.
         self._workqueue: WorkQueue = WorkQueue()
         self._worker_thread: threading.Thread | None = None
+        # Container-wide lifecycle FSM with subscriber/event-bus pattern
+        # (apiarist DESIGN.md §12.3). Plugins register subscribers from
+        # their optional setup_lifecycle() hook; the engine wraps every
+        # job dispatch (oneshot AND daemon-mode) so subscribers see
+        # IDLE↔ACTIVE transitions regardless of which plugin triggered
+        # the job. Public attribute so plugins can call
+        # ``engine.lifecycle.subscribe(...)`` from setup_lifecycle().
+        self.lifecycle: ContainerLifecycle = ContainerLifecycle()
 
     def _resolve_plugins(self) -> dict[str, Any] | None:
         """Discover + activate plugins.
@@ -273,7 +282,31 @@ class Engine:
         return selected
 
     def _setup_plugins(self, plugins: dict[str, Any]) -> bool:
-        """Run one-time plugin setup and fail closed on errors."""
+        """Run one-time plugin setup and fail closed on errors.
+
+        Two-phase setup (apiarist DESIGN.md §12.3):
+
+        1. ``plugin.setup(config)`` — auth-free init (config validation,
+           workspace prep). Existing contract; runs for every plugin in
+           registration order.
+        2. ``plugin.setup_lifecycle(lifecycle, config)`` — OPTIONAL hook
+           for plugins that need to register lifecycle subscribers
+           (auth env injection, secret rotation, etc.). Detected via
+           ``hasattr`` so existing plugins are unaffected.
+
+        Two phases are sequenced — ALL plugins finish phase 1 before any
+        plugin enters phase 2 — so a phase-2 hook can safely assume
+        every other plugin's auth-free init is complete (e.g. the
+        github plugin's subscriber knows the hivemoot plugin has
+        finished resolving its apiarist socket path).
+
+        Subscriber registration order is then driven by the iteration
+        order of ``plugins`` (insertion order under ADR-003: matches
+        ``hivemoot.yaml`` plugin order). Operators control the chain by
+        ordering plugin entries — hivemoot before github so the auth
+        subscriber's env is in place when github's clone subscriber
+        fires.
+        """
         for name, plugin in plugins.items():
             config = registry.config_for(name)
             try:
@@ -281,6 +314,19 @@ class Engine:
             except Exception as exc:
                 print(
                     f"[engine] FATAL: plugin '{name}' setup failed: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                return False
+        for name, plugin in plugins.items():
+            if not hasattr(plugin, "setup_lifecycle"):
+                continue
+            config = registry.config_for(name)
+            try:
+                plugin.setup_lifecycle(self.lifecycle, config)
+            except Exception as exc:
+                print(
+                    f"[engine] FATAL: plugin '{name}' setup_lifecycle "
+                    f"failed: {exc}",
                     file=sys.stderr, flush=True,
                 )
                 return False
@@ -510,6 +556,27 @@ class Engine:
         if is_resume:
             effective_prompt = f"{prompt}\n\n{_RESUME_STALENESS_NOTE}"
 
+        # Container lifecycle: notify subscribers BEFORE per-plugin
+        # on_job_started so subscriber-set env (e.g. apiarist-minted
+        # GITHUB_TOKEN) is in place when on_job_started, the provider
+        # command builder, AND the agent subprocess all read it. Safe
+        # to call when no plugins are loaded — empty subscriber list
+        # makes both transitions no-ops (covered by lifecycle tests).
+        try:
+            self.lifecycle.on_job_starting(job)
+        except Exception as exc:
+            # Subscriber raised in on_active. Lifecycle has already
+            # rolled back the counter and torn down completed
+            # subscribers. Bail without invoking plugin hooks for
+            # this job (no on_job_started ran → no on_job_finished
+            # to pair with).
+            print(
+                f"[engine] oneshot lifecycle on_active failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return 1
+
         # Plugin lifecycle parity with run_agent: every plugin gets a
         # chance to set per-job env (e.g. CODEX_ANSWER_FILE) BEFORE the
         # provider command is built, and on_job_finished is guaranteed
@@ -627,6 +694,20 @@ class Engine:
                             f"{type(exc).__name__}: {exc}",
                             file=sys.stderr, flush=True,
                         )
+            # Lifecycle teardown ALWAYS runs, even when no plugins are
+            # loaded — empty subscriber list makes this a no-op.
+            # Subscriber on_idle errors are swallowed inside
+            # ContainerLifecycle (invariant I4); the defensive try
+            # guards a regression that breaks the invariant.
+            try:
+                self.lifecycle.on_job_finished(job)
+            except Exception as exc:
+                print(
+                    f"[engine] oneshot lifecycle.on_job_finished raised "
+                    f"unexpectedly (broken contract): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
 
     @staticmethod
     def _run_oneshot_subprocess(
@@ -1146,7 +1227,84 @@ class Engine:
         config: PluginConfig,
         plugin_name: str,
     ) -> AgentResult:
-        """Run the agent with MCP tools from the plugin.
+        """Run the agent with MCP tools, wrapped in the container lifecycle.
+
+        Wraps :meth:`_run_agent_inner` with the engine-owned
+        :class:`ContainerLifecycle` so subscribers see IDLE↔ACTIVE
+        transitions on the 0↔1 active-job-counter boundary
+        (apiarist DESIGN.md §12.3).
+
+        Subscriber semantics:
+
+        - On the IDLE→ACTIVE boundary, every subscriber's ``on_active``
+          runs sequentially in registration order BEFORE
+          ``plugin.on_job_started`` so subscriber-set state (env vars,
+          handoffs, metrics) is visible to the triggering plugin AND
+          the agent subprocess.
+        - On the ACTIVE→IDLE boundary, every subscriber's ``on_idle``
+          runs AFTER ``plugin.on_job_finished``. Subscriber errors are
+          logged but don't propagate (best-effort cleanup).
+        - If a subscriber raises in ``on_active``, the lifecycle
+          module rolls back the counter and tears down completed
+          subscribers in reverse order; this method then returns a
+          failed ``AgentResult``. The runtime's normal retry path
+          re-attempts the full chain cleanly.
+
+        Single-threaded contract is unchanged: under daemon mode this
+        runs on the workqueue drain thread; under oneshot it runs on
+        the caller's thread. Lifecycle's ``threading.RLock`` makes the
+        FSM correct under future concurrent dispatch, but other
+        run-time mutations (process env, session store) still need
+        the existing single-caller invariant.
+        """
+        try:
+            self.lifecycle.on_job_starting(job)
+        except Exception as exc:
+            # Subscriber raised in on_active. The lifecycle module has
+            # already rolled back the counter and torn down completed
+            # subscribers; we just need to fail the job so the runtime's
+            # retry path re-attempts the full chain cleanly.
+            print(
+                f"[engine] lifecycle on_active failed for "
+                f"{job.session_key}: {type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return AgentResult(
+                exit_code=1,
+                response=f"lifecycle setup failed: {exc}",
+            )
+
+        try:
+            return self._run_agent_inner(plugin, job, config, plugin_name)
+        finally:
+            # Subscriber on_idle errors are swallowed inside
+            # ContainerLifecycle.on_job_finished (invariant I4) so this
+            # call cannot raise under contract. Defensive try guards
+            # against a regression that breaks the invariant — if this
+            # ever raises, swallowing it here would silently break the
+            # dispatcher's ability to fire the next 0→1 transition.
+            try:
+                self.lifecycle.on_job_finished(job)
+            except Exception as exc:
+                print(
+                    f"[engine] lifecycle.on_job_finished raised "
+                    f"unexpectedly (broken contract): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+
+    def _run_agent_inner(
+        self,
+        plugin: Any,
+        job: Job,
+        config: PluginConfig,
+        plugin_name: str,
+    ) -> AgentResult:
+        """Inner body of ``run_agent`` — runs the agent subprocess.
+
+        Always called via :meth:`run_agent`, which wraps this with the
+        container lifecycle FSM. Direct callers in tests can bypass
+        the lifecycle by calling this method directly.
 
         Under daemon operation (``Engine.run``), this is called
         exclusively from the single workqueue drain thread — the

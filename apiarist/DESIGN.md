@@ -190,11 +190,17 @@ all of the above without restructuring.**
   apiarist auth via `refresh_token: true` in `apiary.yaml`). Apiarist
   holds them in process memory for a short cache window (default
   5 min); the agent receives them over the socket and exposes them
-  to its tooling via the `GITHUB_TOKEN` env var for the duration of
-  the agent's ACTIVE period (any GitHub-touching work in flight).
-  When the agent becomes fully idle, the env var is cleared. See
-  §12.3 for the activity-gated FSM and what "ACTIVE period" means
-  in practice.
+  to its tooling via the `GITHUB_TOKEN` env var. **Phase L'
+  shipping change (2026-04-26):** the env var stays populated for
+  the container lifetime, refreshed by a background thread when
+  within ~5 min of expiry. The original sketch cleared env on IDLE,
+  but watch-driven services (drone with `watch_*` triggers) need a
+  valid token to poll between jobs, and clearing on IDLE deadlocks
+  those services. The strong guarantee — short token TTL via
+  apiarist's policy + the GitHub App 1h cap — is preserved by the
+  refresh thread; the weaker "env clear when idle" defense-in-depth
+  layer was traded for trigger viability. See §12.3 for the FSM
+  semantics and the always-on env model.
 
   Repos that have NOT opted in (the default `refresh_token: false`)
   retain today's static-PAT model: the token comes from
@@ -510,8 +516,8 @@ Phase A-B's single-token assumption stays compatible: if an
 
 | Threat | Defense |
 |---|---|
-| Container compromise (`refresh_token: true` repos) | Token in container is short-lived (1h max from GitHub) and resident in `os.environ["GITHUB_TOKEN"]` only during the agent's ACTIVE period (any GitHub-touching work in flight; see §12.3). When the agent goes IDLE, the env var is cleared. Realistic ACTIVE periods are minutes to a few hours; never the container's full uptime. GitHub-side narrowing via `permissions` (and, in V1.5+, `repository_ids` — see V1 caveat row below) means a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into refresh_token containers) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. **Subprocess caveat:** subprocesses spawned during ACTIVE inherit the env at fork time and retain `GITHUB_TOKEN` until they exit; the parent's IDLE-time cleanup doesn't reach them. Short-lived `gh`/`git` invocations (the common case) are fine. Long-running spawned processes inheriting the env need to be explicitly bounded by the caller. |
-| Container compromise (static-PAT repos, default until migration) | Token comes from `apiary.secrets.yaml`, is staged on disk at deploy time, and is resident in env from container boot until container exit. A compromised container leaks the static PAT in full; the only TTL bound is when the operator manually rotates the PAT (months in practice). This is today's posture for every repo without `refresh_token: true`. The apiarist migration shrinks this exposure to the ACTIVE-period model row above; until a repo is flagged, that row's defenses don't apply. |
+| Container compromise (`refresh_token: true` repos) | Token in container is short-lived (1h max from GitHub, refreshed ~5 min before expiry) and resident in `os.environ["GITHUB_TOKEN"]` for the container's full uptime — **Phase L' shipping change (2026-04-26)**: the original sketch cleared env on IDLE, but watch-driven services need a valid token to poll between jobs and clearing on IDLE deadlocks them. The strong scope-narrowing guarantee (1h TTL via GitHub + apiarist policy server-side) is unchanged; the weaker "env clear when idle" layer was dropped for trigger viability. GitHub-side narrowing via `permissions` (and, in V1.5+, `repository_ids` — see V1 caveat row below) means a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into refresh_token containers) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. **Window comparison:** before Phase L', the exposure window was the ACTIVE period (minutes to hours); now it's container uptime (hours to days, bounded by the deploy cycle). The trade is documented in §12.3. **Subprocess caveat unchanged:** subprocesses spawned anytime inherit the env at fork time and retain `GITHUB_TOKEN` until they exit. Short-lived `gh`/`git` invocations (the common case) are fine. Long-running spawned processes inheriting the env need to be explicitly bounded by the caller. |
+| Container compromise (static-PAT repos, default until migration) | Token comes from `apiary.secrets.yaml`, is staged on disk at deploy time, and is resident in env from container boot until container exit. A compromised container leaks the static PAT in full; the only TTL bound is when the operator manually rotates the PAT (months in practice). This is today's posture for every repo without `refresh_token: true`. The apiarist migration shrinks this exposure to the short-TTL refresh model in the row above (~1h max from GitHub, refreshed automatically) — strictly better than months-of-PAT lifetime even without the original "clear on idle" defense-in-depth layer. Until a repo is flagged, that row's defenses don't apply. |
 | V1 token-policy enforcement (allowed_repos, **shipped**) | Agent token envelope carries an optional `policy: { allowed_repos: string[] }` field (`web/src/server/agent-token.ts:AgentTokenPolicy`). Mint endpoint enforces `request.repo ∈ policy.allowed_repos` if the policy is set; legacy tokens (no policy field) defer to GitHub's installation grant with an explicit `console.warn` pointing operators at `setAgentTokenPolicy` as the remediation. Policy is set via `web/scripts/set-agent-policy.ts` (operator CLI; production-mutate requires `--i-know-what-im-doing` flag). Empty `allowed_repos: []` is intentional reject-all (distinct from `undefined` legacy-permissive). The V1.5 ship narrows to `(request) ⊆ (token policy)`; the second containment `⊆ (installation grant)` is enforced by GitHub itself when the request hits `/access_tokens`. `allowed_permissions` enforcement is deferred to V1.6 — V1 already hard-codes a fixed permission set; per-token permission narrowing is a second layer of defense and hasn't been needed yet. |
 | V1 short-name narrowing gap (until V1.5) | The mint endpoint passes `repositories: [<short-name>]` to GitHub rather than `repository_ids: [<numeric-id>]`. Short names are mutable (rename / transfer); a stale `apiary.yaml` requesting an old name could mint for a new repo at the same short-name slot if the installation covers all repos. V1.5 target: stand up a Redis-backed `installation:<id>:repos` cache populated by the bot's `installation.repositories.added/removed` webhooks, resolve `owner/name` → numeric `id` before the GitHub call, and fail-closed on rename. Tracked in §16 #9. |
 | Cross-service token theft | An agent claiming `service: builder-claude` in its UDS request still authenticates against the **builder-claude token's policy** server-side. Apiarist trusts `AGENT_SERVICE` env (set by deploy, not by container code), and the broker→backend flow uses the bearer keyed off that. A compromised builder container cannot trick apiarist into minting against guard's token by lying about its service — apiarist's per-service policy lookup is the gate. (This does mean a fully-compromised container can mint within its OWN policy without bound — which is exactly the policy-shrink mitigation: don't grant a token broader scope than the agent legitimately needs.) |
@@ -975,6 +981,34 @@ or privileged flag is needed.
 
 ### 12.3 Agent runtime change (monorepo, not apiary)
 
+> **Phase L' shipped (2026-04-26) — read this before the pseudocode.**
+> The behavior tables (§12.3.1, §12.3.6) and failure-mode text
+> (§12.3.7) are the **current truth**. The pseudocode in §12.3.2,
+> §12.3.3, §12.3.4 is **aspirational and out of date** — the shipping
+> implementation is sync (Python 3.14 `threading.RLock` + a daemon
+> refresh thread, not asyncio), and the auth subscriber's `on_idle`
+> is a NO-OP under the always-on env model. The architectural
+> rationale (engine-owned FSM, subscriber pattern, registration
+> order load-bearing) is preserved exactly. For ground truth on
+> shipped semantics, read `agent/cli/hivemoot_agent/lifecycle.py`
+> and `plugins_builtin/hivemoot/auth_subscriber.py`. Two
+> changes vs. the original sketch worth flagging up front:
+>
+> - **Always-on env, not "clear on IDLE"**: the auth subscriber
+>   mints + starts a background refresh thread at `setup_lifecycle`
+>   time and keeps `GH_TOKEN`/`GITHUB_TOKEN` populated for the
+>   container lifetime. `on_idle` is a no-op. Required so
+>   watch-driven services (drone with `watch_*`) can poll between
+>   jobs. Trade-off detailed in §10 (threat model row) and
+>   §12.3.7 (failure modes).
+> - **Sync, not async**: the engine's plugin contract was already
+>   sync (`def setup`, `def on_job_started`); ContainerLifecycle
+>   matches that to avoid an async/sync boundary. The pseudocode
+>   showing `async def`, `await`, `asyncio.gather`, etc. should be
+>   read as "intent + invariants" — the actual code uses
+>   `threading.RLock`, sequential `for` loops, and a `threading.Thread`
+>   for the refresh loop.
+
 The agent runtime grows three layered pieces, with strict separation
 of concerns:
 
@@ -1037,7 +1071,7 @@ Two valid configurations for any repo:
 | Config | What happens | When to use |
 |---|---|---|
 | `refresh_token: false` (or absent) | Static PAT path. Env populated at deploy from `apiary.secrets.yaml`. Never changes during the agent run. Subscriber not registered. | Default. Repos without the bot installed. Backwards compat. |
-| `refresh_token: true` | Subscriber registered. On each ACTIVE period: mint via apiarist, set env, refresh in background, clear on IDLE. | Repos where the bot is installed and the operator has explicitly opted in. |
+| `refresh_token: true` | Subscriber registered. **Phase L' (always-on env)**: at `setup_lifecycle` time the subscriber mints via apiarist, sets env, AND launches a background refresh thread that re-mints when within ~5 min of expiry. `on_active` is a defensive proactive-refresh; `on_idle` is a NO-OP (env stays for the container lifetime so trigger threads can poll between jobs). The original "clear on IDLE" sketch was dropped because it deadlocks watch-driven services like drone whose only work source is the trigger threads. | Repos where the bot is installed and the operator has explicitly opted in. |
 
 **Hard precondition for `refresh_token: true`:** the Hivemoot Bot
 GitHub App must be installed on the target repo. Apiarist mints
@@ -1498,13 +1532,21 @@ Phase L′ therefore includes a real refactor of github plugin's
   `os.environ[token_env]` at on_active entry** — the hivemoot auth
   subscriber registered before us (per the load-bearing
   registration-order contract in §12.3.2's `subscribe()` docstring)
-  has populated env by the time our `on_active` fires. The github
-  subscriber doesn't take a token in its constructor; it's an
-  ambient-env read inside on_active. An idempotency guard at the
-  subscriber level skips the clone work after the first successful
-  on_active per process — subsequent IDLE→ACTIVE cycles re-mint the
-  token but don't re-clone (clone output is process-stable, only
-  the env value cycles per ACTIVE/IDLE).
+  has populated env at its own `start()` time (called from
+  `setup_lifecycle`, before the engine starts dispatching jobs)
+  and keeps env populated for the container lifetime via a
+  background refresh thread. The github subscriber doesn't take a
+  token in its constructor; it's an ambient-env read inside
+  on_active. The clone work is itself idempotent (`clone_or_sync`
+  fetches an existing checkout instead of re-cloning), so per-job
+  re-runs are cheap (~1-2 seconds for `_validate_repo_access` +
+  `git fetch`). The value of running them per-on_active is fail-fast
+  verification of the current env token + a fresh fetch of upstream
+  changes. Note that env reads inside on_active return the same
+  value the refresh thread last wrote — under the always-on contract
+  there is no per-cycle env "rotation"; only periodic refreshes
+  driven by token expiry (see §12.3.6 lifecycle table for the
+  steady-state cadence).
 
 **2. Subscriber registration order matters.**
 
@@ -1563,18 +1605,31 @@ from 2d to 2.5d to reflect the additional refactor.
 
 #### 12.3.6 Lifecycle (showing overlapping work)
 
+**Phase L' shipping note (2026-04-26):** the table below was rewritten
+when the always-on env model replaced the original "mint on ACTIVE,
+clear on IDLE" sketch. The driving constraint was watch-driven
+services (drone with `watch_*` triggers) that have NO work source
+besides their trigger threads — clearing env on IDLE deadlocks them.
+The auth subscriber now mints + starts the refresh thread at
+`setup_lifecycle` time, BEFORE any subscriber registration, so triggers
+see a valid token on their first poll. `on_active` is a defensive
+proactive-refresh; `on_idle` is a NO-OP. See §12.3.7 for the
+container-uptime exposure trade-off.
+
 | Event | Count | State | Engine action |
 |---|---|---|---|
 | Container boot | 0 | IDLE | nothing |
-| Job A starts (engine `on_job_starting`) | 0→1 | IDLE→ACTIVE | await all subscribers' `on_active`; auth subscriber mints, sets env, starts refresh loop |
+| Plugin `setup_lifecycle` (auth subscriber) | 0 | IDLE | auth subscriber mints initial token, sets env, starts background refresh thread; subscribes |
+| Trigger thread starts polling | 0 | IDLE | reads env GH_TOKEN; polls GitHub for events; valid token from refresh thread |
+| Job A starts (engine `on_job_starting`) | 0→1 | IDLE→ACTIVE | sequential `on_active`; auth subscriber's `on_active` is a no-op (token still fresh) OR proactive refresh (within ~5 min of expiry) |
 | Engine dispatches Job A to plugin | 1 | ACTIVE | env populated; job sees valid token |
 | Job B starts (overlapping) | 1→2 | ACTIVE | no transition; subscribers not called |
 | Job A finishes | 2→1 | ACTIVE | no transition |
-| Refresh loop fires (~55 min in) | 2 | ACTIVE | auth subscriber's loop re-mints, updates env transparently |
-| Job B finishes (last) | 1→0 | ACTIVE→IDLE | await all subscribers' `on_idle`; auth subscriber cancels refresh, awaits drain, clears env |
-| Long idle (5h) | 0 | IDLE | zero mints, zero env |
-| Job C starts (next trigger, hours later) | 0→1 | IDLE→ACTIVE | full wake-up cycle again |
-| Container exits (eventually) | — | — | process dies, env evaporates |
+| Refresh thread fires (~55 min in) | 2 | ACTIVE | auth subscriber's thread re-mints, updates env transparently |
+| Job B finishes (last) | 1→0 | ACTIVE→IDLE | sequential `on_idle`; auth subscriber's `on_idle` is a NO-OP — env stays populated for trigger threads |
+| Long idle (5h) | 0 | IDLE | refresh thread keeps re-minting every ~55 min; trigger threads continue polling with valid env |
+| Job C starts (next trigger, hours later) | 0→1 | IDLE→ACTIVE | env already populated by refresh thread; auth subscriber's `on_active` is a no-op |
+| Container exits (eventually) | — | — | refresh thread (daemon) dies with the process; env evaporates |
 
 The "fully idle" definition is critical: the IDLE transition only
 fires when the counter reaches 0. Intermediate decrements (2→1, 1→2,
@@ -1582,31 +1637,38 @@ etc.) don't trigger subscriber events.
 
 #### 12.3.7 Failure modes
 
-- *Apiarist unreachable when waking up* (or *repo not covered by an
-  installation* — `BACKEND_FORBIDDEN`) → auth subscriber's
-  `on_active` raises. `on_job_starting` halts the sequential
-  subscriber chain at this point, awaits `on_idle` on every prior
-  successful subscriber in reverse registration order (best-effort
-  cleanup), rolls the counter back to 0, and re-raises. The
-  triggering job fails to start. Runtime treats it as transient
-  and retries; the next job triggers a fresh `on_job_starting`
-  and re-runs the whole subscriber-setup phase cleanly. The
-  most-common operational failure here is a misconfigured repo
-  (operator set `refresh_token: true` without installing the bot);
-  the daemon's
-  error message includes the repo name so the cause is visible
-  immediately.
-- *Refresh fails mid-active* → auth subscriber's `_on_refresh_died`
-  callback fires, logs loudly, schedules
-  `_reset_after_refresh_crash` which clears env. Any in-flight job
-  will see env cleared on its next GitHub call, fail with 401, and
-  the runtime retries the job; the retry doesn't trigger a new
-  `on_job_starting` (engine still sees us as ACTIVE), so the auth
-  subscriber doesn't re-run setup automatically — the
-  `_reset_after_refresh_crash` path is best-effort. If 401 storms
-  are observed in production after refresh deaths, the right fix is
-  a "subscriber-requested reset" hook in the engine; tracked in §16
-  open questions.
+- *Apiarist unreachable at container boot* (or *repo not covered by
+  an installation* — `BACKEND_FORBIDDEN`) → auth subscriber's
+  `start()` raises during `setup_lifecycle`. Plugin setup fails
+  fast; container exits with the apiarist error in stderr. Operator
+  fixes apiarist health (it's a systemd unit on the host) or repo
+  policy (via `set-agent-policy` CLI), then redeploys. Container
+  restart reattempts the full chain. The most-common operational
+  failure here is a misconfigured repo (operator set
+  `refresh_token: true` without installing the bot); the apiarist
+  error message includes the repo name so the cause is visible.
+- *Apiarist unreachable mid-active* (defensive `on_active` refresh
+  near expiry can't reach socket) → `on_active` raises;
+  `on_job_starting` halts the sequential subscriber chain, awaits
+  `on_idle` on prior successful subscribers in reverse registration
+  order (best-effort cleanup), rolls the counter back to 0, and
+  re-raises. The triggering job fails to start. Runtime treats it
+  as transient and retries; if apiarist recovers, the next
+  `on_job_starting` runs cleanly.
+- *Refresh fails periodically in background* (Phase L'
+  always-on model) → auth subscriber's refresh thread logs each
+  failure ("[hivemoot-auth] refresh failed for `<repo>`: ...; retrying
+  in `<backoff>`s") and waits `refresh_backoff_on_error_secs` (default
+  60s) before retrying. The previous (about-to-expire) token stays
+  in env — once the GitHub TTL elapses, in-flight job calls and
+  trigger polls start failing with 401. The 401 storm IS the
+  visible signal — operator sees it in agent logs alongside the
+  refresh-failure log lines and correlates with apiarist health.
+  The refresh thread keeps retrying; recovery is automatic when
+  apiarist comes back. There is no "best-effort env clear" path
+  because that would just substitute one symptom (401) for
+  another (outright auth-missing); the documented contract is
+  "401 visibility instead of silent reuse of expired token."
 - *401 mid-job* (clock skew, manual revocation via App admin UI) →
   job fails with normal HTTP error, runtime retries; refresh loop
   may have already updated env on the retry. If 401 recurs the job
@@ -1623,32 +1685,36 @@ inline at the point it knows the env token may have aged out. The
 inline mint should also update `os.environ[token_env]` if the job
 expects sibling tooling (subprocesses, other libraries reading env)
 to see the fresh value. Opt-in, no subscriber change required. Rare
-in practice — the refresh loop covers steady-state ACTIVE periods
-regardless of duration.
+in practice — the refresh thread covers the entire container
+uptime regardless of ACTIVE/IDLE state.
 
-**Subprocess env inheritance** (V1 trust model honesty): when the
-agent spawns subprocesses during ACTIVE — `gh`, `git` (via askpass),
-anything else exec'd — those subprocesses receive a fork-time copy
-of env including `GITHUB_TOKEN`. The token persists in the
-subprocess until **the subprocess** exits, not until the parent
-transitions to IDLE. Short-lived `gh`/`git` invocations are fine.
-Long-running spawned processes (a watch loop, a wrapper that never
-exits) need to be explicitly bounded by the caller; the parent's
-`os.environ.pop` doesn't reach them.
+**Subprocess env inheritance** (V1 trust model honesty): whenever
+the agent spawns subprocesses — `gh`, `git` (via askpass), anything
+else exec'd — those subprocesses receive a fork-time copy of env
+including `GITHUB_TOKEN`. The token persists in the subprocess
+until **the subprocess** exits. Short-lived `gh`/`git` invocations
+are fine. Long-running spawned processes (a watch loop, a wrapper
+that never exits) need to be explicitly bounded by the caller — the
+refresh thread updates the parent's `os.environ` in place but
+does NOT reach into already-spawned subprocesses (their env is a
+fork-time snapshot). Concretely, a long-running subprocess that
+holds an old token while the parent's env contains a fresh one
+will start failing with 401 after ~1h and the operator must kill +
+respawn it.
 
 #### 12.3.8 What this design does NOT do (intentionally)
 
-- Mint at container startup (wrong moment — work hasn't arrived).
-- Run a perpetual background refresh loop (only runs during ACTIVE).
-- Reactively re-mint on 401 (refresh covers steady-state; 401
-  fails the job; runtime retry path handles recovery).
-- Mint per-job (chained jobs share env via the engine's lifecycle
-  state; per-job mint would burn redundant mints + tear down env
-  between rapid-fire triggers).
-- Restrict in-process token lifetime during ACTIVE (env is
-  process-global; agent code and subprocesses can read it).
+- Reactively re-mint on 401 (the refresh thread covers steady-state;
+  a 401 fails the job; the runtime retry path handles recovery).
+- Mint per-job (jobs share env via the always-on subscriber; per-job
+  mint would burn redundant mints when the refresh thread already
+  keeps env fresh).
+- Restrict in-process token lifetime (env is process-global; agent
+  code and subprocesses can read it for the container lifetime,
+  bounded by the short token TTL via apiarist's policy).
 - Restrict subprocess token lifetime once spawned (subprocess
-  inherits env at fork; parent IDLE cleanup doesn't reach it).
+  inherits env at fork; the refresh thread cannot reach into a
+  spawned subprocess's env to update it).
 - Drive auth from the github plugin (it's a tool provider, not an
   identity owner; the dependency direction is auth → tools, not
   the reverse).
@@ -1698,9 +1764,22 @@ the Hivemoot Bot installed already.
   cross-cutting concerns reuse; the subscriber implements the
   apiarist-specific logic.
 - Flag drone's repo block in `apiary.yaml` with `refresh_token: true`.
-- Deploy and observe one full review cycle. Audit logs should show
-  exactly one token mint per ACTIVE period, ≤1h TTL, scoped to
-  `hivemoot/hivemoot`.
+- Deploy and observe one full review cycle. Validation criteria
+  under the always-on env model (Phase L' shipping):
+  * Initial `mint_token` call lands at container boot
+    (`setup_lifecycle` → subscriber `start()`).
+  * Subsequent `mint_token` calls fire from the refresh thread on
+    a steady ~`(token TTL − 5min)` cadence (so ~55min for a 1h
+    GitHub TTL), regardless of how many ACTIVE/IDLE transitions
+    happened in between. A drone container that goes 4h without a
+    job should still show ~4 mints in apiarist's audit log
+    (boot + 3 refreshes), not zero.
+  * Every minted token is ≤1h TTL and scoped to
+    `hivemoot/hivemoot` (verify via apiarist's per-mint log line:
+    `installation=<id>, expires_at=<iso>`).
+  * Drone successfully posts a review comment using the token
+    (this exercises `gh` reading `GH_TOKEN` from env populated by
+    the subscriber).
 
 **Phase 1.5 — Foxstoria** (week 2-3)
 
@@ -1752,7 +1831,7 @@ in `apiary.secrets.yaml`.
 | **I.** Systemd unit | `apiarist.service` with hardening attrs (§10) | 0.25d | E |
 | **J.** Install script | `deploy/install.sh`: create user, copy files, enable unit | 0.5d | I |
 | **K.** Apiary integration — deploy script | `apiary/deploy-apiary.sh` patch (§12.2): when `refresh_token: true`, skip static token staging, bind-mount `/run/apiarist/apiarist.sock` (host) → `/run/apiarist.sock` (container), emit `APIARIST_TOKEN_ENV=<env_var>`, omit github plugin's `token_file:` line, emit a new `hivemoot.apiarist:` block (enabled, socket_path, repo, env_var) for Phase L′ to consume. Two new validating helpers (`get_repo_refresh_token`, `get_repo_token_env`) reject malformed inputs at parse time. Fail-fast deploy if the host apiarist socket isn't present. PR opened against `hivemoot/apiary` (no fleet review there, self-merge per CLAUDE.md memory). **Shipped** in `hivemoot/apiary` PR #67. | 0.5d | — (parallel) |
-| **L′.** Engine lifecycle FSM + hivemoot auth subscriber + github plugin refactor | Four layered changes: (a) **engine.py** gains `ContainerLifecycle` (generic IDLE/ACTIVE FSM with subscriber pattern) and a `LifecycleSubscriber` interface, with engine's job-dispatch loop calling `on_job_starting`/`on_job_finished` around each job; (b) new `plugins_builtin/hivemoot/auth/` submodule with `HivemootGithubAuthSubscriber` (implements `LifecycleSubscriber`, owns mint/refresh/env management) and `apiarist_client.py` (~50 LOC UDS client); (c) hivemoot plugin's `setup` reads per-repo config (`refresh_token: true`, `token_env: GITHUB_TOKEN`) and conditionally registers the subscriber; (d) **github plugin refactor**: split `setup()` into auth-free (workspace bootstrap, `gh` CLI discovery) + the **full auth-required sequence per §12.3.5a** — `resolve_github_user`, `_configure_git_auth`, `_validate_repo_access`, `clone_or_sync`, `configure_git_user` (in that exact order; see §12.3.5a for file:line references). The auth-required half moves to a github-plugin-owned `LifecycleSubscriber` whose `on_active` reads the token from `os.environ[token_env]` (populated by the hivemoot subscriber that registered before us per the load-bearing registration-order contract) and runs the five operations idempotently — clone happens once per process, env reads cycle per ACTIVE/IDLE. `validate()` grows a `token_source: subscriber` opt that permits absent `token_file:` (deploy-apiary.sh emits this for `refresh_token: true`). Engine knows lifecycle, doesn't know auth. Auth subscriber knows auth, doesn't know lifecycle internals. Github plugin's tooling-provider runtime contract is unchanged; only its plugin-load model splits. **Hard precondition for opt-in: target repo must have the Hivemoot Bot GitHub App installed** — non-installed repos stay on static-PAT (the default). | 2.5d | D, E |
+| **L′.** Engine lifecycle FSM + hivemoot auth subscriber + github plugin refactor | Four layered changes: (a) **engine.py** gains `ContainerLifecycle` (generic IDLE/ACTIVE FSM with subscriber pattern) and a `LifecycleSubscriber` interface, with engine's job-dispatch loop calling `on_job_starting`/`on_job_finished` around each job; (b) new `plugins_builtin/hivemoot/auth/` submodule with `HivemootGithubAuthSubscriber` (implements `LifecycleSubscriber`, owns mint/refresh/env management) and `apiarist_client.py` (~50 LOC UDS client); (c) hivemoot plugin's `setup` reads per-repo config (`refresh_token: true`, `token_env: GITHUB_TOKEN`) and conditionally registers the subscriber; (d) **github plugin refactor**: split `setup()` into auth-free (workspace bootstrap, `gh` CLI discovery) + the **full auth-required sequence per §12.3.5a** — `resolve_github_user`, `_configure_git_auth`, `_validate_repo_access`, `clone_or_sync`, `configure_git_user` (in that exact order; see §12.3.5a for file:line references). The auth-required half moves to a github-plugin-owned `LifecycleSubscriber` whose `on_active` reads the token from `os.environ[token_env]` (populated by the hivemoot subscriber that registered before us per the load-bearing registration-order contract) and runs the five operations idempotently — clone happens once per process, env reads return the same value for the container lifetime once the hivemoot subscriber's refresh thread is running (Phase L' shipping change: env is always-on, refreshed every ~55min via background thread, no longer cleared on IDLE). `validate()` grows a `token_source: subscriber` opt that permits absent `token_file:` (deploy-apiary.sh emits this for `refresh_token: true`). Engine knows lifecycle, doesn't know auth. Auth subscriber knows auth, doesn't know lifecycle internals. Github plugin's tooling-provider runtime contract is unchanged; only its plugin-load model splits. **Hard precondition for opt-in: target repo must have the Hivemoot Bot GitHub App installed** — non-installed repos stay on static-PAT (the default). | 2.5d | D, E |
 | **M.** Shadow deploy on Hive | rsync, install, verify socket creation, exercise via examples/client.py without flagging any service. | 0.5d | J, K, L′ |
 | **N.** Drone pilot | The V1 pilot is **drone**, not foxstoria — drone is a fleet member on `hivemoot/hivemoot` (which already has the bot installed) AND its existing PAT is invalid as of 2026-04-25 so migrating it can't regress anything. Flag drone's repo block (`hivemoot:` in `apiary.yaml`) with `refresh_token: true`, deploy, observe one full review cycle. Verify a `ghs_` token reaches GitHub successfully and zero token files appear on disk. Foxstoria opt-in is deferred to Phase 1.5 (see §13) — it works under the engine-lifecycle architecture but is shipped after the drone pilot validates the path. | 0.5d | M, **backend endpoint live** |
 | **O.** Runbook + metrics | `apiarist/README.md` ops guide. Document `journalctl -u apiarist`, common failure modes, how to validate a service is using App auth vs PAT. | 0.5d | N |
@@ -1847,15 +1926,29 @@ on Hive (Phase 0).
 6. **Telemetry.** Emit logs only in V1. Add Prometheus metrics endpoint
    when (a) we deploy multiple Hives and want fleet-wide visibility, or
    (b) we have a Prometheus scraper anywhere. **Neither today.**
-7. **Subscriber-requested-reset hook in `ContainerLifecycle`.** §12.3.4
-   notes that the hivemoot auth subscriber's `_reset_after_refresh_crash`
-   path doesn't trigger an engine IDLE transition — that would require
-   a callback from subscriber → engine which V1 doesn't have. If
-   401-storms are observed in production after refresh-task crashes
-   (subscriber clears env but engine still thinks it's ACTIVE so no
-   re-wake on next job-start), V1.1 adds a `subscriber.request_reset()`
-   API that triggers a forced ACTIVE→IDLE→ACTIVE cycle. Defer until
-   we have telemetry evidence the gap matters in practice.
+7. **Refresh-thread crash recovery.** Phase L' shipping behavior
+   (§12.3.7 failure modes): the refresh thread logs each mint
+   failure ("[hivemoot-auth] refresh failed for `<repo>`: ...; retrying
+   in `<backoff>`s") and waits `refresh_backoff_on_error_secs`
+   (default 60s) before retrying. The previous (about-to-expire)
+   token stays in env; once the GitHub TTL elapses, in-flight
+   calls and trigger polls start failing with 401, and the 401
+   storm IS the visible signal alongside the refresh-failure log
+   lines. There is no automatic env-clear path because that would
+   substitute one symptom (401) for another (outright auth-missing)
+   without recovery being any faster — the refresh thread keeps
+   retrying; recovery is automatic when apiarist comes back. If
+   ever the documented "401 visibility" path proves operationally
+   insufficient (e.g. because 401s don't surface in agent dashboards
+   for a class of repos), V1.1 could revisit:
+   * adding a structured-event emission for refresh failures (vs
+     the current stderr-only log), so dashboards can surface them
+     directly without parsing log lines, OR
+   * a `subscriber.request_health_check()` API that lets the
+     subscriber escalate persistent failures to the engine for
+     a graceful container restart.
+   Defer until we have telemetry evidence the gap matters in
+   practice.
 8. **Token-policy scoping in agent-token envelope.** **Partially shipped
    in V1.5** (PR #489): the envelope now carries `policy: { allowed_repos:
    string[] }`, the mint endpoint enforces `request.repo ∈
