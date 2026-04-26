@@ -111,9 +111,9 @@ Follows REDIS_KEY_CONVENTION.md. All keys versioned `v1:`.
 
 | Key | Type | TTL | Purpose |
 |---|---|---|---|
-| `hive:v1:agent-token:{installationId}:{name}` | string (JSON envelope) | None | Token core record |
+| `hive:v1:agent-token:{installationId}:{name}` | string (JSON envelope) | None for `expiresAt: null` tokens; `expiresAt - now()` Redis TTL for tokens with explicit expiry (closes hivemoot reviewer #5 issue 2) | Token core record |
 | `hive:v1:idx:agent-token:hash:{tokenHash}` | string (JSON `{installationId, name}`) | None | Bearer → identity reverse index |
-| `hive:v1:idx:agent-token:installation:{installationId}` | set (token names) | None | Token list per installation |
+| `hive:v1:idx:agent-token:installation:{installationId}` | sorted set (token names, score = `createdAt` epoch ms) | None | Token list per installation; sort by creation order for stable `tokens list` output (closes hivemoot reviewer #5 issue 4) |
 | `hive:v1:agent-token:{installationId}:{name}:meta` | hash | None | Mutable side-state (`lastUsedAt`, `callCount`) — see §`lastUsedAt` write strategy |
 | `hive:v1:agent-token:{installationId}:audit` | stream | 30 days (per-entry trim) | Rolling audit log; entries carry `fingerprint`, NEVER raw bearer |
 | `hive:v1:lock:agent-token:{installationId}:{name}` | string (lock holder) | 30 s | Issue / revoke / set-capabilities serialization |
@@ -170,17 +170,53 @@ field on the envelope, with audit emission.
 
 ```lua
 -- KEYS: [envelopeKey, auditStreamKey]
--- ARGV: [newEnvelopeJson, auditEntryJson]
+-- ARGV: [newEnvelopeJson, auditEntryJson, expirySecsOrZero]
 -- Returns:
 --   {1}          success
 --   {-1}         envelope missing (race with revoke; caller surfaces 404)
 local existing = redis.call("get", KEYS[1])
 if not existing then return {-1} end
-redis.call("set", KEYS[1], ARGV[1])
+if tonumber(ARGV[3]) > 0 then
+  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[3]))
+else
+  redis.call("set", KEYS[1], ARGV[1])
+end
 redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*",
                    "entry", ARGV[2])
 return {1}
 ```
+
+**`ROTATE_TOKEN_SCRIPT`** — atomically replaces the bearer for an
+existing named token (closes hivemoot reviewer #5 issue 1: prior
+revoke+issue path produced a downtime window because the bearer
+became invalid for in-flight requests between the two ops).
+
+```lua
+-- KEYS: [envelopeKey, oldHashIndexKey, newHashIndexKey, auditStreamKey]
+-- ARGV: [newEnvelopeJson, newHashRecordJson, auditEntryJson, expirySecsOrZero]
+-- Returns:
+--   {1}                success
+--   {-1, "no_envelope"}    name doesn't exist (race with revoke)
+local existing = redis.call("get", KEYS[1])
+if not existing then return {-1, "no_envelope"} end
+redis.call("del", KEYS[2])                            -- old hash index
+if tonumber(ARGV[4]) > 0 then
+  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[4]))
+else
+  redis.call("set", KEYS[1], ARGV[1])
+end
+redis.call("set", KEYS[3], ARGV[2])                   -- new hash index
+redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*",
+                   "entry", ARGV[3])
+return {1}
+```
+
+The new bearer is reachable via the new hash index immediately;
+the old bearer's hash index is gone in the same atomic call. Total
+"invalid bearer" window: zero. The CLI command for this is
+`hivemoot tokens rotate --installation-id N --name worker` —
+operators rotating fleet credentials get atomic semantics matching
+the existing `agent-token.ts:ROTATE_TOKEN_SCRIPT` pattern.
 
 ### Migration cleanup script (closes guard A)
 
@@ -486,6 +522,44 @@ bad task UX. Tracked as a follow-up open question, not blocking V1.
 
 ---
 
+## Capability × `allowed_repos` × `allowed_permissions` interactions
+(closes hivemoot reviewer #5 issue 3)
+
+The three policy dimensions are intentionally independent:
+
+- **`capabilities`** — gates which hivemoot.dev API endpoints the
+  bearer can call (e.g., `installation_token.mint`, `tasks.claim`).
+- **`allowed_repos`** — narrows the GitHub installation token's
+  repository scope when minted via `installation_token.mint`.
+- **`allowed_permissions`** — narrows the GitHub installation
+  token's permission scope (Phase C, V1.6).
+
+A request must pass ALL THREE checks where applicable. The
+combinations that produce confusing operator errors (and how the
+system surfaces them):
+
+| Token shape | API behavior | Operator signal |
+|---|---|---|
+| `capabilities: ["installation_token.mint"]`, `allowed_repos: []` | 200 with empty-scope token (useless) | CLI `tokens issue` warns at issue time when `installation_token.mint` is granted with empty `allowed_repos`: *"Warning: token can mint but has no allowed_repos — minted GitHub tokens will have zero-repo scope. Set --allowed-repos or skip this cap."* |
+| `capabilities: ["tasks.claim"]`, `allowed_repos: []` | Claim succeeds; downstream `gh` calls fail when the worker tries to operate on a repo | Documented; operator runbook explains "claimed tasks fail at GitHub-call time when allowed_repos is empty." |
+| `capabilities: []` (rejected at issue) | n/a — capabilities ≥1 is enforced | 401 `TOKEN_LEGACY_UNSCOPED` (covered earlier) |
+| `capabilities: ["installation_token.mint"]`, `allowed_permissions: { contents: "read" }` (Phase C) | Minted token can read but not write | Worker correctly fails with GitHub 403 if it tries to push; `/api/whoami` shows the limited permission set explicitly |
+
+**Validation at `tokens issue`**: the CLI flags clearly suspicious
+combinations (capability granted with no resource scope to use it
+on) but does NOT block — operators sometimes WANT a deliberately-
+stub-scoped token (e.g., for audit/canary). Hard rejections only on
+empty `capabilities` (401-on-load) and on `--capabilities` strings
+that fail the regex.
+
+The point of independence: capability narrows API access;
+`allowed_repos`/`allowed_permissions` narrow GitHub access. Both
+need to be set deliberately. Folding them together (e.g., implicit
+"if you have `tasks.claim`, you must have at least 1 repo") would
+make the system harder to audit, not easier.
+
+---
+
 ## CLI surface (`hivemoot tokens`)
 
 ```bash
@@ -525,6 +599,10 @@ hivemoot tokens set-capabilities --installation-id 12345 --name worker \
                                   --preset worker
 hivemoot tokens set-policy --installation-id 12345 --name worker \
                             --allowed-repos hivemoot/hivemoot,hivemoot/colony
+
+# Rotate (atomic — keeps the same name + capabilities, just swaps
+# the bearer; zero invalid-bearer window vs revoke+reissue path)
+hivemoot tokens rotate --installation-id 12345 --name worker
 
 # Revoke
 hivemoot tokens revoke --installation-id 12345 --name pilot
