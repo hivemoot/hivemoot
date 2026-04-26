@@ -181,6 +181,39 @@ class GitHubPlugin:
                 errors.append(
                     f"plugins.github.token_file is empty: {cfg.token_file}"
                 )
+
+        # Subscriber mode is incompatible with /notifications-based
+        # watchers (mentions + review_requests). App installation
+        # tokens (ghs_*) cannot reach /notifications — GitHub returns
+        # 403 — so the underlying `hivemoot watch` command fails with
+        # a misleading "Could not determine GitHub user" error every
+        # poll cycle. Catch the misconfiguration at engine activation
+        # and point the operator at the App-token-compatible
+        # alternative (watch_new_prs polls /repos/{owner}/{repo}/pulls
+        # directly). See apiarist/DESIGN.md §12.3.7 for the full
+        # architectural rationale; the relevant nuance is that all
+        # App-authed agents share a single bot identity, so mention-
+        # based and review-request workflows need a routing layer
+        # (bot-mediated dispatch via the task queue, or label-based
+        # polling) rather than a CLI patch.
+        if cfg.token_source == "subscriber":
+            if cfg.watch_mentions:
+                errors.append(
+                    "plugins.github.watch_mentions: true is not supported "
+                    "with token_source: subscriber. App installation "
+                    "tokens cannot access /notifications. Use "
+                    "watch_new_prs (poll-based, App-token compatible) "
+                    "or set token_source: file."
+                )
+            if cfg.watch_review_requests:
+                errors.append(
+                    "plugins.github.watch_review_requests: true is not "
+                    "supported with token_source: subscriber. App "
+                    "installation tokens cannot access /notifications "
+                    "and cannot be assigned as PR reviewers. Use "
+                    "watch_new_prs (poll-based, App-token compatible) "
+                    "or set token_source: file."
+                )
         return errors
 
     def triggers(self) -> list[Trigger]:
