@@ -794,7 +794,7 @@ OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 | Codex | `--dangerously-bypass-approvals-and-sandbox` (no active Codex sandbox flag in `main`) | Container isolation plus your mounted workspace | `--full-auto` workspace-write path in [#224](https://github.com/hivemoot/hivemoot-agent/pull/224) |
 | Gemini | `--yolo` (this runtime does not configure Gemini policy/sandbox controls) | Container isolation plus your mounted workspace | Configure Gemini CLI `--sandbox`, `--approval-mode`, and `--policy` in runtime defaults |
 | Kilo | `kilo run --auto` (no provider-level deny list configured by this runtime) | Container isolation plus your mounted workspace | Depends on upstream/provider-specific capability support |
-| OpenCode | `opencode run` (no provider-level deny list configured by this runtime) | Container isolation plus your mounted workspace | Depends on upstream/provider-specific capability support |
+| OpenCode | `opencode run --dangerously-skip-permissions` (auto-approves anything not explicitly denied in operator's `opencode.json`; the deploy-staged config retains explicit `deny` patterns for `*.env` / `*.key` / `*.pem` / `*secret*` on read and `doom_loop` action) | Container isolation plus your mounted workspace; opencode's deny patterns layered on top | Pending: link to PR adding provider-level deny-list contract once OpenCode upstream surfaces a policy hook |
 
 When running Gemini against untrusted repositories, treat the container boundary as the primary runtime defense. Add external controls (for example, network egress restrictions and tightly scoped credentials) if exfiltration risk is a concern.
 

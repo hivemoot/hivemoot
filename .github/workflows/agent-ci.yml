@@ -77,6 +77,8 @@ jobs:
         run: python3 cli/tests/test_formatter.py
       - name: Verify engine and oneshot tests
         run: python3 cli/tests/test_engine.py
+      - name: Verify opencode provider argv (--dangerously-skip-permissions invariant)
+        run: python3 cli/tests/test_opencode_provider.py
       - name: Verify engine lifecycle contract tests
         run: python3 cli/tests/test_engine_lifecycle.py
       - name: Verify container lifecycle FSM (apiarist Phase L' invariants I1-I5)
