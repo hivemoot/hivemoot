@@ -222,32 +222,45 @@ client; see `web/src/server/redis.ts`, `web/src/server/agent-token.ts`,
 `DATABASE_URL`. War rooms reuse this stack — no new infrastructure
 dependency.
 
-The earlier draft of this doc presented PostgreSQL schemas. Those have
-been re-expressed below as Redis structures. Multi-key atomicity is
-preserved via Lua scripts (same pattern as `ROTATE_TOKEN_SCRIPT` /
-`REVOKE_TOKEN_SCRIPT` in `agent-token.ts`).
+All keys follow the project-wide convention in
+`docs/architecture/REDIS_KEY_CONVENTION.md`:
+`hive:v<n>:<entity>[:<sub-entity>]:<id>` for primary records,
+`hive:v<n>:idx:<entity>:<lookup>:<value>` for secondary indexes,
+`hive:v<n>:lock:<entity>:<id>` for locks. Multi-key atomicity is
+preserved via Lua scripts.
 
 ### Key shape
 
-| Key | Type | Purpose |
-|---|---|---|
-| `hive:room:{installationId}:{roomId}` | hash | Room core record (status, manager, subject_ref, timing config, decision once closed) |
-| `hive:room-events:{roomId}` | sorted set | Event log; member = event JSON, score = sequence number |
-| `hive:room-event-by-key:{roomId}:{idempotencyKey}` | string | Idempotency reverse index → sequence number (TTL = `max_age_secs * 2`) |
-| `hive:room-participants:{roomId}` | hash | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
-| `hive:room-contributions:{roomId}` | hash | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
-| `hive:room-seq:{roomId}` | counter | Monotonic event sequence (`INCR` per event) |
-| `hive:room-by-subject:{installationId}:{subjectType}:{subjectRef}` | string | Open-room idempotency: → `{roomId}` while room is in `awaiting_rsvp \| awaiting_contributions \| deciding`; deleted on close |
-| `hive:rooms-by-installation:{installationId}` | sorted set | Room IDs by `opened_at`; for `GET /api/rooms` filtering |
-| `hive:rooms-by-status:{installationId}:{status}` | set | Room IDs at this status; rebuilt on every transition. Used by manager loop's "rooms to advance" scan |
-| `hive:room-claim:{roomId}` | string | Synthesis claim: → `{queenRunner, claimedThroughSequence}`. TTL = 5 min (auto-revert on queen crash — see §15) |
+Primary records:
 
-All keys live behind the `hive:` namespace already in use. Eviction:
-rooms set explicit TTL on close = 30 days for audit retention; events,
-participants, contributions inherit room TTL via paired `EXPIRE` calls
-in the close Lua script. The `hive:room-seq:{roomId}` counter and
-`hive:room-event-by-key:*` indexes get the same TTL treatment so
-nothing leaks.
+| Key | Type | TTL | Purpose |
+|---|---|---|---|
+| `hive:v1:room:{installationId}:{roomId}` | hash | None until closed; 30 days after close | Room core (status, manager, subject_ref, timing config, decision once closed) |
+| `hive:v1:room:{roomId}:events` | sorted set | Inherits room TTL | Event log; member = event JSON, score = sequence number |
+| `hive:v1:room:{roomId}:idem:{key}` | string | 90 days | Idempotency reverse index → sequence number |
+| `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
+| `hive:v1:room:{roomId}:contributions` | hash | Inherits room TTL | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
+| `hive:v1:room:{roomId}:seq` | counter | Inherits room TTL | Monotonic event sequence (`INCR` per event) |
+| `hive:v1:room:{roomId}:claim` | string | 5 min | Synthesis claim: → `{queenRunner, claimedThroughSequence}` (auto-revert on queen crash — see §Force-close vs queen mid-decide race) |
+
+Secondary indexes:
+
+| Key | Type | TTL | Purpose |
+|---|---|---|---|
+| `hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}` | string | None until close | Open-room uniqueness → `{roomId}` while room is in `awaiting_rsvp \| awaiting_contributions \| deciding`; deleted on close |
+| `hive:v1:idx:room:installation:{installationId}` | sorted set (roomIds, score=`opened_at`) | None | All rooms for `GET /api/rooms` filtering |
+| `hive:v1:idx:room:status:{installationId}:{status}` | set (roomIds) | None | Rooms at this status; updated on every transition. Used by manager loop's "rooms to advance" scan |
+
+Locks (per REDIS_KEY_CONVENTION.md):
+
+| Key | Type | TTL | Purpose |
+|---|---|---|---|
+| `hive:v1:lock:room:{installationId}:{roomId}` | string | 30 s | Defense-in-depth serialization for non-Lua-scripted multi-key writes (rare) |
+
+Eviction: rooms set explicit TTL on close = 30 days for audit
+retention; sibling keys inherit via paired `EXPIRE` calls in the
+close Lua script. The `:seq` counter and `:idem:*` indexes get the
+same TTL treatment so nothing leaks.
 
 ### Atomic operations (Lua)
 
@@ -257,6 +270,11 @@ subjectType, subjectRef)`.
 
 ```lua
 -- KEYS: [subjectIndexKey, roomKey, eventsKey, statusSetKey, allRoomsKey]
+--   subjectIndexKey  = hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}
+--   roomKey          = hive:v1:room:{installationId}:{roomId}
+--   eventsKey        = hive:v1:room:{roomId}:events
+--   statusSetKey     = hive:v1:idx:room:status:{installationId}:awaiting_rsvp
+--   allRoomsKey      = hive:v1:idx:room:installation:{installationId}
 -- ARGV: [installationId, roomId, subjectType, subjectRef, roomJson,
 --        roomOpenedEventJson, openedAt]
 local existing = redis.call("get", KEYS[1])
@@ -389,10 +407,10 @@ status, filter by repo, join events + participants) decompose into
 narrow Redis lookups:
 
 - "List open rooms in installation X" → `SMEMBERS
-  hive:rooms-by-status:{X}:awaiting_rsvp ∪ awaiting_contributions ∪
+  hive:v1:idx:room:status:{X}:awaiting_rsvp ∪ awaiting_contributions ∪
   deciding`, then `HMGET` per room key.
 - "List rooms by repo" → fetched set intersected against a per-repo
-  index `hive:rooms-by-repo:{installationId}:{owner}/{repo}` (added
+  index `hive:v1:idx:room:repo:{installationId}:{owner}/{repo}` (added
   on room open, removed on room close).
 - "Stuck-room watchdog" — same status set + per-room hash read.
 
@@ -803,7 +821,7 @@ the watchdog → rooms accumulate silently. V1 ships:
 | `rooms_past_max_age_count` | scan `hive:rooms-by-status` filtered by `opened_at` | > 0 for > 5 min |
 | `time_since_last_timeout_emit` | bot-side counter, reset on each emit | > 10 min when there are pending RSVPs |
 | `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 90s (3× tick interval) |
-| `claim_held_too_long` | scan `hive:room-claim:*` ages | any claim > 5 min (= TTL) |
+| `claim_held_too_long` | scan `hive:v1:room:*:claim` ages | any claim > 5 min (= TTL) |
 
 Alerts wire into the same channel the dashboard's existing
 Vercel/Upstash health observability uses. Non-blocking V1 — V1.1
@@ -831,7 +849,7 @@ if status in {awaiting_rsvp, awaiting_contributions}:
   emit room_closed{reason: 'force_close', actor: operator}
   status → closed; release subject index; close
 elif status == deciding:
-  DEL hive:room-claim:{roomId}  # invalidate queen's claim
+  DEL hive:v1:room:{roomId}:claim  # invalidate queen's claim
   emit room_closed{reason: 'force_close_during_decide', actor: operator}
   status → closed; release subject index; close
 elif status in {closed, expired}:
@@ -1021,7 +1039,7 @@ the agent stack; 5 min created false timeouts in dry-run thinking).
 
 Single queen for V1. The bot is single-instance per Vercel deploy
 already. Queen-restart safety: the 5-minute claim TTL on
-`hive:room-claim:*` auto-reverts a `deciding` room to
+`hive:v1:room:*:claim` auto-reverts a `deciding` room to
 `awaiting_contributions` if queen crashes mid-synthesis
 (§Storage layout / `ROOM_DECIDE_CLAIM_SCRIPT`). No `/unclaim`
 endpoint exposed publicly; queen's own abort path uses
