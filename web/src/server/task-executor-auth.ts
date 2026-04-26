@@ -2,7 +2,7 @@ import { type Redis } from "@upstash/redis";
 import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
-import { resolveTokenToInstallation } from "@/server/agent-token";
+import { AgentTokenExpiredError, resolveTokenToInstallation } from "@/server/agent-token";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 
 export type TaskExecutorAuthResult =
@@ -22,6 +22,17 @@ function unauthorizedResponse() {
     response: taskError(
       TASK_ERROR.NOT_AUTHENTICATED,
       "Invalid or missing executor token",
+      401,
+    ),
+  };
+}
+
+function tokenExpiredResponse() {
+  return {
+    ok: false as const,
+    response: taskError(
+      TASK_ERROR.TOKEN_EXPIRED,
+      "Executor token expired",
       401,
     ),
   };
@@ -63,7 +74,13 @@ export async function authenticateTaskExecutorRequest(
   if (!rawToken) return unauthorizedResponse();
 
   const redis = getRedisClient(redisRestUrl, redisRestToken);
-  const installationId = await resolveTokenToInstallation(rawToken, redis);
+  let installationId: Awaited<ReturnType<typeof resolveTokenToInstallation>>;
+  try {
+    installationId = await resolveTokenToInstallation(rawToken, redis);
+  } catch (err) {
+    if (err instanceof AgentTokenExpiredError) return tokenExpiredResponse();
+    throw err;
+  }
   if (!installationId) return unauthorizedResponse();
 
   return {

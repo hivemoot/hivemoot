@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
 import {
+  AgentTokenExpiredError,
   resolveTokenToInstallationAndPolicy,
   type AgentTokenPolicy,
 } from "@/server/agent-token";
@@ -40,6 +41,17 @@ function unauthenticatedResponse() {
     response: agentHealthError(
       AGENT_HEALTH_ERROR.NOT_AUTHENTICATED,
       "Invalid or missing agent token",
+      401,
+    ),
+  };
+}
+
+function tokenExpiredResponse() {
+  return {
+    ok: false as const,
+    response: agentHealthError(
+      AGENT_HEALTH_ERROR.TOKEN_EXPIRED,
+      "Agent token expired",
       401,
     ),
   };
@@ -83,7 +95,13 @@ export async function authenticateAgentRequest(
   if (!rawToken) return unauthenticatedResponse();
 
   const redis = getRedisClient(redisRestUrl, redisRestToken);
-  const resolved = await resolveTokenToInstallationAndPolicy(rawToken, redis);
+  let resolved: Awaited<ReturnType<typeof resolveTokenToInstallationAndPolicy>>;
+  try {
+    resolved = await resolveTokenToInstallationAndPolicy(rawToken, redis);
+  } catch (err) {
+    if (err instanceof AgentTokenExpiredError) return tokenExpiredResponse();
+    throw err;
+  }
 
   if (resolved === null) return unauthenticatedResponse();
 

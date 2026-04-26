@@ -23,6 +23,7 @@ vi.mock("@/server/crypto", () => ({
 }));
 
 import {
+  AgentTokenExpiredError,
   generateAgentToken,
   getAgentToken,
   getAgentTokenMeta,
@@ -123,15 +124,38 @@ describe("generateAgentToken", () => {
   it("stores a hash reverse index", async () => {
     const token = await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis);
     const hash = hashToken(token);
-    const record = redis._store.get(`agent-token-hash:${hash}`) as { installationId: string };
+    const record = redis._store.get(`agent-token-hash:${hash}`) as {
+      installationId: string;
+      expiresAt: string | null;
+    };
     expect(record.installationId).toBe("inst-1");
+    expect(record.expiresAt).toBeNull();
   });
 
-  it("sets createdBy and fingerprint in the envelope", async () => {
+  it("sets createdBy, fingerprint, and null expiry in the envelope", async () => {
     const token = await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis);
     const envelope = redis._store.get("hive:agent-token:inst-1") as Record<string, unknown>;
     expect(envelope.createdBy).toBe("alice");
     expect(envelope.fingerprint).toBe(token.slice(-8));
+    expect(envelope.expiresAt).toBeNull();
+  });
+
+  it("stores configured expiry in the envelope and hash index", async () => {
+    const expiresAt = "2026-07-25T00:00:00.000Z";
+    const token = await generateAgentToken(
+      "inst-1",
+      "alice",
+      "v1",
+      MOCK_KEYRING,
+      redis,
+      expiresAt,
+    );
+    const hash = hashToken(token);
+    const envelope = redis._store.get("hive:agent-token:inst-1") as Record<string, unknown>;
+    const record = redis._store.get(`agent-token-hash:${hash}`) as Record<string, unknown>;
+
+    expect(envelope.expiresAt).toBe(expiresAt);
+    expect(record.expiresAt).toBe(expiresAt);
   });
 
   it("removes old hash index when generating a new token for the same installation", async () => {
@@ -226,6 +250,7 @@ describe("getAgentTokenMeta", () => {
     expect(meta!.createdBy).toBe("alice");
     expect(meta!.hasToken).toBe(true);
     expect(meta!.createdAt).toBeDefined();
+    expect(meta!.expiresAt).toBeNull();
   });
 
   it("does not expose ciphertext or token hash", async () => {
@@ -260,6 +285,7 @@ describe("getAgentToken", () => {
     expect(record!.fingerprint).toBe(token.slice(-8));
     expect(record!.createdBy).toBe("alice");
     expect(record!.createdAt).toBeDefined();
+    expect(record!.expiresAt).toBeNull();
   });
 });
 
@@ -353,6 +379,21 @@ describe("reEncryptAgentToken", () => {
     const meta = await getAgentTokenMeta("inst-1", redis);
     expect(meta!.fingerprint).toBe(token.slice(-8));
   });
+
+  it("preserves expiry while re-encrypting", async () => {
+    const expiresAt = "2026-07-25T00:00:00.000Z";
+    await generateAgentToken("inst-1", "alice", "v1", MOCK_KEYRING, redis, expiresAt);
+
+    const keyring = new Map([
+      ["v1", Buffer.alloc(32)],
+      ["v2", Buffer.alloc(32)],
+    ]);
+    const result = await reEncryptAgentToken("inst-1", "v2", keyring, redis);
+    expect(result).toBe(true);
+
+    const meta = await getAgentTokenMeta("inst-1", redis);
+    expect(meta!.expiresAt).toBe(expiresAt);
+  });
 });
 
 describe("resolveTokenToInstallation", () => {
@@ -372,6 +413,21 @@ describe("resolveTokenToInstallation", () => {
     const token = await generateAgentToken("inst-42", "bob", "v1", MOCK_KEYRING, redis);
     const resolved = await resolveTokenToInstallation(token, redis);
     expect(resolved).toBe("inst-42");
+  });
+
+  it("rejects an expired token with a distinct error", async () => {
+    const token = await generateAgentToken(
+      "inst-42",
+      "bob",
+      "v1",
+      MOCK_KEYRING,
+      redis,
+      "2020-01-01T00:00:00.000Z",
+    );
+
+    await expect(resolveTokenToInstallation(token, redis)).rejects.toBeInstanceOf(
+      AgentTokenExpiredError,
+    );
   });
 });
 
@@ -424,6 +480,21 @@ describe("resolveTokenToInstallationAndPolicy", () => {
 
     const result = await resolveTokenToInstallationAndPolicy(token, redis);
     expect(result).toBeNull();
+  });
+
+  it("rejects when the envelope expiry is in the past", async () => {
+    const token = await generateAgentToken(
+      "inst-8",
+      "carol",
+      "v1",
+      MOCK_KEYRING,
+      redis,
+      "2020-01-01T00:00:00.000Z",
+    );
+
+    await expect(resolveTokenToInstallationAndPolicy(token, redis)).rejects.toBeInstanceOf(
+      AgentTokenExpiredError,
+    );
   });
 });
 
