@@ -126,10 +126,39 @@ class ContainerLifecycle:
       back to its prior value so the next job-start retries cleanly.
     - **I4**: a subscriber raising in ``on_idle`` is logged but
       doesn't block other subscribers' cleanup.
-    - **I5**: implementers that spawn background threads/tasks must
-      join them in ``on_idle`` and surface unhandled exceptions
-      themselves (this layer doesn't track subscriber-internal
-      tasks).
+    - **I5**: subscribers own the lifecycle of any background
+      threads / tasks they spawn. This module does NOT track
+      subscriber-internal work. Concretely, each implementer must:
+
+      a) **Surface failures themselves.** Unhandled exceptions in a
+         subscriber's background thread won't reach the lifecycle's
+         exception logger — the implementer must wrap their loop
+         and log to stderr (or whatever channel the operator
+         observes).
+      b) **Pick — and document — the lifetime model that fits its
+         job.** Two valid shapes:
+
+         - *Per-cycle* (spawn-and-join inside on_active/on_idle):
+           the subscriber starts the thread in ``on_active`` and
+           joins it in ``on_idle``. Right when the thread's work
+           is conceptually paired with a single ACTIVE period
+           (e.g. a per-job metrics-flush task).
+
+         - *Container-lifetime* (start once, stop on shutdown):
+           the subscriber starts a daemon thread before subscribing
+           (typically from the plugin's ``setup_lifecycle``) and
+           lets process exit handle the join, OR exposes an
+           explicit ``stop()`` for clean test teardown. Right when
+           the subscriber owns state that must persist across
+           ACTIVE/IDLE boundaries (e.g. the apiarist auth
+           subscriber's token-refresh thread, which keeps the env
+           valid for trigger threads polling between jobs).
+
+      Either pattern is fine; the implementer documents the
+      choice in their subscriber's class docstring so future
+      maintainers don't accidentally regress one model into the
+      other. The lifecycle module does not enforce or police the
+      choice.
     """
 
     def __init__(self) -> None:
