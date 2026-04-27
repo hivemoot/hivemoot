@@ -153,7 +153,7 @@ function makeMockRedis() {
           | undefined;
         if (!envelope) return [-2, "envelope_missing"];
         if (envelope.tokenHash !== presentedHash) return [-3, "stale_bearer"];
-        return [1, JSON.stringify(envelope)];
+        return [1, JSON.stringify(envelope), hashRecord.installationId];
       }
 
       // ROTATE_TOKEN_SCRIPT — 4 keys, 5 args (R2: + auditStreamKey + name first + auditEntry)
@@ -974,7 +974,7 @@ describe("resolveBearerToEnvelope (R3 fix — replaces broken pipeline pseudocod
     redis = makeMockRedis();
   });
 
-  it("returns ok=true with the envelope when bearer is valid", async () => {
+  it("returns ok=true with the envelope + installationId when bearer is valid", async () => {
     const issued = await issueAgentToken(defaultIssueArgs(redis));
     const result = await resolveBearerToEnvelope({
       rawBearer: issued.token,
@@ -992,6 +992,10 @@ describe("resolveBearerToEnvelope (R3 fix — replaces broken pipeline pseudocod
       expect(result.envelope.fingerprint).toBe(
         createHash("sha256").update(issued.token).digest("hex").slice(0, 8),
       );
+      // installationId surfaced from the hash record (not on the
+      // envelope schema itself) so the middleware can construct
+      // the meta key without an extra round-trip.
+      expect(result.installationId).toBe("12345");
     }
   });
 
