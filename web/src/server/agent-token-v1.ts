@@ -90,7 +90,7 @@ export const DEFAULT_TOKEN_LIMIT_PER_INSTALLATION = 20;
  */
 export const ENVELOPE_TTL_SKEW_MARGIN_SECONDS = 300;
 
-const ENVELOPE_PREFIX = "hive:v1:agent-token:";
+export const ENVELOPE_PREFIX = "hive:v1:agent-token:";
 const HASH_INDEX_PREFIX = "hive:v1:idx:agent-token:hash:";
 const INSTALLATION_INDEX_PREFIX = "hive:v1:idx:agent-token:installation:";
 const META_SUFFIX = ":meta";
@@ -312,7 +312,12 @@ local existed = redis.call("del", KEYS[1])
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[4])
 redis.call("zrem", KEYS[3], ARGV[1])
-if ARGV[2] ~= "" then
+-- Audit emit ONLY on actual revoke (existed > 0) — closes guard R1
+-- non-blocking #5 on PR #504: an agent_tokens.manage holder calling
+-- revoke against a nonexistent name was previously emitting an audit
+-- entry per call, which would let them spam real entries past the
+-- :audit stream's MAXLEN ~10000 trim and push out genuine forensics.
+if ARGV[2] ~= "" and existed > 0 then
   redis.call("xadd", KEYS[5], "MAXLEN", "~", "10000", "*", "entry", ARGV[2])
 end
 if existed == 0 then return {0, ARGV[1]} end
