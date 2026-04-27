@@ -124,20 +124,45 @@ adds a second Redis read per auth (hash index + envelope). The
 implementation MUST batch both reads via `redis.pipeline()` so
 each auth request stays one network round-trip. A sequential
 `await get` then `await get` would silently regress fleet-scale
-auth latency. Pseudocode (concrete pattern):
+auth latency.
+
+**Bearer-resurrection invariant** (closes builder R2 on PR #503):
+the hash index is intentionally NOT TTL'd (per the storage table
+TTL column rationale), so an explicit-expiry token whose envelope
+gets swept by Redis leaves a stale hash record pointing at
+`{installationId, name}`. If the operator subsequently issues a
+NEW token with the SAME name (now permitted because
+`pruneOrphanedIndexEntries` cleared the sorted-set entry), the
+old bearer's hash → name → envelope path would resolve to the
+NEW envelope without an additional check.
+
+The middleware MUST reject this case by comparing the presented
+bearer's SHA-256 against the loaded envelope's `tokenHash` field
+and rejecting on mismatch. This is the invariant that lets the
+hash index remain non-TTL safely:
 
 ```
+const presentedHash = sha256(rawBearer);
 const [hashRecord, envelope] = await redis.pipeline()
-  .get(`hive:v1:idx:agent-token:hash:${tokenHash}`)
+  .get(`hive:v1:idx:agent-token:hash:${presentedHash}`)
   .get(`hive:v1:agent-token:${installationId}:${name}`)
   .all();
+
+if (!envelope || envelope.tokenHash !== presentedHash) {
+  // Stale hash index pointing at a since-reissued name, OR
+  // envelope swept by Redis TTL. Surface as TOKEN_EXPIRED so
+  // the operator knows to re-issue / re-authenticate.
+  return reject(TOKEN_EXPIRED);
+}
 ```
 
-(Pseudocode uses the canonical v1 key shapes from the storage
-table — closes guard G-R2.2-1 doc-drift.)
+Acceptance criterion for B.1.c: a regression test demonstrates
+the scenario "issue → wait for TTL → reissue same name → present
+old bearer → middleware returns TOKEN_EXPIRED (NOT auth success
+under new envelope's identity)."
 
-A unit test on the auth path asserts on the call shape so a future
-refactor can't silently switch to sequential gets.
+A unit test on the auth path also asserts on the call shape so
+a future refactor can't silently switch to sequential gets.
 
 ### Storage layout (Redis)
 
@@ -165,14 +190,23 @@ sorted-set/`SADD` mismatch + guard R2 N1 (atomic limit) + builder
 R2.2 (envelope TTL contract for `--expires-in` tokens).
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey]
--- ARGV: [installationId, name, envelopeJson, hashRecordJson,
---        createdAtMs, tokenLimit, expirySecsOrZero]
+-- R2 shipping shape (matches web/src/server/agent-token-v1.ts):
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, auditStreamKey]
+-- ARGV: [name, envelopeJson, hashRecordJson, createdAtMs,
+--        tokenLimit, expirySecsOrZero, auditEntryJsonOrEmpty]
 --   expirySecsOrZero: 0 = no TTL (expiresAt: null tokens);
 --                     positive int = (expiresAt - now() + 300)
 --                     where +300 is the clock-skew safety margin
 --                     (closes guard R2.1 G-R2.1-4 + builder R2.2
 --                     "TTL contract not implemented in script")
+--   auditEntryJsonOrEmpty: pre-built audit entry JSON, or "" to
+--                          skip the XADD. Atomic-audit guarantee
+--                          per guard R1 G1 on PR #503: audit emit
+--                          inside the same EVAL when non-empty.
+--   installationId is encoded in the envelope KEY's prefix; the
+--                  script never uses it directly (was in design's
+--                  earlier 7-arg form; impl drops the redundant
+--                  arg per guard R1 G8 on PR #503).
 -- Returns:
 --   {1, name}                success
 --   {0, "name_taken"}        name already exists
@@ -180,15 +214,18 @@ R2.2 (envelope TTL contract for `--expires-in` tokens).
 local existing = redis.call("get", KEYS[1])
 if existing then return {0, "name_taken"} end
 local count = redis.call("zcard", KEYS[3])
-if count >= tonumber(ARGV[6]) then return {-1, "limit"} end
-if tonumber(ARGV[7]) > 0 then
-  redis.call("set", KEYS[1], ARGV[3], "EX", tonumber(ARGV[7]))
+if count >= tonumber(ARGV[5]) then return {-1, "limit"} end
+if tonumber(ARGV[6]) > 0 then
+  redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[6]))
 else
-  redis.call("set", KEYS[1], ARGV[3])
+  redis.call("set", KEYS[1], ARGV[2])
 end
-redis.call("set", KEYS[2], ARGV[4])
-redis.call("zadd", KEYS[3], tonumber(ARGV[5]), ARGV[2])
-return {1, ARGV[2]}
+redis.call("set", KEYS[2], ARGV[3])
+redis.call("zadd", KEYS[3], tonumber(ARGV[4]), ARGV[1])
+if ARGV[7] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[7])
+end
+return {1, ARGV[1]}
 ```
 
 The hash index is intentionally NOT TTL'd at issue: middleware
@@ -210,8 +247,9 @@ index + installation sorted-set membership + meta). Closes hivemoot
 reviewer #3 (3+ keys atomic) + builder R2.1 sorted-set parity.
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey]
--- ARGV: [name]
+-- R2 shipping shape:
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey, auditStreamKey]
+-- ARGV: [name, auditEntryJsonOrEmpty]
 -- Returns:
 --   {1, name}    success (envelope existed, all keys cleaned)
 --   {0, name}    nothing to revoke (envelope already gone)
@@ -219,6 +257,9 @@ local existed = redis.call("del", KEYS[1])
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[4])
 redis.call("zrem", KEYS[3], ARGV[1])
+if ARGV[2] ~= "" then
+  redis.call("xadd", KEYS[5], "MAXLEN", "~", "10000", "*", "entry", ARGV[2])
+end
 if existed == 0 then return {0, ARGV[1]} end
 return {1, ARGV[1]}
 ```
@@ -232,20 +273,22 @@ not by token lifetime.
 field on the envelope, with audit emission.
 
 ```lua
+-- R2 shipping shape:
 -- KEYS: [envelopeKey, auditStreamKey]
--- ARGV: [newEnvelopeJson, auditEntryJson, expirySecsOrZero]
+-- ARGV: [newEnvelopeJson, expirySecsOrZero, auditEntryJsonOrEmpty]
 -- Returns:
---   {1}          success
---   {-1}         envelope missing (race with revoke; caller surfaces 404)
+--   {1}                  success
+--   {-1, "no_envelope"}  envelope missing (race with revoke; caller surfaces 404)
 local existing = redis.call("get", KEYS[1])
-if not existing then return {-1} end
-if tonumber(ARGV[3]) > 0 then
-  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[3]))
+if not existing then return {-1, "no_envelope"} end
+if tonumber(ARGV[2]) > 0 then
+  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[2]))
 else
   redis.call("set", KEYS[1], ARGV[1])
 end
-redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*",
-                   "entry", ARGV[2])
+if ARGV[3] ~= "" then
+  redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*", "entry", ARGV[3])
+end
 return {1}
 ```
 
@@ -255,23 +298,25 @@ revoke+issue path produced a downtime window because the bearer
 became invalid for in-flight requests between the two ops).
 
 ```lua
+-- R2 shipping shape:
 -- KEYS: [envelopeKey, oldHashIndexKey, newHashIndexKey, auditStreamKey]
--- ARGV: [newEnvelopeJson, newHashRecordJson, auditEntryJson, expirySecsOrZero]
+-- ARGV: [name, newEnvelopeJson, newHashRecordJson, expirySecsOrZero, auditEntryJsonOrEmpty]
 -- Returns:
---   {1}                success
+--   {1, name}              success
 --   {-1, "no_envelope"}    name doesn't exist (race with revoke)
 local existing = redis.call("get", KEYS[1])
 if not existing then return {-1, "no_envelope"} end
 redis.call("del", KEYS[2])                            -- old hash index
 if tonumber(ARGV[4]) > 0 then
-  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[4]))
+  redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[4]))
 else
-  redis.call("set", KEYS[1], ARGV[1])
+  redis.call("set", KEYS[1], ARGV[2])
 end
-redis.call("set", KEYS[3], ARGV[2])                   -- new hash index
-redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*",
-                   "entry", ARGV[3])
-return {1}
+redis.call("set", KEYS[3], ARGV[3])                   -- new hash index
+if ARGV[5] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[5])
+end
+return {1, ARGV[1]}
 ```
 
 The new bearer is reachable via the new hash index immediately;

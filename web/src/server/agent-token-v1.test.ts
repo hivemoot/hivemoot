@@ -872,6 +872,76 @@ describe("SET_CAPABILITIES_SCRIPT — {-1, no_envelope} race path (G7)", () => {
   });
 });
 
+describe("bearer-resurrection invariant (builder R2 on PR #503)", () => {
+  // Demonstrates the storage state after the same-name reissue
+  // scenario builder flagged. This module's storage shape REQUIRES
+  // the middleware (B.1.c) to enforce
+  //   sha256(presentedBearer) === envelope.tokenHash
+  // and reject mismatches. This test pins the storage state so a
+  // future B.1.c regression test can assert against it concretely.
+  it("after TTL-sweep + same-name reissue, old hash index lingers and points at NEW envelope (middleware MUST reject by tokenHash mismatch)", async () => {
+    const redis = makeMockRedis();
+
+    // 1. Issue token A under name "worker"
+    const tokenA = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+      expiresAt: null, // would normally be future-dated; null here for test simplicity
+    });
+    const oldHash = redis._store.get(envelopeKey("12345", "worker")) as AgentTokenEnvelopeV1;
+    const oldTokenHash = oldHash.tokenHash;
+    expect(oldTokenHash).toBeDefined();
+    expect(redis._store.has(hashIndexKey(oldTokenHash))).toBe(true);
+
+    // 2. Simulate Redis TTL sweep on the envelope (real-world: explicit
+    //    expiresAt fires Redis EX). The hash index is intentionally
+    //    NOT TTL'd, so it persists pointing at the now-deleted name.
+    redis._store.delete(envelopeKey("12345", "worker"));
+
+    // 3. Reissue under the SAME name. listAgentTokens / issueAgentToken
+    //    self-heal the orphaned sorted-set entry, so the issuance
+    //    succeeds.
+    const tokenB = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+      capabilities: ["rooms.read"],
+      expiresAt: null,
+    });
+    expect(tokenB.token).not.toBe(tokenA.token);
+
+    // 4. THE INVARIANT: the OLD hash index still exists, pointing at
+    //    `{installationId, name: "worker"}` — but the envelope at
+    //    that name is now token B's, with a DIFFERENT tokenHash.
+    //    The middleware (B.1.c) MUST reject by comparing the
+    //    presented bearer's hash against envelope.tokenHash.
+    const oldHashRecordStillThere = redis._store.get(hashIndexKey(oldTokenHash));
+    expect(oldHashRecordStillThere).toEqual({
+      installationId: "12345",
+      name: "worker",
+    });
+
+    const newEnvelope = redis._store.get(
+      envelopeKey("12345", "worker"),
+    ) as AgentTokenEnvelopeV1;
+    expect(newEnvelope.tokenHash).not.toBe(oldTokenHash);
+    expect(newEnvelope.tokenHash).toBe(
+      createHash("sha256").update(tokenB.token).digest("hex"),
+    );
+
+    // The middleware-side check that closes this:
+    //   const presentedHash = sha256(rawBearerA);
+    //   if (envelope.tokenHash !== presentedHash) reject(TOKEN_EXPIRED);
+    // → bearer A presented against new envelope B fails because their
+    //   hashes don't match.
+    const presentedHashIfBearerAUsed = createHash("sha256")
+      .update(tokenA.token)
+      .digest("hex");
+    expect(presentedHashIfBearerAUsed).not.toBe(newEnvelope.tokenHash);
+    // ↑ this is the assertion the B.1.c middleware translates into
+    // a 401 TOKEN_EXPIRED response.
+  });
+});
+
 describe("ROTATE_TOKEN_SCRIPT — {-1, no_envelope} race path (G7)", () => {
   it("translates {-1, no_envelope} from the script to TokenNotFoundError", async () => {
     const redis = makeMockRedis();

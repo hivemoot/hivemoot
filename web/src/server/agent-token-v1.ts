@@ -8,6 +8,29 @@
  * callers stay on `agent-token.ts` until the cutover (B.1.e) flips
  * the middleware over.
  *
+ * BEARER-RESURRECTION INVARIANT (load-bearing for B.1.c middleware)
+ * ----------------------------------------------------------------
+ * The hash index is intentionally NOT TTL'd (per CAPABILITIES_DESIGN.md
+ * — middleware verifies envelope expiry; TTLing the hash index too
+ * risks dropping it before the envelope under clock skew). That
+ * design decision creates a same-name-reuse failure mode at the
+ * storage layer: if an explicit-expiry envelope gets TTL'd by Redis
+ * AND the operator reissues a NEW token under the SAME name (now
+ * permitted because pruneOrphanedIndexEntries cleared the
+ * sorted-set entry), the OLD bearer's hash index still points at
+ * `{installationId, name}` and would resolve to the NEW envelope.
+ *
+ * The middleware MUST close this by comparing
+ *   sha256(presentedBearer) === envelope.tokenHash
+ * and rejecting on mismatch. This module does NOT enforce that
+ * check (it's middleware-side); B.1.c implements it. The fact
+ * that this module's storage shape REQUIRES that check is the
+ * load-bearing contract — any future refactor that drops the
+ * check would silently allow old-bearer-resurrection.
+ *
+ * See `agent-token-v1.test.ts` "bearer-resurrection invariant"
+ * test for the storage-state demonstration.
+ *
  * Storage layout (per `docs/architecture/REDIS_KEY_CONVENTION.md`):
  *
  *   hive:v1:agent-token:{installationId}:{name}            string (envelope JSON)
