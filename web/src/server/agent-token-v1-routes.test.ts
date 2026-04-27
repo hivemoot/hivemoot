@@ -6,8 +6,8 @@
  *   - parseV1RequestPolicy (camelCase wire → snake_case storage)
  *   - projectV1ResponsePolicy (snake_case storage → camelCase wire)
  *   - projectV1TokenSummary (full summary projection)
- *   - buildMutationAuditEntry (audit entry shape)
- *   - mapV1StorageErrorToResponse (error → HTTP status)
+ *   - mapV1StorageErrorToResponse (error → HTTP status,
+ *     including TokenExpiredForMutationError → 410 Gone)
  */
 
 import { describe, it, expect } from "vitest";
@@ -16,7 +16,6 @@ import {
   parseV1RequestPolicy,
   projectV1ResponsePolicy,
   projectV1TokenSummary,
-  buildMutationAuditEntry,
   mapV1StorageErrorToResponse,
   AGENT_TOKENS_V1_ERROR,
 } from "./agent-token-v1-routes";
@@ -24,6 +23,7 @@ import {
   TokenNameTakenError,
   TokenNotFoundError,
   TokenLimitReachedError,
+  TokenExpiredForMutationError,
   InvalidExpiresAtError,
   type AgentTokenSummaryV1,
 } from "./agent-token-v1";
@@ -289,69 +289,6 @@ describe("projectV1TokenSummary", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildMutationAuditEntry
-// ---------------------------------------------------------------------------
-
-describe("buildMutationAuditEntry", () => {
-  it("issue: fingerprint = operator's, name = subject's, actor = operator's name", () => {
-    const entry = buildMutationAuditEntry({
-      action: "issue",
-      operator: { fingerprint: "abcdef01", name: "admin" },
-      subjectName: "new-worker",
-      detail: { agent_role: "drone", capabilities: ["agent_health.report"] },
-    });
-    expect(entry.fingerprint).toBe("abcdef01");
-    expect(entry.name).toBe("new-worker");
-    expect(entry.action).toBe("issue");
-    expect(entry.actor).toBe("admin");
-    expect(entry.detail).toEqual({
-      agent_role: "drone",
-      capabilities: ["agent_health.report"],
-    });
-    expect(typeof entry.ts).toBe("string");
-    // ISO 8601 + UTC marker
-    expect(entry.ts).toMatch(/T.*Z$/);
-  });
-
-  it("revoke: minimal entry without detail", () => {
-    const entry = buildMutationAuditEntry({
-      action: "revoke",
-      operator: { fingerprint: "abcdef01", name: "admin" },
-      subjectName: "old-worker",
-    });
-    expect(entry.action).toBe("revoke");
-    expect(entry.name).toBe("old-worker");
-    expect(entry.actor).toBe("admin");
-    expect("detail" in entry).toBe(false);
-  });
-
-  it("set_capabilities: detail carries from + to lists", () => {
-    const entry = buildMutationAuditEntry({
-      action: "set_capabilities",
-      operator: { fingerprint: "abcdef01", name: "admin" },
-      subjectName: "worker",
-      detail: { from: ["tasks.claim"], to: ["tasks.claim", "rooms.read"] },
-    });
-    expect(entry.detail).toEqual({
-      from: ["tasks.claim"],
-      to: ["tasks.claim", "rooms.read"],
-    });
-  });
-
-  it("SECURITY: never includes raw token / bearer field", () => {
-    const entry = buildMutationAuditEntry({
-      action: "issue",
-      operator: { fingerprint: "abcdef01", name: "admin" },
-      subjectName: "worker",
-    });
-    const json = JSON.stringify(entry);
-    expect(json).not.toMatch(/"token"\s*:/);
-    expect(json).not.toMatch(/"bearer"\s*:/);
-    expect(json).not.toMatch(/hmt_/); // no raw bearer prefix
-  });
-});
-
-// ---------------------------------------------------------------------------
 // mapV1StorageErrorToResponse
 // ---------------------------------------------------------------------------
 
@@ -387,6 +324,24 @@ describe("mapV1StorageErrorToResponse", () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.code).toBe(AGENT_TOKENS_V1_ERROR.TOKEN_LIMIT_REACHED);
+  });
+
+  it("TokenExpiredForMutationError → 410 Gone with name + expiredAt (B.1)", async () => {
+    const res = mapV1StorageErrorToResponse(
+      new TokenExpiredForMutationError(
+        "12345",
+        "old-worker",
+        "2026-04-26T00:00:00.000Z",
+      ),
+      { ...ctx, name: "old-worker" },
+    );
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.code).toBe(AGENT_TOKENS_V1_ERROR.TOKEN_EXPIRED_FOR_MUTATION);
+    expect(body.name).toBe("old-worker");
+    expect(body.expiredAt).toBe("2026-04-26T00:00:00.000Z");
+    // Operator-facing message hints at the recovery path
+    expect(body.message).toMatch(/successor/i);
   });
 
   it("InvalidExpiresAtError → 400 INVALID_EXPIRES_IN", async () => {

@@ -29,17 +29,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
-import {
-  setAgentTokenCapabilities,
-  getAgentTokenSummary,
-} from "@/server/agent-token-v1";
+import { setAgentTokenCapabilities } from "@/server/agent-token-v1";
 import {
   isKnownPreset,
   resolvePreset,
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
 import {
-  buildMutationAuditEntry,
   projectV1TokenSummary,
   mapV1StorageErrorToResponse,
   readJsonObject,
@@ -145,49 +141,20 @@ export async function POST(
     }
   }
 
-  // For richer audit detail (`from` / `to` capability lists), read
-  // the current summary BEFORE mutating. Best-effort — if it fails
-  // we still proceed with the mutation but emit audit without
-  // `from` data. Closes the audit-narrative gap that the previous
-  // empty-detail set_capabilities entries left.
-  let previousCapabilities: string[] | undefined;
-  try {
-    const before = await getAgentTokenSummary({
-      installationId: auth.installationId,
-      name,
-      redis: auth.redis,
-    });
-    previousCapabilities = before.capabilities;
-  } catch (err) {
-    // If the token doesn't exist, the set-capabilities call will
-    // 404 us with the canonical error. Don't pre-empt it here.
-    if (
-      !(err instanceof Error && err.name === "TokenNotFoundError")
-    ) {
-      console.warn(
-        "[agent-tokens/set-capabilities] pre-read for audit detail failed",
-        { installationId: auth.installationId, name, error: err },
-      );
-    }
-  }
-
-  const auditEntry = buildMutationAuditEntry({
-    action: "set_capabilities",
-    operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
-    subjectName: name,
-    detail: {
-      to: [...capabilities],
-      ...(previousCapabilities !== undefined ? { from: previousCapabilities } : {}),
-    },
-  });
-
+  // Storage builds the audit entry internally with `from` taken
+  // from the LOCKED envelope state. Closes #506 builder R1 #3:
+  // a previous pattern that pre-read `from` at the route layer
+  // could race a concurrent set-capabilities and produce a
+  // misleading `from: A, to: C` row when actual change was B → C.
   try {
     const updated = await setAgentTokenCapabilities({
       installationId: auth.installationId,
       name,
       capabilities,
       redis: auth.redis,
-      auditEntry,
+      auditContext: {
+        operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
+      },
     });
 
     void auditAppend({

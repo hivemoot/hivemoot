@@ -16,11 +16,12 @@
  *   - `projectV1ResponsePolicy()` translates the stored snake_case
  *     back to camelCase for the response — same projection /whoami uses.
  *
- * **Audit-entry construction** lives in `buildMutationAuditEntry` so
- * every mutation endpoint emits a consistent shape: `fingerprint` =
- * the operator's bearer fingerprint (i.e. who triggered the action),
- * `name` = the SUBJECT (the token being acted on), `actor` = the
- * operator's name. Per-action `detail` payloads are caller-specified.
+ * **Audit-entry construction** moved INTO the storage layer
+ * (`agent-token-v1.ts`) so entries are built using the LOCKED envelope
+ * state — `from` lists in `set_capabilities` audits, `fingerprint_revoked`
+ * in revoke audits, and `created_fingerprint` in issue audits are all
+ * accurate to the moment the mutation lands. Closes #506 builder R1 #3.
+ * Endpoints just pass an `auditContext` (operator fingerprint + name).
  *
  * **Error mapping** centralizes the storage-error → HTTP-status
  * translation. The route handler catches any error and lets
@@ -33,15 +34,14 @@ import {
   TokenNameTakenError,
   TokenNotFoundError,
   TokenLimitReachedError,
+  TokenExpiredForMutationError,
   InvalidExpiresAtError,
   type AgentTokenSummaryV1,
 } from "@/server/agent-token-v1";
 import { CapabilityValidationError } from "@/server/agent-token-capabilities";
 import { LockTimeoutError } from "@/server/redis-lock";
-import {
-  type AuditMutationEntry,
-  type AuditMutationAction,
-} from "@/server/agent-token-v1-audit";
+// Audit-entry construction lives in the storage layer now (see header).
+// Endpoints just pass an `AuditMutationContext` from `agent-token-v1.ts`.
 import type { AgentTokenPolicy } from "@/server/agent-token";
 
 // ---------------------------------------------------------------------------
@@ -291,49 +291,6 @@ export function projectV1TokenSummary(
 }
 
 // ---------------------------------------------------------------------------
-// Audit entry construction
-// ---------------------------------------------------------------------------
-
-/**
- * Build a mutation-class audit entry for the storage script's
- * atomic-XADD slot. All four mutation endpoints share this builder
- * so the audit entries land in `:audit` with consistent shape.
- *
- * **Field semantics** (see also `BaseAuditEntry` jsdoc):
- *   - `fingerprint` — the OPERATOR's bearer fingerprint (the bearer
- *     that authenticated the call). Lets investigators trace
- *     "which operator did this" back through the auth stream.
- *   - `name` — the SUBJECT's name (the token being acted on). For
- *     `issue` this is the new token's name. For revoke /
- *     set_capabilities / rotate it's the existing token's name.
- *   - `actor` — the operator's name (admin token name when API
- *     bearer-driven; "dashboard" for cookie/bootstrap path —
- *     B.1.d-iv will use that variant).
- *   - `detail` — caller-specified action-specific payload. For issue:
- *     the new token's metadata. For set_capabilities: from/to lists.
- *     For rotate/revoke: typically minimal.
- *
- * Note: for `issue`, the new token's fingerprint is NOT in this
- * entry's `fingerprint` field (unknown until inside the storage
- * function). Callers SHOULD include it under `detail.created_fingerprint`.
- */
-export function buildMutationAuditEntry(args: {
-  action: AuditMutationAction;
-  operator: { fingerprint: string; name: string };
-  subjectName: string;
-  detail?: Record<string, unknown>;
-}): AuditMutationEntry {
-  return {
-    ts: new Date().toISOString(),
-    fingerprint: args.operator.fingerprint,
-    name: args.subjectName,
-    action: args.action,
-    actor: args.operator.name,
-    ...(args.detail !== undefined ? { detail: args.detail } : {}),
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Error mapping
 // ---------------------------------------------------------------------------
 
@@ -353,6 +310,11 @@ export const AGENT_TOKENS_V1_ERROR = {
   NAME_TAKEN: "agent_tokens_v1_name_taken",
   TOKEN_NOT_FOUND: "agent_tokens_v1_token_not_found",
   TOKEN_LIMIT_REACHED: "agent_tokens_v1_token_limit_reached",
+  /** Caller tried to mutate (set-capabilities or rotate) a token whose
+   * expiresAt has already passed — refused at the storage boundary so
+   * the mutation can't resurrect a dying envelope. Closes #506
+   * builder R1 #1 (TTL cleanup invariant). */
+  TOKEN_EXPIRED_FOR_MUTATION: "agent_tokens_v1_token_expired_for_mutation",
   LOCK_TIMEOUT: "agent_tokens_v1_lock_timeout",
   /** Caller tried to revoke / rotate / set-capabilities on the bearer
    * they're authenticated with — would lock them out mid-flight. */
@@ -413,6 +375,21 @@ export function mapV1StorageErrorToResponse(
       AGENT_TOKENS_V1_ERROR.TOKEN_LIMIT_REACHED,
       err.message,
       422,
+    );
+  }
+  if (err instanceof TokenExpiredForMutationError) {
+    // 410 Gone — the resource exists but has reached the end of
+    // its lifecycle and won't be accepting further mutations.
+    // Distinct from 404 (token doesn't exist) and 422 (request
+    // would violate domain rules). Operators reading the response
+    // see expiredAt + the canonical message ("issue a successor
+    // instead of mutating an expired one") so the recovery path
+    // is obvious.
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.TOKEN_EXPIRED_FOR_MUTATION,
+      err.message,
+      410,
+      { name: err.tokenName, expiredAt: err.expiredAt },
     );
   }
   if (err instanceof InvalidExpiresAtError) {

@@ -80,7 +80,6 @@ import type {
 // carry-forward #1 (drift risk between two definitions).
 import {
   auditStreamKey,
-  buildAuditEntryJson,
   type AuditMutationEntry,
 } from "@/server/agent-token-v1-audit";
 
@@ -191,7 +190,12 @@ export interface AgentTokenSummaryV1 {
   policy?: AgentTokenPolicy;
 }
 
-/** Bearer + minimal metadata returned ONCE at issue time. */
+/** Bearer + minimal metadata returned ONCE at issue time (also the
+ * shape returned by `rotateAgentToken`). The optional `policy` field
+ * round-trips so callers can populate response bodies without an
+ * extra GET — closes #506 builder R1 #2: rotate previously surfaced
+ * `policy: null` even when the token had policy preserved on the
+ * envelope, which falsely advertised the token as legacy-permissive. */
 export interface IssuedAgentTokenV1 {
   token: string;
   name: string;
@@ -199,6 +203,10 @@ export interface IssuedAgentTokenV1 {
   capabilities: string[];
   fingerprint: string;
   expiresAt: string | null;
+  /** Present when the issued/rotated token has a policy on its
+   * envelope. Omitted (`undefined`) for legacy / V1.5-pre tokens
+   * that have no policy field at all. */
+  policy?: AgentTokenPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +251,82 @@ export class InvalidExpiresAtError extends Error {
       `Invalid expiresAt ${JSON.stringify(value)} — ${reason}. Provide a future ISO 8601 timestamp or null for no expiry.`,
     );
     this.name = "InvalidExpiresAtError";
+  }
+}
+
+/**
+ * Thrown when set-capabilities or rotate is called against an
+ * envelope whose `expiresAt` has already passed. Closes #506
+ * builder R1 #1 (TTL cleanup invariant): `computeEnvelopeTtlSeconds`
+ * returns 0 for past expiresAt, which would make the Lua script
+ * fall into the unconditional-`SET` branch, CLEARING the existing
+ * Redis TTL — turning an expired envelope into a permanent one.
+ * The fix is to fail-closed at the storage boundary: an admin
+ * holding a still-valid bearer can mutate someone else's token,
+ * but cannot resurrect an envelope that the cleanup sweep is
+ * about to remove. Operators wanting to extend lifetime must
+ * issue a fresh successor.
+ */
+export class TokenExpiredForMutationError extends Error {
+  public readonly installationId: string;
+  public readonly tokenName: string;
+  public readonly expiredAt: string;
+  constructor(installationId: string, tokenName: string, expiredAt: string) {
+    super(
+      `Refusing to mutate token '${tokenName}' for installation ${installationId}: envelope expired at ${expiredAt} and is awaiting cleanup. Issue a successor token instead of mutating an expired one.`,
+    );
+    this.name = "TokenExpiredForMutationError";
+    this.installationId = installationId;
+    this.tokenName = tokenName;
+    this.expiredAt = expiredAt;
+  }
+}
+
+/**
+ * Operator-side context for an atomic mutation. Replaces the
+ * pre-built `auditEntry` parameter (which let callers race the
+ * lock — closes #506 builder R1 #3): the storage layer now builds
+ * the entry ITSELF using the locked envelope state, so the `from`
+ * lists in `set_capabilities` audits + the `fingerprint_revoked`
+ * fields in `revoke` audits + the `created_fingerprint` field in
+ * `issue` audits are guaranteed accurate to the moment the
+ * mutation lands.
+ *
+ * The caller (route handler) only knows the operator's identity
+ * and any optional extra detail not derivable from envelope state.
+ * Storage knows the action, subject, and pre/post envelope state.
+ */
+export interface AuditMutationContext {
+  operator: { fingerprint: string; name: string };
+  /** Optional fields merged into the action's standard detail.
+   * Use sparingly — the standard detail (from/to / fingerprints)
+   * covers the canonical cases. */
+  detailExtras?: Record<string, unknown>;
+}
+
+/**
+ * Throw if the envelope has already expired (`expiresAt` ≤ now) —
+ * mutations must not resurrect a token that the cleanup sweep is
+ * about to remove. Closes #506 builder R1 #1: the Lua scripts'
+ * `tonumber(ARGV[N]) > 0 → SET EX, else SET` branch would CLEAR
+ * the existing TTL when called with `ttlSecs = 0`, making the
+ * expired envelope permanent. Failing closed at the storage
+ * boundary is simpler than per-script TTL preservation logic.
+ */
+function assertEnvelopeNotExpiredForMutation(
+  envelope: AgentTokenEnvelopeV1,
+  installationId: string,
+  nowMs: number,
+): void {
+  if (envelope.expiresAt === null) return;
+  const expiresAtMs = new Date(envelope.expiresAt).getTime();
+  if (Number.isNaN(expiresAtMs)) return; // unparseable — let it through to be cleaned up by other paths
+  if (expiresAtMs <= nowMs) {
+    throw new TokenExpiredForMutationError(
+      installationId,
+      envelope.name,
+      envelope.expiresAt,
+    );
   }
 }
 
@@ -583,19 +667,15 @@ export async function issueAgentToken(args: {
   redis: Redis;
   tokenLimit?: number;
   /**
-   * Optional structured audit entry. When provided, JSON is passed
-   * into the script's atomic-XADD slot — the audit row lands in the
-   * `:audit` stream in the same EVAL as the envelope write, so a
-   * partial-success state where the token exists but the audit
-   * entry doesn't (or vice versa) is unrepresentable. When omitted
-   * the script no-ops the XADD (preserves pre-B.1.d behavior so
-   * direct-from-tests callers don't have to construct an entry).
-   *
-   * The endpoint layer (B.1.d-ii) is the canonical caller — it
-   * builds entries from `auth.envelope.fingerprint` + `auth.name`.
-   * Direct callers (CLI scripts, migration jobs) typically omit it.
+   * Optional operator-side audit context. When provided, the
+   * storage layer builds the `issue` audit entry INSIDE the script's
+   * atomic-XADD slot so the mutation + audit land together (closes
+   * #506 builder R1 #3). The new token's fingerprint is included
+   * automatically — callers don't need to (and can't) compute it.
+   * When omitted the script no-ops the XADD (preserves pre-B.1.d
+   * behavior so direct-from-tests callers don't have to construct one).
    */
-  auditEntry?: AuditMutationEntry;
+  auditContext?: AuditMutationContext;
 }): Promise<IssuedAgentTokenV1> {
   validateName(args.name);
   validateAgentRole(args.agent_role);
@@ -691,10 +771,27 @@ export async function issueAgentToken(args: {
             String(limit),
             String(ttlSecs),
             // Empty sentinel = script no-ops the audit XADD. When the
-            // endpoint passes an `auditEntry`, this slot carries the
-            // serialized JSON, and the script's atomic-audit guard
+            // endpoint passes an `auditContext`, the entry is built
+            // here using the new token's fingerprint (which the caller
+            // can't pre-compute), and the script's atomic-audit guard
             // emits the row in the same EVAL as the envelope write.
-            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+            args.auditContext
+              ? JSON.stringify({
+                  ts: createdAtIso,
+                  fingerprint: args.auditContext.operator.fingerprint,
+                  name: args.name,
+                  action: "issue" as const,
+                  actor: args.auditContext.operator.name,
+                  detail: {
+                    agent_role: args.agent_role,
+                    capabilities: [...args.capabilities],
+                    expiresAt: args.expiresAt,
+                    has_policy: args.policy !== undefined,
+                    created_fingerprint: tokenFingerprint,
+                    ...(args.auditContext.detailExtras ?? {}),
+                  },
+                } satisfies AuditMutationEntry)
+              : "",
           ],
         ),
       );
@@ -716,6 +813,10 @@ export async function issueAgentToken(args: {
         capabilities: [...args.capabilities],
         fingerprint: tokenFingerprint,
         expiresAt: args.expiresAt,
+        // Surface policy back to caller so the response shape can
+        // round-trip it without an extra GET. Closes #506 builder R1
+        // #2 for the issue path (rotate gets the same field below).
+        ...(args.policy ? { policy: args.policy } : {}),
       };
     },
   );
@@ -734,8 +835,11 @@ export async function revokeAgentToken(args: {
   installationId: string;
   name: string;
   redis: Redis;
-  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
-  auditEntry?: AuditMutationEntry;
+  /** See `issueAgentToken.auditContext` — same atomic-audit
+   * semantics. The revoked envelope's fingerprint is included in
+   * detail automatically (taken from the locked envelope read
+   * before the script runs). */
+  auditContext?: AuditMutationContext;
 }): Promise<boolean> {
   validateName(args.name);
 
@@ -770,7 +874,19 @@ export async function revokeAgentToken(args: {
           ],
           [
             args.name,
-            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+            args.auditContext
+              ? JSON.stringify({
+                  ts: new Date().toISOString(),
+                  fingerprint: args.auditContext.operator.fingerprint,
+                  name: args.name,
+                  action: "revoke" as const,
+                  actor: args.auditContext.operator.name,
+                  detail: {
+                    fingerprint_revoked: envelopeRaw.fingerprint,
+                    ...(args.auditContext.detailExtras ?? {}),
+                  },
+                } satisfies AuditMutationEntry)
+              : "",
           ],
         ),
       );
@@ -795,8 +911,14 @@ export async function setAgentTokenCapabilities(args: {
   capabilities: readonly string[];
   redis: Redis;
   nowMs?: number;
-  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
-  auditEntry?: AuditMutationEntry;
+  /** See `issueAgentToken.auditContext` — same atomic-audit
+   * semantics. The audit `detail.from` list is built from the LOCKED
+   * envelope state inside this function, NOT pre-read at the route
+   * layer (closes #506 builder R1 #3: pre-read could race a
+   * concurrent set-capabilities and produce a `from` that doesn't
+   * match the actual previous state).
+   */
+  auditContext?: AuditMutationContext;
 }): Promise<AgentTokenSummaryV1> {
   validateName(args.name);
   if (args.capabilities.length === 0) {
@@ -810,20 +932,25 @@ export async function setAgentTokenCapabilities(args: {
     lockKey(args.installationId, args.name),
     args.redis,
     async () => {
+      const nowMs = args.nowMs ?? Date.now();
       const envelopeRaw = await args.redis.get<AgentTokenEnvelopeV1>(
         envelopeKey(args.installationId, args.name),
       );
       if (!envelopeRaw) {
         throw new TokenNotFoundError(args.installationId, args.name);
       }
+      // Closes #506 builder R1 #1 (TTL cleanup invariant): refuse
+      // to mutate an envelope whose expiry has passed. The Lua
+      // SET-without-EX branch (when ttlSecs=0) would clear the
+      // existing TTL and resurrect the dying envelope. Failing
+      // closed at the storage boundary is simpler than per-script
+      // TTL preservation logic and gives operators a clear error.
+      assertEnvelopeNotExpiredForMutation(envelopeRaw, args.installationId, nowMs);
       const updated: AgentTokenEnvelopeV1 = {
         ...envelopeRaw,
         capabilities: [...args.capabilities],
       };
-      const ttlSecs = computeEnvelopeTtlSeconds(
-        updated.expiresAt,
-        args.nowMs ?? Date.now(),
-      );
+      const ttlSecs = computeEnvelopeTtlSeconds(updated.expiresAt, nowMs);
       const result = dispatchScriptResult(
         await args.redis.eval(
           SET_CAPABILITIES_SCRIPT,
@@ -834,7 +961,20 @@ export async function setAgentTokenCapabilities(args: {
           [
             JSON.stringify(updated),
             String(ttlSecs),
-            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+            args.auditContext
+              ? JSON.stringify({
+                  ts: new Date().toISOString(),
+                  fingerprint: args.auditContext.operator.fingerprint,
+                  name: args.name,
+                  action: "set_capabilities" as const,
+                  actor: args.auditContext.operator.name,
+                  detail: {
+                    from: [...envelopeRaw.capabilities],
+                    to: [...args.capabilities],
+                    ...(args.auditContext.detailExtras ?? {}),
+                  },
+                } satisfies AuditMutationEntry)
+              : "",
           ],
         ),
       );
@@ -871,8 +1011,11 @@ export async function rotateAgentToken(args: {
   keyVersion: string;
   redis: Redis;
   nowMs?: number;
-  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
-  auditEntry?: AuditMutationEntry;
+  /** See `issueAgentToken.auditContext` — same atomic-audit
+   * semantics. The audit detail includes both the old and new
+   * fingerprints so investigators can correlate the rotation event
+   * with prior `auth.success` entries tied to the old fingerprint. */
+  auditContext?: AuditMutationContext;
 }): Promise<IssuedAgentTokenV1> {
   validateName(args.name);
 
@@ -880,12 +1023,19 @@ export async function rotateAgentToken(args: {
     lockKey(args.installationId, args.name),
     args.redis,
     async () => {
+      const nowMs = args.nowMs ?? Date.now();
       const envelopeRaw = await args.redis.get<AgentTokenEnvelopeV1>(
         envelopeKey(args.installationId, args.name),
       );
       if (!envelopeRaw) {
         throw new TokenNotFoundError(args.installationId, args.name);
       }
+      // Closes #506 builder R1 #1 (TTL cleanup invariant): refuse
+      // to rotate an expired envelope. Without this guard the new
+      // bearer would be issued with the past expiresAt copied
+      // forward AND the SET-without-EX branch would clear the
+      // existing TTL — a doubly-broken state.
+      assertEnvelopeNotExpiredForMutation(envelopeRaw, args.installationId, nowMs);
 
       const newRawToken = generateRawToken();
       const newTokenHash = hashToken(newRawToken);
@@ -913,10 +1063,7 @@ export async function rotateAgentToken(args: {
         name: args.name,
       };
 
-      const ttlSecs = computeEnvelopeTtlSeconds(
-        updated.expiresAt,
-        args.nowMs ?? Date.now(),
-      );
+      const ttlSecs = computeEnvelopeTtlSeconds(updated.expiresAt, nowMs);
 
       const result = dispatchScriptResult(
         await args.redis.eval(
@@ -932,7 +1079,20 @@ export async function rotateAgentToken(args: {
             JSON.stringify(updated),
             JSON.stringify(newHashRecord),
             String(ttlSecs),
-            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+            args.auditContext
+              ? JSON.stringify({
+                  ts: new Date().toISOString(),
+                  fingerprint: args.auditContext.operator.fingerprint,
+                  name: args.name,
+                  action: "rotate" as const,
+                  actor: args.auditContext.operator.name,
+                  detail: {
+                    fingerprint_old: envelopeRaw.fingerprint,
+                    fingerprint_new: newFingerprint,
+                    ...(args.auditContext.detailExtras ?? {}),
+                  },
+                } satisfies AuditMutationEntry)
+              : "",
           ],
         ),
       );
@@ -952,6 +1112,12 @@ export async function rotateAgentToken(args: {
         capabilities: [...updated.capabilities],
         fingerprint: newFingerprint,
         expiresAt: updated.expiresAt,
+        // Closes #506 builder R1 #2: surface the preserved policy
+        // back to the caller so the response can round-trip it
+        // accurately. Previously the rotate response said
+        // `policy: null` regardless, falsely advertising
+        // policy-narrowed tokens as legacy-permissive.
+        ...(envelopeRaw.policy ? { policy: envelopeRaw.policy } : {}),
       };
     },
   );

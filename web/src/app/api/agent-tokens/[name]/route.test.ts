@@ -205,16 +205,14 @@ describe("DELETE /api/agent-tokens/{name}", () => {
     expect((await res.json()).code).toBe("agent_tokens_v1_token_not_found");
   });
 
-  it("auditEntry passed to storage with action=revoke + operator's fingerprint", async () => {
+  it("auditContext passed to storage with operator identity (storage builds entry)", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk());
     mockedRevoke.mockResolvedValue(true);
     await DELETE(makeRequest("DELETE"), makeContext("worker"));
     const callArgs = mockedRevoke.mock.calls[0][0];
-    expect(callArgs.auditEntry).toBeDefined();
-    expect(callArgs.auditEntry?.action).toBe("revoke");
-    expect(callArgs.auditEntry?.fingerprint).toBe("deadbeef");
-    expect(callArgs.auditEntry?.name).toBe("worker"); // subject
-    expect(callArgs.auditEntry?.actor).toBe("admin"); // operator
+    expect(callArgs.auditContext).toBeDefined();
+    expect(callArgs.auditContext?.operator.fingerprint).toBe("deadbeef");
+    expect(callArgs.auditContext?.operator.name).toBe("admin");
   });
 
   it("emits auth.success audit", async () => {

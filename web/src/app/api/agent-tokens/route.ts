@@ -37,7 +37,6 @@ import { auditAppend } from "@/server/agent-token-v1-audit";
 import {
   parseExpiresIn,
   parseV1RequestPolicy,
-  buildMutationAuditEntry,
   projectV1ResponsePolicy,
   projectV1TokenSummary,
   mapV1StorageErrorToResponse,
@@ -207,22 +206,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // ----- audit entry (fingerprint = OPERATOR's; subjectName = NEW token's) -----
-  const auditEntry = buildMutationAuditEntry({
-    action: "issue",
-    operator: {
-      fingerprint: auth.envelope.fingerprint,
-      name: auth.name,
-    },
-    subjectName: name,
-    detail: {
-      agent_role,
-      capabilities: [...capabilities],
-      expiresAt: expiresParse.expiresAt,
-      has_policy: policyParse.policy !== undefined,
-    },
-  });
-
+  // Storage builds the audit entry internally now (closes #506
+  // builder R1 #3 — entry construction inside the lock window so
+  // the new token's fingerprint can be included in detail and the
+  // entry lands atomically with the envelope write).
   try {
     const issued = await issueAgentToken({
       installationId: auth.installationId,
@@ -235,7 +222,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       keyring: keyringResult.keyring,
       keyVersion: keyringResult.keyVersion,
       redis: auth.redis,
-      auditEntry,
+      auditContext: {
+        operator: {
+          fingerprint: auth.envelope.fingerprint,
+          name: auth.name,
+        },
+      },
     });
 
     // Auth-success audit (fire-and-forget; same pattern as /whoami).

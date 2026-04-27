@@ -32,7 +32,6 @@ import {
 import { rotateAgentToken } from "@/server/agent-token-v1";
 import { auditAppend } from "@/server/agent-token-v1-audit";
 import {
-  buildMutationAuditEntry,
   projectV1ResponsePolicy,
   mapV1StorageErrorToResponse,
   v1Error,
@@ -83,22 +82,10 @@ export async function POST(
   const keyringResult = loadV1MintKeyring();
   if (!keyringResult.ok) return keyringResult.response;
 
-  // For audit detail, capture the OLD fingerprint so investigators
-  // can correlate the rotation with prior `auth.success` entries
-  // tied to that fingerprint. We don't have the new fingerprint
-  // until inside the storage function — that lands in the response
-  // payload (and can be reconstructed from the next auth.success
-  // event for the same name).
-  const auditEntry = buildMutationAuditEntry({
-    action: "rotate",
-    operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
-    subjectName: name,
-    // No `detail` — rotate is "swap bearer, preserve everything
-    // else" and the new fingerprint is observable via the response
-    // and the next auth.success in the same installation's :auth
-    // stream. Empty detail keeps the audit row compact.
-  });
-
+  // Storage builds the audit entry internally with both the OLD
+  // and NEW fingerprints in detail (read inside the lock; new is
+  // computed before the script runs). Closes #506 builder R1 #3
+  // and gives investigators a clean correlation point.
   try {
     const issued = await rotateAgentToken({
       installationId: auth.installationId,
@@ -106,7 +93,9 @@ export async function POST(
       keyring: keyringResult.keyring,
       keyVersion: keyringResult.keyVersion,
       redis: auth.redis,
-      auditEntry,
+      auditContext: {
+        operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
+      },
     });
 
     void auditAppend({
@@ -123,18 +112,12 @@ export async function POST(
       },
     });
 
-    // Preserved policy comes from the OLD envelope — rotate doesn't
-    // mutate policy. Read it from the auth context's envelope view
-    // by way of a separate read isn't worth it; the response just
-    // omits policy on rotate (caller can GET /api/agent-tokens/{name}
-    // afterwards if they want the full snapshot). For now we stage
-    // policy: null — rotation doesn't claim to surface it.
-    //
-    // Actually — surface it for operator clarity. We can fetch the
-    // post-rotate summary in the same call's wake. But that's an
-    // extra Redis RTT for a frontend convenience. Compromise:
-    // include it as null and document that callers wanting the full
-    // post-rotate snapshot should call GET /api/agent-tokens/{name}.
+    // The preserved policy is now surfaced from `IssuedAgentTokenV1`
+    // (closes #506 builder R1 #2 — was previously `null` regardless,
+    // falsely advertising policy-narrowed tokens as legacy-permissive).
+    // `issued.policy` is undefined for envelopes that genuinely had
+    // no policy; `projectV1ResponsePolicy(undefined)` correctly
+    // returns null in that case.
     const responseBody: RotateResponse = {
       token: issued.token,
       name: issued.name,
@@ -142,11 +125,9 @@ export async function POST(
       capabilities: issued.capabilities,
       fingerprint: issued.fingerprint,
       expiresAt: issued.expiresAt,
-      // IssuedAgentTokenV1 doesn't carry policy; surface null and
-      // tell callers to fetch the show endpoint for the full picture.
-      policy: projectV1ResponsePolicy(null),
+      policy: projectV1ResponsePolicy(issued.policy ?? null),
       message:
-        "New bearer is shown ONCE — store it securely now. Old bearer is already invalid. Call GET /api/agent-tokens/{name} for the full post-rotate snapshot (incl. policy).",
+        "New bearer is shown ONCE — store it securely now. Old bearer is already invalid.",
     };
     return NextResponse.json(responseBody, { status: 200 });
   } catch (err) {

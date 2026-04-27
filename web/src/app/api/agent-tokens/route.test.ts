@@ -382,7 +382,7 @@ describe("POST /api/agent-tokens — happy paths", () => {
     expect(res.status).toBe(201);
   });
 
-  it("auditEntry passed to storage with action=issue + operator's fingerprint", async () => {
+  it("auditContext passed to storage with operator's identity (storage builds entry internally)", async () => {
     mockedIssue.mockResolvedValue(makeIssued());
     await POST(
       makeRequest("POST", {
@@ -392,14 +392,41 @@ describe("POST /api/agent-tokens — happy paths", () => {
       }),
     );
     const callArgs = mockedIssue.mock.calls[0][0];
-    expect(callArgs.auditEntry).toBeDefined();
-    expect(callArgs.auditEntry?.action).toBe("issue");
+    expect(callArgs.auditContext).toBeDefined();
     // operator's fingerprint (from auth.envelope.fingerprint)
-    expect(callArgs.auditEntry?.fingerprint).toBe("deadbeef");
-    // subject = new token's name
-    expect(callArgs.auditEntry?.name).toBe("worker");
-    // actor = operator's name
-    expect(callArgs.auditEntry?.actor).toBe("admin");
+    expect(callArgs.auditContext?.operator.fingerprint).toBe("deadbeef");
+    // operator's name (from auth.name)
+    expect(callArgs.auditContext?.operator.name).toBe("admin");
+    // Storage will fill in action="issue", subject=name, and the
+    // detail object including the new token's fingerprint — none
+    // of which the route layer should pre-compute.
+  });
+
+  it("issue response surfaces policy back to caller (no extra GET needed)", async () => {
+    mockedIssue.mockResolvedValue({
+      ...makeIssued(),
+      policy: {
+        allowed_repos: ["hivemoot/foxstoria"],
+        allowed_permissions: { contents: "read" },
+      },
+    });
+    const res = await POST(
+      makeRequest("POST", {
+        name: "worker",
+        agent_role: "drone",
+        preset: "worker",
+        policy: {
+          allowedRepos: ["hivemoot/foxstoria"],
+          allowedPermissions: { contents: "read" },
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.policy).toEqual({
+      allowedRepos: ["hivemoot/foxstoria"],
+      allowedPermissions: { contents: "read" },
+    });
   });
 
   it("emits auth.success to :auth stream via auditAppend", async () => {

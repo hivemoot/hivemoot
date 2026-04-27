@@ -39,6 +39,7 @@ import {
 import {
   rotateAgentToken,
   TokenNotFoundError,
+  TokenExpiredForMutationError,
 } from "@/server/agent-token-v1";
 import { auditAppend } from "@/server/agent-token-v1-audit";
 import { POST } from "./route";
@@ -156,7 +157,7 @@ describe("POST /api/agent-tokens/{name}/rotate", () => {
     expect(body.message).toMatch(/Old bearer is already invalid/);
   });
 
-  it("auditEntry passed with action=rotate + operator's fingerprint", async () => {
+  it("auditContext passed with operator identity (storage builds entry with old + new fingerprints)", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk());
     mockedKeyring.mockReturnValue(makeKeyringOk());
     mockedRotate.mockResolvedValue({
@@ -169,10 +170,73 @@ describe("POST /api/agent-tokens/{name}/rotate", () => {
     });
     await POST(makeRequest(), makeContext("worker"));
     const callArgs = mockedRotate.mock.calls[0][0];
-    expect(callArgs.auditEntry?.action).toBe("rotate");
-    expect(callArgs.auditEntry?.fingerprint).toBe("deadbeef"); // operator's
-    expect(callArgs.auditEntry?.name).toBe("worker"); // subject
-    expect(callArgs.auditEntry?.actor).toBe("admin"); // operator's name
+    expect(callArgs.auditContext).toBeDefined();
+    expect(callArgs.auditContext?.operator.fingerprint).toBe("deadbeef");
+    expect(callArgs.auditContext?.operator.name).toBe("admin");
+    // Storage builds the entry with detail.fingerprint_old +
+    // fingerprint_new from the locked envelope state.
+  });
+
+  it("rotate response surfaces preserved policy (B2 regression)", async () => {
+    // Closes #506 builder R1 #2: previously rotate always returned
+    // policy: null, falsely advertising policy-narrowed tokens as
+    // legacy-permissive. Storage now round-trips policy on
+    // IssuedAgentTokenV1 from the existing envelope.
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedRotate.mockResolvedValue({
+      token: "hmt_rotated",
+      name: "worker",
+      agent_role: "drone",
+      capabilities: ["tasks.claim"],
+      fingerprint: "newfp001",
+      expiresAt: null,
+      policy: {
+        allowed_repos: ["hivemoot/foxstoria"],
+        allowed_permissions: { contents: "read" },
+      },
+    });
+    const res = await POST(makeRequest(), makeContext("worker"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.policy).toEqual({
+      allowedRepos: ["hivemoot/foxstoria"],
+      allowedPermissions: { contents: "read" },
+    });
+  });
+
+  it("rotate response policy: null when token genuinely has no policy", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedRotate.mockResolvedValue({
+      token: "hmt_rotated",
+      name: "worker",
+      agent_role: "drone",
+      capabilities: ["tasks.claim"],
+      fingerprint: "newfp001",
+      expiresAt: null,
+      // no policy field
+    });
+    const res = await POST(makeRequest(), makeContext("worker"));
+    const body = await res.json();
+    expect(body.policy).toBeNull();
+  });
+
+  it("expired-target rotate → 410 TOKEN_EXPIRED_FOR_MUTATION (B1)", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedRotate.mockRejectedValue(
+      new TokenExpiredForMutationError(
+        "12345",
+        "old-worker",
+        "2026-04-26T00:00:00.000Z",
+      ),
+    );
+    const res = await POST(makeRequest(), makeContext("old-worker"));
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_token_expired_for_mutation");
+    expect(body.expiredAt).toBe("2026-04-26T00:00:00.000Z");
   });
 
   it("token not found → 404 TOKEN_NOT_FOUND", async () => {

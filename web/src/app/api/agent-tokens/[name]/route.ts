@@ -25,7 +25,6 @@ import {
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
 import {
-  buildMutationAuditEntry,
   projectV1TokenSummary,
   mapV1StorageErrorToResponse,
   v1Error,
@@ -142,18 +141,16 @@ export async function DELETE(
     );
   }
 
-  const auditEntry = buildMutationAuditEntry({
-    action: "revoke",
-    operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
-    subjectName: nameCheck.name,
-  });
-
   try {
     const revoked = await revokeAgentToken({
       installationId: auth.installationId,
       name: nameCheck.name,
       redis: auth.redis,
-      auditEntry,
+      // Storage builds the audit entry internally with the revoked
+      // envelope's fingerprint (read inside the lock).
+      auditContext: {
+        operator: { fingerprint: auth.envelope.fingerprint, name: auth.name },
+      },
     });
 
     void auditAppend({
