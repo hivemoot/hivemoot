@@ -329,6 +329,13 @@ describe("GET /api/whoami — policy projection", () => {
     expect(raw).not.toContain("0123456789abcdef"); // tokenHash from envelope
     expect(raw).not.toContain("createdBy");
     expect(raw).not.toContain("operator");
+    // Carry-forward from #505 guard R2 N2: complete the envelope-fields
+    // blacklist. keyVersion + createdAt aren't in the projection by
+    // construction, but pinning their absence catches a future refactor
+    // that accidentally widens the projection.
+    expect(raw).not.toContain('"keyVersion"');
+    expect(raw).not.toContain('"createdAt"');
+    expect(raw).not.toContain("2026-04-27T10:00:00.000Z"); // mock createdAt
     // Sanity — the legitimate (camelCase) fields ARE there
     expect(raw).toContain("allowedRepos");
     expect(raw).toContain("allowedPermissions");

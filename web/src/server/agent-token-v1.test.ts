@@ -39,6 +39,7 @@ import {
   TokenNameTakenError,
   TokenLimitReachedError,
   TokenNotFoundError,
+  TokenExpiredForMutationError,
   InvalidExpiresAtError,
   type AgentTokenEnvelopeV1,
   type AgentTokenHashRecordV1,
@@ -589,6 +590,29 @@ describe("setAgentTokenCapabilities", () => {
       }),
     ).rejects.toThrow(TokenNotFoundError);
   });
+
+  it("refuses to mutate an expired envelope (B1 — TTL cleanup invariant)", async () => {
+    // Closes #506 builder R1 #1: pre-fix, a set-capabilities call
+    // against an expired-but-not-yet-swept envelope (within the
+    // +300s margin) would land an unconditional SET in the Lua
+    // script, CLEARING the existing TTL and resurrecting the dead
+    // envelope. Storage now fails closed at the boundary.
+    await issueAgentToken(defaultIssueArgs(redis));
+    const envKey = envelopeKey("12345", "worker");
+    const env = redis._store.get(envKey) as AgentTokenEnvelopeV1;
+    // Manually re-store with a past expiresAt to simulate the +300s
+    // cleanup-window state that triggered the original bug.
+    redis._store.set(envKey, { ...env, expiresAt: "2025-01-01T00:00:00.000Z" });
+
+    await expect(
+      setAgentTokenCapabilities({
+        installationId: "12345",
+        name: "worker",
+        capabilities: ["agent_health.report", "tasks.claim", "rooms.read"],
+        redis,
+      }),
+    ).rejects.toThrow(TokenExpiredForMutationError);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -644,6 +668,50 @@ describe("rotateAgentToken", () => {
         redis,
       }),
     ).rejects.toThrow(TokenNotFoundError);
+  });
+
+  it("refuses to rotate an expired envelope (B1 — TTL cleanup invariant)", async () => {
+    // Closes #506 builder R1 #1: rotate would otherwise CLEAR the
+    // existing TTL on an expired envelope AND issue a new bearer
+    // already past expiresAt. Storage now fails closed at the
+    // boundary — operators must issue a successor instead.
+    await issueAgentToken(defaultIssueArgs(redis));
+    const envKey = envelopeKey("12345", "worker");
+    const env = redis._store.get(envKey) as AgentTokenEnvelopeV1;
+    redis._store.set(envKey, { ...env, expiresAt: "2025-01-01T00:00:00.000Z" });
+
+    await expect(
+      rotateAgentToken({
+        installationId: "12345",
+        name: "worker",
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      }),
+    ).rejects.toThrow(TokenExpiredForMutationError);
+  });
+
+  it("response surfaces preserved policy (B2 round-trip)", async () => {
+    // Closes #506 builder R1 #2: rotate previously surfaced
+    // policy: null even when the envelope had policy preserved.
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      policy: {
+        allowed_repos: ["hivemoot/foxstoria"],
+        allowed_permissions: { contents: "read" },
+      },
+    });
+    const rotated = await rotateAgentToken({
+      installationId: "12345",
+      name: "worker",
+      keyring: KEYRING,
+      keyVersion: "v1",
+      redis,
+    });
+    expect(rotated.policy).toEqual({
+      allowed_repos: ["hivemoot/foxstoria"],
+      allowed_permissions: { contents: "read" },
+    });
   });
 
   it("preserves expiresAt (rotate ≠ extend)", async () => {
