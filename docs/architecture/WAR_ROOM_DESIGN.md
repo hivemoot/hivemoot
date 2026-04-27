@@ -72,7 +72,8 @@ acceptable; both share the same Vercel deploy lifecycle anyway.
 clients to the war-room API on hivemoot.dev. The bot's existing
 webhook handler dispatches `pull_request.opened` etc. to a queen
 "create-room" routine. A scheduled background job (Vercel Cron or
-similar) drives the manager loop on a 30s tick to advance rooms past
+similar) drives the manager loop on a 60s tick (Hobby/Pro Vercel
+Cron minimum — see §Manager loop) to advance rooms past
 their RSVP/contribution windows.
 
 The standalone queen-agent variant is documented in §17 (Future
@@ -241,7 +242,7 @@ Primary records:
 | `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
 | `hive:v1:room:{roomId}:contributions` | hash | Inherits room TTL | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
 | `hive:v1:room:{roomId}:seq` | counter | Inherits room TTL | Monotonic event sequence (`INCR` per event) |
-| `hive:v1:room:{roomId}:claim` | string | 5 min | Synthesis claim: → `{queenRunner, claimedThroughSequence}` (auto-revert on queen crash — see §Force-close vs queen mid-decide race) |
+| `hive:v1:room:{roomId}:claim` | string | **6 min** (intentionally 1 min ABOVE Vercel Pro `maxDuration` of 5 min — closes guard R3 N7 recovery-vs-synthesis double-post race) | Synthesis claim: → `{queenRunner, claimedThroughSequence}` (auto-revert on queen crash — see §Force-close vs queen mid-decide race) |
 
 Secondary indexes:
 
@@ -358,7 +359,7 @@ between watchdog scan and write, the script returns `{-2, ...}` and
 the watchdog re-scans on the next tick.
 
 **`ROOM_DECIDE_CLAIM_SCRIPT`** — atomically claim synthesis. The
-claim's 5-minute TTL is necessary but not sufficient for crash
+claim's 6-minute TTL is necessary but not sufficient for crash
 recovery — see `ROOM_RECOVER_DECIDING_SCRIPT` below.
 
 ```lua
@@ -387,7 +388,7 @@ return {1, seq}
 
 **`ROOM_RECOVER_DECIDING_SCRIPT`** — atomically revert a `deciding`
 room to `awaiting_contributions` IF the claim has expired (or never
-existed). Closes builder R2 — the 5-minute TTL deletes the claim
+existed). Closes builder R2 — the 6-minute TTL deletes the claim
 key but NOT the room hash status nor the status-set membership; this
 script is what the manager-loop recovery branch invokes per stuck
 room.
@@ -424,27 +425,38 @@ return tells the manager "queen is still working" — skip and re-check
 next tick. The `{1, ...}` return triggers an audit event and observability
 metric (`recovered_deciding_rooms_count`).
 
-**`ROOM_EXPIRE_SCRIPT`** — atomically close a room past `max_age_secs`
-without requiring a claim. Closes Queen R3 #1 — the previous
-`closeAsExpired` was undefined because `ROOM_CLOSE_SCRIPT` requires a
-valid claim (which expired rooms in `awaiting_*` never had).
+**`ROOM_TERMINATE_SCRIPT`** (renamed from `ROOM_EXPIRE_SCRIPT` in R4
+to reflect its broader scope) — atomically close a room without
+requiring a claim. Used for any non-decided terminal transition:
+expiration, synthesis-failure, force-close, manual operator close.
+Closes Queen R3 #1, guard R3 N10 (closed_reason arg drift), guard
+R3 N8 (deciding-state coverage), builder R3 #2 (terminal close
+paths consistency).
 
 ```lua
 -- KEYS: [roomKey, subjectIndexKey, statusSetCurrentKey, allRoomsKey, repoIndexKey,
---        seqKey, eventsKey, participantsKey, contributionsKey]
--- ARGV: [roomId, expiredEventJson, closedAt, retentionSecs]
--- Returns: {1, sequence}        expired (status → closed, sibling cleanup)
---          {-1, currentStatus}  not in an expirable status (already closed/deciding)
+--        seqKey, eventsKey, participantsKey, contributionsKey, claimKey]
+-- ARGV: [roomId, terminalEventJson, closedAt, retentionSecs, closedReason]
+--   closedReason ∈ {"expired", "failed_synthesis", "force_close", "manual"}
+-- Returns: {1, sequence}        terminated (status → closed, sibling cleanup,
+--                                          claim DELed if held)
+--          {-1, currentStatus}  already in `closed` (operator double-tap)
 local status = redis.call("hget", KEYS[1], "status")
-if status ~= "awaiting_rsvp" and status ~= "awaiting_contributions" then
+if status == "closed" then
   return {-1, status}
 end
+-- If the room is in `deciding`, the queen had a claim — DEL it so
+-- queen's mid-flight `/close` returns {-3, "claim_lost"} and aborts
+-- the GitHub post (closes guard R3 N8: stuck-deciding past max_age
+-- was unreachable by the prior expire script). Same path covers
+-- force-close on a deciding room (S5).
+redis.call("del", KEYS[10])
 local seq = redis.call("incr", KEYS[6])
 local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq))
 redis.call("zadd", KEYS[7], seq, eventJson)
 redis.call("hset", KEYS[1], "status", "closed",
                           "closed_at", ARGV[3],
-                          "closed_reason", "expired")
+                          "closed_reason", ARGV[5])
 redis.call("del", KEYS[2])              -- subject index released
 redis.call("srem", KEYS[3], ARGV[1])    -- remove from current status set
 redis.call("zrem", KEYS[4], ARGV[1])    -- remove from per-installation index (R2 #2)
@@ -456,6 +468,22 @@ redis.call("expire", KEYS[8], tonumber(ARGV[4]))
 redis.call("expire", KEYS[9], tonumber(ARGV[4]))
 return {1, seq}
 ```
+
+Per the new `closed_reason` parameter, the manager-loop call sites
+become:
+
+| Call site | `closed_reason` |
+|---|---|
+| `room.age > max_age_secs` (watchdog) | `"expired"` |
+| `consecutive_synthesis_failures >= 3` | `"failed_synthesis"` |
+| `POST /api/rooms/{id}/force-close` | `"force_close"` |
+| `POST /api/rooms/{id}/close` from operator UI (rare) | `"manual"` |
+
+The successful `decided` path stays in `ROOM_CLOSE_SCRIPT` (which
+DOES require a claim, since it represents queen completing
+synthesis cleanly with sequence-consistency intact). The two
+scripts split cleanly: `ROOM_CLOSE_SCRIPT` for "happy path with
+claim", `ROOM_TERMINATE_SCRIPT` for everything else.
 
 Note the per-key TTLs on the seq counter and audit/event sibling
 keys (closes Queen R2 #1 — TTL leak in CLOSE), and the explicit
@@ -648,7 +676,7 @@ ground truth on the client's view of the sequence.
 
 ### Sequence ordering with concurrent writers (Queen #3)
 
-`hive:room-seq:{roomId}` is a Redis counter. Every event acquires its
+`hive:v1:room:{roomId}:seq` is a Redis counter. Every event acquires its
 sequence via `INCR` inside `ROOM_APPEND_EVENT_SCRIPT`, atomic with
 the event-set `ZADD`. Multiple workers POST'ing concurrently (present,
 contribute, withdraw) get distinct, monotonic sequence numbers; the
@@ -726,7 +754,7 @@ POST   /api/rooms/{id}/replay              # see §14 for semantics
 ```
 
 Background watchdog (V1): bot-side cron-driven scan every 60s of
-`hive:rooms-by-status:{installationId}:awaiting_contributions`. For
+`hive:v1:idx:room:status:{installationId}:awaiting_contributions`. For
 each room, check participants past their RSVP-to-contribution timeout
 → emit `participant_timed_out` (transitionless event); also check
 rooms past `max_age_secs` → close with `expired` reason.
@@ -789,7 +817,7 @@ room's core also carries `replayed_by: {operatorAgentId}` and
 intact.
 
 Why option (a) over (b) (re-open closed): re-opening collides with
-the partial uniqueness invariant (`hive:room-by-subject:*` is held
+the partial uniqueness invariant (`hive:v1:idx:room:subject:*` is held
 only for open rooms). Creating a new room composes naturally with the
 existing open-room idempotency check — if a real new room for the
 same subject was opened in the meantime, replay still produces a
@@ -904,10 +932,22 @@ precondition fail because queen has claimed the room), the bot:
    naturally.
 
 If the buffer fills (>10 entries during synthesis), oldest entries
-are dropped with `webhook_buffer_overflow` warning. This keeps the
-common case lossless without unbounded growth on a stuck `deciding`
-room (which the recovery branch closes via
-`ROOM_RECOVER_DECIDING_SCRIPT` within ~1 tick).
+are dropped with `webhook_buffer_overflow` warning (closes guard
+R3 N9 — explicit accept of the trade-off). Cap=10 is sized for the
+slow-cadence assumption: synthesis takes ≤6 min, ≤10 webhooks per
+6 min on a single PR is rare even on actively-pushed PRs.
+
+If V1 operations show legitimate overflow (e.g. on force-push
+storms), three V1.1 mitigations are pre-spec'd:
+- (a) Bump cap (Redis lists are cheap; 100 still bounded).
+- (b) Coalesce same-event-type entries (10 force-pushes
+  collapse to one "subject_updated" with the latest commit ref).
+- (c) Per-event-type sub-buffers so e.g. comment-mention events
+  don't displace push events.
+
+V1 ships (a) at cap=10. Operators monitoring
+`webhook_buffer_overflow_count` can prompt the V1.1 expansion if
+the metric breaches a single-PR-per-day rate.
 
 ### 3. Manager loop — `is_room_ready()`
 
@@ -933,21 +973,43 @@ guarantee non-overlapping invocations; a tick that runs longer
 than 60 s could overlap with the next fire. The route acquires a
 distributed lock at entry:
 
+**Acquire** with `SET key runnerId NX EX 55`. **Release** with the
+canonical Redlock compare-and-DEL pattern via a Lua script (NOT
+`if acquired === runnerId then redis.del()` — `SET ... NX` returns
+the string `"OK"` on success or `null` on contention, NOT the
+stored value, so the JS-level comparison is always false; closes
+guard R3 B6).
+
+The release script (`QUEEN_TICK_LOCK_RELEASE_SCRIPT`):
+
+```lua
+-- KEYS: [lockKey]
+-- ARGV: [runnerId]
+-- Returns: 1 if released by this runner, 0 if lock held by someone
+--          else (TTL expired and another runner re-acquired it)
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+```
+
+Sequencing in the route:
+
 ```typescript
-// SET hive:v1:lock:queen-tick:{installationId} <runner> NX EX 55
-const acquired = await redis.set(
-  `hive:v1:lock:queen-tick:${installationId}`,
-  runnerId, "NX", { EX: 55 },
-);
-if (!acquired) {
+const lockKey = `hive:v1:lock:queen-tick:${installationId}`;
+const acquired = await redis.set(lockKey, runnerId, "NX", { EX: 55 });
+if (acquired === null) {
+  // Contention — another tick is running. Skip cleanly.
   log.info("queen_tick_overlap_skipped", { installationId, runnerId });
   return new Response(null, { status: 200 });
 }
 try {
   await queenTick(installationId);
 } finally {
-  // Release the lock IFF we still hold it (no-op if TTL expired)
-  if (acquired === runnerId) await redis.del(...);
+  // Compare-and-DEL via the Lua script above. Atomic; a racing
+  // fast-finishing tick can't accidentally release another
+  // runner's lock.
+  await callQueenTickLockReleaseScript(lockKey, runnerId);
 }
 ```
 
@@ -976,7 +1038,7 @@ async function queenTick(installationId: string) {
   for (const room of await listOpenRooms(installationId)) {
     // 2. Expire rooms past max_age_secs (closes Queen R3 #1)
     if (room.age > room.max_age_secs) {
-      await callExpireRoomScript(room.id);
+      await callTerminateRoomScript(room.id, "expired");
       continue;
     }
 
@@ -997,7 +1059,7 @@ async function queenTick(installationId: string) {
 
       // Per-room consecutive-failure backoff (closes guard M4)
       if (room.consecutive_synthesis_failures >= 3) {
-        await callExpireRoomScript(room.id, "failed_synthesis");
+        await callTerminateRoomScript(room.id, "failed_synthesis");
         log.error("room_marked_failed_synthesis", {
           installationId, roomId: room.id,
           failures: room.consecutive_synthesis_failures,
@@ -1171,10 +1233,10 @@ the watchdog → rooms accumulate silently. V1 ships:
 
 | Metric | Source | Alert threshold |
 |---|---|---|
-| `rooms_past_max_age_count` | scan `hive:rooms-by-status` filtered by `opened_at` | > 0 for > 5 min |
+| `rooms_past_max_age_count` | scan `hive:v1:idx:room:status:*` filtered by `opened_at` | > 0 for > 5 min |
 | `time_since_last_timeout_emit` | bot-side counter, reset on each emit | > 10 min when there are pending RSVPs |
 | `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 90s (3× tick interval) |
-| `claim_held_too_long` | scan `hive:v1:room:*:claim` ages | any claim > 5 min (= TTL) |
+| `claim_held_too_long` | scan `hive:v1:room:*:claim` ages | any claim > 6 min (= TTL) |
 
 Alerts wire into the same channel the dashboard's existing
 Vercel/Upstash health observability uses. Non-blocking V1 — V1.1
@@ -1195,19 +1257,20 @@ sort changed.
 Force-close on a `deciding` room MUST NOT silently let queen finish
 and post the GitHub action.
 
-`POST /api/rooms/{id}/force-close` semantics:
+`POST /api/rooms/{id}/force-close` calls
+`ROOM_TERMINATE_SCRIPT(roomId, terminalEventJson, closedAt,
+retentionSecs, "force_close")` — the unified terminate path
+(builder R3 #2). The script:
 
-```
-if status in {awaiting_rsvp, awaiting_contributions}:
-  emit room_closed{reason: 'force_close', actor: operator}
-  status → closed; release subject index; close
-elif status == deciding:
-  DEL hive:v1:room:{roomId}:claim  # invalidate queen's claim
-  emit room_closed{reason: 'force_close_during_decide', actor: operator}
-  status → closed; release subject index; close
-elif status in {closed, expired}:
-  return 409 ROOM_ALREADY_CLOSED
-```
+- Atomically `DEL`s `hive:v1:room:{roomId}:claim` if held (covers
+  the `status == deciding` case naturally — queen's mid-flight
+  `/close` returns `{-3, "claim_lost"}` and aborts).
+- Sets `status → closed`, `closed_reason → "force_close"`.
+- Releases subject index, removes from per-installation /
+  per-status / per-repo indexes.
+- Sets retention TTLs on all sibling keys.
+- Returns `{-1, "closed"}` if already closed (operator double-tap)
+  → caller surfaces 409 `ROOM_ALREADY_CLOSED`.
 
 Queen's `/close` script (`ROOM_CLOSE_SCRIPT`) checks the claim still
 exists before posting. If the claim was deleted by force-close, queen's
@@ -1321,9 +1384,17 @@ To ship FAST, V1 cuts:
 5. **CLI** — `hivemoot rooms list/get/contribute/events/watch`
    minimum. ~1 day.
 
-Cuts: dashboard UI (use CLI for V1), replay, force-close,
-queen_question events, complex quorum policies, intent_hint
-requirement. All deferrable.
+Cuts: dashboard UI (use CLI for V1), replay, queen_question
+events, complex quorum policies, intent_hint requirement. All
+deferrable.
+
+Force-close is **kept in V1** because `ROOM_TERMINATE_SCRIPT`
+covers it as a single code path alongside the
+expired/failed_synthesis paths the watchdog already needs (closes
+builder R3 #2 — the original "cut force-close" line was leftover
+from R3, but R4's unified terminate script makes it a free
+addition). Operator surface: CLI `hivemoot rooms force-close <id>`
++ dashboard button (Phase I).
 
 V1 total: 1.5-2 weeks of focused work, parallelizable across surfaces.
 Bot-as-queen saves ~1-2 days vs the standalone-agent variant
@@ -1344,7 +1415,7 @@ gets its own explicit endpoint; not the same as subject-update.
 
 ### B. Re-contribution — append or replace contribution body?
 
-Replace in `hive:room-contributions:*` materialized hash; events
+Replace in `hive:v1:room:{roomId}:contributions` materialized hash; events
 sorted set preserves audit history regardless.
 
 ### C. Bot-pushed vs queen-polled? **CHANGED**
@@ -1403,7 +1474,7 @@ fire on rooms still within the age ceiling.
 ### J. Single queen instance vs sharded?
 
 Single queen for V1. The bot is single-instance per Vercel deploy
-already. Queen-restart safety: the 5-minute claim TTL on
+already. Queen-restart safety: the 6-minute claim TTL on
 `hive:v1:room:*:claim` auto-reverts a `deciding` room to
 `awaiting_contributions` if queen crashes mid-synthesis
 (§Storage layout / `ROOM_DECIDE_CLAIM_SCRIPT`). No `/unclaim`
