@@ -91,8 +91,11 @@ interface AgentTokenEnvelope {
   ASCII, starts with a letter, ≤32 chars (closes guard D)
 - `agent_role` validated against the same regex
 - Capability strings validated against
-  `^[a-z_]+(\.[a-z_*]+)+$` — lowercase ASCII, dot-separated, optional
-  `*` only as a trailing segment
+  `^(\*|[a-z_]+(\.[a-z_]+)*(\.\*)?)$` — bare `*`, OR lowercase
+  dot-separated identifier with an OPTIONAL `*` ONLY as the final
+  segment. Closes builder R2.1 — the prior regex
+  `^[a-z_]+(\.[a-z_*]+)+$` permitted shapes like `tasks.*claim` or
+  `tasks.cl*aim` because `*` was allowed mid-segment
 
 The `AgentTokenHashRecord` (reverse index) shape changes:
 
@@ -100,10 +103,26 @@ The `AgentTokenHashRecord` (reverse index) shape changes:
 interface AgentTokenHashRecord {
   installationId: string;
   name: string;        // NEW — needed by middleware to load the envelope by name
-  // expiresAt removed — middleware now reads expiry from the envelope (one
-  // extra Redis read per auth, marginal cost; keeps the truth in one place)
+  // expiresAt removed — middleware now reads expiry from the envelope.
 }
 ```
+
+**Latency note** (closes guard R2 N5): the V1.5→V1.6 transition
+adds a second Redis read per auth (hash index + envelope). The
+implementation MUST batch both reads via `redis.pipeline()` so
+each auth request stays one network round-trip. A sequential
+`await get` then `await get` would silently regress fleet-scale
+auth latency. Pseudocode (concrete pattern):
+
+```
+const [hashRecord, envelope] = await redis.pipeline()
+  .get(`agent-token-hash:${tokenHash}`)
+  .get(`hive:v1:agent-token:${installationId}:${name}`)
+  .all();
+```
+
+A unit test on the auth path asserts on the call shape so a future
+refactor can't silently switch to sequential gets.
 
 ### Storage layout (Redis)
 
@@ -111,11 +130,11 @@ Follows REDIS_KEY_CONVENTION.md. All keys versioned `v1:`.
 
 | Key | Type | TTL | Purpose |
 |---|---|---|---|
-| `hive:v1:agent-token:{installationId}:{name}` | string (JSON envelope) | None for `expiresAt: null` tokens; `expiresAt - now()` Redis TTL for tokens with explicit expiry (closes hivemoot reviewer #5 issue 2) | Token core record |
+| `hive:v1:agent-token:{installationId}:{name}` | string (JSON envelope) | None for `expiresAt: null` tokens; `expiresAt - now() + 300` (5-min safety margin to absorb Redis-vs-API clock skew — closes guard R2.1 G-R2.1-4) for tokens with explicit expiry. The auth middleware ALWAYS does its own `expiresAt`-from-envelope check; Redis TTL is the eventually-consistent sweep, not the user-visible gate. | Token core record |
 | `hive:v1:idx:agent-token:hash:{tokenHash}` | string (JSON `{installationId, name}`) | None | Bearer → identity reverse index |
 | `hive:v1:idx:agent-token:installation:{installationId}` | sorted set (token names, score = `createdAt` epoch ms) | None | Token list per installation; sort by creation order for stable `tokens list` output (closes hivemoot reviewer #5 issue 4) |
 | `hive:v1:agent-token:{installationId}:{name}:meta` | hash | None | Mutable side-state (`lastUsedAt`, `callCount`) — see §`lastUsedAt` write strategy |
-| `hive:v1:agent-token:{installationId}:audit` | stream | 30 days (per-entry trim) | Rolling audit log; entries carry `fingerprint`, NEVER raw bearer |
+| `hive:v1:agent-token:{installationId}:audit` | stream | bounded by `MAXLEN ~N` (split by event class — see §Audit log for the math) | Rolling audit log; entries carry `fingerprint`, NEVER raw bearer |
 | `hive:v1:lock:agent-token:{installationId}:{name}` | string (lock holder) | 30 s | Issue / revoke / set-capabilities serialization |
 
 ### Atomic operations (Lua)
@@ -126,36 +145,49 @@ each with a documented return-shape contract per
 REDIS_KEY_CONVENTION.md.
 
 **`ISSUE_TOKEN_SCRIPT`** — atomic SET NX on the envelope key, plus
-hash index + installation set cleanup if the name was previously
-revoked-then-reissued.
+hash index + installation sorted-set add. Closes builder R2.1
+sorted-set/`SADD` mismatch (the storage table says sorted set;
+this script now uses `ZADD` accordingly). Also closes guard R2 N1
+(token-count limit must be inside the script, not TOCTOU between
+client SCARD and EVAL).
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSetKey]
--- ARGV: [installationId, name, envelopeJson, hashRecordJson]
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey]
+-- ARGV: [installationId, name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit]
 -- Returns:
---   {1, name}    success
---   {0, name}    name already exists (callers map to 409 NAME_TAKEN)
+--   {1, name}                success
+--   {0, "name_taken"}        name already exists
+--   {-1, "limit"}            installation already at tokenLimit names
 local existing = redis.call("get", KEYS[1])
-if existing then return {0, ARGV[2]} end
+if existing then return {0, "name_taken"} end
+local count = redis.call("zcard", KEYS[3])
+if count >= tonumber(ARGV[6]) then return {-1, "limit"} end
 redis.call("set", KEYS[1], ARGV[3])
 redis.call("set", KEYS[2], ARGV[4])
-redis.call("sadd", KEYS[3], ARGV[2])
+redis.call("zadd", KEYS[3], tonumber(ARGV[5]), ARGV[2])
 return {1, ARGV[2]}
 ```
 
-**`REVOKE_TOKEN_SCRIPT`** — atomic 3-key cleanup (envelope + reverse
-index + installation set membership). Closes hivemoot reviewer #3.
+The `0` return reuses the convention's "benign conflict" slot but
+with a stable string discriminator (`"name_taken"`) so callers map
+to 409 NAME_TAKEN unambiguously. The convention table's `{0, ...}`
+description is updated correspondingly (closes guard R2.1
+"convention drift" minor).
+
+**`REVOKE_TOKEN_SCRIPT`** — atomic 4-key cleanup (envelope + reverse
+index + installation sorted-set membership + meta). Closes hivemoot
+reviewer #3 (3+ keys atomic) + builder R2.1 sorted-set parity.
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSetKey, metaKey]
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey]
 -- ARGV: [name]
 -- Returns:
---   {1, name}    success
---   {0, name}    nothing to revoke (already gone)
+--   {1, name}    success (envelope existed, all keys cleaned)
+--   {0, name}    nothing to revoke (envelope already gone)
 local existed = redis.call("del", KEYS[1])
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[4])
-redis.call("srem", KEYS[3], ARGV[1])
+redis.call("zrem", KEYS[3], ARGV[1])
 if existed == 0 then return {0, ARGV[1]} end
 return {1, ARGV[1]}
 ```
@@ -212,11 +244,36 @@ return {1}
 ```
 
 The new bearer is reachable via the new hash index immediately;
-the old bearer's hash index is gone in the same atomic call. Total
-"invalid bearer" window: zero. The CLI command for this is
-`hivemoot tokens rotate --installation-id N --name worker` —
-operators rotating fleet credentials get atomic semantics matching
-the existing `agent-token.ts:ROTATE_TOKEN_SCRIPT` pattern.
+the old bearer's hash index is gone in the same atomic call. The
+**Redis-atomicity** window is zero — but the **operationally-
+visible** window is non-zero (closes guard R2.1 G-R2.1-1):
+between `tokens rotate` returning the new bearer and the operator
+finishing their `apiary.secrets.yaml` edit + redeploy, services on
+the Hive still hold the old bearer (now invalid) and 401-storm
+exactly like cutover.
+
+V1 chose the staging-and-restart path explicitly. The runbook step
+sequence:
+
+1. `hivemoot tokens rotate --installation-id N --name worker` (new
+   bearer printed once)
+2. `apiary stop` on the Hive (services stop holding the old bearer)
+3. Update `apiary.secrets.yaml` with the new bearer
+4. `apiary start` (services pick up the new bearer)
+
+V1.1 may add an "overlap window" path (a TTL'd second
+`hive:v1:idx:agent-token:hash:{oldHash}` entry valid for N minutes
+after rotation, so step 2-3 can happen without a downtime gap).
+For V1, the explicit stop-and-start sequence is acceptable.
+
+**Expiry preservation on rotate** (closes guard R2.1 G-R2.1-2):
+`ROTATE_TOKEN_SCRIPT`'s `expirySecsOrZero` ARGV is computed by the
+caller as `expiresAt - now()` from the **existing envelope's**
+`expiresAt` — rotate does NOT reset the lifetime clock. Operators
+who want to extend lifetime must explicitly `tokens issue --name X
+--expires-in 30d` to mint a successor with a fresh window, then
+revoke the previous slot. This matches the principle "rotate ≠
+extend."
 
 ### Migration cleanup script (closes guard A)
 
@@ -320,22 +377,29 @@ export const KNOWN_CAPABILITIES = [
   "agent_tokens.manage",
 ] as const;
 
+// Capabilities that admin classes alone can grant. Even prefix
+// wildcards must explicitly list these — never reachable by an
+// unsuspecting `agent_tokens.*` glob (closes guard R2 N3).
+const ADMIN_CLASS_CAPABILITIES = new Set<string>(["agent_tokens.manage"]);
+
 export function expandWildcards(capabilities: string[]): Set<string> {
   const out = new Set<string>();
   for (const c of capabilities) {
     if (c === "*") {
       // Bare wildcard — operator must opt in via tokens issue
-      // --allow-wildcards. The wildcard does NOT include
-      // agent_tokens.manage unless the operator explicitly adds it.
+      // --allow-wildcards. Excludes admin-class caps; operator must
+      // list those explicitly.
       for (const k of KNOWN_CAPABILITIES) {
-        if (k !== "agent_tokens.manage") out.add(k);
+        if (!ADMIN_CLASS_CAPABILITIES.has(k)) out.add(k);
       }
       continue;
     }
     if (c.endsWith(".*")) {
       const prefix = c.slice(0, -2);  // "tasks.*" → "tasks"
       for (const k of KNOWN_CAPABILITIES) {
-        if (k.startsWith(prefix + ".")) out.add(k);
+        if (k.startsWith(prefix + ".") && !ADMIN_CLASS_CAPABILITIES.has(k)) {
+          out.add(k);
+        }
       }
       continue;
     }
@@ -542,7 +606,8 @@ system surfaces them):
 |---|---|---|
 | `capabilities: ["installation_token.mint"]`, `allowed_repos: []` | 200 with empty-scope token (useless) | CLI `tokens issue` warns at issue time when `installation_token.mint` is granted with empty `allowed_repos`: *"Warning: token can mint but has no allowed_repos — minted GitHub tokens will have zero-repo scope. Set --allowed-repos or skip this cap."* |
 | `capabilities: ["tasks.claim"]`, `allowed_repos: []` | Claim succeeds; downstream `gh` calls fail when the worker tries to operate on a repo | Documented; operator runbook explains "claimed tasks fail at GitHub-call time when allowed_repos is empty." |
-| `capabilities: []` (rejected at issue) | n/a — capabilities ≥1 is enforced | 401 `TOKEN_LEGACY_UNSCOPED` (covered earlier) |
+| `capabilities: []` at **issue time** | 422 `EMPTY_CAPABILITIES` from `tokens issue` (validation rejects empty list at write time) | n/a — never reaches storage |
+| Legacy envelope (no `capabilities` field) loaded from Redis at **auth time** | 401 `TOKEN_LEGACY_UNSCOPED` returned by middleware (envelope shape predates V1) | Operator must reissue via `tokens issue` (closes guard R2.1 G-R2.1-3 — the prior single row collapsed two distinct scenarios at two different times) |
 | `capabilities: ["installation_token.mint"]`, `allowed_permissions: { contents: "read" }` (Phase C) | Minted token can read but not write | Worker correctly fails with GitHub 403 if it tries to push; `/api/whoami` shows the limited permission set explicitly |
 
 **Validation at `tokens issue`**: the CLI flags clearly suspicious
@@ -643,6 +708,16 @@ token's bearer. Revoking the bootstrap admin token without first
 issuing a replacement will lock the operator out — the dashboard
 bootstrap page remains as the recovery path (cookie auth always
 works for the installation owner).
+
+**Bootstrap admin token defaults to `expiresAt: now + 24h`**
+(closes guard R2 N4). The one-time-display + paste flow gives
+ample window for any browser-extension or screen-recording surface
+to capture the bearer; persisting that exposure indefinitely is
+too much trust for a one-shot UI flow. Operators MUST issue a
+successor admin token (`tokens issue --preset admin --expires-in
+30d` or however long they want, deliberately confirmed) within
+the 24h window. If they miss it, re-bootstrap via the dashboard —
+the cookie-auth path always works for the installation owner.
 
 The CLI's `tokens issue --preset admin` requires
 `agent_tokens.manage` capability on the bearer — which only the
@@ -823,10 +898,25 @@ Per-entry shape (JSON inside `XADD`):
 }
 ```
 
-Stream is bounded with `MAXLEN ~10000` per installation (auto-trim
-oldest). Retention is approximately 30 days at single-Hive auth
-volume. V1.1 may add an export-to-Vercel-Analytics path for longer
-retention; not blocking V1.
+Streams are split by event class (closes guard R2 N2 — single
+`MAXLEN ~10000` claimed 30-day retention but at task-heartbeat
+volume actually held only minutes-to-hours):
+
+| Stream | Event classes | `MAXLEN ~N` | Realistic retention |
+|---|---|---|---|
+| `hive:v1:agent-token:{installationId}:audit` | mutations only — `issue`, `revoke`, `set_capabilities`, `rotate`, `bootstrap` | 10000 | Effectively unbounded for V1 — operator mutations are infrequent (~10/day max). |
+| `hive:v1:agent-token:{installationId}:auth` | `auth.success`, `auth.failure` | 100000 | Hours-to-days at single-Hive load. Higher trim budget because volume is higher; the audit-trail signal lives in the mutations stream above. |
+
+The split prevents the high-frequency auth events from displacing
+the low-frequency mutation events that operators actually care
+about (who issued, who revoked, when capabilities changed). At
+V1.1, the auth stream may export to Vercel Analytics for longer
+retention; mutations stay in Redis indefinitely (unbounded MAXLEN
+acceptable at <1000 entries/year/installation).
+
+The audit-emission helper `auditAppend(installationId, eventClass,
+entry)` is the only call site; no path can omit `MAXLEN ~N` (closes
+guard R2 minor "Audit XADD MAXLEN consistency").
 
 ---
 

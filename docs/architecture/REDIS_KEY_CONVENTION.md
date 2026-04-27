@@ -102,13 +102,24 @@ that distinguish success from each named failure mode, so callers
 can dispatch precisely:
 
 ```lua
--- Convention:
+-- Convention (each script picks the discriminators it needs from this set):
 --   {1, ...}    success (positive numeric tag, optional payload)
---   {0, ...}    benign conflict (already exists, idempotency replay)
+--   {0,  "<reason>"}   conflict / no-op outcome that the caller
+--                      surfaces as a 4xx with a stable code. The
+--                      reason string is the discriminator (e.g.
+--                      "name_taken", "claim_active", "subject_taken").
+--                      May ALSO be used for benign idempotency replay
+--                      where the caller treats both the same way.
 --   {-1, ...}   precondition failed (status mismatch, claim invalid)
 --   {-2, ...}   sequence drift (caller should re-fetch and retry)
 --   {-3, ...}   unrecoverable (claim_lost, force_close window)
 ```
+
+Callers `switch` on the tag and discriminator, mapping each to a
+distinct response shape. The convention is internally consistent
+across modules: ISSUE returns `{0, "name_taken"}` for the "name
+already exists" case, ROOM_RECOVER_DECIDING returns `{0,
+"claim_active"}` for the "queen still working" case, etc.
 
 Pin the script's `KEYS` ordering and `ARGV` ordering in a
 JSDoc/Python docstring next to the constant so callers can audit
