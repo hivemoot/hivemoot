@@ -63,19 +63,31 @@ interface AgentTokenEnvelope {
   name: string;               // operator-chosen, unique per (installationId, name)
   agent_role: string;         // e.g. "drone", "queen", "apiarist"; bound at issue,
                               // server-derived for any role-bearing API call
+  capabilities: string[];     // REQUIRED, ≥1 entry, gates hivemoot.dev API.
+                              // Top-level (NOT nested under policy) per the
+                              // B.1.b implementation: required fields stay
+                              // top-level; the optional V1.5+ policy container
+                              // holds optional GitHub-narrowing fields.
 
-  // — policy (gains capabilities; existing fields stay) —
-  policy: {
+  // — V1.5+/V1.6 GitHub-narrowing policy (optional container) —
+  policy?: {
     allowed_repos?: string[];        // V1.5 — repo narrowing for installation-token mints
     allowed_permissions?: {          // V1.6 (Phase C) — GitHub permission narrowing
       contents?: "read" | "write";
       pull_requests?: "read" | "write";
       issues?: "read" | "write";
     };
-    capabilities: string[];          // NEW — required, ≥1 entry, gates hivemoot.dev API
   };
 }
 ```
+
+**Schema note** (closes guard R1 G2 on PR #503): an earlier draft of
+this section nested `capabilities` inside `policy`. The shipping
+shape above hoists it to the top level — `capabilities` is required,
+and pulling it out of the optional `policy` container makes the type
+narrower and the middleware import simpler (`envelope.capabilities`,
+not `envelope.policy.capabilities`). The `policy` container retains
+only the optional V1.5/V1.6 GitHub-narrowing fields.
 
 **Strict-mode notes:**
 - Envelopes loaded WITHOUT `name` → 401 with `code:

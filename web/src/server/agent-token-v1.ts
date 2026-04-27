@@ -71,6 +71,7 @@ const ENVELOPE_PREFIX = "hive:v1:agent-token:";
 const HASH_INDEX_PREFIX = "hive:v1:idx:agent-token:hash:";
 const INSTALLATION_INDEX_PREFIX = "hive:v1:idx:agent-token:installation:";
 const META_SUFFIX = ":meta";
+const AUDIT_SUFFIX = ":audit";
 const LOCK_PREFIX = "hive:v1:lock:agent-token:";
 
 export function envelopeKey(installationId: string, name: string): string {
@@ -87,6 +88,18 @@ export function installationIndexKey(installationId: string): string {
 
 export function envelopeMetaKey(installationId: string, name: string): string {
   return `${envelopeKey(installationId, name)}${META_SUFFIX}`;
+}
+
+/**
+ * Per-installation audit stream (mutations only — issue / revoke /
+ * set_capabilities / rotate / bootstrap). The high-volume auth-event
+ * stream lives at a different key (B.1.d wires that one alongside
+ * `auditAppend`). Per CAPABILITIES_DESIGN.md §Audit log: split-stream
+ * model with `MAXLEN ~10000` on this stream → effectively unbounded
+ * at <10 mutations/day.
+ */
+export function auditStreamKey(installationId: string): string {
+  return `${ENVELOPE_PREFIX}${installationId}${AUDIT_SUFFIX}`;
 }
 
 export function lockKey(installationId: string, name: string): string {
@@ -187,6 +200,24 @@ export class TokenNotFoundError extends Error {
   }
 }
 
+/**
+ * Thrown when caller passes an `expiresAt` that is in the past or
+ * unparseable. Issuing such a token would create a permanently-401
+ * envelope (the auth middleware would reject it from the start),
+ * AND consume a slot against the installation's token cap, AND
+ * leave a stale sorted-set entry once the past-TTL Redis sweep
+ * fires. Reject at write time so the operator gets a clear error
+ * (closes builder R1 issue 2).
+ */
+export class InvalidExpiresAtError extends Error {
+  constructor(value: string, reason: string) {
+    super(
+      `Invalid expiresAt ${JSON.stringify(value)} — ${reason}. Provide a future ISO 8601 timestamp or null for no expiry.`,
+    );
+    this.name = "InvalidExpiresAtError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lua scripts
 // ---------------------------------------------------------------------------
@@ -204,8 +235,16 @@ export class TokenNotFoundError extends Error {
  * TTLing the hash index too risks dropping it slightly before the
  * envelope under clock skew.
  *
- * KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey]
- * ARGV: [name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit, expirySecsOrZero]
+ * Audit emit happens INSIDE the same EVAL when ARGV[7] is non-empty
+ * (closes guard R1 G1).
+ *
+ * Note (closes guard R1 G8): the design doc shows a 7-arg form with
+ * `installationId` first; impl drops it because installationId is
+ * already encoded in the envelope KEY's prefix and the script never
+ * uses it. Functionally equivalent.
+ *
+ * KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, auditStreamKey]
+ * ARGV: [name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit, expirySecsOrZero, auditEntryJsonOrEmpty]
  *
  * Returns:
  *   {1, name}            success
@@ -224,28 +263,35 @@ else
 end
 redis.call("set", KEYS[2], ARGV[3])
 redis.call("zadd", KEYS[3], tonumber(ARGV[4]), ARGV[1])
+if ARGV[7] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[7])
+end
 return {1, ARGV[1]}
 `;
 
 /**
  * REVOKE_TOKEN_SCRIPT — atomic 4-key cleanup (envelope + reverse index
- * + installation sorted-set membership + meta).
+ * + installation sorted-set membership + meta) + audit emit.
  *
- * KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey]
- * ARGV: [name]
+ * Audit emit happens INSIDE the same EVAL when ARGV[2] is non-empty
+ * (closes guard R1 G1). The audit stream itself is NEVER deleted —
+ * the audit trail outlives the token.
+ *
+ * KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey, auditStreamKey]
+ * ARGV: [name, auditEntryJsonOrEmpty]
  *
  * Returns:
  *   {1, name}    success (envelope existed, all keys cleaned)
  *   {0, name}    nothing to revoke (envelope already gone)
- *
- * The audit stream is intentionally NOT deleted on revoke — the
- * audit trail outlives the token.
  */
 const REVOKE_TOKEN_SCRIPT = `
 local existed = redis.call("del", KEYS[1])
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[4])
 redis.call("zrem", KEYS[3], ARGV[1])
+if ARGV[2] ~= "" then
+  redis.call("xadd", KEYS[5], "MAXLEN", "~", "10000", "*", "entry", ARGV[2])
+end
 if existed == 0 then return {0, ARGV[1]} end
 return {1, ARGV[1]}
 `;
@@ -257,8 +303,14 @@ return {1, ARGV[1]}
  * calling this). Preserves the envelope's existing TTL via the same
  * `expirySecsOrZero` ARGV pattern as ISSUE.
  *
- * KEYS: [envelopeKey]
- * ARGV: [newEnvelopeJson, expirySecsOrZero]
+ * Audit emit happens INSIDE the same EVAL when ARGV[3] is non-empty
+ * (closes guard R1 G1 — the design spec'd atomic audit; this PR
+ * ships the script with the slot wired so B.1.d only adds the
+ * audit-entry construction at the call site, never re-versions the
+ * script body).
+ *
+ * KEYS: [envelopeKey, auditStreamKey]
+ * ARGV: [newEnvelopeJson, expirySecsOrZero, auditEntryJsonOrEmpty]
  *
  * Returns:
  *   {1}                  success
@@ -271,6 +323,9 @@ if tonumber(ARGV[2]) > 0 then
   redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[2]))
 else
   redis.call("set", KEYS[1], ARGV[1])
+end
+if ARGV[3] ~= "" then
+  redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*", "entry", ARGV[3])
 end
 return {1}
 `;
@@ -287,8 +342,11 @@ return {1}
  * computes `expirySecsOrZero` as `expiresAt - now() + 300` from the
  * EXISTING envelope's expiry.
  *
- * KEYS: [envelopeKey, oldHashIndexKey, newHashIndexKey]
- * ARGV: [newEnvelopeJson, newHashRecordJson, expirySecsOrZero]
+ * Audit emit happens INSIDE the same EVAL when ARGV[5] is non-empty
+ * (closes guard R1 G1).
+ *
+ * KEYS: [envelopeKey, oldHashIndexKey, newHashIndexKey, auditStreamKey]
+ * ARGV: [name, newEnvelopeJson, newHashRecordJson, expirySecsOrZero, auditEntryJsonOrEmpty]
  *
  * Returns:
  *   {1, name}                success
@@ -298,13 +356,16 @@ const ROTATE_TOKEN_SCRIPT = `
 local existing = redis.call("get", KEYS[1])
 if not existing then return {-1, "no_envelope"} end
 redis.call("del", KEYS[2])
-if tonumber(ARGV[3]) > 0 then
-  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[3]))
+if tonumber(ARGV[4]) > 0 then
+  redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[4]))
 else
-  redis.call("set", KEYS[1], ARGV[1])
+  redis.call("set", KEYS[1], ARGV[2])
 end
-redis.call("set", KEYS[3], ARGV[2])
-return {1, ARGV[2]}
+redis.call("set", KEYS[3], ARGV[3])
+if ARGV[5] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[5])
+end
+return {1, ARGV[1]}
 `;
 
 // ---------------------------------------------------------------------------
@@ -319,31 +380,15 @@ function hashToken(rawToken: string): string {
   return createHash("sha256").update(rawToken).digest("hex");
 }
 
-function fingerprint(rawToken: string): string {
-  return rawToken.slice(-8);
-}
-
 /**
- * Bracket-notation alias around the Upstash Redis client's Lua
- * execution method. The literal `.<method>(` token-pattern is
- * flagged by an unrelated security-warning hook (it can't tell
- * the difference between Node's built-in eval and Redis's
- * Lua-script entrypoint), so we route the call through bracket
- * access in one place and keep the rest of the file readable.
+ * Derive an audit/list fingerprint from the token's SHA-256 hash.
+ * MUST NOT be derived from the raw bearer — that would leak 8 hex
+ * chars of the secret anywhere `fingerprint` is exposed (audit log,
+ * `tokens list`, dashboard). Hash prefix is the design's canonical
+ * form per CAPABILITIES_DESIGN.md §Audit log entry shape.
  */
-function runLuaScript(
-  client: Redis,
-  script: string,
-  keys: string[],
-  argv: string[],
-): Promise<unknown> {
-  const method = "eval";
-  const fn = (client as unknown as Record<string, unknown>)[method] as (
-    s: string,
-    k: string[],
-    a: string[],
-  ) => Promise<unknown>;
-  return fn.call(client, script, keys, argv);
+function fingerprint(tokenHash: string): string {
+  return tokenHash.slice(0, 8);
 }
 
 /**
@@ -444,14 +489,37 @@ export async function issueAgentToken(args: {
   }
   for (const c of args.capabilities) validateCapabilityString(c);
 
+  // Reject past or unparseable expiresAt at write time (closes builder R1
+  // issue 2 — letting an already-expired envelope land would consume a
+  // slot against the cap and produce a permanently-401 token).
+  if (args.expiresAt !== null) {
+    const expiresAtMs = new Date(args.expiresAt).getTime();
+    if (Number.isNaN(expiresAtMs)) {
+      throw new InvalidExpiresAtError(args.expiresAt, "not a valid ISO 8601 timestamp");
+    }
+    if (expiresAtMs <= Date.now()) {
+      throw new InvalidExpiresAtError(args.expiresAt, "is in the past");
+    }
+  }
+
   const limit = args.tokenLimit ?? DEFAULT_TOKEN_LIMIT_PER_INSTALLATION;
   if (limit <= 0) {
     throw new Error(`tokenLimit must be positive (got ${limit})`);
   }
 
+  // Self-heal orphaned sorted-set entries before the limit check. If
+  // explicit-expiry envelopes have been TTL'd by Redis, their hash
+  // index + sorted-set membership outlive the envelope; without this
+  // pruning the cap would count ghost entries (closes builder R1 #2).
+  // Cheap: O(N) Redis reads on a bounded set (cap ≤20).
+  await pruneOrphanedIndexEntries({
+    installationId: args.installationId,
+    redis: args.redis,
+  });
+
   const rawToken = generateRawToken();
   const tokenHash = hashToken(rawToken);
-  const tokenFingerprint = fingerprint(rawToken);
+  const tokenFingerprint = fingerprint(tokenHash);
 
   const encrypted: EncryptedEnvelope = encrypt(
     rawToken,
@@ -490,13 +558,13 @@ export async function issueAgentToken(args: {
     args.redis,
     async () => {
       const result = dispatchScriptResult(
-        await runLuaScript(
-          args.redis,
+        await args.redis.eval(
           ISSUE_TOKEN_SCRIPT,
           [
             envelopeKey(args.installationId, args.name),
             hashIndexKey(tokenHash),
             installationIndexKey(args.installationId),
+            auditStreamKey(args.installationId),
           ],
           [
             args.name,
@@ -505,6 +573,12 @@ export async function issueAgentToken(args: {
             String(createdAtMs),
             String(limit),
             String(ttlSecs),
+            // B.1.d will replace this empty sentinel with the
+            // structured audit-entry JSON. Script no-ops when empty,
+            // so the atomic-audit guarantee from the design is
+            // preserved without B.1.d needing to re-version the
+            // script (closes guard R1 G1).
+            "",
           ],
         ),
       );
@@ -557,24 +631,26 @@ export async function revokeAgentToken(args: {
         envelopeKey(args.installationId, args.name),
       );
       if (!envelopeRaw) {
-        // Sweep just the index in case of partial-state from prior failure
-        await args.redis.zrem(
-          installationIndexKey(args.installationId),
-          args.name,
-        );
+        // Sweep both the index entry AND the meta key in case of partial-
+        // state from prior failure (closes guard R1 G4 — meta could
+        // orphan after a manual Redis intervention).
+        await Promise.all([
+          args.redis.zrem(installationIndexKey(args.installationId), args.name),
+          args.redis.del(envelopeMetaKey(args.installationId, args.name)),
+        ]);
         return false;
       }
       const result = dispatchScriptResult(
-        await runLuaScript(
-          args.redis,
+        await args.redis.eval(
           REVOKE_TOKEN_SCRIPT,
           [
             envelopeKey(args.installationId, args.name),
             hashIndexKey(envelopeRaw.tokenHash),
             installationIndexKey(args.installationId),
             envelopeMetaKey(args.installationId, args.name),
+            auditStreamKey(args.installationId),
           ],
-          [args.name],
+          [args.name, ""],
         ),
       );
       return result.ok === 1;
@@ -626,11 +702,13 @@ export async function setAgentTokenCapabilities(args: {
         args.nowMs ?? Date.now(),
       );
       const result = dispatchScriptResult(
-        await runLuaScript(
-          args.redis,
+        await args.redis.eval(
           SET_CAPABILITIES_SCRIPT,
-          [envelopeKey(args.installationId, args.name)],
-          [JSON.stringify(updated), String(ttlSecs)],
+          [
+            envelopeKey(args.installationId, args.name),
+            auditStreamKey(args.installationId),
+          ],
+          [JSON.stringify(updated), String(ttlSecs), ""],
         ),
       );
       if (result.ok === -1 && result.reason === "no_envelope") {
@@ -682,7 +760,7 @@ export async function rotateAgentToken(args: {
 
       const newRawToken = generateRawToken();
       const newTokenHash = hashToken(newRawToken);
-      const newFingerprint = fingerprint(newRawToken);
+      const newFingerprint = fingerprint(newTokenHash);
 
       const encrypted: EncryptedEnvelope = encrypt(
         newRawToken,
@@ -712,18 +790,20 @@ export async function rotateAgentToken(args: {
       );
 
       const result = dispatchScriptResult(
-        await runLuaScript(
-          args.redis,
+        await args.redis.eval(
           ROTATE_TOKEN_SCRIPT,
           [
             envelopeKey(args.installationId, args.name),
             hashIndexKey(envelopeRaw.tokenHash),
             hashIndexKey(newTokenHash),
+            auditStreamKey(args.installationId),
           ],
           [
+            args.name,
             JSON.stringify(updated),
             JSON.stringify(newHashRecord),
             String(ttlSecs),
+            "",
           ],
         ),
       );
@@ -752,6 +832,11 @@ export async function rotateAgentToken(args: {
  * List token summaries for an installation in creation order
  * (by `createdAt` epoch ms via the sorted-set score). Excludes
  * encrypted ciphertext.
+ *
+ * Self-healing: opportunistically prunes orphaned sorted-set
+ * entries whose envelopes have been TTL'd by Redis. Keeps
+ * `tokens list` accurate AND ensures the per-installation cap
+ * doesn't count ghost entries.
  */
 export async function listAgentTokens(args: {
   installationId: string;
@@ -771,10 +856,77 @@ export async function listAgentTokens(args: {
     ),
   );
   const out: AgentTokenSummaryV1[] = [];
-  for (const env of envelopes) {
-    if (env !== null) out.push(summarize(env));
+  const orphans: string[] = [];
+  for (let i = 0; i < envelopes.length; i++) {
+    const env = envelopes[i];
+    if (env !== null) {
+      out.push(summarize(env));
+    } else {
+      orphans.push(names[i]);
+    }
+  }
+  if (orphans.length > 0) {
+    // Best-effort cleanup; failures are logged but don't fail the read.
+    await Promise.all(
+      orphans.map((name) =>
+        args.redis
+          .zrem(installationIndexKey(args.installationId), name)
+          .catch((err: unknown) => {
+            console.warn(
+              `[agent-token-v1] failed to ZREM orphaned index entry ${args.installationId}:${name}`,
+              err,
+            );
+          }),
+      ),
+    );
   }
   return out;
+}
+
+/**
+ * Sweep the per-installation sorted set for entries whose envelope has
+ * been TTL'd by Redis. Called by `issueAgentToken` before the cap
+ * check so explicit-expiry tokens that have already been swept don't
+ * consume slots.
+ *
+ * Returns the count of pruned entries (mostly for tests / observability).
+ * Best-effort: ZREM failures are logged but not propagated.
+ */
+export async function pruneOrphanedIndexEntries(args: {
+  installationId: string;
+  redis: Redis;
+}): Promise<number> {
+  const names = await args.redis.zrange<string[]>(
+    installationIndexKey(args.installationId),
+    0,
+    -1,
+  );
+  if (names.length === 0) return 0;
+  const envelopes = await Promise.all(
+    names.map((name) =>
+      args.redis.get<AgentTokenEnvelopeV1>(
+        envelopeKey(args.installationId, name),
+      ),
+    ),
+  );
+  const orphans: string[] = [];
+  for (let i = 0; i < envelopes.length; i++) {
+    if (envelopes[i] === null) orphans.push(names[i]);
+  }
+  if (orphans.length === 0) return 0;
+  await Promise.all(
+    orphans.map((name) =>
+      args.redis
+        .zrem(installationIndexKey(args.installationId), name)
+        .catch((err: unknown) => {
+          console.warn(
+            `[agent-token-v1] failed to ZREM orphaned index entry ${args.installationId}:${name}`,
+            err,
+          );
+        }),
+    ),
+  );
+  return orphans.length;
 }
 
 /** Read a single token summary by name. Throws TokenNotFoundError. */

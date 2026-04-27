@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type Redis } from "@upstash/redis";
 
+import { createHash } from "crypto";
 import {
   // Public API under test
   issueAgentToken,
@@ -23,6 +24,7 @@ import {
   rotateAgentToken,
   listAgentTokens,
   getAgentTokenSummary,
+  pruneOrphanedIndexEntries,
   // Helpers we want to unit-test directly
   computeEnvelopeTtlSeconds,
   envelopeKey,
@@ -35,6 +37,7 @@ import {
   TokenNameTakenError,
   TokenLimitReachedError,
   TokenNotFoundError,
+  InvalidExpiresAtError,
   type AgentTokenEnvelopeV1,
   type AgentTokenHashRecordV1,
 } from "./agent-token-v1";
@@ -76,9 +79,10 @@ function makeMockRedis() {
       }
 
       // ISSUE_TOKEN_SCRIPT — 3 keys, 6 args
-      if (keys.length === 3 && argv.length === 6 && script.includes("name_taken")) {
-        const [envelopeK, hashIdxK, instIdxK] = keys;
-        const [name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit, expirySecsOrZero] = argv;
+      if (keys.length === 4 && argv.length === 7 && script.includes("name_taken")) {
+        // R2 (audit slot): 4 keys (added auditStreamKey), 7 args (added auditEntry)
+        const [envelopeK, hashIdxK, instIdxK, _auditK] = keys;
+        const [name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit, expirySecsOrZero, _auditEntry] = argv;
         if (store.has(envelopeK)) return [0, "name_taken"];
         const set = getSortedSet(instIdxK);
         if (set.length >= Number(tokenLimit)) return [-1, "limit"];
@@ -93,14 +97,14 @@ function makeMockRedis() {
         return [1, name];
       }
 
-      // REVOKE_TOKEN_SCRIPT — 4 keys, 1 arg
+      // REVOKE_TOKEN_SCRIPT — 5 keys, 2 args (R2: + auditStreamKey + auditEntry)
       if (
-        keys.length === 4 &&
-        argv.length === 1 &&
+        keys.length === 5 &&
+        argv.length === 2 &&
         script.includes('existed = redis.call("del"')
       ) {
-        const [envelopeK, hashIdxK, instIdxK, metaK] = keys;
-        const [name] = argv;
+        const [envelopeK, hashIdxK, instIdxK, metaK, _auditK] = keys;
+        const [name, _auditEntry] = argv;
         const existed = store.has(envelopeK) ? 1 : 0;
         store.delete(envelopeK);
         store.delete(hashIdxK);
@@ -112,15 +116,15 @@ function makeMockRedis() {
         return [1, name];
       }
 
-      // SET_CAPABILITIES_SCRIPT — 1 key, 2 args, includes no_envelope
-      // (and NOT 3 keys like ROTATE)
+      // SET_CAPABILITIES_SCRIPT — 2 keys, 3 args (R2: + auditStreamKey + auditEntry)
+      // (distinguished from ROTATE by 2 keys vs ROTATE's 4 keys)
       if (
-        keys.length === 1 &&
-        argv.length === 2 &&
+        keys.length === 2 &&
+        argv.length === 3 &&
         script.includes("no_envelope")
       ) {
-        const [envelopeK] = keys;
-        const [envelopeJson, expirySecsOrZero] = argv;
+        const [envelopeK, _auditK] = keys;
+        const [envelopeJson, expirySecsOrZero, _auditEntry] = argv;
         if (!store.has(envelopeK)) return [-1, "no_envelope"];
         const env = JSON.parse(envelopeJson) as Record<string, unknown>;
         if (Number(expirySecsOrZero) > 0) {
@@ -130,14 +134,14 @@ function makeMockRedis() {
         return [1];
       }
 
-      // ROTATE_TOKEN_SCRIPT — 3 keys, 3 args, includes no_envelope
+      // ROTATE_TOKEN_SCRIPT — 4 keys, 5 args (R2: + auditStreamKey + name first + auditEntry)
       if (
-        keys.length === 3 &&
-        argv.length === 3 &&
+        keys.length === 4 &&
+        argv.length === 5 &&
         script.includes("no_envelope")
       ) {
-        const [envelopeK, oldHashIdxK, newHashIdxK] = keys;
-        const [envelopeJson, hashRecordJson, expirySecsOrZero] = argv;
+        const [envelopeK, oldHashIdxK, newHashIdxK, _auditK] = keys;
+        const [name, envelopeJson, hashRecordJson, expirySecsOrZero, _auditEntry] = argv;
         if (!store.has(envelopeK)) return [-1, "no_envelope"];
         store.delete(oldHashIdxK);
         const env = JSON.parse(envelopeJson) as Record<string, unknown>;
@@ -146,7 +150,8 @@ function makeMockRedis() {
         }
         store.set(envelopeK, env);
         store.set(newHashIdxK, JSON.parse(hashRecordJson));
-        return [1, envelopeJson];
+        // R2 (G6 fix): script returns {1, name} for parity with ISSUE
+        return [1, name];
       }
 
       return null;
@@ -303,6 +308,16 @@ describe("issueAgentToken", () => {
     expect(issued.fingerprint.length).toBe(8);
     expect(issued.expiresAt).toBeNull();
 
+    // R1 fix: fingerprint MUST equal the SHA-256 prefix of the bearer,
+    // NOT the suffix of the raw bearer (would leak 8 hex chars of
+    // the secret anywhere fingerprint is exposed).
+    const expectedFingerprint = createHash("sha256")
+      .update(issued.token)
+      .digest("hex")
+      .slice(0, 8);
+    expect(issued.fingerprint).toBe(expectedFingerprint);
+    expect(issued.fingerprint).not.toBe(issued.token.slice(-8));
+
     const envelope = redis._store.get(
       envelopeKey("12345", "worker"),
     ) as AgentTokenEnvelopeV1;
@@ -388,7 +403,7 @@ describe("issueAgentToken", () => {
     await issueAgentToken({ ...defaultIssueArgs(redis), expiresAt: future });
 
     const issueCall = redis._luaSim.mock.calls.find(
-      (c) => c[1].length === 3 && c[2].length === 6,
+      (c) => c[1].length === 4 && c[2].length === 7,
     );
     expect(issueCall).toBeDefined();
     if (issueCall) {
@@ -400,7 +415,7 @@ describe("issueAgentToken", () => {
   it("with expiresAt: null, ISSUE script call carries expirySecsOrZero=0", async () => {
     await issueAgentToken(defaultIssueArgs(redis));
     const issueCall = redis._luaSim.mock.calls.find(
-      (c) => c[1].length === 3 && c[2].length === 6,
+      (c) => c[1].length === 4 && c[2].length === 7,
     );
     expect(issueCall).toBeDefined();
     if (issueCall) {
@@ -678,5 +693,211 @@ describe("v1 storage layer never touches legacy keys", () => {
       // legacy reverse idx = `agent-token-hash:`
       expect(key, key).not.toMatch(/^agent-token-hash:/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1 fix — past/invalid expiresAt rejected at issue time (builder #2)
+// ---------------------------------------------------------------------------
+
+describe("issueAgentToken — expiresAt validation (R1 fix)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("rejects past expiresAt with InvalidExpiresAtError", async () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await expect(
+      issueAgentToken({ ...defaultIssueArgs(redis), expiresAt: past }),
+    ).rejects.toThrow(InvalidExpiresAtError);
+  });
+
+  it("rejects unparseable expiresAt string with InvalidExpiresAtError", async () => {
+    await expect(
+      issueAgentToken({ ...defaultIssueArgs(redis), expiresAt: "not-a-date" }),
+    ).rejects.toThrow(InvalidExpiresAtError);
+  });
+
+  it("accepts future expiresAt", async () => {
+    const future = new Date(Date.now() + 86400 * 1000).toISOString();
+    const issued = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      expiresAt: future,
+    });
+    expect(issued.expiresAt).toBe(future);
+  });
+
+  it("accepts null expiresAt (no-expiry default)", async () => {
+    const issued = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      expiresAt: null,
+    });
+    expect(issued.expiresAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1 fix — orphaned index entries pruned (builder #2)
+// ---------------------------------------------------------------------------
+
+describe("pruneOrphanedIndexEntries (R1 fix)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("returns 0 when there are no orphans", async () => {
+    await issueAgentToken(defaultIssueArgs(redis));
+    const pruned = await pruneOrphanedIndexEntries({
+      installationId: "12345",
+      redis,
+    });
+    expect(pruned).toBe(0);
+  });
+
+  it("ZREMs orphaned entries when their envelope was TTL'd", async () => {
+    await issueAgentToken({ ...defaultIssueArgs(redis), name: "alive" });
+    await issueAgentToken({ ...defaultIssueArgs(redis), name: "ghost" });
+
+    // Simulate Redis TTL expiry: delete the envelope but leave the
+    // sorted-set entry (this is exactly what happens when a Redis EX
+    // fires on the envelope key without our explicit revoke flow).
+    redis._store.delete(envelopeKey("12345", "ghost"));
+
+    const pruned = await pruneOrphanedIndexEntries({
+      installationId: "12345",
+      redis,
+    });
+    expect(pruned).toBe(1);
+
+    // Sorted set should now only contain "alive"
+    const idx = redis._store.get(
+      installationIndexKey("12345"),
+    ) as SortedSetEntry[];
+    expect(idx.map((e) => e.member)).toEqual(["alive"]);
+  });
+});
+
+describe("listAgentTokens — self-heals orphans (R1 fix)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("skips orphans in the returned list AND ZREMs them from the index", async () => {
+    await issueAgentToken({ ...defaultIssueArgs(redis), name: "alive" });
+    await issueAgentToken({ ...defaultIssueArgs(redis), name: "ghost" });
+    redis._store.delete(envelopeKey("12345", "ghost"));
+
+    const out = await listAgentTokens({ installationId: "12345", redis });
+    expect(out.map((s) => s.name)).toEqual(["alive"]);
+
+    // Orphan was opportunistically pruned
+    const idx = redis._store.get(
+      installationIndexKey("12345"),
+    ) as SortedSetEntry[];
+    expect(idx.map((e) => e.member)).toEqual(["alive"]);
+  });
+});
+
+describe("issueAgentToken — at-cap orphan self-heal (R1 fix)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("issuing at the cap succeeds when an orphan exists (the orphan is pruned first)", async () => {
+    // Issue 2 tokens with cap=2, then orphan one and try to issue a third.
+    // Without orphan-pruning before the cap check, this would 422 with
+    // TokenLimitReached. With pruning, the third issuance succeeds.
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "first",
+      tokenLimit: 2,
+    });
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "second",
+      tokenLimit: 2,
+    });
+
+    // Orphan "second" by deleting its envelope (simulating TTL expiry)
+    redis._store.delete(envelopeKey("12345", "second"));
+
+    // Third issue should succeed because the orphaned "second" is
+    // pruned before the cap check.
+    const issued = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "third",
+      tokenLimit: 2,
+    });
+    expect(issued.name).toBe("third");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G7 — direct test coverage for {-1, "no_envelope"} race paths
+// ---------------------------------------------------------------------------
+
+describe("SET_CAPABILITIES_SCRIPT — {-1, no_envelope} race path (G7)", () => {
+  it("translates {-1, no_envelope} from the script to TokenNotFoundError", async () => {
+    const redis = makeMockRedis();
+    await issueAgentToken(defaultIssueArgs(redis));
+
+    // Force the eval to return [-1, "no_envelope"] — simulates a race
+    // where the GET succeeded (envelope was there) but a concurrent
+    // revoke deleted the envelope before the EVAL ran.
+    const original = redis._luaSim.getMockImplementation();
+    redis._luaSim.mockImplementation(async (script, keys, argv) => {
+      // Hit only on SET_CAPABILITIES_SCRIPT shape (2 keys, 3 args)
+      if (
+        keys.length === 2 &&
+        argv.length === 3 &&
+        script.includes("no_envelope")
+      ) {
+        return [-1, "no_envelope"];
+      }
+      return original ? await (original as (s: string, k: string[], a: string[]) => Promise<unknown>)(script, keys, argv) : null;
+    });
+
+    await expect(
+      setAgentTokenCapabilities({
+        installationId: "12345",
+        name: "worker",
+        capabilities: ["rooms.read"],
+        redis,
+      }),
+    ).rejects.toThrow(TokenNotFoundError);
+  });
+});
+
+describe("ROTATE_TOKEN_SCRIPT — {-1, no_envelope} race path (G7)", () => {
+  it("translates {-1, no_envelope} from the script to TokenNotFoundError", async () => {
+    const redis = makeMockRedis();
+    await issueAgentToken(defaultIssueArgs(redis));
+
+    const original = redis._luaSim.getMockImplementation();
+    redis._luaSim.mockImplementation(async (script, keys, argv) => {
+      // Hit only on ROTATE_TOKEN_SCRIPT shape (4 keys, 5 args)
+      if (
+        keys.length === 4 &&
+        argv.length === 5 &&
+        script.includes("no_envelope")
+      ) {
+        return [-1, "no_envelope"];
+      }
+      return original ? await (original as (s: string, k: string[], a: string[]) => Promise<unknown>)(script, keys, argv) : null;
+    });
+
+    await expect(
+      rotateAgentToken({
+        installationId: "12345",
+        name: "worker",
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      }),
+    ).rejects.toThrow(TokenNotFoundError);
   });
 });
