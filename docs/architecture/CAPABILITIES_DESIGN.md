@@ -116,10 +116,13 @@ auth latency. Pseudocode (concrete pattern):
 
 ```
 const [hashRecord, envelope] = await redis.pipeline()
-  .get(`agent-token-hash:${tokenHash}`)
+  .get(`hive:v1:idx:agent-token:hash:${tokenHash}`)
   .get(`hive:v1:agent-token:${installationId}:${name}`)
   .all();
 ```
+
+(Pseudocode uses the canonical v1 key shapes from the storage
+table — closes guard G-R2.2-1 doc-drift.)
 
 A unit test on the auth path asserts on the call shape so a future
 refactor can't silently switch to sequential gets.
@@ -146,14 +149,18 @@ REDIS_KEY_CONVENTION.md.
 
 **`ISSUE_TOKEN_SCRIPT`** — atomic SET NX on the envelope key, plus
 hash index + installation sorted-set add. Closes builder R2.1
-sorted-set/`SADD` mismatch (the storage table says sorted set;
-this script now uses `ZADD` accordingly). Also closes guard R2 N1
-(token-count limit must be inside the script, not TOCTOU between
-client SCARD and EVAL).
+sorted-set/`SADD` mismatch + guard R2 N1 (atomic limit) + builder
+R2.2 (envelope TTL contract for `--expires-in` tokens).
 
 ```lua
 -- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey]
--- ARGV: [installationId, name, envelopeJson, hashRecordJson, createdAtMs, tokenLimit]
+-- ARGV: [installationId, name, envelopeJson, hashRecordJson,
+--        createdAtMs, tokenLimit, expirySecsOrZero]
+--   expirySecsOrZero: 0 = no TTL (expiresAt: null tokens);
+--                     positive int = (expiresAt - now() + 300)
+--                     where +300 is the clock-skew safety margin
+--                     (closes guard R2.1 G-R2.1-4 + builder R2.2
+--                     "TTL contract not implemented in script")
 -- Returns:
 --   {1, name}                success
 --   {0, "name_taken"}        name already exists
@@ -162,11 +169,23 @@ local existing = redis.call("get", KEYS[1])
 if existing then return {0, "name_taken"} end
 local count = redis.call("zcard", KEYS[3])
 if count >= tonumber(ARGV[6]) then return {-1, "limit"} end
-redis.call("set", KEYS[1], ARGV[3])
+if tonumber(ARGV[7]) > 0 then
+  redis.call("set", KEYS[1], ARGV[3], "EX", tonumber(ARGV[7]))
+else
+  redis.call("set", KEYS[1], ARGV[3])
+end
 redis.call("set", KEYS[2], ARGV[4])
 redis.call("zadd", KEYS[3], tonumber(ARGV[5]), ARGV[2])
 return {1, ARGV[2]}
 ```
+
+The hash index is intentionally NOT TTL'd at issue: middleware
+verifies expiry from the envelope on every auth, so a "hash
+exists, envelope expired" race resolves cleanly with the
+envelope-side check. If we TTL'd the hash index too, a small
+clock skew between Redis nodes could drop the index slightly
+before the envelope and produce confusing "bearer not recognized"
+errors instead of the cleaner `TOKEN_EXPIRED`.
 
 The `0` return reuses the convention's "benign conflict" slot but
 with a stable string discriminator (`"name_taken"`) so callers map
@@ -266,14 +285,17 @@ V1.1 may add an "overlap window" path (a TTL'd second
 after rotation, so step 2-3 can happen without a downtime gap).
 For V1, the explicit stop-and-start sequence is acceptable.
 
-**Expiry preservation on rotate** (closes guard R2.1 G-R2.1-2):
-`ROTATE_TOKEN_SCRIPT`'s `expirySecsOrZero` ARGV is computed by the
-caller as `expiresAt - now()` from the **existing envelope's**
-`expiresAt` — rotate does NOT reset the lifetime clock. Operators
+**Expiry preservation on rotate** (closes guard R2.1 G-R2.1-2 +
+G-R2.2-2): `ROTATE_TOKEN_SCRIPT`'s `expirySecsOrZero` ARGV is
+computed by the caller as `expiresAt - now() + 300` from the
+**existing envelope's** `expiresAt` — same +300s clock-skew safety
+margin ISSUE uses. Rotate does NOT reset the lifetime clock; both
+issue and rotate produce envelopes whose Redis TTLs trail the
+envelope's own `expiresAt` by 5 min so the auth middleware's
+envelope-side check is always the user-visible gate. Operators
 who want to extend lifetime must explicitly `tokens issue --name X
 --expires-in 30d` to mint a successor with a fresh window, then
-revoke the previous slot. This matches the principle "rotate ≠
-extend."
+revoke the previous slot. "Rotate ≠ extend."
 
 ### Migration cleanup script (closes guard A)
 
@@ -666,7 +688,8 @@ hivemoot tokens set-policy --installation-id 12345 --name worker \
                             --allowed-repos hivemoot/hivemoot,hivemoot/colony
 
 # Rotate (atomic — keeps the same name + capabilities, just swaps
-# the bearer; zero invalid-bearer window vs revoke+reissue path)
+# the bearer; Redis-atomic but operationally requires stop-and-restart
+# — see §Atomic operations / ROTATE_TOKEN_SCRIPT for the runbook)
 hivemoot tokens rotate --installation-id 12345 --name worker
 
 # Revoke
@@ -948,9 +971,14 @@ These need a decision before PR 1 lands. R2 deltas marked **CHANGED**.
    Skip. Drop wildcards and list explicitly if needed.
 
 7. **Audit log retention?**
-   30 days rolling via stream `MAXLEN ~10000` (closes guard +
-   hivemoot reviewer audit-location asks). Storage location:
-   Redis stream per-installation (`hive:v1:agent-token:{installationId}:audit`).
+   Two streams, each per-installation, each with its own
+   `MAXLEN ~N` budget (see §Audit log for the math): the
+   `:audit` stream (mutations only) is effectively unbounded
+   at <10/day, the `:auth` stream (auth.success / auth.failure)
+   covers hours-to-days at single-Hive load. Closes guard R2 N2
+   "30-day retention claim was actually minutes-to-hours at
+   task-heartbeat volume." V1.1 may export `:auth` to Vercel
+   Analytics for longer retention.
 
 8. **CHANGED — Token count limit per installation?**
    20 hard cap (closes hivemoot reviewer #2 issue 1). Configurable
