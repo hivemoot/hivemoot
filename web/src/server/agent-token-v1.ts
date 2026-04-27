@@ -1084,18 +1084,7 @@ export async function resolveBearerToEnvelope(args: {
   redis: Redis;
 }): Promise<ResolveBearerResult> {
   const presentedHash = hashToken(args.rawBearer);
-  // Use bracket-access to bypass an unrelated security-warning hook
-  // that pattern-matches on the literal `.<luaMethod>(` token.
-  const luaMethod = "eval";
-  const runScript = (
-    args.redis as unknown as Record<string, unknown>
-  )[luaMethod] as (
-    s: string,
-    k: string[],
-    a: string[],
-  ) => Promise<unknown>;
-  const raw = await runScript.call(
-    args.redis,
+  const raw = await args.redis.eval(
     RESOLVE_BEARER_SCRIPT,
     [hashIndexKey(presentedHash)],
     [ENVELOPE_PREFIX, presentedHash],

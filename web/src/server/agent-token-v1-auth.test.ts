@@ -411,6 +411,105 @@ describe("authenticateAgentRequestV1 — capability check", () => {
   });
 });
 
+describe("authenticateAgentRequestV1 — envelope_missing maps to TOKEN_EXPIRED (R1 G2 fix)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+    mockedGetRedis.mockReturnValue(redis as unknown as Redis);
+  });
+
+  it("when hash record exists but envelope was Redis-TTL-swept → 401 TOKEN_EXPIRED (NOT UNKNOWN_BEARER)", async () => {
+    const issued = await issueAgentToken({
+      installationId: "12345",
+      name: "worker",
+      agent_role: "drone",
+      capabilities: ["tasks.claim"],
+      createdBy: "operator",
+      expiresAt: null,
+      keyring: KEYRING,
+      keyVersion: "v1",
+      redis,
+    });
+
+    // Simulate Redis sweeping the envelope past the +300s clock-skew
+    // margin while the hash index lingers (the hash index is
+    // intentionally NOT TTL'd per CAPABILITIES_DESIGN.md). This is
+    // the divergence window builder R1 / guard R1 G2 flagged: a
+    // legitimate caller whose token quietly expired past the margin
+    // would otherwise be told "never issued."
+    const envKey = `hive:v1:agent-token:12345:worker`;
+    redis._store.delete(envKey);
+
+    const result = await authenticateAgentRequestV1(
+      makeRequest(issued.token),
+      { requires: "tasks.claim" },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+      const body = await result.response.json();
+      // The truthful cause: the bearer's envelope is gone (expired or
+      // evicted). NOT "unknown bearer" — that would imply the bearer
+      // was never issued.
+      expect(body.code).toBe(AGENT_AUTH_V1_ERROR.TOKEN_EXPIRED);
+    }
+  });
+});
+
+describe("authenticateAgentRequestV1 — case-insensitive Bearer scheme (RFC 6750)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+    mockedGetRedis.mockReturnValue(redis as unknown as Redis);
+  });
+
+  it.each([["Bearer"], ["bearer"], ["BEARER"], ["BeArEr"]])(
+    "accepts scheme %s (RFC 6750 case-insensitive)",
+    async (scheme) => {
+      const issued = await issueAgentToken({
+        installationId: "12345",
+        name: "worker",
+        agent_role: "drone",
+        capabilities: ["tasks.claim"],
+        createdBy: "operator",
+        expiresAt: null,
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      });
+
+      const headers = new Headers();
+      headers.set("authorization", `${scheme} ${issued.token}`);
+      const req = new NextRequest("https://www.hivemoot.dev/api/test", {
+        method: "POST",
+        headers,
+      });
+
+      const result = await authenticateAgentRequestV1(req, {
+        requires: "tasks.claim",
+      });
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it("rejects non-Bearer schemes (Basic, Digest)", async () => {
+    const headers = new Headers();
+    headers.set("authorization", "Basic dXNlcjpwYXNz");
+    const req = new NextRequest("https://www.hivemoot.dev/api/test", {
+      method: "POST",
+      headers,
+    });
+    const result = await authenticateAgentRequestV1(req, {
+      requires: "tasks.claim",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const body = await result.response.json();
+      expect(body.code).toBe(AGENT_AUTH_V1_ERROR.MISSING_BEARER);
+    }
+  });
+});
+
 describe("authenticateAgentRequestV1 — bearer-resurrection (B.1.b invariant end-to-end)", () => {
   let redis: ReturnType<typeof makeMockRedis>;
   beforeEach(() => {

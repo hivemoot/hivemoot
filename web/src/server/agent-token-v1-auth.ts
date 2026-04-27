@@ -149,8 +149,14 @@ export interface AuthenticateAgentRequestV1Options {
 
 function extractBearer(request: NextRequest): string | null {
   const header = request.headers.get("authorization");
-  if (!header || !header.startsWith("Bearer ")) return null;
-  const raw = header.slice("Bearer ".length).trim();
+  if (!header) return null;
+  // RFC 6750: scheme matching is case-insensitive ("Bearer", "bearer",
+  // "BEARER" all valid). Most clients send "Bearer " — but pin the
+  // case-insensitive contract so a misbehaving client doesn't get
+  // surprising 401s.
+  const match = header.match(/^bearer\s+(\S.*)$/i);
+  if (!match) return null;
+  const raw = match[1].trim();
   return raw.length > 0 ? raw : null;
 }
 
@@ -192,6 +198,17 @@ function envelopeStillValid(
  * Two Redis RTTs in the worst case (HGET then HSET); the HSET is
  * skipped on the common path (within debounce window). Fire-and-
  * forget — the calling handler does NOT await this.
+ *
+ * **Serverless reliability caveat** (closes guard R1 PR #504
+ * non-blocking #2): on Vercel functions the runtime can suspend
+ * the function instance immediately after the response flushes;
+ * a fire-and-forget HSET kicked off but not awaited may never
+ * reach Redis. `lastUsedAt` is observability state, not security
+ * state, so the loss is acceptable for V1. If `lastUsedAt`
+ * becomes load-bearing for an operator workflow (e.g. unused-
+ * token cleanup), upgrade callers to wrap this in
+ * `request.waitUntil()` so Vercel keeps the instance alive
+ * through the write.
  */
 async function maybeUpdateLastUsedAt(
   redis: Redis,
@@ -301,19 +318,43 @@ export async function authenticateAgentRequestV1(
   }
 
   if (!resolved.ok) {
-    // unknown_bearer / envelope_missing → invalid bearer, indistinguishable
-    //   from the operator's perspective (both mean "this bearer doesn't
-    //   bind to a current envelope").
-    // stale_bearer → bearer-resurrection: envelope.tokenHash differs.
-    //   Surface as TOKEN_EXPIRED — the bearer's name was reissued, so
-    //   from the holder's POV their bearer no longer maps to its
-    //   identity (semantically equivalent to an expiry).
-    if (resolved.code === "stale_bearer") {
+    // Three failure modes, two HTTP responses:
+    //
+    //   unknown_bearer    → 401 UNKNOWN_BEARER. Hash index has no
+    //                       entry: bearer was never issued, OR was
+    //                       revoked (REVOKE_TOKEN_SCRIPT DELs the
+    //                       hash index alongside the envelope).
+    //
+    //   envelope_missing  → 401 TOKEN_EXPIRED. Hash record EXISTS
+    //                       but envelope is gone. Most likely cause:
+    //                       Redis swept the explicit-expiry envelope
+    //                       past the +300s clock-skew margin. Hash
+    //                       index is intentionally NOT TTL'd (per
+    //                       CAPABILITIES_DESIGN.md "Latency +
+    //                       bearer-resurrection" — TTLing it risks
+    //                       dropping the index slightly before the
+    //                       envelope under clock skew). Less common:
+    //                       Upstash maxmemory eviction picking the
+    //                       larger envelope key over the small hash
+    //                       record. Either way, telling the operator
+    //                       "TOKEN_EXPIRED" is the truthful cause —
+    //                       NOT "unknown bearer" which would imply
+    //                       the bearer was never issued. (Closes
+    //                       guard R1 G2 on PR #504.)
+    //
+    //   stale_bearer      → 401 TOKEN_EXPIRED. Bearer-resurrection:
+    //                       envelope.tokenHash differs from the
+    //                       presented bearer's hash. The bearer's
+    //                       name was reissued; from the holder's POV
+    //                       the bearer no longer maps to its
+    //                       identity (semantically equivalent to an
+    //                       expiry).
+    if (resolved.code === "envelope_missing" || resolved.code === "stale_bearer") {
       return {
         ok: false,
         response: authV1Error(
           AGENT_AUTH_V1_ERROR.TOKEN_EXPIRED,
-          "Token superseded by a new issuance under the same name. Re-authenticate with a fresh bearer.",
+          "Token expired or superseded — re-authenticate with a fresh bearer",
           401,
         ),
       };
