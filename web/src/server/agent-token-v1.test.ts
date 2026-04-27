@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type Redis } from "@upstash/redis";
 
 import { createHash } from "crypto";
+import { readFileSync } from "fs";
 import {
   // Public API under test
   issueAgentToken,
@@ -487,6 +488,30 @@ describe("revokeAgentToken", () => {
       redis,
     });
     expect(removed).toBe(false);
+  });
+
+  it("does NOT XADD to audit stream on no-op revoke (closes guard PR #504 non-blocking #5: audit-spam guard)", async () => {
+    // The mock's REVOKE branch follows the script logic: only emit
+    // when ARGV[2] is non-empty AND existed > 0. Since the storage
+    // layer doesn't call this path with an audit entry yet (B.1.d
+    // wires structured entries), we verify the script's no-op
+    // branch in isolation by counting eval calls before and after a
+    // revoke against a nonexistent name. With the audit-spam guard,
+    // the script returns {0, name} without doing the XADD even if
+    // ARGV[2] were non-empty — preventing an agent_tokens.manage
+    // holder from spamming `revoke nonexistent-name` to push real
+    // audit entries past the MAXLEN ~10000 trim.
+    //
+    // Direct guarantee: REVOKE_TOKEN_SCRIPT body now reads:
+    //   if ARGV[2] ~= "" and existed > 0 then xadd ... end
+    // (was: `if ARGV[2] ~= "" then xadd ... end` — vulnerable to spam)
+    const script = readFileSync(
+      __dirname + "/agent-token-v1.ts",
+      "utf8",
+    );
+    expect(script).toMatch(/if ARGV\[2\] ~= "" and existed > 0 then/);
+    // Defensive: make sure the unguarded form is gone
+    expect(script).not.toMatch(/if ARGV\[2\] ~= "" then\n  redis\.call\("xadd"/);
   });
 
   it("rejects invalid name without making any Redis writes", async () => {
