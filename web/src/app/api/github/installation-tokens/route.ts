@@ -17,6 +17,7 @@ import { validateEnv } from "@/server/env";
 import {
   mintInstallationToken,
   MintError,
+  V1_PERMISSIONS,
 } from "@/server/github-installation-token";
 
 const BAD_REQUEST_BODY = {
@@ -35,6 +36,36 @@ const INTERNAL_BODY = {
   error: "internal_error",
   message: "Unexpected error during mint; see backend logs for details.",
 } as const;
+
+/**
+ * Order-insensitive equality on GitHub permission maps.
+ *
+ * Used by the audit-log `scopeReduced` flag to detect actual scope
+ * reduction (vs no-op narrowing where the policy matches V1_PERMISSIONS
+ * exactly with different key order, or where GitHub returns the same
+ * permissions in a different key order than V1_PERMISSIONS declares).
+ *
+ * `JSON.stringify(...)===JSON.stringify(...)` is order-sensitive, so
+ * GitHub returning `{pull_requests: "write", contents: "read", ...}`
+ * vs V1_PERMISSIONS `{contents: "read", pull_requests: "write", ...}`
+ * would log scopeReduced=true on a no-op narrowing.
+ *
+ * Closes guard G3-R2 + builder R2 follow-up. Same-keys + same-values
+ * = equal regardless of insertion order.
+ */
+export function permissionsEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   // Bearer auth — same path used by /api/agent-health POST. 401 on
@@ -166,6 +197,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       repo,
       appId: githubAppId,
       appPrivateKeyPem: githubAppPrivateKey,
+      // V1.6: pass token's allowed_permissions through. Undefined for
+      // legacy / V1.5 tokens (mint asks for V1_PERMISSIONS unchanged);
+      // when set, mintInstallationToken intersects it with V1_PERMISSIONS
+      // before sending to GitHub. The token can narrow scope, never raise.
+      allowedPermissions: auth.policy?.allowed_permissions,
     });
     // Audit log: success. Token VALUE never logged — only metadata.
     // hashed_token is the audit-correlation handle (sha256/base64 of
@@ -179,6 +215,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       agentId,
       hashedToken: tokenResponse.hashed_token,
       expiresAt: tokenResponse.expires_at,
+      // V1.6 audit: surface the actual permissions GitHub granted (which
+      // = (intersected request) ∩ (installation grant)). Lets operators
+      // verify a "read-only worker" token actually got read-only scope
+      // without combing through GitHub's audit log.
+      grantedPermissions: tokenResponse.permissions,
+      // Whether the operator HAS configured a per-token narrowing policy.
+      // Distinct from `scopeReduced` below: a policy with `{}` or matching
+      // V1_PERMISSIONS is "configured but no-op". This flag = "policy
+      // field is set on the envelope, regardless of effect."
+      policyHasAllowedPermissions:
+        auth.policy?.allowed_permissions !== undefined,
+      // Whether the granted permissions actually differ from V1_PERMISSIONS.
+      // True = some narrowing took effect (from token policy OR installation
+      // grant); false = mint received the V1 default scope. This is the
+      // signal operators actually want when answering "did this token
+      // narrow scope?" (closes guard G3 — `narrowedByPolicy` was misleading
+      // because it was true even for empty {} or V1_PERMISSIONS-equivalent
+      // policies).
+      //
+      // Order-insensitive comparison: GitHub's response may emit
+      // permissions in different key order than V1_PERMISSIONS, so a
+      // simple JSON.stringify(...)===JSON.stringify(...) would log
+      // scopeReduced=true on a no-op narrowing (closes guard G3-R2 +
+      // builder R2 follow-up). permissionsEqual normalizes by sorting
+      // keys and comparing values per-key.
+      scopeReduced: !permissionsEqual(tokenResponse.permissions, V1_PERMISSIONS),
       latencyMs: Date.now() - start,
     });
     return NextResponse.json(tokenResponse, { status: 200 });

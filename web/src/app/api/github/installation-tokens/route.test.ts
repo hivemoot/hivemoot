@@ -55,7 +55,16 @@ function makeRequest(body: unknown, opts: { json?: boolean } = {}): NextRequest 
 
 function authOk(
   installationId = "67890",
-  policy: { allowed_repos: string[] } | undefined = undefined,
+  policy:
+    | {
+        allowed_repos: string[];
+        // V1.6: optional allowed_permissions narrows GitHub permission
+        // scope at mint time. Tests can pass it through to exercise the
+        // route's V1.6 wiring (auth.policy?.allowed_permissions →
+        // mintInstallationToken's allowedPermissions param).
+        allowed_permissions?: Record<string, "read" | "write" | "admin">;
+      }
+    | undefined = undefined,
 ) {
   return {
     ok: true as const,
@@ -72,14 +81,29 @@ function authFailure(status = 401, code = "agent_health_not_authenticated") {
   };
 }
 
-function successMint() {
+function successMint(
+  overrides: Partial<{
+    token: string;
+    expires_at: string;
+    installation_id: string;
+    permissions: Record<string, string>;
+    repositories: Array<{ full_name: string; id: number }>;
+    hashed_token: string;
+  }> = {},
+) {
   return {
     token: "ghs_e2e_test_token",
     expires_at: "2026-04-25T19:30:00Z",
     installation_id: "67890",
-    permissions: { contents: "read", pull_requests: "write" },
+    permissions: {
+      contents: "read",
+      pull_requests: "write",
+      issues: "write",
+      metadata: "read",
+    },
     repositories: [{ full_name: "owner/repo", id: 12345 }],
     hashed_token: "FAKE_BASE64_SHA256_HASH=",
+    ...overrides,
   };
 }
 
@@ -317,6 +341,8 @@ describe("POST /api/github/installation-tokens — happy path", () => {
     expect(body.permissions).toEqual({
       contents: "read",
       pull_requests: "write",
+      issues: "write",
+      metadata: "read",
     });
     expect(body.repositories).toEqual([{ full_name: "owner/repo", id: 12345 }]);
     expect(body.hashed_token).toBe("FAKE_BASE64_SHA256_HASH=");
@@ -408,5 +434,240 @@ describe("POST /api/github/installation-tokens — mint error mapping", () => {
     // Critically: the unexpected error message is NOT echoed in the response,
     // only logged. Backend doesn't leak internals to apiarist.
     expect(body.message).not.toContain("totally unexpected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V1.6 — allowed_permissions wiring (closes guard G2)
+// ---------------------------------------------------------------------------
+//
+// These tests close the gap between the unit tests on intersectPermissions
+// and the actual route. They assert that the route forwards
+// auth.policy.allowed_permissions into mintInstallationToken's
+// allowedPermissions param, and that the audit log surfaces the right
+// signals (policyHasAllowedPermissions + scopeReduced).
+
+describe("POST /api/github/installation-tokens — V1.6 allowed_permissions wiring", () => {
+  beforeEach(() => {
+    mockedAuth.mockClear();
+    mockedMint.mockClear();
+  });
+
+  it("V1.5 path: no allowed_permissions on policy → mint called WITHOUT allowedPermissions", async () => {
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["owner/repo"] }),
+    );
+    mockedMint.mockResolvedValue(successMint());
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(mockedMint).toHaveBeenCalledTimes(1);
+    const call = mockedMint.mock.calls[0][0];
+    expect(call.allowedPermissions).toBeUndefined();
+  });
+
+  it("V1.6 path: allowed_permissions on policy → forwarded to mint as allowedPermissions", async () => {
+    const readOnly = {
+      contents: "read" as const,
+      pull_requests: "read" as const,
+      issues: "read" as const,
+      metadata: "read" as const,
+    };
+    mockedAuth.mockResolvedValue(
+      authOk("67890", {
+        allowed_repos: ["owner/repo"],
+        allowed_permissions: readOnly,
+      }),
+    );
+    mockedMint.mockResolvedValue(
+      successMint({ permissions: readOnly }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(mockedMint).toHaveBeenCalledTimes(1);
+    const call = mockedMint.mock.calls[0][0];
+    expect(call.allowedPermissions).toEqual(readOnly);
+  });
+
+  it("audit log: policyHasAllowedPermissions=false when policy.allowed_permissions undefined", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["owner/repo"] }),
+    );
+    mockedMint.mockResolvedValue(successMint());
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({ policyHasAllowedPermissions: false }),
+    );
+    consoleLog.mockRestore();
+  });
+
+  it("audit log: policyHasAllowedPermissions=true AND scopeReduced=true when narrowing actually applied", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue(
+      authOk("67890", {
+        allowed_repos: ["owner/repo"],
+        allowed_permissions: { pull_requests: "read" },
+      }),
+    );
+    // Mocked mint returns the narrowed scope (pull_requests=read instead
+    // of write). Real intersectPermissions runs in the unit-test suite.
+    mockedMint.mockResolvedValue(
+      successMint({
+        permissions: {
+          contents: "read",
+          pull_requests: "read",   // narrowed
+          issues: "write",
+          metadata: "read",
+        },
+      }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({
+        policyHasAllowedPermissions: true,
+        scopeReduced: true,
+      }),
+    );
+    consoleLog.mockRestore();
+  });
+
+  it("audit log: scopeReduced=false when policy is set but matches V1_PERMISSIONS exactly (no-op narrowing)", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    // Policy "narrows" to exactly the same scope as V1_PERMISSIONS.
+    // policyHasAllowedPermissions=true (operator did configure it), but
+    // scopeReduced=false (no actual reduction happened) — distinct signals.
+    mockedAuth.mockResolvedValue(
+      authOk("67890", {
+        allowed_repos: ["owner/repo"],
+        allowed_permissions: {
+          contents: "read",
+          pull_requests: "write",
+          issues: "write",
+          metadata: "read",
+        },
+      }),
+    );
+    mockedMint.mockResolvedValue(successMint());
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({
+        policyHasAllowedPermissions: true,
+        scopeReduced: false,
+      }),
+    );
+    consoleLog.mockRestore();
+  });
+
+  it("audit log: scopeReduced=false when GitHub returns V1_PERMISSIONS in DIFFERENT KEY ORDER (regression on guard G3-R2)", async () => {
+    // R2 follow-up regression: prior implementation used
+    // JSON.stringify(...)===JSON.stringify(...), which is
+    // order-sensitive. GitHub may emit permissions in different
+    // key order than V1_PERMISSIONS declares; without
+    // order-insensitive comparison the audit log would falsely
+    // report scopeReduced=true on a no-op narrowing.
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["owner/repo"] }),
+    );
+    // Same permissions as V1_PERMISSIONS, intentionally rearranged
+    // (issues + pull_requests + metadata + contents instead of the
+    // canonical contents/pull_requests/issues/metadata).
+    mockedMint.mockResolvedValue(
+      successMint({
+        permissions: {
+          issues: "write",
+          pull_requests: "write",
+          metadata: "read",
+          contents: "read",
+        },
+      }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({ scopeReduced: false }),
+    );
+    consoleLog.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// permissionsEqual unit tests
+// ---------------------------------------------------------------------------
+
+import { permissionsEqual } from "./route";
+
+describe("permissionsEqual (route helper)", () => {
+  it("identical maps in identical order → true", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read", pull_requests: "write" },
+      ),
+    ).toBe(true);
+  });
+
+  it("same keys + values, DIFFERENT insertion order → true (order-insensitive)", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { pull_requests: "write", contents: "read" },
+      ),
+    ).toBe(true);
+  });
+
+  it("same keys, ONE differing value → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read", pull_requests: "read" },
+      ),
+    ).toBe(false);
+  });
+
+  it("a has extra key → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read" },
+      ),
+    ).toBe(false);
+  });
+
+  it("b has extra key → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read" },
+        { contents: "read", pull_requests: "write" },
+      ),
+    ).toBe(false);
+  });
+
+  it("both empty → true", () => {
+    expect(permissionsEqual({}, {})).toBe(true);
+  });
+
+  it("prototype member name on b doesn't false-positive", () => {
+    // Defense against a's key matching Object.prototype member name
+    // that could exist on b's prototype chain (toString etc.).
+    expect(
+      permissionsEqual(
+        { contents: "read", toString: "read" },
+        { contents: "read" },
+      ),
+    ).toBe(false);
   });
 });

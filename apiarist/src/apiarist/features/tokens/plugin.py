@@ -25,10 +25,26 @@ from apiarist.core.registry import Registry
 from apiarist.features.health import HealthState
 from apiarist.features.tokens.cache import TokenCache
 
-# V1 hard-coded narrowed permission set per DESIGN.md §11. Future
-# variants of the API may accept a per-request permissions override
-# (constrained by the agent token's policy) — for now every mint asks
-# for the same scope.
+# Hard-coded request-side ceiling per DESIGN.md §11. Apiarist always
+# asks the backend for THIS scope; the backend (V1.6+) may further
+# narrow per the agent token's `policy.allowed_permissions` before
+# calling GitHub. The response's `permissions` field reflects what was
+# actually granted (= intersect of this, token policy, installation
+# grant).
+#
+# Must stay in sync with web's `V1_PERMISSIONS` in
+# `web/src/server/github-installation-token.ts` — both define the same
+# upper bound, used as the cache-key hash on this side and as the
+# request body on the server side. Diverging keys/values would
+# silently invalidate every cached entry on the client OR cause the
+# server to receive a request asking for scope it doesn't accept.
+#
+# V1.6 cache-invalidation note: this dict drives the cache key on
+# apiarist's side; the SERVER applies token-policy narrowing on top.
+# If an operator updates a token's `policy.allowed_permissions`,
+# cached tokens minted under the previous policy keep serving until
+# their natural cache TTL expires (default 5 min). For immediate
+# rollout, restart the apiarist daemon — the in-memory cache resets.
 _V1_PERMISSIONS: dict[str, str] = {
     "contents": "read",
     "pull_requests": "write",
