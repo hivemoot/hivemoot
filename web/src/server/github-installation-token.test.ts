@@ -8,6 +8,7 @@ vi.mock("@/server/github-auth", () => ({
 import { generateAppJwt } from "@/server/github-auth";
 import {
   mintInstallationToken,
+  intersectPermissions,
   V1_PERMISSIONS,
   AppCredentialError,
   InstallationNotCoverageError,
@@ -16,6 +17,7 @@ import {
   InvalidMintRequestError,
   type MintOptions,
 } from "./github-installation-token";
+import type { GitHubPermissionLevel } from "./agent-token";
 
 const mockJwt = vi.mocked(generateAppJwt);
 
@@ -387,5 +389,160 @@ describe("mintInstallationToken — network + parse", () => {
     await expect(
       mintInstallationToken(VALID_OPTIONS, fetcher),
     ).rejects.toBeInstanceOf(GitHubUnavailableError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V1.6 — intersectPermissions helper
+// ---------------------------------------------------------------------------
+
+describe("intersectPermissions (V1.6)", () => {
+  it("undefined narrow → returns defaults verbatim (V1.5 path)", () => {
+    expect(intersectPermissions(V1_PERMISSIONS, undefined)).toEqual(V1_PERMISSIONS);
+  });
+
+  it("returns a fresh object (not the same reference as defaults)", () => {
+    const result = intersectPermissions(V1_PERMISSIONS, undefined);
+    expect(result).not.toBe(V1_PERMISSIONS);
+  });
+
+  it("token requesting same level as default → no change", () => {
+    expect(
+      intersectPermissions(V1_PERMISSIONS, {
+        contents: "read",
+        pull_requests: "write",
+      }),
+    ).toEqual(V1_PERMISSIONS);
+  });
+
+  it("token narrowing pull_requests: write → read", () => {
+    const result = intersectPermissions(V1_PERMISSIONS, {
+      pull_requests: "read",
+    });
+    expect(result.pull_requests).toBe("read");
+    expect(result.contents).toBe("read");
+    expect(result.issues).toBe("write");
+    expect(result.metadata).toBe("read");
+  });
+
+  it("token requesting HIGHER than default → silently capped at default (no escalation)", () => {
+    const result = intersectPermissions(V1_PERMISSIONS, {
+      contents: "write",
+    });
+    expect(result.contents).toBe("read");
+  });
+
+  it("token requesting admin → still capped at default level for that permission", () => {
+    const result = intersectPermissions(V1_PERMISSIONS, {
+      pull_requests: "admin",
+    });
+    expect(result.pull_requests).toBe("write");
+  });
+
+  it("token mentioning a permission NOT in defaults is silently dropped + warned", () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = intersectPermissions(V1_PERMISSIONS, {
+      administration: "write" as GitHubPermissionLevel,
+      contents: "read",
+    });
+    expect(Object.keys(result).sort()).toEqual(
+      Object.keys(V1_PERMISSIONS).sort(),
+    );
+    expect(result).not.toHaveProperty("administration");
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("administration"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("read-only worker preset (all read) → all permissions = read", () => {
+    const readOnlyPolicy: Record<string, GitHubPermissionLevel> = {
+      contents: "read",
+      pull_requests: "read",
+      issues: "read",
+      metadata: "read",
+    };
+    expect(intersectPermissions(V1_PERMISSIONS, readOnlyPolicy)).toEqual({
+      contents: "read",
+      pull_requests: "read",
+      issues: "read",
+      metadata: "read",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V1.6 — mint with allowedPermissions
+// ---------------------------------------------------------------------------
+
+describe("mintInstallationToken — V1.6 allowedPermissions", () => {
+  beforeEach(() => {
+    mockJwt.mockClear();
+    mockJwt.mockReturnValue("fake.jwt.token");
+  });
+
+  it("V1.5 path: omitted allowedPermissions sends V1_PERMISSIONS verbatim", async () => {
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+    await mintInstallationToken(VALID_OPTIONS, fetcher);
+
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.permissions).toEqual(V1_PERMISSIONS);
+  });
+
+  it("read-only worker: narrows pull_requests + issues to read", async () => {
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+    await mintInstallationToken(
+      {
+        ...VALID_OPTIONS,
+        allowedPermissions: {
+          contents: "read",
+          pull_requests: "read",
+          issues: "read",
+          metadata: "read",
+        },
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.permissions).toEqual({
+      contents: "read",
+      pull_requests: "read",
+      issues: "read",
+      metadata: "read",
+    });
+  });
+
+  it("attempt to escalate (write where default is read) is silently capped", async () => {
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+    await mintInstallationToken(
+      {
+        ...VALID_OPTIONS,
+        allowedPermissions: { contents: "write" },
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.permissions.contents).toBe("read");
+  });
+
+  it("partial narrow leaves unspecified defaults intact", async () => {
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+    await mintInstallationToken(
+      {
+        ...VALID_OPTIONS,
+        allowedPermissions: { pull_requests: "read" },
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.permissions).toEqual({
+      contents: "read",
+      pull_requests: "read",   // narrowed
+      issues: "write",         // unchanged from V1_PERMISSIONS
+      metadata: "read",
+    });
   });
 });

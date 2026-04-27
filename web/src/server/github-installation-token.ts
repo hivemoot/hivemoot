@@ -23,24 +23,88 @@
 
 import { createHash } from "crypto";
 import { generateAppJwt } from "@/server/github-auth";
+import type { GitHubPermissionLevel } from "@/server/agent-token";
 
 // ---------------------------------------------------------------------------
-// V1 permission set
+// Default permission set
 // ---------------------------------------------------------------------------
 //
-// Hard-coded for V1 per apiarist DESIGN.md §11 — every mint asks for the
-// same scope. Future variants of the API may accept a per-request override
-// constrained by the agent token's policy. Apiarist's `_V1_PERMISSIONS`
-// (in `apiarist/src/apiarist/features/tokens/plugin.py`) MUST be kept in
-// sync with this — apiarist uses it as the cache-key hash, and a divergence
+// Hard-coded ceiling per apiarist DESIGN.md §11 — every mint asks for at
+// most this scope. V1.6 (`allowed_permissions` on the token policy) lets
+// individual tokens NARROW from this default; nothing can EXCEED it.
+// Apiarist's `_V1_PERMISSIONS` (in
+// `apiarist/src/apiarist/features/tokens/plugin.py`) MUST be kept in sync
+// with this — apiarist uses it as the cache-key hash, and a divergence
 // would silently invalidate every cached entry on the client.
 
-export const V1_PERMISSIONS: Readonly<Record<string, string>> = Object.freeze({
-  contents: "read",
-  pull_requests: "write",
-  issues: "write",
-  metadata: "read",
-});
+export const V1_PERMISSIONS: Readonly<Record<string, GitHubPermissionLevel>> =
+  Object.freeze({
+    contents: "read",
+    pull_requests: "write",
+    issues: "write",
+    metadata: "read",
+  });
+
+// ---------------------------------------------------------------------------
+// Permission intersection (V1.6)
+// ---------------------------------------------------------------------------
+
+const PERMISSION_LEVEL_RANK: Readonly<Record<GitHubPermissionLevel, number>> =
+  Object.freeze({ read: 1, write: 2, admin: 3 });
+
+/**
+ * Compute the effective permission set: intersect the default ceiling
+ * with an optional per-token narrowing map.
+ *
+ * Rules:
+ *   1. If `narrow` is `undefined` → return defaults unchanged (V1.5
+ *      behavior preserved for legacy / non-V1.6 tokens).
+ *   2. For every key in `defaults`:
+ *      - If `narrow` doesn't mention it → use the default level.
+ *      - If `narrow` mentions it → take the LOWER of the two levels
+ *        (read < write < admin). The token can narrow but never raise.
+ *   3. Keys present in `narrow` but absent from `defaults` are silently
+ *      DROPPED (a token cannot grant scope the default doesn't have).
+ *      A console warning is emitted so misconfigurations are visible
+ *      in operator logs.
+ *
+ * Exported for unit testing; production callers should let
+ * `mintInstallationToken` apply this internally.
+ */
+export function intersectPermissions(
+  defaults: Readonly<Record<string, GitHubPermissionLevel>>,
+  narrow: Readonly<Record<string, GitHubPermissionLevel>> | undefined,
+): Record<string, GitHubPermissionLevel> {
+  if (narrow === undefined) {
+    // No narrowing requested — caller wants defaults verbatim.
+    return { ...defaults };
+  }
+
+  const out: Record<string, GitHubPermissionLevel> = {};
+  for (const [key, defaultLevel] of Object.entries(defaults)) {
+    const narrowLevel = narrow[key];
+    if (narrowLevel === undefined) {
+      out[key] = defaultLevel;
+      continue;
+    }
+    const defaultRank = PERMISSION_LEVEL_RANK[defaultLevel];
+    const narrowRank = PERMISSION_LEVEL_RANK[narrowLevel];
+    out[key] = narrowRank < defaultRank ? narrowLevel : defaultLevel;
+  }
+
+  // Surface (don't silently swallow) keys in `narrow` that aren't in
+  // `defaults` — operator typo'd a permission name, or asked for a scope
+  // V1_PERMISSIONS doesn't expose. The dropped keys still go to GitHub
+  // through `out`, so the request is unaffected (those keys aren't there).
+  for (const key of Object.keys(narrow)) {
+    if (!(key in defaults)) {
+      console.warn(
+        `[mintInstallationToken] policy.allowed_permissions['${key}'] ignored — not in V1_PERMISSIONS`,
+      );
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -55,6 +119,15 @@ export interface MintOptions {
   appId: string;
   /** Hivemoot Bot's RSA private key in PEM form (from `GITHUB_APP_PRIVATE_KEY` env). */
   appPrivateKeyPem: string;
+  /**
+   * V1.6+: per-token permission narrowing from the agent token's
+   * `policy.allowed_permissions`. When set, the requested scope is
+   * `intersectPermissions(V1_PERMISSIONS, allowedPermissions)` — the
+   * token can only narrow the default; it cannot raise it.
+   * Absence (undefined) preserves V1.5 behavior — request V1_PERMISSIONS
+   * verbatim.
+   */
+  allowedPermissions?: Record<string, GitHubPermissionLevel>;
 }
 
 export interface InstallationAccessTokenResponse {
@@ -212,11 +285,20 @@ export async function mintInstallationToken(
   options: MintOptions,
   fetcher: Fetcher = fetch,
 ): Promise<InstallationAccessTokenResponse> {
-  const { installationId, repo, appId, appPrivateKeyPem } = options;
+  const { installationId, repo, appId, appPrivateKeyPem, allowedPermissions } =
+    options;
 
   // Validate repo shape BEFORE generating the JWT so a malformed input
   // doesn't burn an RSA signing operation.
   const { name: repoShortName } = parseRepo(repo);
+
+  // V1.6: compute the effective permission set. With no narrowing
+  // (legacy/V1.5 tokens) this returns V1_PERMISSIONS unchanged; with
+  // narrowing (V1.6 tokens) it returns the intersected map.
+  const effectivePermissions = intersectPermissions(
+    V1_PERMISSIONS,
+    allowedPermissions,
+  );
 
   // Generate the App JWT. This is purely CPU work (RS256 sign) — failures
   // here mean the App private key in env is malformed or missing, which is
@@ -251,10 +333,12 @@ export async function mintInstallationToken(
         // name (NOT owner/name); the installation provides the owner
         // context implicitly.
         repositories: [repoShortName],
-        // Narrow to the V1 permission set. If the installation's policy
-        // grants less, GitHub silently narrows further and the response
+        // Permission set: V1_PERMISSIONS by default, intersected with
+        // `allowedPermissions` (V1.6) if the token's policy narrows
+        // further. If the installation's policy grants less than what
+        // we ask for, GitHub silently narrows further and the response
         // permissions reflect that.
-        permissions: V1_PERMISSIONS,
+        permissions: effectivePermissions,
       }),
     });
   } catch (err) {

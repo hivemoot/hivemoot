@@ -65,18 +65,30 @@ return 1
  * logs a warning and defers to the installation grant — this preserves
  * compatibility with existing tokens during the V1.5 migration window.
  *
- * `allowed_permissions` is intentionally DEFERRED to V1.6: V1 already
- * hard-codes a narrow permission set (`V1_PERMISSIONS` in
- * `github-installation-token.ts`); per-token permission narrowing is a
- * second layer of defense that hasn't been needed yet. When added,
- * enforcement: passed permissions ∩ V1_PERMISSIONS, then validated
- * against the installation grant by GitHub.
+ * `allowed_permissions` (V1.6, this revision) is per-token permission
+ * narrowing on top of the V1.5 repo narrowing. When set, the mint
+ * endpoint intersects these permissions with `V1_PERMISSIONS` (the
+ * default scope hard-coded in `github-installation-token.ts`) before
+ * passing to GitHub: the token can NARROW the default but never
+ * EXCEED it. Permissions GitHub doesn't grant on the installation are
+ * always rejected by GitHub regardless. Absence (`undefined`) = use
+ * `V1_PERMISSIONS` unchanged (V1.5 behavior, no narrowing).
  */
+export type GitHubPermissionLevel = "read" | "write" | "admin";
+
 export interface AgentTokenPolicy {
   /** `owner/name` strings the token may request mints for. Empty array
    * = reject everything (intentional). Field absence on the envelope =
    * legacy permissive (defer to installation grant). */
   allowed_repos: string[];
+  /** V1.6+: per-token permission narrowing. Map of GitHub App permission
+   * name (e.g. "contents", "pull_requests", "issues", "metadata") to
+   * the maximum level the token may request. Mint intersects with
+   * `V1_PERMISSIONS` (lower level wins per `read < write < admin`).
+   * Permissions named here that aren't in `V1_PERMISSIONS` are silently
+   * dropped (a token cannot grant scope the default doesn't have).
+   * Absence (`undefined`) = use `V1_PERMISSIONS` as-is. */
+  allowed_permissions?: Record<string, GitHubPermissionLevel>;
 }
 
 export interface AgentTokenEnvelope {

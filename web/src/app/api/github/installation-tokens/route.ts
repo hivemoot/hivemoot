@@ -166,6 +166,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       repo,
       appId: githubAppId,
       appPrivateKeyPem: githubAppPrivateKey,
+      // V1.6: pass token's allowed_permissions through. Undefined for
+      // legacy / V1.5 tokens (mint asks for V1_PERMISSIONS unchanged);
+      // when set, mintInstallationToken intersects it with V1_PERMISSIONS
+      // before sending to GitHub. The token can narrow scope, never raise.
+      allowedPermissions: auth.policy?.allowed_permissions,
     });
     // Audit log: success. Token VALUE never logged — only metadata.
     // hashed_token is the audit-correlation handle (sha256/base64 of
@@ -179,6 +184,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       agentId,
       hashedToken: tokenResponse.hashed_token,
       expiresAt: tokenResponse.expires_at,
+      // V1.6 audit: surface the actual permissions GitHub granted (which
+      // = (intersected request) ∩ (installation grant)). Lets operators
+      // verify a "read-only worker" token actually got read-only scope
+      // without combing through GitHub's audit log.
+      grantedPermissions: tokenResponse.permissions,
+      // Whether the token narrowed via V1.6 policy. False = legacy /
+      // V1.5 token (defaults verbatim); true = V1.6 narrowing applied.
+      narrowedByPolicy: auth.policy?.allowed_permissions !== undefined,
       latencyMs: Date.now() - start,
     });
     return NextResponse.json(tokenResponse, { status: 200 });
