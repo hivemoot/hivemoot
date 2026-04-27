@@ -33,6 +33,7 @@ import { type Redis } from "@upstash/redis";
 import { NextRequest, NextResponse } from "next/server";
 import { validateEnv } from "@/server/env";
 import { getRedisClient } from "@/server/redis";
+import { parseKeyring } from "@/server/crypto";
 import {
   bearerHasCapability,
 } from "@/server/agent-token-capabilities";
@@ -423,4 +424,98 @@ export async function authenticateAgentRequestV1(
     envelope,
     redis,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Keyring loader (for issue / rotate endpoints — anything that mints
+// new envelopes needs the active master key)
+// ---------------------------------------------------------------------------
+
+export type LoadV1MintKeyringResult =
+  | { ok: true; keyring: Map<string, Buffer>; keyVersion: string }
+  | { ok: false; response: NextResponse };
+
+/**
+ * Load the active keyring + its version for V1 mutation endpoints
+ * that mint envelopes (issue + rotate). Read endpoints don't need
+ * this — they only `get` from Redis. Bootstrap (B.1.d-iv) reuses
+ * this same loader.
+ *
+ * Returns a 503 NextResponse when env config is missing or the
+ * active key version isn't in the keyring. Mirrors the BYOK auth
+ * pattern (`byok-auth.ts:loadRuntimeConfig`) but is scoped to the
+ * V1 endpoints' needs — we don't need the cookie-session storage
+ * here, only the keyring.
+ *
+ * Per CLAUDE.md fail-closed principle: when the keyring is
+ * misconfigured we return 503 rather than letting the endpoint
+ * try to encrypt with an undefined key.
+ */
+export function loadV1MintKeyring(): LoadV1MintKeyringResult {
+  const env = validateEnv();
+  if (!env.ok) {
+    console.error(
+      "[agent-token-v1-auth] mint keyring load failed: env validation failed",
+      { missing: env.missing },
+    );
+    return {
+      ok: false,
+      response: authV1Error(
+        AGENT_AUTH_V1_ERROR.SERVER_MISCONFIGURATION,
+        "Server misconfiguration",
+        503,
+      ),
+    };
+  }
+
+  const { byokActiveKeyVersion, byokMasterKeysJson } = env.config;
+
+  if (!byokActiveKeyVersion || !byokMasterKeysJson) {
+    console.error(
+      "[agent-token-v1-auth] mint keyring load failed: BYOK_ACTIVE_KEY_VERSION or BYOK_MASTER_KEYS missing",
+    );
+    return {
+      ok: false,
+      response: authV1Error(
+        AGENT_AUTH_V1_ERROR.SERVER_MISCONFIGURATION,
+        "Encryption is not configured",
+        503,
+      ),
+    };
+  }
+
+  let keyring: Map<string, Buffer>;
+  try {
+    keyring = parseKeyring(byokMasterKeysJson);
+  } catch (err) {
+    console.error(
+      "[agent-token-v1-auth] mint keyring load failed: parseKeyring threw",
+      { error: err },
+    );
+    return {
+      ok: false,
+      response: authV1Error(
+        AGENT_AUTH_V1_ERROR.SERVER_MISCONFIGURATION,
+        "Invalid encryption configuration",
+        503,
+      ),
+    };
+  }
+
+  if (!keyring.has(byokActiveKeyVersion)) {
+    console.error(
+      "[agent-token-v1-auth] mint keyring load failed: active key version not in keyring",
+      { activeKeyVersion: byokActiveKeyVersion },
+    );
+    return {
+      ok: false,
+      response: authV1Error(
+        AGENT_AUTH_V1_ERROR.SERVER_MISCONFIGURATION,
+        "Active key version not in keyring",
+        503,
+      ),
+    };
+  }
+
+  return { ok: true, keyring, keyVersion: byokActiveKeyVersion };
 }

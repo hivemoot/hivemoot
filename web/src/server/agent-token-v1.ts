@@ -69,6 +69,20 @@ import type {
   AgentTokenPolicy,
   GitHubPermissionLevel,
 } from "@/server/agent-token";
+// `auditStreamKey` is owned by the audit module (where its sibling
+// `authStreamKey` lives, and where stream MAXLEN constants are
+// declared). Storage scripts in this file pass the stream key as a
+// KEYS slot to the Lua audit-emit guard. Cycle is safe: the audit
+// module's `auditStreamKey` reads `ENVELOPE_PREFIX` only at function
+// CALL time (live ESM binding), and this module's reverse import
+// reads `auditStreamKey` only at function CALL time too — neither
+// touches the cycled symbol at module init. Closes #505 guard R1
+// carry-forward #1 (drift risk between two definitions).
+import {
+  auditStreamKey,
+  buildAuditEntryJson,
+  type AuditMutationEntry,
+} from "@/server/agent-token-v1-audit";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,7 +108,6 @@ export const ENVELOPE_PREFIX = "hive:v1:agent-token:";
 const HASH_INDEX_PREFIX = "hive:v1:idx:agent-token:hash:";
 const INSTALLATION_INDEX_PREFIX = "hive:v1:idx:agent-token:installation:";
 const META_SUFFIX = ":meta";
-const AUDIT_SUFFIX = ":audit";
 const LOCK_PREFIX = "hive:v1:lock:agent-token:";
 
 export function envelopeKey(installationId: string, name: string): string {
@@ -113,17 +126,9 @@ export function envelopeMetaKey(installationId: string, name: string): string {
   return `${envelopeKey(installationId, name)}${META_SUFFIX}`;
 }
 
-/**
- * Per-installation audit stream (mutations only — issue / revoke /
- * set_capabilities / rotate / bootstrap). The high-volume auth-event
- * stream lives at a different key (B.1.d wires that one alongside
- * `auditAppend`). Per CAPABILITIES_DESIGN.md §Audit log: split-stream
- * model with `MAXLEN ~10000` on this stream → effectively unbounded
- * at <10 mutations/day.
- */
-export function auditStreamKey(installationId: string): string {
-  return `${ENVELOPE_PREFIX}${installationId}${AUDIT_SUFFIX}`;
-}
+// `auditStreamKey` lives in `agent-token-v1-audit.ts` (owns both
+// stream key constructors + their MAXLEN constants). Imported above.
+// Closes #505 guard R1 carry-forward #1.
 
 export function lockKey(installationId: string, name: string): string {
   return `${LOCK_PREFIX}${installationId}:${name}`;
@@ -577,6 +582,20 @@ export async function issueAgentToken(args: {
   keyVersion: string;
   redis: Redis;
   tokenLimit?: number;
+  /**
+   * Optional structured audit entry. When provided, JSON is passed
+   * into the script's atomic-XADD slot — the audit row lands in the
+   * `:audit` stream in the same EVAL as the envelope write, so a
+   * partial-success state where the token exists but the audit
+   * entry doesn't (or vice versa) is unrepresentable. When omitted
+   * the script no-ops the XADD (preserves pre-B.1.d behavior so
+   * direct-from-tests callers don't have to construct an entry).
+   *
+   * The endpoint layer (B.1.d-ii) is the canonical caller — it
+   * builds entries from `auth.envelope.fingerprint` + `auth.name`.
+   * Direct callers (CLI scripts, migration jobs) typically omit it.
+   */
+  auditEntry?: AuditMutationEntry;
 }): Promise<IssuedAgentTokenV1> {
   validateName(args.name);
   validateAgentRole(args.agent_role);
@@ -671,12 +690,11 @@ export async function issueAgentToken(args: {
             String(createdAtMs),
             String(limit),
             String(ttlSecs),
-            // B.1.d will replace this empty sentinel with the
-            // structured audit-entry JSON. Script no-ops when empty,
-            // so the atomic-audit guarantee from the design is
-            // preserved without B.1.d needing to re-version the
-            // script (closes guard R1 G1).
-            "",
+            // Empty sentinel = script no-ops the audit XADD. When the
+            // endpoint passes an `auditEntry`, this slot carries the
+            // serialized JSON, and the script's atomic-audit guard
+            // emits the row in the same EVAL as the envelope write.
+            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
           ],
         ),
       );
@@ -716,6 +734,8 @@ export async function revokeAgentToken(args: {
   installationId: string;
   name: string;
   redis: Redis;
+  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
+  auditEntry?: AuditMutationEntry;
 }): Promise<boolean> {
   validateName(args.name);
 
@@ -748,7 +768,10 @@ export async function revokeAgentToken(args: {
             envelopeMetaKey(args.installationId, args.name),
             auditStreamKey(args.installationId),
           ],
-          [args.name, ""],
+          [
+            args.name,
+            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+          ],
         ),
       );
       return result.ok === 1;
@@ -772,6 +795,8 @@ export async function setAgentTokenCapabilities(args: {
   capabilities: readonly string[];
   redis: Redis;
   nowMs?: number;
+  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
+  auditEntry?: AuditMutationEntry;
 }): Promise<AgentTokenSummaryV1> {
   validateName(args.name);
   if (args.capabilities.length === 0) {
@@ -806,7 +831,11 @@ export async function setAgentTokenCapabilities(args: {
             envelopeKey(args.installationId, args.name),
             auditStreamKey(args.installationId),
           ],
-          [JSON.stringify(updated), String(ttlSecs), ""],
+          [
+            JSON.stringify(updated),
+            String(ttlSecs),
+            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
+          ],
         ),
       );
       if (result.ok === -1 && result.reason === "no_envelope") {
@@ -842,6 +871,8 @@ export async function rotateAgentToken(args: {
   keyVersion: string;
   redis: Redis;
   nowMs?: number;
+  /** See `issueAgentToken.auditEntry` — same atomic-audit semantics. */
+  auditEntry?: AuditMutationEntry;
 }): Promise<IssuedAgentTokenV1> {
   validateName(args.name);
 
@@ -901,7 +932,7 @@ export async function rotateAgentToken(args: {
             JSON.stringify(updated),
             JSON.stringify(newHashRecord),
             String(ttlSecs),
-            "",
+            args.auditEntry ? buildAuditEntryJson(args.auditEntry) : "",
           ],
         ),
       );
@@ -1047,13 +1078,18 @@ export async function pruneOrphanedIndexEntries(args: {
  *     SHA-256 — the bearer-resurrection scenario (see the
  *     BEARER-RESURRECTION INVARIANT docblock at top of file).
  *
- * Caller (B.1.c middleware) maps each failure code to its
- * appropriate HTTP response:
- *   - unknown_bearer / envelope_missing → 401 Invalid bearer
- *   - stale_bearer → 401 TOKEN_EXPIRED (semantically: the bearer
- *     points at a name whose envelope has been replaced; from
- *     the caller's perspective the bearer no longer maps to its
- *     identity)
+ * Caller (B.1.c middleware in `agent-token-v1-auth.ts`) maps each
+ * failure code to its appropriate HTTP response. Mapping reflects
+ * what the SHIPPED middleware does (was misdocumented in the
+ * pre-#505 JSDoc — closes #505 guard R1 carry-forward #2):
+ *   - unknown_bearer → 401 UNKNOWN_BEARER (no record at all — bearer
+ *     never existed or was revoked, hash index gone)
+ *   - envelope_missing → 401 TOKEN_EXPIRED (hash record points at an
+ *     envelope that was TTL-swept or concurrently revoked — from
+ *     the bearer's POV the credential is past its lifecycle)
+ *   - stale_bearer → 401 TOKEN_EXPIRED (envelope exists but a same-
+ *     name reissue replaced its tokenHash — the bearer-resurrection
+ *     check; bearer's identity no longer maps to current envelope)
  *   - ok → caller checks `envelope.expiresAt` against the wall
  *     clock + checks the `requires` capability per
  *     `bearerHasCapability(envelope.capabilities, requires)`.

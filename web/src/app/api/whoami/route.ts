@@ -53,9 +53,27 @@ import { auditAppend } from "@/server/agent-token-v1-audit";
  * shape entirely when absent — operators see "no narrowing" rather
  * than "narrowing: undefined".
  */
+/**
+ * GitHub permission level union. Inlined (not imported from
+ * agent-token.ts) to keep the wire type self-contained and decoupled
+ * from the storage type — same defense-in-depth rationale as
+ * `WhoamiPolicyView` itself. The values are a stable, well-known
+ * GitHub-permission set; if the storage union ever expands at
+ * `agent-token.ts:GitHubPermissionLevel`, the projection here
+ * intentionally still narrows what the wire promises until this
+ * file is updated explicitly.
+ *
+ * Carry-forward from #505 guard R2 N1: was `Record<string, string>`,
+ * but if storage drifts (CLI bug, manual envelope edit), the
+ * introspection signal would mislead operators reading /whoami.
+ * Narrowing the wire type catches drift at the type boundary even
+ * though GitHub rejects malformed values at mint time.
+ */
+type WhoamiPermissionLevel = "read" | "write" | "admin";
+
 interface WhoamiPolicyView {
   allowedRepos: string[];
-  allowedPermissions?: Record<string, string>;
+  allowedPermissions?: Record<string, WhoamiPermissionLevel>;
 }
 
 interface WhoamiResponse {
