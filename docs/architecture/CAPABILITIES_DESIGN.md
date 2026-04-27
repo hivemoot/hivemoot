@@ -119,50 +119,48 @@ interface AgentTokenHashRecord {
 }
 ```
 
-**Latency note** (closes guard R2 N5): the V1.5→V1.6 transition
-adds a second Redis read per auth (hash index + envelope). The
-implementation MUST batch both reads via `redis.pipeline()` so
-each auth request stays one network round-trip. A sequential
-`await get` then `await get` would silently regress fleet-scale
-auth latency.
+**Latency + bearer-resurrection** (closes guard R2 N5 + builder
+R2 + builder R3 on PR #503): auth needs a hash-index read AND an
+envelope read AND a check that the envelope's `tokenHash` matches
+the presented bearer's SHA-256. The two reads are DEPENDENT —
+the envelope key requires `{installationId, name}` returned by
+the first read — so they CAN'T be batched via
+`redis.pipeline()`; the second key constructor depends on the
+first read's result.
 
-**Bearer-resurrection invariant** (closes builder R2 on PR #503):
-the hash index is intentionally NOT TTL'd (per the storage table
-TTL column rationale), so an explicit-expiry token whose envelope
+(Earlier drafts of this section had a `redis.pipeline().get().get()`
+pseudocode that builder R3 correctly identified as impossible.)
+
+The shipped pattern is a single Lua EVAL — `RESOLVE_BEARER_SCRIPT`
+— that does both reads + the bearer-resurrection check
+server-side. One Redis round-trip, no JS-side ordering bug
+possible. The script is in §Atomic operations below; the
+TypeScript wrapper is `web/src/server/agent-token-v1.ts:
+resolveBearerToEnvelope`. B.1.c middleware just consumes the
+typed result.
+
+**Why the `tokenHash` check is load-bearing.** The hash index is
+intentionally NOT TTL'd (per the storage-table TTL column —
+TTLing it risks dropping the index slightly before the envelope
+under clock skew). So an explicit-expiry token whose envelope
 gets swept by Redis leaves a stale hash record pointing at
 `{installationId, name}`. If the operator subsequently issues a
 NEW token with the SAME name (now permitted because
 `pruneOrphanedIndexEntries` cleared the sorted-set entry), the
-old bearer's hash → name → envelope path would resolve to the
-NEW envelope without an additional check.
+OLD bearer's hash → name → envelope path would resolve to the
+NEW envelope's identity. The script's
+`envelope.tokenHash != presentedHash → {-3, "stale_bearer"}`
+branch is what closes this. Middleware translates `stale_bearer`
+to 401 TOKEN_EXPIRED.
 
-The middleware MUST reject this case by comparing the presented
-bearer's SHA-256 against the loaded envelope's `tokenHash` field
-and rejecting on mismatch. This is the invariant that lets the
-hash index remain non-TTL safely:
-
-```
-const presentedHash = sha256(rawBearer);
-const [hashRecord, envelope] = await redis.pipeline()
-  .get(`hive:v1:idx:agent-token:hash:${presentedHash}`)
-  .get(`hive:v1:agent-token:${installationId}:${name}`)
-  .all();
-
-if (!envelope || envelope.tokenHash !== presentedHash) {
-  // Stale hash index pointing at a since-reissued name, OR
-  // envelope swept by Redis TTL. Surface as TOKEN_EXPIRED so
-  // the operator knows to re-issue / re-authenticate.
-  return reject(TOKEN_EXPIRED);
-}
-```
-
-Acceptance criterion for B.1.c: a regression test demonstrates
-the scenario "issue → wait for TTL → reissue same name → present
-old bearer → middleware returns TOKEN_EXPIRED (NOT auth success
-under new envelope's identity)."
-
-A unit test on the auth path also asserts on the call shape so
-a future refactor can't silently switch to sequential gets.
+**Acceptance criterion for B.1.c**: a regression test demonstrates
+"issue → TTL-sweep envelope → reissue same name → present old
+bearer → middleware returns 401 TOKEN_EXPIRED (NOT auth success
+under new envelope's identity)." B.1.b ships the storage-state
+demonstration of the scenario in `agent-token-v1.test.ts`'s
+"bearer-resurrection invariant" test + exercises the resolver
+script's `stale_bearer` branch directly via
+`resolveBearerToEnvelope` end-to-end.
 
 ### Storage layout (Redis)
 
@@ -291,6 +289,45 @@ if ARGV[3] ~= "" then
 end
 return {1}
 ```
+
+**`RESOLVE_BEARER_SCRIPT`** — single-RTT bearer→envelope
+resolution. Closes builder R3 on PR #503: the dependent reads
+(envelope key needs `{installationId, name}` from the hash
+record) can't be batched at the JS layer, so the read +
+bearer-resurrection check happens in one Lua EVAL.
+
+```lua
+-- KEYS: [hashIndexKey]
+-- ARGV: [envelopeKeyPrefix, presentedHash]
+--   envelopeKeyPrefix = "hive:v1:agent-token:" — passed as ARGV
+--                       so the prefix lives in TS code (single
+--                       source of truth) rather than Lua.
+-- Returns:
+--   {1, envelopeJson}              success
+--   {-1, "unknown_bearer"}         hash index miss
+--   {-2, "envelope_missing"}       hash record points at TTL-swept
+--                                  or revoked envelope
+--   {-3, "stale_bearer"}           bearer-resurrection scenario:
+--                                  envelope.tokenHash differs from
+--                                  presentedHash (same-name
+--                                  reissue race; see
+--                                  §"Latency + bearer-resurrection")
+local hashRecord = redis.call("get", KEYS[1])
+if not hashRecord then return {-1, "unknown_bearer"} end
+local parsed = cjson.decode(hashRecord)
+local envKey = ARGV[1] .. parsed.installationId .. ":" .. parsed.name
+local envelope = redis.call("get", envKey)
+if not envelope then return {-2, "envelope_missing"} end
+local envParsed = cjson.decode(envelope)
+if envParsed.tokenHash ~= ARGV[2] then return {-3, "stale_bearer"} end
+return {1, envelope}
+```
+
+Middleware (B.1.c) wraps this via `resolveBearerToEnvelope`:
+maps each failure code to its HTTP response (`unknown_bearer` /
+`envelope_missing` → 401 invalid-bearer; `stale_bearer` → 401
+TOKEN_EXPIRED), then on success applies the `expiresAt` wall-clock
+check and the per-endpoint `requires` capability check.
 
 **`ROTATE_TOKEN_SCRIPT`** — atomically replaces the bearer for an
 existing named token (closes hivemoot reviewer #5 issue 1: prior

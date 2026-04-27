@@ -25,6 +25,7 @@ import {
   listAgentTokens,
   getAgentTokenSummary,
   pruneOrphanedIndexEntries,
+  resolveBearerToEnvelope,
   // Helpers we want to unit-test directly
   computeEnvelopeTtlSeconds,
   envelopeKey,
@@ -132,6 +133,27 @@ function makeMockRedis() {
         }
         store.set(envelopeK, env);
         return [1];
+      }
+
+      // RESOLVE_BEARER_SCRIPT — 1 key, 2 args (R3: + envelopePrefix + presentedHash)
+      if (
+        keys.length === 1 &&
+        argv.length === 2 &&
+        script.includes("unknown_bearer")
+      ) {
+        const [hashIdxK] = keys;
+        const [envelopePrefix, presentedHash] = argv;
+        const hashRecord = store.get(hashIdxK) as
+          | { installationId: string; name: string }
+          | undefined;
+        if (!hashRecord) return [-1, "unknown_bearer"];
+        const envKey = `${envelopePrefix}${hashRecord.installationId}:${hashRecord.name}`;
+        const envelope = store.get(envKey) as
+          | { tokenHash: string }
+          | undefined;
+        if (!envelope) return [-2, "envelope_missing"];
+        if (envelope.tokenHash !== presentedHash) return [-3, "stale_bearer"];
+        return [1, JSON.stringify(envelope)];
       }
 
       // ROTATE_TOKEN_SCRIPT — 4 keys, 5 args (R2: + auditStreamKey + name first + auditEntry)
@@ -939,6 +961,112 @@ describe("bearer-resurrection invariant (builder R2 on PR #503)", () => {
     expect(presentedHashIfBearerAUsed).not.toBe(newEnvelope.tokenHash);
     // ↑ this is the assertion the B.1.c middleware translates into
     // a 401 TOKEN_EXPIRED response.
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveBearerToEnvelope — single-RTT bearer resolution (R3 fix for builder)
+// ---------------------------------------------------------------------------
+
+describe("resolveBearerToEnvelope (R3 fix — replaces broken pipeline pseudocode)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("returns ok=true with the envelope when bearer is valid", async () => {
+    const issued = await issueAgentToken(defaultIssueArgs(redis));
+    const result = await resolveBearerToEnvelope({
+      rawBearer: issued.token,
+      redis,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.envelope.name).toBe("worker");
+      expect(result.envelope.agent_role).toBe("drone");
+      expect(result.envelope.capabilities).toEqual([
+        "agent_health.report",
+        "tasks.claim",
+      ]);
+      // Envelope carries the SHA-256-derived fingerprint, not bearer suffix
+      expect(result.envelope.fingerprint).toBe(
+        createHash("sha256").update(issued.token).digest("hex").slice(0, 8),
+      );
+    }
+  });
+
+  it("returns code=unknown_bearer when the hash index has no entry", async () => {
+    const result = await resolveBearerToEnvelope({
+      rawBearer: "deadbeef".repeat(8), // 64 chars, valid shape but never issued
+      redis,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("unknown_bearer");
+  });
+
+  it("returns code=envelope_missing when hash record points at a TTL-swept envelope", async () => {
+    const issued = await issueAgentToken(defaultIssueArgs(redis));
+    // Simulate Redis TTL sweep on the envelope (hash index intentionally
+    // not TTL'd, so it lingers).
+    redis._store.delete(envelopeKey("12345", "worker"));
+
+    const result = await resolveBearerToEnvelope({
+      rawBearer: issued.token,
+      redis,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("envelope_missing");
+  });
+
+  it("returns code=stale_bearer for the bearer-resurrection scenario (closes builder R2 invariant end-to-end)", async () => {
+    // 1. Issue token A
+    const tokenA = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+    });
+    // 2. TTL-sweep A's envelope
+    redis._store.delete(envelopeKey("12345", "worker"));
+    // 3. Reissue under same name → token B
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+      capabilities: ["rooms.read"],
+    });
+
+    // 4. Bearer A presented now: the resolver SHOULD reject as
+    //    stale_bearer because envelope.tokenHash (B's) != sha256(A).
+    //    This is the bearer-resurrection close.
+    const result = await resolveBearerToEnvelope({
+      rawBearer: tokenA.token,
+      redis,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("stale_bearer");
+  });
+
+  it("succeeds for the NEW bearer after a same-name reissue (B doesn't get rejected)", async () => {
+    // Same setup as bearer-resurrection test, but verify token B (the
+    // legitimate new bearer) is not collateral damage.
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+    });
+    redis._store.delete(envelopeKey("12345", "worker"));
+    const tokenB = await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      name: "worker",
+      capabilities: ["rooms.read"],
+    });
+
+    const result = await resolveBearerToEnvelope({
+      rawBearer: tokenB.token,
+      redis,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // It's B's envelope (the new one with rooms.read)
+      expect(result.envelope.capabilities).toEqual(["rooms.read"]);
+    }
   });
 });
 

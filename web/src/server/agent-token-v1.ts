@@ -354,6 +354,66 @@ return {1}
 `;
 
 /**
+ * RESOLVE_BEARER_SCRIPT — single-RTT bearer→envelope resolution.
+ *
+ * Closes builder R3: the design doc's earlier "pipeline both reads"
+ * pseudocode was impossible because the envelope key requires
+ * `{installationId, name}` from the hash record returned by the
+ * FIRST get. The reads are dependent, so a JS-side
+ * `redis.pipeline().get().get().all()` can't construct the second
+ * key before the pipeline has run.
+ *
+ * Resolution: do both reads + the bearer-resurrection invariant
+ * check (`envelope.tokenHash === presentedHash`) inside a single
+ * Lua EVAL. The script:
+ *   1. GET the hash index for the presented bearer.
+ *   2. If missing → `{-1, "unknown_bearer"}`.
+ *   3. cjson.decode the hash record → `{installationId, name}`.
+ *   4. Compute the envelope key in Lua + GET it.
+ *   5. If missing → `{-2, "envelope_missing"}` (TTL-swept or
+ *      revoke race).
+ *   6. cjson.decode the envelope + check `envelope.tokenHash ===
+ *      ARGV[2]`. If mismatch → `{-3, "stale_bearer"}` (the
+ *      same-name-reissue bearer-resurrection scenario the storage
+ *      shape is designed to defend against — see the BEARER-
+ *      RESURRECTION INVARIANT block at the top of this file).
+ *   7. Otherwise return `{1, envelopeJson}`.
+ *
+ * Middleware (B.1.c) then:
+ *   - Checks `envelope.expiresAt` against current time (Lua can't
+ *     reliably compare wall-clock time across instances; the +300s
+ *     TTL margin guarantees the envelope outlives its expiresAt
+ *     by at least 5 min so this check is the user-visible gate).
+ *   - Returns the typed auth result with capabilities + agent_role.
+ *
+ * KEYS: [hashIndexKey]
+ * ARGV: [envelopeKeyPrefix, presentedHash]
+ *   envelopeKeyPrefix = "hive:v1:agent-token:" — passed as ARGV
+ *                       so the prefix lives in TS code (single
+ *                       source of truth) rather than the Lua
+ *                       string. Lua does
+ *                         envelopeKey = prefix + installationId
+ *                                      + ":" + name
+ *
+ * Returns:
+ *   {1, envelopeJson}              success — caller cjson.parses + uses
+ *   {-1, "unknown_bearer"}         hash index miss
+ *   {-2, "envelope_missing"}       hash record points at a TTL'd or revoked envelope
+ *   {-3, "stale_bearer"}           bearer-resurrection: hash → envelope but envelope.tokenHash differs
+ */
+const RESOLVE_BEARER_SCRIPT = `
+local hashRecord = redis.call("get", KEYS[1])
+if not hashRecord then return {-1, "unknown_bearer"} end
+local parsed = cjson.decode(hashRecord)
+local envKey = ARGV[1] .. parsed.installationId .. ":" .. parsed.name
+local envelope = redis.call("get", envKey)
+if not envelope then return {-2, "envelope_missing"} end
+local envParsed = cjson.decode(envelope)
+if envParsed.tokenHash ~= ARGV[2] then return {-3, "stale_bearer"} end
+return {1, envelope}
+`;
+
+/**
  * ROTATE_TOKEN_SCRIPT — atomic bearer swap. Replaces the envelope +
  * the hash index under the same name with a new bearer's hash record
  * + freshly-encrypted envelope. The previous hash index is DELed in
@@ -464,10 +524,10 @@ function dispatchScriptResult(raw: unknown): ScriptResult {
   }
   const tag = Number(raw[0]);
   const payload = raw.length > 1 ? String(raw[1]) : undefined;
-  return {
-    ok: tag,
-    reason: tag === 0 || tag === -1 ? payload : undefined,
-  };
+  // Pass payload through for ALL tags. For success (tag === 1) it
+  // can carry an envelope/name/etc; for non-success tags it carries
+  // the named discriminator (REDIS_KEY_CONVENTION.md `{0, "<reason>"}`).
+  return { ok: tag, reason: payload };
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1010,89 @@ export async function pruneOrphanedIndexEntries(args: {
     ),
   );
   return orphans.length;
+}
+
+/**
+ * Resolve a presented bearer to the full envelope in ONE Redis
+ * round-trip. Used by B.1.c middleware to authenticate incoming
+ * requests; the returned envelope carries everything the
+ * `requires` capability check needs (capabilities, agent_role,
+ * installationId, policy, expiresAt).
+ *
+ * Returns:
+ *   - `{ ok: true, envelope }` when the bearer is valid and
+ *     binds to a current envelope (tokenHash matched).
+ *   - `{ ok: false, code: "unknown_bearer" }` when the hash index
+ *     misses (bearer never existed OR was revoked).
+ *   - `{ ok: false, code: "envelope_missing" }` when the hash
+ *     record points at an envelope that was Redis-TTL-swept or
+ *     concurrently revoked.
+ *   - `{ ok: false, code: "stale_bearer" }` when the envelope
+ *     exists but its tokenHash differs from the presented bearer's
+ *     SHA-256 — the bearer-resurrection scenario (see the
+ *     BEARER-RESURRECTION INVARIANT docblock at top of file).
+ *
+ * Caller (B.1.c middleware) maps each failure code to its
+ * appropriate HTTP response:
+ *   - unknown_bearer / envelope_missing → 401 Invalid bearer
+ *   - stale_bearer → 401 TOKEN_EXPIRED (semantically: the bearer
+ *     points at a name whose envelope has been replaced; from
+ *     the caller's perspective the bearer no longer maps to its
+ *     identity)
+ *   - ok → caller checks `envelope.expiresAt` against the wall
+ *     clock + checks the `requires` capability per
+ *     `bearerHasCapability(envelope.capabilities, requires)`.
+ *
+ * The returned envelope INCLUDES the encrypted ciphertext fields
+ * (the middleware doesn't decrypt; it only reads metadata). Callers
+ * MUST NOT log the envelope object verbatim — it carries the
+ * encrypted bearer ciphertext which would defeat the audit-stream
+ * "fingerprint, never raw bearer" rule.
+ */
+export type ResolveBearerResult =
+  | { ok: true; envelope: AgentTokenEnvelopeV1 }
+  | {
+      ok: false;
+      code: "unknown_bearer" | "envelope_missing" | "stale_bearer";
+    };
+
+export async function resolveBearerToEnvelope(args: {
+  rawBearer: string;
+  redis: Redis;
+}): Promise<ResolveBearerResult> {
+  const presentedHash = hashToken(args.rawBearer);
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      RESOLVE_BEARER_SCRIPT,
+      [hashIndexKey(presentedHash)],
+      [ENVELOPE_PREFIX, presentedHash],
+    ),
+  );
+  if (result.ok === 1) {
+    // payload is the envelope JSON returned by the Lua script
+    const envelopeJson = result.reason;
+    if (envelopeJson === undefined) {
+      throw new Error(
+        "RESOLVE_BEARER_SCRIPT returned ok=1 with no envelope payload",
+      );
+    }
+    return {
+      ok: true,
+      envelope: JSON.parse(envelopeJson) as AgentTokenEnvelopeV1,
+    };
+  }
+  if (result.ok === -1 && result.reason === "unknown_bearer") {
+    return { ok: false, code: "unknown_bearer" };
+  }
+  if (result.ok === -2 && result.reason === "envelope_missing") {
+    return { ok: false, code: "envelope_missing" };
+  }
+  if (result.ok === -3 && result.reason === "stale_bearer") {
+    return { ok: false, code: "stale_bearer" };
+  }
+  throw new Error(
+    `RESOLVE_BEARER_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
 }
 
 /** Read a single token summary by name. Throws TokenNotFoundError. */
