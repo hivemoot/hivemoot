@@ -63,19 +63,31 @@ interface AgentTokenEnvelope {
   name: string;               // operator-chosen, unique per (installationId, name)
   agent_role: string;         // e.g. "drone", "queen", "apiarist"; bound at issue,
                               // server-derived for any role-bearing API call
+  capabilities: string[];     // REQUIRED, ≥1 entry, gates hivemoot.dev API.
+                              // Top-level (NOT nested under policy) per the
+                              // B.1.b implementation: required fields stay
+                              // top-level; the optional V1.5+ policy container
+                              // holds optional GitHub-narrowing fields.
 
-  // — policy (gains capabilities; existing fields stay) —
-  policy: {
+  // — V1.5+/V1.6 GitHub-narrowing policy (optional container) —
+  policy?: {
     allowed_repos?: string[];        // V1.5 — repo narrowing for installation-token mints
     allowed_permissions?: {          // V1.6 (Phase C) — GitHub permission narrowing
       contents?: "read" | "write";
       pull_requests?: "read" | "write";
       issues?: "read" | "write";
     };
-    capabilities: string[];          // NEW — required, ≥1 entry, gates hivemoot.dev API
   };
 }
 ```
+
+**Schema note** (closes guard R1 G2 on PR #503): an earlier draft of
+this section nested `capabilities` inside `policy`. The shipping
+shape above hoists it to the top level — `capabilities` is required,
+and pulling it out of the optional `policy` container makes the type
+narrower and the middleware import simpler (`envelope.capabilities`,
+not `envelope.policy.capabilities`). The `policy` container retains
+only the optional V1.5/V1.6 GitHub-narrowing fields.
 
 **Strict-mode notes:**
 - Envelopes loaded WITHOUT `name` → 401 with `code:
@@ -107,25 +119,48 @@ interface AgentTokenHashRecord {
 }
 ```
 
-**Latency note** (closes guard R2 N5): the V1.5→V1.6 transition
-adds a second Redis read per auth (hash index + envelope). The
-implementation MUST batch both reads via `redis.pipeline()` so
-each auth request stays one network round-trip. A sequential
-`await get` then `await get` would silently regress fleet-scale
-auth latency. Pseudocode (concrete pattern):
+**Latency + bearer-resurrection** (closes guard R2 N5 + builder
+R2 + builder R3 on PR #503): auth needs a hash-index read AND an
+envelope read AND a check that the envelope's `tokenHash` matches
+the presented bearer's SHA-256. The two reads are DEPENDENT —
+the envelope key requires `{installationId, name}` returned by
+the first read — so they CAN'T be batched via
+`redis.pipeline()`; the second key constructor depends on the
+first read's result.
 
-```
-const [hashRecord, envelope] = await redis.pipeline()
-  .get(`hive:v1:idx:agent-token:hash:${tokenHash}`)
-  .get(`hive:v1:agent-token:${installationId}:${name}`)
-  .all();
-```
+(Earlier drafts of this section had a `redis.pipeline().get().get()`
+pseudocode that builder R3 correctly identified as impossible.)
 
-(Pseudocode uses the canonical v1 key shapes from the storage
-table — closes guard G-R2.2-1 doc-drift.)
+The shipped pattern is a single Lua EVAL — `RESOLVE_BEARER_SCRIPT`
+— that does both reads + the bearer-resurrection check
+server-side. One Redis round-trip, no JS-side ordering bug
+possible. The script is in §Atomic operations below; the
+TypeScript wrapper is `web/src/server/agent-token-v1.ts:
+resolveBearerToEnvelope`. B.1.c middleware just consumes the
+typed result.
 
-A unit test on the auth path asserts on the call shape so a future
-refactor can't silently switch to sequential gets.
+**Why the `tokenHash` check is load-bearing.** The hash index is
+intentionally NOT TTL'd (per the storage-table TTL column —
+TTLing it risks dropping the index slightly before the envelope
+under clock skew). So an explicit-expiry token whose envelope
+gets swept by Redis leaves a stale hash record pointing at
+`{installationId, name}`. If the operator subsequently issues a
+NEW token with the SAME name (now permitted because
+`pruneOrphanedIndexEntries` cleared the sorted-set entry), the
+OLD bearer's hash → name → envelope path would resolve to the
+NEW envelope's identity. The script's
+`envelope.tokenHash != presentedHash → {-3, "stale_bearer"}`
+branch is what closes this. Middleware translates `stale_bearer`
+to 401 TOKEN_EXPIRED.
+
+**Acceptance criterion for B.1.c**: a regression test demonstrates
+"issue → TTL-sweep envelope → reissue same name → present old
+bearer → middleware returns 401 TOKEN_EXPIRED (NOT auth success
+under new envelope's identity)." B.1.b ships the storage-state
+demonstration of the scenario in `agent-token-v1.test.ts`'s
+"bearer-resurrection invariant" test + exercises the resolver
+script's `stale_bearer` branch directly via
+`resolveBearerToEnvelope` end-to-end.
 
 ### Storage layout (Redis)
 
@@ -153,14 +188,23 @@ sorted-set/`SADD` mismatch + guard R2 N1 (atomic limit) + builder
 R2.2 (envelope TTL contract for `--expires-in` tokens).
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey]
--- ARGV: [installationId, name, envelopeJson, hashRecordJson,
---        createdAtMs, tokenLimit, expirySecsOrZero]
+-- R2 shipping shape (matches web/src/server/agent-token-v1.ts):
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, auditStreamKey]
+-- ARGV: [name, envelopeJson, hashRecordJson, createdAtMs,
+--        tokenLimit, expirySecsOrZero, auditEntryJsonOrEmpty]
 --   expirySecsOrZero: 0 = no TTL (expiresAt: null tokens);
 --                     positive int = (expiresAt - now() + 300)
 --                     where +300 is the clock-skew safety margin
 --                     (closes guard R2.1 G-R2.1-4 + builder R2.2
 --                     "TTL contract not implemented in script")
+--   auditEntryJsonOrEmpty: pre-built audit entry JSON, or "" to
+--                          skip the XADD. Atomic-audit guarantee
+--                          per guard R1 G1 on PR #503: audit emit
+--                          inside the same EVAL when non-empty.
+--   installationId is encoded in the envelope KEY's prefix; the
+--                  script never uses it directly (was in design's
+--                  earlier 7-arg form; impl drops the redundant
+--                  arg per guard R1 G8 on PR #503).
 -- Returns:
 --   {1, name}                success
 --   {0, "name_taken"}        name already exists
@@ -168,15 +212,18 @@ R2.2 (envelope TTL contract for `--expires-in` tokens).
 local existing = redis.call("get", KEYS[1])
 if existing then return {0, "name_taken"} end
 local count = redis.call("zcard", KEYS[3])
-if count >= tonumber(ARGV[6]) then return {-1, "limit"} end
-if tonumber(ARGV[7]) > 0 then
-  redis.call("set", KEYS[1], ARGV[3], "EX", tonumber(ARGV[7]))
+if count >= tonumber(ARGV[5]) then return {-1, "limit"} end
+if tonumber(ARGV[6]) > 0 then
+  redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[6]))
 else
-  redis.call("set", KEYS[1], ARGV[3])
+  redis.call("set", KEYS[1], ARGV[2])
 end
-redis.call("set", KEYS[2], ARGV[4])
-redis.call("zadd", KEYS[3], tonumber(ARGV[5]), ARGV[2])
-return {1, ARGV[2]}
+redis.call("set", KEYS[2], ARGV[3])
+redis.call("zadd", KEYS[3], tonumber(ARGV[4]), ARGV[1])
+if ARGV[7] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[7])
+end
+return {1, ARGV[1]}
 ```
 
 The hash index is intentionally NOT TTL'd at issue: middleware
@@ -198,8 +245,9 @@ index + installation sorted-set membership + meta). Closes hivemoot
 reviewer #3 (3+ keys atomic) + builder R2.1 sorted-set parity.
 
 ```lua
--- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey]
--- ARGV: [name]
+-- R2 shipping shape:
+-- KEYS: [envelopeKey, hashIndexKey, installationSortedSetKey, metaKey, auditStreamKey]
+-- ARGV: [name, auditEntryJsonOrEmpty]
 -- Returns:
 --   {1, name}    success (envelope existed, all keys cleaned)
 --   {0, name}    nothing to revoke (envelope already gone)
@@ -207,6 +255,9 @@ local existed = redis.call("del", KEYS[1])
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[4])
 redis.call("zrem", KEYS[3], ARGV[1])
+if ARGV[2] ~= "" then
+  redis.call("xadd", KEYS[5], "MAXLEN", "~", "10000", "*", "entry", ARGV[2])
+end
 if existed == 0 then return {0, ARGV[1]} end
 return {1, ARGV[1]}
 ```
@@ -220,22 +271,63 @@ not by token lifetime.
 field on the envelope, with audit emission.
 
 ```lua
+-- R2 shipping shape:
 -- KEYS: [envelopeKey, auditStreamKey]
--- ARGV: [newEnvelopeJson, auditEntryJson, expirySecsOrZero]
+-- ARGV: [newEnvelopeJson, expirySecsOrZero, auditEntryJsonOrEmpty]
 -- Returns:
---   {1}          success
---   {-1}         envelope missing (race with revoke; caller surfaces 404)
+--   {1}                  success
+--   {-1, "no_envelope"}  envelope missing (race with revoke; caller surfaces 404)
 local existing = redis.call("get", KEYS[1])
-if not existing then return {-1} end
-if tonumber(ARGV[3]) > 0 then
-  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[3]))
+if not existing then return {-1, "no_envelope"} end
+if tonumber(ARGV[2]) > 0 then
+  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[2]))
 else
   redis.call("set", KEYS[1], ARGV[1])
 end
-redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*",
-                   "entry", ARGV[2])
+if ARGV[3] ~= "" then
+  redis.call("xadd", KEYS[2], "MAXLEN", "~", "10000", "*", "entry", ARGV[3])
+end
 return {1}
 ```
+
+**`RESOLVE_BEARER_SCRIPT`** — single-RTT bearer→envelope
+resolution. Closes builder R3 on PR #503: the dependent reads
+(envelope key needs `{installationId, name}` from the hash
+record) can't be batched at the JS layer, so the read +
+bearer-resurrection check happens in one Lua EVAL.
+
+```lua
+-- KEYS: [hashIndexKey]
+-- ARGV: [envelopeKeyPrefix, presentedHash]
+--   envelopeKeyPrefix = "hive:v1:agent-token:" — passed as ARGV
+--                       so the prefix lives in TS code (single
+--                       source of truth) rather than Lua.
+-- Returns:
+--   {1, envelopeJson}              success
+--   {-1, "unknown_bearer"}         hash index miss
+--   {-2, "envelope_missing"}       hash record points at TTL-swept
+--                                  or revoked envelope
+--   {-3, "stale_bearer"}           bearer-resurrection scenario:
+--                                  envelope.tokenHash differs from
+--                                  presentedHash (same-name
+--                                  reissue race; see
+--                                  §"Latency + bearer-resurrection")
+local hashRecord = redis.call("get", KEYS[1])
+if not hashRecord then return {-1, "unknown_bearer"} end
+local parsed = cjson.decode(hashRecord)
+local envKey = ARGV[1] .. parsed.installationId .. ":" .. parsed.name
+local envelope = redis.call("get", envKey)
+if not envelope then return {-2, "envelope_missing"} end
+local envParsed = cjson.decode(envelope)
+if envParsed.tokenHash ~= ARGV[2] then return {-3, "stale_bearer"} end
+return {1, envelope}
+```
+
+Middleware (B.1.c) wraps this via `resolveBearerToEnvelope`:
+maps each failure code to its HTTP response (`unknown_bearer` /
+`envelope_missing` → 401 invalid-bearer; `stale_bearer` → 401
+TOKEN_EXPIRED), then on success applies the `expiresAt` wall-clock
+check and the per-endpoint `requires` capability check.
 
 **`ROTATE_TOKEN_SCRIPT`** — atomically replaces the bearer for an
 existing named token (closes hivemoot reviewer #5 issue 1: prior
@@ -243,23 +335,25 @@ revoke+issue path produced a downtime window because the bearer
 became invalid for in-flight requests between the two ops).
 
 ```lua
+-- R2 shipping shape:
 -- KEYS: [envelopeKey, oldHashIndexKey, newHashIndexKey, auditStreamKey]
--- ARGV: [newEnvelopeJson, newHashRecordJson, auditEntryJson, expirySecsOrZero]
+-- ARGV: [name, newEnvelopeJson, newHashRecordJson, expirySecsOrZero, auditEntryJsonOrEmpty]
 -- Returns:
---   {1}                success
+--   {1, name}              success
 --   {-1, "no_envelope"}    name doesn't exist (race with revoke)
 local existing = redis.call("get", KEYS[1])
 if not existing then return {-1, "no_envelope"} end
 redis.call("del", KEYS[2])                            -- old hash index
 if tonumber(ARGV[4]) > 0 then
-  redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[4]))
+  redis.call("set", KEYS[1], ARGV[2], "EX", tonumber(ARGV[4]))
 else
-  redis.call("set", KEYS[1], ARGV[1])
+  redis.call("set", KEYS[1], ARGV[2])
 end
-redis.call("set", KEYS[3], ARGV[2])                   -- new hash index
-redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*",
-                   "entry", ARGV[3])
-return {1}
+redis.call("set", KEYS[3], ARGV[3])                   -- new hash index
+if ARGV[5] ~= "" then
+  redis.call("xadd", KEYS[4], "MAXLEN", "~", "10000", "*", "entry", ARGV[5])
+end
+return {1, ARGV[1]}
 ```
 
 The new bearer is reachable via the new hash index immediately;
