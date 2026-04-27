@@ -297,16 +297,29 @@ record) can't be batched at the JS layer, so the read +
 bearer-resurrection check happens in one Lua EVAL.
 
 ```lua
+-- B.1.c shipping shape (matches web/src/server/agent-token-v1.ts):
 -- KEYS: [hashIndexKey]
 -- ARGV: [envelopeKeyPrefix, presentedHash]
 --   envelopeKeyPrefix = "hive:v1:agent-token:" — passed as ARGV
 --                       so the prefix lives in TS code (single
 --                       source of truth) rather than Lua.
 -- Returns:
---   {1, envelopeJson}              success
+--   {1, envelopeJson, installationId}
+--                                  success — caller cjson.parses
+--                                  envelope; installationId is
+--                                  surfaced from the hash record
+--                                  so the middleware can build
+--                                  the meta-key (lastUsedAt
+--                                  write) and return it on the
+--                                  auth result without an extra
+--                                  round-trip. The V1 envelope
+--                                  schema does NOT carry
+--                                  installationId; it lives only
+--                                  in the storage key + the hash
+--                                  record.
 --   {-1, "unknown_bearer"}         hash index miss
 --   {-2, "envelope_missing"}       hash record points at TTL-swept
---                                  or revoked envelope
+--                                  or evicted envelope
 --   {-3, "stale_bearer"}           bearer-resurrection scenario:
 --                                  envelope.tokenHash differs from
 --                                  presentedHash (same-name
@@ -320,14 +333,32 @@ local envelope = redis.call("get", envKey)
 if not envelope then return {-2, "envelope_missing"} end
 local envParsed = cjson.decode(envelope)
 if envParsed.tokenHash ~= ARGV[2] then return {-3, "stale_bearer"} end
-return {1, envelope}
+return {1, envelope, parsed.installationId}
 ```
 
-Middleware (B.1.c) wraps this via `resolveBearerToEnvelope`:
-maps each failure code to its HTTP response (`unknown_bearer` /
-`envelope_missing` → 401 invalid-bearer; `stale_bearer` → 401
-TOKEN_EXPIRED), then on success applies the `expiresAt` wall-clock
-check and the per-endpoint `requires` capability check.
+Middleware (B.1.c, see
+`web/src/server/agent-token-v1-auth.ts`) wraps this via
+`resolveBearerToEnvelope` and maps each failure code to its
+HTTP response:
+
+- `unknown_bearer` → 401 `agent_auth_v1_unknown_bearer`
+  ("Invalid or unknown bearer"). Hash index miss = bearer was
+  never issued OR was revoked (revoke DELs the hash index).
+- `envelope_missing` → 401 `agent_auth_v1_token_expired`
+  ("Token expired or superseded"). Hash record exists but envelope
+  is gone. Most likely cause: Redis TTL swept the explicit-expiry
+  envelope past the +300s skew margin (hash index intentionally
+  NOT TTL'd to avoid clock-skew dropping it before the envelope).
+  Closes guard R1 G2 + builder R1 #1 on PR #504 — earlier draft
+  mapped this to `unknown_bearer`, which would tell a legitimate-
+  but-expired caller their bearer was "never issued."
+- `stale_bearer` → 401 `agent_auth_v1_token_expired`. Bearer-
+  resurrection: envelope.tokenHash differs from presentedHash;
+  the bearer's name was reissued under a new envelope.
+
+On success, middleware applies the wall-clock `expiresAt` check
+(envelope-side is the user-visible gate) and the per-endpoint
+`requires` capability check via `bearerHasCapability`.
 
 **`ROTATE_TOKEN_SCRIPT`** — atomically replaces the bearer for an
 existing named token (closes hivemoot reviewer #5 issue 1: prior
