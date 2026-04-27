@@ -242,7 +242,7 @@ Primary records:
 | `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
 | `hive:v1:room:{roomId}:contributions` | hash | Inherits room TTL | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
 | `hive:v1:room:{roomId}:seq` | counter | Inherits room TTL | Monotonic event sequence (`INCR` per event) |
-| `hive:v1:room:{roomId}:claim` | string | **6 min** (intentionally 1 min ABOVE Vercel Pro `maxDuration` of 5 min — closes guard R3 N7 recovery-vs-synthesis double-post race) | Synthesis claim: → `{queenRunner, claimedThroughSequence}` (auto-revert on queen crash — see §Force-close vs queen mid-decide race) |
+| `hive:v1:room:{roomId}:claim` | string | **6 min** (intentionally 1 min ABOVE Vercel Pro `maxDuration` of 5 min — closes guard R3 N7 recovery-vs-synthesis double-post race) | Synthesis claim: → `{queenRunner, claimedThroughSequence}`. TTL deletes the claim KEY only; the room hash + status set are reverted on the next manager-loop tick by `ROOM_RECOVER_DECIDING_SCRIPT` — see §Atomic operations and §Manager loop / Recovery branch. |
 
 Secondary indexes:
 
@@ -1235,7 +1235,7 @@ the watchdog → rooms accumulate silently. V1 ships:
 |---|---|---|
 | `rooms_past_max_age_count` | scan `hive:v1:idx:room:status:*` filtered by `opened_at` | > 0 for > 5 min |
 | `time_since_last_timeout_emit` | bot-side counter, reset on each emit | > 10 min when there are pending RSVPs |
-| `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 90s (3× tick interval) |
+| `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 180s (3× 60s tick interval) |
 | `claim_held_too_long` | scan `hive:v1:room:*:claim` ages | any claim > 6 min (= TTL) |
 
 Alerts wire into the same channel the dashboard's existing
@@ -1474,11 +1474,20 @@ fire on rooms still within the age ceiling.
 ### J. Single queen instance vs sharded?
 
 Single queen for V1. The bot is single-instance per Vercel deploy
-already. Queen-restart safety: the 6-minute claim TTL on
-`hive:v1:room:*:claim` auto-reverts a `deciding` room to
-`awaiting_contributions` if queen crashes mid-synthesis
-(§Storage layout / `ROOM_DECIDE_CLAIM_SCRIPT`). No `/unclaim`
-endpoint exposed publicly; queen's own abort path uses
+already. Queen-restart safety is a **two-step** sequence (closes
+guard R4 #2 + builder R4 #2): the 6-minute claim TTL on
+`hive:v1:room:*:claim` deletes the claim KEY when queen crashes
+mid-synthesis, but the room hash + status set remain in `deciding`
+state. The actual revert happens on the next manager-loop tick: the
+recovery branch scans `hive:v1:idx:room:status:{installationId}:deciding`,
+calls `ROOM_RECOVER_DECIDING_SCRIPT` per stranded room (which
+returns `{0, "claim_active"}` for rooms whose claim still exists,
+or `{1, sequence}` for rooms with expired claims — atomically
+reverts hash + status sets to `awaiting_contributions` and emits a
+recovery event). See §Atomic operations / `ROOM_RECOVER_DECIDING_SCRIPT`
++ §Manager loop / "Recovery branch."
+
+No `/unclaim` endpoint exposed publicly; queen's own abort path uses
 `DELETE /api/rooms/{id}/claim` (queen-only capability).
 
 ---
