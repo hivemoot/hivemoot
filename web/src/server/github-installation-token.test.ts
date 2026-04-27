@@ -9,6 +9,7 @@ import { generateAppJwt } from "@/server/github-auth";
 import {
   mintInstallationToken,
   intersectPermissions,
+  InvalidPermissionLevelError,
   V1_PERMISSIONS,
   AppCredentialError,
   InstallationNotCoverageError,
@@ -451,6 +452,58 @@ describe("intersectPermissions (V1.6)", () => {
     expect(result).not.toHaveProperty("administration");
     expect(consoleWarn).toHaveBeenCalledWith(
       expect.stringContaining("administration"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  // R2 fix: fail-closed on invalid level values. The R1 review found
+  // that a typoed level like "typo" silently fell through to the default
+  // (e.g. pull_requests: "typo" → effective level "write" instead of
+  // failing the mint). For a narrowing primitive, fail-open is the
+  // worst possible failure direction.
+  it("invalid level value in narrow throws InvalidPermissionLevelError (fail-closed)", () => {
+    expect(() =>
+      intersectPermissions(V1_PERMISSIONS, {
+        pull_requests: "typo" as GitHubPermissionLevel,
+      }),
+    ).toThrow(InvalidPermissionLevelError);
+  });
+
+  it("invalid level error names the offending permission and value", () => {
+    let captured: InvalidPermissionLevelError | null = null;
+    try {
+      intersectPermissions(V1_PERMISSIONS, {
+        contents: "WRITE" as GitHubPermissionLevel,  // wrong case
+      });
+    } catch (e) {
+      captured = e as InvalidPermissionLevelError;
+    }
+    expect(captured).toBeInstanceOf(InvalidPermissionLevelError);
+    expect(captured?.message).toContain("contents");
+    expect(captured?.message).toContain("WRITE");
+    expect(captured?.errorCode).toBe("invalid_permission_level");
+    expect(captured?.httpStatus).toBe(400);
+  });
+
+  it("non-string level value (e.g. number from corrupted JSON) fails closed", () => {
+    expect(() =>
+      intersectPermissions(V1_PERMISSIONS, {
+        // Simulates a corrupted Redis envelope with non-string level
+        contents: 1 as unknown as GitHubPermissionLevel,
+      }),
+    ).toThrow(InvalidPermissionLevelError);
+  });
+
+  it("Object.prototype member name in narrow does NOT suppress the warning", () => {
+    // R2 G4: prior `key in defaults` check would walk the prototype chain
+    // and treat e.g. "toString" as "in defaults" because Object.prototype
+    // has toString. Fix uses hasOwnProperty.
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    intersectPermissions(V1_PERMISSIONS, {
+      toString: "read" as GitHubPermissionLevel,
+    });
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("toString"),
     );
     consoleWarn.mockRestore();
   });

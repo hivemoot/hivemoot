@@ -52,6 +52,22 @@ export const V1_PERMISSIONS: Readonly<Record<string, GitHubPermissionLevel>> =
 const PERMISSION_LEVEL_RANK: Readonly<Record<GitHubPermissionLevel, number>> =
   Object.freeze({ read: 1, write: 2, admin: 3 });
 
+// `InvalidPermissionLevelError` is declared further down (after `MintError`,
+// which it extends — TypeScript classes are not hoisted, so it must be
+// defined after its base class). Forward-declared here as a type-only
+// import for the `intersectPermissions` JSDoc cross-reference.
+
+function isValidPermissionLevel(value: unknown): value is GitHubPermissionLevel {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(PERMISSION_LEVEL_RANK, value)
+  );
+}
+
+const VALID_LEVELS = Object.freeze(
+  Object.keys(PERMISSION_LEVEL_RANK) as GitHubPermissionLevel[],
+);
+
 /**
  * Compute the effective permission set: intersect the default ceiling
  * with an optional per-token narrowing map.
@@ -61,19 +77,26 @@ const PERMISSION_LEVEL_RANK: Readonly<Record<GitHubPermissionLevel, number>> =
  *      behavior preserved for legacy / non-V1.6 tokens).
  *   2. For every key in `defaults`:
  *      - If `narrow` doesn't mention it → use the default level.
- *      - If `narrow` mentions it → take the LOWER of the two levels
- *        (read < write < admin). The token can narrow but never raise.
+ *      - If `narrow` mentions it with a VALID level → take the LOWER
+ *        of the two levels (read < write < admin). The token can
+ *        narrow but never raise.
+ *      - If `narrow` mentions it with an INVALID level (string that
+ *        isn't "read"|"write"|"admin", or non-string) → throw
+ *        {@link InvalidPermissionLevelError}. Fail closed.
  *   3. Keys present in `narrow` but absent from `defaults` are silently
  *      DROPPED (a token cannot grant scope the default doesn't have).
  *      A console warning is emitted so misconfigurations are visible
- *      in operator logs.
+ *      in operator logs. Uses `hasOwnProperty` (not `in`) to avoid
+ *      false positives on `Object.prototype` member names like
+ *      `toString`/`hasOwnProperty` themselves.
  *
  * Exported for unit testing; production callers should let
- * `mintInstallationToken` apply this internally.
+ * `mintInstallationToken` apply this internally (which translates
+ * thrown errors into structured 400 responses).
  */
 export function intersectPermissions(
   defaults: Readonly<Record<string, GitHubPermissionLevel>>,
-  narrow: Readonly<Record<string, GitHubPermissionLevel>> | undefined,
+  narrow: Readonly<Record<string, unknown>> | undefined,
 ): Record<string, GitHubPermissionLevel> {
   if (narrow === undefined) {
     // No narrowing requested — caller wants defaults verbatim.
@@ -87,6 +110,18 @@ export function intersectPermissions(
       out[key] = defaultLevel;
       continue;
     }
+    if (!isValidPermissionLevel(narrowLevel)) {
+      // Fail-closed: do NOT silently fall back to the default level.
+      // For a narrowing primitive, the safer behavior is to reject
+      // the mint entirely so the operator notices and fixes the
+      // policy. Caller (route handler) maps this to a 400 with the
+      // structured error code.
+      throw new InvalidPermissionLevelError(
+        key,
+        String(narrowLevel),
+        VALID_LEVELS,
+      );
+    }
     const defaultRank = PERMISSION_LEVEL_RANK[defaultLevel];
     const narrowRank = PERMISSION_LEVEL_RANK[narrowLevel];
     out[key] = narrowRank < defaultRank ? narrowLevel : defaultLevel;
@@ -96,8 +131,10 @@ export function intersectPermissions(
   // `defaults` — operator typo'd a permission name, or asked for a scope
   // V1_PERMISSIONS doesn't expose. The dropped keys still go to GitHub
   // through `out`, so the request is unaffected (those keys aren't there).
+  // Use hasOwnProperty so prototype-chain members ("toString" etc.) don't
+  // suppress legitimate warnings.
   for (const key of Object.keys(narrow)) {
-    if (!(key in defaults)) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, key)) {
       console.warn(
         `[mintInstallationToken] policy.allowed_permissions['${key}'] ignored — not in V1_PERMISSIONS`,
       );
@@ -248,6 +285,28 @@ export class GitHubUnavailableError extends MintError {
 export class InvalidMintRequestError extends MintError {
   constructor(detail: string) {
     super(`Invalid mint request: ${detail}`, 400, "invalid_mint_request");
+  }
+}
+
+/**
+ * Thrown when `allowed_permissions` carries a level value that isn't
+ * one of `"read" | "write" | "admin"`. The Redis-stored policy JSON
+ * has no schema enforcement, so an operator typo or a corrupted
+ * envelope could land here. Fail closed: better to refuse the mint
+ * with a clear error than silently fall through to the default level
+ * (R1 finding from PR #501 — fail-open on invalid levels would let a
+ * typoed read-only worker token get write scope by accident, which
+ * is the WORST possible failure direction for a narrowing primitive).
+ */
+export class InvalidPermissionLevelError extends MintError {
+  constructor(permission: string, badValue: string, validLevels: readonly string[]) {
+    super(
+      `Token policy 'allowed_permissions.${permission}' has invalid value ` +
+        `${JSON.stringify(badValue)} (expected one of ${validLevels.join(", ")}). ` +
+        `Fix the token's policy via setAgentTokenPolicy or rotate it.`,
+      400,
+      "invalid_permission_level",
+    );
   }
 }
 

@@ -17,6 +17,7 @@ import { validateEnv } from "@/server/env";
 import {
   mintInstallationToken,
   MintError,
+  V1_PERMISSIONS,
 } from "@/server/github-installation-token";
 
 const BAD_REQUEST_BODY = {
@@ -189,9 +190,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // verify a "read-only worker" token actually got read-only scope
       // without combing through GitHub's audit log.
       grantedPermissions: tokenResponse.permissions,
-      // Whether the token narrowed via V1.6 policy. False = legacy /
-      // V1.5 token (defaults verbatim); true = V1.6 narrowing applied.
-      narrowedByPolicy: auth.policy?.allowed_permissions !== undefined,
+      // Whether the operator HAS configured a per-token narrowing policy.
+      // Distinct from `scopeReduced` below: a policy with `{}` or matching
+      // V1_PERMISSIONS is "configured but no-op". This flag = "policy
+      // field is set on the envelope, regardless of effect."
+      policyHasAllowedPermissions:
+        auth.policy?.allowed_permissions !== undefined,
+      // Whether the granted permissions actually differ from V1_PERMISSIONS.
+      // True = some narrowing took effect (from token policy OR installation
+      // grant); false = mint received the V1 default scope. This is the
+      // signal operators actually want when answering "did this token
+      // narrow scope?" (closes guard G3 — `narrowedByPolicy` was misleading
+      // because it was true even for empty {} or V1_PERMISSIONS-equivalent
+      // policies).
+      scopeReduced:
+        JSON.stringify(tokenResponse.permissions) !==
+        JSON.stringify(V1_PERMISSIONS),
       latencyMs: Date.now() - start,
     });
     return NextResponse.json(tokenResponse, { status: 200 });
