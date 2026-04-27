@@ -26,12 +26,37 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import {
-  authenticateAgentRequestV1,
-  AGENT_AUTH_V1_ERROR,
-} from "@/server/agent-token-v1-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { envelopeMetaKey } from "@/server/agent-token-v1";
 import { auditAppend } from "@/server/agent-token-v1-audit";
+
+/**
+ * Sanitized policy projection on the public wire shape.
+ *
+ * **Naming convention** — wire shape is **camelCase** (`allowedRepos`,
+ * `allowedPermissions`) per CAPABILITIES_DESIGN.md §`/api/whoami`
+ * introspection endpoint, while the underlying envelope storage is
+ * **snake_case** (`allowed_repos`, `allowed_permissions`) for backward
+ * compat with the V1.5 envelope shape. The handler is the translation
+ * layer — operators see camelCase, storage stays snake_case.
+ *
+ * Defined LOCALLY (not imported from `AgentTokenPolicy`) so that future
+ * additions to the storage type aren't auto-leaked through /whoami. The
+ * projection below is the only path to populate this type — adding a
+ * field here MUST be paired with an explicit copy + rename in the handler.
+ *
+ * Returned as `null` on the response when the envelope has no `policy`
+ * field at all (legacy / V1.5-pre tokens). When the policy field IS
+ * present, `allowedRepos` is always defined (empty `[]` is the
+ * intentional reject-all marker, per `AgentTokenPolicy`). The
+ * `allowedPermissions` field is V1.6+ and is omitted from the wire
+ * shape entirely when absent — operators see "no narrowing" rather
+ * than "narrowing: undefined".
+ */
+interface WhoamiPolicyView {
+  allowedRepos: string[];
+  allowedPermissions?: Record<string, string>;
+}
 
 interface WhoamiResponse {
   name: string;
@@ -41,6 +66,7 @@ interface WhoamiResponse {
   fingerprint: string;
   expiresAt: string | null;
   lastUsedAt: string | null;
+  policy: WhoamiPolicyView | null;
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -85,6 +111,32 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     },
   });
 
+  // Build sanitized policy projection. ONLY copy known V1.5/V1.6
+  // policy fields — never let the entire envelope leak through.
+  // Closes builder R1 on PR #505: the design doc requires policy
+  // visibility on /whoami so operators can verify token narrowing
+  // (allowedRepos for V1.5 mint scope, allowedPermissions for
+  // V1.6 GitHub-permission narrowing).
+  //
+  // **Snake_case → camelCase translation** is intentional and
+  // load-bearing. Storage shape is snake_case (envelope on Redis);
+  // wire shape is camelCase (per design doc §`/api/whoami`). Don't
+  // remove this rename or the public API drifts from the contract.
+  //
+  // `allowed_repos` is always defined when policy is set (empty []
+  // is the canonical reject-all marker), so it's copied directly.
+  // `allowed_permissions` is V1.6+ and conditionally spread to
+  // omit the key entirely when absent rather than emit
+  // `"allowedPermissions": null`.
+  const policy: WhoamiPolicyView | null = auth.envelope.policy
+    ? {
+        allowedRepos: auth.envelope.policy.allowed_repos,
+        ...(auth.envelope.policy.allowed_permissions !== undefined
+          ? { allowedPermissions: auth.envelope.policy.allowed_permissions }
+          : {}),
+      }
+    : null;
+
   const body: WhoamiResponse = {
     name: auth.name,
     agent_role: auth.agent_role,
@@ -93,6 +145,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     fingerprint: auth.envelope.fingerprint,
     expiresAt: auth.envelope.expiresAt,
     lastUsedAt,
+    policy,
   };
 
   return NextResponse.json(body, { status: 200 });
@@ -101,10 +154,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 // Suppress the "Method Not Allowed" default by explicitly
 // rejecting non-GET methods. Helps operator triage when a script
 // accidentally POSTs a /whoami probe.
+//
+// The code is `method_not_allowed` (not an auth error code) — using
+// `agent_auth_v1_missing_bearer` here would be misleading since the
+// failure mode is wrong-verb, not wrong-credentials. Closes drone R1
+// non-blocking observation D1 on PR #505.
 export async function POST(): Promise<NextResponse> {
   return NextResponse.json(
     {
-      code: AGENT_AUTH_V1_ERROR.MISSING_BEARER,
+      code: "method_not_allowed",
       message: "GET /api/whoami only — POST not supported",
     },
     { status: 405, headers: { Allow: "GET" } },
