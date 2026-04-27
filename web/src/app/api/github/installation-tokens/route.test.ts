@@ -568,4 +568,106 @@ describe("POST /api/github/installation-tokens — V1.6 allowed_permissions wiri
     );
     consoleLog.mockRestore();
   });
+
+  it("audit log: scopeReduced=false when GitHub returns V1_PERMISSIONS in DIFFERENT KEY ORDER (regression on guard G3-R2)", async () => {
+    // R2 follow-up regression: prior implementation used
+    // JSON.stringify(...)===JSON.stringify(...), which is
+    // order-sensitive. GitHub may emit permissions in different
+    // key order than V1_PERMISSIONS declares; without
+    // order-insensitive comparison the audit log would falsely
+    // report scopeReduced=true on a no-op narrowing.
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue(
+      authOk("67890", { allowed_repos: ["owner/repo"] }),
+    );
+    // Same permissions as V1_PERMISSIONS, intentionally rearranged
+    // (issues + pull_requests + metadata + contents instead of the
+    // canonical contents/pull_requests/issues/metadata).
+    mockedMint.mockResolvedValue(
+      successMint({
+        permissions: {
+          issues: "write",
+          pull_requests: "write",
+          metadata: "read",
+          contents: "read",
+        },
+      }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({ scopeReduced: false }),
+    );
+    consoleLog.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// permissionsEqual unit tests
+// ---------------------------------------------------------------------------
+
+import { permissionsEqual } from "./route";
+
+describe("permissionsEqual (route helper)", () => {
+  it("identical maps in identical order → true", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read", pull_requests: "write" },
+      ),
+    ).toBe(true);
+  });
+
+  it("same keys + values, DIFFERENT insertion order → true (order-insensitive)", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { pull_requests: "write", contents: "read" },
+      ),
+    ).toBe(true);
+  });
+
+  it("same keys, ONE differing value → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read", pull_requests: "read" },
+      ),
+    ).toBe(false);
+  });
+
+  it("a has extra key → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read", pull_requests: "write" },
+        { contents: "read" },
+      ),
+    ).toBe(false);
+  });
+
+  it("b has extra key → false", () => {
+    expect(
+      permissionsEqual(
+        { contents: "read" },
+        { contents: "read", pull_requests: "write" },
+      ),
+    ).toBe(false);
+  });
+
+  it("both empty → true", () => {
+    expect(permissionsEqual({}, {})).toBe(true);
+  });
+
+  it("prototype member name on b doesn't false-positive", () => {
+    // Defense against a's key matching Object.prototype member name
+    // that could exist on b's prototype chain (toString etc.).
+    expect(
+      permissionsEqual(
+        { contents: "read", toString: "read" },
+        { contents: "read" },
+      ),
+    ).toBe(false);
+  });
 });

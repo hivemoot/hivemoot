@@ -37,6 +37,36 @@ const INTERNAL_BODY = {
   message: "Unexpected error during mint; see backend logs for details.",
 } as const;
 
+/**
+ * Order-insensitive equality on GitHub permission maps.
+ *
+ * Used by the audit-log `scopeReduced` flag to detect actual scope
+ * reduction (vs no-op narrowing where the policy matches V1_PERMISSIONS
+ * exactly with different key order, or where GitHub returns the same
+ * permissions in a different key order than V1_PERMISSIONS declares).
+ *
+ * `JSON.stringify(...)===JSON.stringify(...)` is order-sensitive, so
+ * GitHub returning `{pull_requests: "write", contents: "read", ...}`
+ * vs V1_PERMISSIONS `{contents: "read", pull_requests: "write", ...}`
+ * would log scopeReduced=true on a no-op narrowing.
+ *
+ * Closes guard G3-R2 + builder R2 follow-up. Same-keys + same-values
+ * = equal regardless of insertion order.
+ */
+export function permissionsEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   // Bearer auth — same path used by /api/agent-health POST. 401 on
   // missing/invalid bearer; the underlying helper has its own response
@@ -203,9 +233,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // narrow scope?" (closes guard G3 — `narrowedByPolicy` was misleading
       // because it was true even for empty {} or V1_PERMISSIONS-equivalent
       // policies).
-      scopeReduced:
-        JSON.stringify(tokenResponse.permissions) !==
-        JSON.stringify(V1_PERMISSIONS),
+      //
+      // Order-insensitive comparison: GitHub's response may emit
+      // permissions in different key order than V1_PERMISSIONS, so a
+      // simple JSON.stringify(...)===JSON.stringify(...) would log
+      // scopeReduced=true on a no-op narrowing (closes guard G3-R2 +
+      // builder R2 follow-up). permissionsEqual normalizes by sorting
+      // keys and comparing values per-key.
+      scopeReduced: !permissionsEqual(tokenResponse.permissions, V1_PERMISSIONS),
       latencyMs: Date.now() - start,
     });
     return NextResponse.json(tokenResponse, { status: 200 });
