@@ -302,6 +302,12 @@ export interface AuditMutationContext {
    * Use sparingly — the standard detail (from/to / fingerprints)
    * covers the canonical cases. */
   detailExtras?: Record<string, unknown>;
+  /** Override the action class. ONLY honored by `issueAgentToken`
+   * (the only function that can emit either `issue` or `bootstrap`
+   * — bootstrap is a special-case issue from the dashboard cookie-
+   * auth path). Other functions ignore this field — their action
+   * is determined by the function name. */
+  actionOverride?: "bootstrap";
 }
 
 /**
@@ -780,7 +786,13 @@ export async function issueAgentToken(args: {
                   ts: createdAtIso,
                   fingerprint: args.auditContext.operator.fingerprint,
                   name: args.name,
-                  action: "issue" as const,
+                  // Bootstrap path uses the same storage call but
+                  // emits a different action class so investigators
+                  // can distinguish operator-from-dashboard from
+                  // operator-from-bearer in the :audit stream.
+                  action: (args.auditContext.actionOverride ?? "issue") as
+                    | "issue"
+                    | "bootstrap",
                   actor: args.auditContext.operator.name,
                   detail: {
                     agent_role: args.agent_role,

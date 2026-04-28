@@ -422,6 +422,49 @@ describe("issueAgentToken", () => {
     expect(DEFAULT_TOKEN_LIMIT_PER_INSTALLATION).toBe(20);
   });
 
+  it("auditContext.actionOverride: 'bootstrap' makes the audit entry use action=bootstrap (B.1.d-iii)", async () => {
+    // The bootstrap endpoint reuses issueAgentToken but needs the
+    // audit row's action field to read "bootstrap" (distinguishes
+    // dashboard cookie-auth from bearer-auth in the :audit stream).
+    // Pin that the override flows through to the JSON the script
+    // receives.
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      auditContext: {
+        operator: { fingerprint: "", name: "dashboard" },
+        actionOverride: "bootstrap",
+        detailExtras: { bootstrapped_by: "operator-gh-login" },
+      },
+    });
+    const issueCall = redis._luaSim.mock.calls.find(
+      (c) => c[1].length === 4 && c[2].length === 7,
+    );
+    expect(issueCall).toBeDefined();
+    const auditEntryJson = issueCall![2][6] as string;
+    expect(auditEntryJson).not.toBe("");
+    const auditEntry = JSON.parse(auditEntryJson);
+    expect(auditEntry.action).toBe("bootstrap");
+    expect(auditEntry.actor).toBe("dashboard");
+    expect(auditEntry.fingerprint).toBe("");
+    expect(auditEntry.detail.bootstrapped_by).toBe("operator-gh-login");
+    expect(auditEntry.detail.created_fingerprint).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("auditContext without actionOverride defaults to action=issue", async () => {
+    await issueAgentToken({
+      ...defaultIssueArgs(redis),
+      auditContext: {
+        operator: { fingerprint: "feedface", name: "admin" },
+      },
+    });
+    const issueCall = redis._luaSim.mock.calls.find(
+      (c) => c[1].length === 4 && c[2].length === 7,
+    );
+    const auditEntry = JSON.parse(issueCall![2][6] as string);
+    expect(auditEntry.action).toBe("issue");
+    expect(auditEntry.actor).toBe("admin");
+  });
+
   it("with expiresAt set, ISSUE script call carries positive expirySecsOrZero", async () => {
     const future = new Date(Date.now() + 86400 * 1000).toISOString();
     await issueAgentToken({ ...defaultIssueArgs(redis), expiresAt: future });
