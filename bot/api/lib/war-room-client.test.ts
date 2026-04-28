@@ -287,3 +287,306 @@ describe("WarRoomClient.appendEvent (E.2)", () => {
     }
   });
 });
+
+describe("WarRoomClient queen-side reads (G'.1)", () => {
+  const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";
+
+  it("listRooms returns the rooms array", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { rooms: [{ roomId: ROOM_ID, status: "awaiting_rsvp" }] },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const rooms = await client.listRooms();
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].roomId).toBe(ROOM_ID);
+  });
+
+  it("listRooms passes limit query param", async () => {
+    const fetchSpy = makeFetch({ status: 200, body: { rooms: [] } });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.listRooms({ limit: 50 });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("?limit=50"),
+      expect.anything(),
+    );
+  });
+
+  it("listRooms returns empty array when rooms field missing", async () => {
+    const fetchSpy = makeFetch({ status: 200, body: {} });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    expect(await client.listRooms()).toEqual([]);
+  });
+
+  it("listRooms throws WarRoomApiError on 4xx/5xx", async () => {
+    const fetchSpy = makeFetch({
+      status: 403,
+      body: { code: "agent_auth_v1_missing_capability" },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.listRooms();
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(WarRoomApiError);
+      expect((err as WarRoomApiError).status).toBe(403);
+    }
+  });
+
+  it("getRoomCore parses the response", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { roomId: ROOM_ID, status: "deciding" },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const room = await client.getRoomCore(ROOM_ID);
+    expect(room.roomId).toBe(ROOM_ID);
+    expect(room.status).toBe("deciding");
+  });
+
+  it("getRoomCore 404 → WarRoomApiError(code='room_not_found')", async () => {
+    const fetchSpy = makeFetch({
+      status: 404,
+      body: { code: "room_not_found" },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.getRoomCore(ROOM_ID);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as WarRoomApiError).code).toBe("room_not_found");
+    }
+  });
+
+  it("listRoomEvents passes since + limit query params", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { events: [], roomId: ROOM_ID },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.listRoomEvents({ roomId: ROOM_ID, since: 5, limit: 200 });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\?since=5&limit=200/),
+      expect.anything(),
+    );
+  });
+
+  it("listRoomEvents handles default no-query path", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { events: [], roomId: ROOM_ID },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.listRoomEvents({ roomId: ROOM_ID });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `https://www.hivemoot.dev/api/rooms/${ROOM_ID}/events`,
+      expect.anything(),
+    );
+  });
+
+  it("getRoomContributions parses the materialized hash", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: {
+        contributions: {
+          drone: {
+            agent_id: "drone-1",
+            role: "drone",
+            body: { verdict: "APPROVE", summary: "ok" },
+            raw_md: "# Verdict",
+          },
+        },
+        roomId: ROOM_ID,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.getRoomContributions(ROOM_ID);
+    expect(result.contributions.drone).toBeDefined();
+    expect(result.contributions.drone.body?.verdict).toBe("APPROVE");
+  });
+
+  it("getRoomContributions returns withdrawn tombstones as-is", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: {
+        contributions: { drone: { withdrawn: true, contributed_at: "now" } },
+        roomId: ROOM_ID,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.getRoomContributions(ROOM_ID);
+    expect(result.contributions.drone.withdrawn).toBe(true);
+  });
+
+  it("getRoomParticipants parses participant slots", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: {
+        participants: {
+          drone: {
+            agent_id: "drone-1",
+            role: "drone",
+            status: "resolved",
+            rsvp_at: "2026-04-28T07:00:00.000Z",
+            resolved_at: "2026-04-28T07:05:00.000Z",
+          },
+        },
+        roomId: ROOM_ID,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.getRoomParticipants(ROOM_ID);
+    expect(result.participants.drone.status).toBe("resolved");
+  });
+});
+
+describe("WarRoomClient queen-side writes (G'.1)", () => {
+  const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";
+
+  it("claimSynthesis returns throughSequence + claimTtlSecs", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { throughSequence: 7, claimTtlSecs: 360 },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.claimSynthesis({
+      roomId: ROOM_ID,
+      queenRunner: "bot-queen.pid42.tick0",
+    });
+    expect(result.throughSequence).toBe(7);
+    expect(result.claimTtlSecs).toBe(360);
+  });
+
+  it("claimSynthesis sends body shape correctly", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { throughSequence: 1, claimTtlSecs: 360 },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.claimSynthesis({
+      roomId: ROOM_ID,
+      queenRunner: "bot-queen",
+      claimTtlSecs: 120,
+    });
+    const callArgs = (fetchSpy as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body).toEqual({ queenRunner: "bot-queen", claimTtlSecs: 120 });
+  });
+
+  it("claimSynthesis omits claimTtlSecs when undefined", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { throughSequence: 1, claimTtlSecs: 360 },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.claimSynthesis({
+      roomId: ROOM_ID,
+      queenRunner: "bot-queen",
+    });
+    const callArgs = (fetchSpy as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body).toEqual({ queenRunner: "bot-queen" });
+    expect(body).not.toHaveProperty("claimTtlSecs");
+  });
+
+  it("claimSynthesis 409 claim_already_held → typed error with full response body", async () => {
+    const fetchSpy = makeFetch({
+      status: 409,
+      body: {
+        code: "claim_already_held",
+        message: "another runner",
+        heldByRunner: "queen-A",
+        throughSequence: 5,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.claimSynthesis({
+        roomId: ROOM_ID,
+        queenRunner: "queen-B",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(WarRoomApiError);
+      expect((err as WarRoomApiError).code).toBe("claim_already_held");
+      expect((err as WarRoomApiError).response.heldByRunner).toBe("queen-A");
+      expect((err as WarRoomApiError).response.throughSequence).toBe(5);
+    }
+  });
+
+  it("closeRoom sends decision + expectedThroughSequence", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { closedSequence: 8 },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const decision = {
+      synthesized_at: "2026-04-28T08:00:00.000Z",
+      synthesis_runner: "bot-queen.pid42",
+      content: "## Synthesis\n\nApprove.",
+      sequence_closed: 7,
+    };
+    const result = await client.closeRoom({
+      roomId: ROOM_ID,
+      expectedThroughSequence: 7,
+      decision,
+    });
+    expect(result.closedSequence).toBe(8);
+    const callArgs = (fetchSpy as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.expectedThroughSequence).toBe(7);
+    expect(body.decision).toEqual(decision);
+  });
+
+  it("closeRoom 409 sequence_drift surfaces lastSeq in response", async () => {
+    const fetchSpy = makeFetch({
+      status: 409,
+      body: {
+        code: "sequence_drift",
+        message: "drift",
+        expectedThroughSequence: 7,
+        lastSeq: 9,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.closeRoom({
+        roomId: ROOM_ID,
+        expectedThroughSequence: 7,
+        decision: {
+          synthesized_at: "x",
+          synthesis_runner: "y",
+          content: "z",
+          sequence_closed: 7,
+        },
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as WarRoomApiError).code).toBe("sequence_drift");
+      expect((err as WarRoomApiError).response.lastSeq).toBe(9);
+    }
+  });
+
+  it("closeRoom 409 claim_lost surfaces (force-close raced)", async () => {
+    const fetchSpy = makeFetch({
+      status: 409,
+      body: { code: "claim_lost", message: "claim DELed" },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.closeRoom({
+        roomId: ROOM_ID,
+        expectedThroughSequence: 7,
+        decision: {
+          synthesized_at: "x",
+          synthesis_runner: "y",
+          content: "z",
+          sequence_closed: 7,
+        },
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as WarRoomApiError).code).toBe("claim_lost");
+    }
+  });
+});

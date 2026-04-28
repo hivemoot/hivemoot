@@ -74,6 +74,74 @@ export interface RoomCoreResponse {
 }
 
 /**
+ * Room entry from `GET /api/rooms` and `GET /api/rooms/:id` —
+ * matches the storage layer's `RoomCoreWithId` type added in
+ * D.1.b-iii. Distinct from `RoomCoreResponse` (createRoom 201)
+ * which omits `roomId`.
+ */
+export interface RoomListEntry extends RoomCoreResponse {
+  roomId: string;
+  closed_at?: string;
+  closed_reason?: "expired" | "failed_synthesis" | "force_close" | "manual";
+  deciding_through_sequence?: number;
+  decision?: RoomDecision;
+}
+
+/**
+ * One event from a room's append-only log. Matches the storage
+ * layer's `RoomEvent` shape.
+ */
+export interface RoomEvent {
+  seq: number;
+  timestamp: string;
+  event_type: string;
+  actor_role: string;
+  actor_id: string;
+  body: Record<string, unknown>;
+}
+
+/**
+ * Materialized participant entry (latest-state-wins per role).
+ * Matches storage's `RoomParticipant`.
+ */
+export interface RoomParticipant {
+  agent_id: string;
+  role: string;
+  status: "pending" | "resolved" | "withdrew" | "timed_out";
+  rsvp_at: string;
+  resolved_at?: string;
+  withdrew_at_sequence?: number;
+}
+
+/**
+ * Materialized contribution entry. Withdrawn contributions surface
+ * as tombstones with `withdrawn: true`.
+ */
+export interface RoomContribution {
+  agent_id?: string;
+  role?: string;
+  body?: Record<string, unknown>;
+  raw_md?: string;
+  contributed_at?: string;
+  withdrawn?: boolean;
+}
+
+/**
+ * Decision payload passed on `/close` — what the queen synthesized.
+ * Mirrors the storage layer's `RoomDecision` type.
+ */
+export interface RoomDecision {
+  synthesized_at: string;
+  synthesis_runner: string;
+  /** Synthesis body (markdown). ≤ 64 KiB UTF-8 bytes per server cap. */
+  content: string;
+  /** Sequence the queen synthesized through (= throughSequence from
+   * the claim response). Server compares against the live seq at
+   * close time to detect drift. */
+  sequence_closed: number;
+}
+
+/**
  * Thrown when the API returns a 4xx/5xx with a structured error
  * body. `code` matches the server's wire `code` field.
  */
@@ -236,6 +304,198 @@ export class WarRoomClient {
         ? parsed.message
         : `War-room API ${response.status} (${code})`;
     throw new WarRoomApiError(response.status, code, message, parsed);
+  }
+
+  // ─── Queen-side reads (G'.1) ─────────────────────────────────────────
+
+  /**
+   * GET /api/rooms — list rooms for the bearer's installation.
+   * Used by the queen's manager loop to find rooms eligible for
+   * synthesis. Capability: `rooms.read_all` (queen preset).
+   *
+   * Returns the array as serialized; caller filters by status +
+   * participant resolution to identify synthesis candidates. Wire
+   * shape uses `RoomCoreWithId` (D.1.b-iii) so each room has a
+   * top-level `roomId` field — distinct from createRoom's 201
+   * which uses `RoomCore` without roomId.
+   */
+  async listRooms(args: { limit?: number } = {}): Promise<RoomListEntry[]> {
+    const query = args.limit !== undefined ? `?limit=${args.limit}` : "";
+    const response = await this.request("GET", `/api/rooms${query}`);
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    const body = (await response.json()) as { rooms?: RoomListEntry[] };
+    return Array.isArray(body.rooms) ? body.rooms : [];
+  }
+
+  /**
+   * GET /api/rooms/:roomId — fetch one room's core record.
+   * 404 → `RoomNotFoundError(code: room_not_found)`.
+   */
+  async getRoomCore(roomId: string): Promise<RoomListEntry> {
+    const response = await this.request(
+      "GET",
+      `/api/rooms/${encodeURIComponent(roomId)}`,
+    );
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as RoomListEntry;
+  }
+
+  /**
+   * GET /api/rooms/:roomId/events — append-only event log slice.
+   * `since` is the last seq the caller observed; events with
+   * `seq > since` are returned (default 0 = all).
+   */
+  async listRoomEvents(args: {
+    roomId: string;
+    since?: number;
+    limit?: number;
+  }): Promise<{ events: RoomEvent[]; roomId: string }> {
+    const params = new URLSearchParams();
+    if (args.since !== undefined) params.set("since", String(args.since));
+    if (args.limit !== undefined) params.set("limit", String(args.limit));
+    const qs = params.toString();
+    const path =
+      `/api/rooms/${encodeURIComponent(args.roomId)}/events` +
+      (qs ? `?${qs}` : "");
+    const response = await this.request("GET", path);
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as { events: RoomEvent[]; roomId: string };
+  }
+
+  /**
+   * GET /api/rooms/:roomId/contributions — materialized contribution
+   * hash. The queen's synthesis prompt uses this.
+   */
+  async getRoomContributions(
+    roomId: string,
+  ): Promise<{ contributions: Record<string, RoomContribution>; roomId: string }> {
+    const response = await this.request(
+      "GET",
+      `/api/rooms/${encodeURIComponent(roomId)}/contributions`,
+    );
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as {
+      contributions: Record<string, RoomContribution>;
+      roomId: string;
+    };
+  }
+
+  /**
+   * GET /api/rooms/:roomId/participants — materialized RSVP hash.
+   * Queen reads this to confirm "all participants resolved" before
+   * claiming synthesis.
+   */
+  async getRoomParticipants(
+    roomId: string,
+  ): Promise<{ participants: Record<string, RoomParticipant>; roomId: string }> {
+    const response = await this.request(
+      "GET",
+      `/api/rooms/${encodeURIComponent(roomId)}/participants`,
+    );
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as {
+      participants: Record<string, RoomParticipant>;
+      roomId: string;
+    };
+  }
+
+  // ─── Queen-side writes (G'.1) ────────────────────────────────────────
+
+  /**
+   * POST /api/rooms/:roomId/decide — atomically claim the synthesis
+   * lane. Capability: `rooms.decide`. Returns `{throughSequence,
+   * claimTtlSecs}`; the queen passes `throughSequence` back on
+   * `/close` for drift detection.
+   *
+   * 409 with code `claim_already_held` is the benign-conflict path
+   * (another queen runner won the race). Caller should log + skip
+   * — the manager loop's next tick will re-check.
+   */
+  async claimSynthesis(args: {
+    roomId: string;
+    queenRunner: string;
+    claimTtlSecs?: number;
+  }): Promise<{ throughSequence: number; claimTtlSecs: number }> {
+    const body: Record<string, unknown> = {
+      queenRunner: args.queenRunner,
+    };
+    if (args.claimTtlSecs !== undefined) {
+      body.claimTtlSecs = args.claimTtlSecs;
+    }
+    const response = await this.request(
+      "POST",
+      `/api/rooms/${encodeURIComponent(args.roomId)}/decide`,
+      body,
+    );
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as {
+      throughSequence: number;
+      claimTtlSecs: number;
+    };
+  }
+
+  /**
+   * POST /api/rooms/:roomId/close — happy-path close with the
+   * queen's synthesized decision. Capability: `rooms.close`.
+   *
+   * Failure modes:
+   *   - 409 `sequence_drift`: new events landed since claim; queen
+   *     aborts GitHub post, manager loop re-claims on next tick
+   *   - 409 `claim_lost`: force-close raced; abort
+   *   - 409 `claim_through_seq_mismatch`: another runner re-claimed;
+   *     abort
+   *   - 400 `decision_too_large`: synthesis content exceeded 64 KiB
+   */
+  async closeRoom(args: {
+    roomId: string;
+    expectedThroughSequence: number;
+    decision: RoomDecision;
+  }): Promise<{ closedSequence: number }> {
+    const body = {
+      expectedThroughSequence: args.expectedThroughSequence,
+      decision: args.decision,
+    };
+    const response = await this.request(
+      "POST",
+      `/api/rooms/${encodeURIComponent(args.roomId)}/close`,
+      body,
+    );
+    if (!response.ok) {
+      throw await this._toApiError(response);
+    }
+    return (await response.json()) as { closedSequence: number };
+  }
+
+  /**
+   * Helper: convert a non-2xx Response into a `WarRoomApiError`.
+   * Mirrors the pattern used inline in createRoom/appendEvent;
+   * extracted here to keep the new G'.1 methods short.
+   */
+  private async _toApiError(response: Response): Promise<WarRoomApiError> {
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = (await response.json()) as Record<string, unknown>;
+    } catch {
+      // Non-JSON body — fall through.
+    }
+    const code = typeof parsed.code === "string" ? parsed.code : "unknown";
+    const message =
+      typeof parsed.message === "string"
+        ? parsed.message
+        : `War-room API ${response.status} (${code})`;
+    return new WarRoomApiError(response.status, code, message, parsed);
   }
 
   /** Internal: shared request shape. */
