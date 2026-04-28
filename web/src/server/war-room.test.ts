@@ -1029,6 +1029,57 @@ describe("getRoomCore", () => {
     expect(core.deciding_through_sequence).toBe(42);
     expect(typeof core.deciding_through_sequence).toBe("number");
   });
+
+  it("deciding_through_sequence empty-string sentinel reads as undefined, NOT 0 (closes #511 builder R1)", async () => {
+    // Per design L415 (RECOVER) + L523 (CLOSE-drift), the recovery
+    // and drift-revert paths CLEAR the field via HSET ... "" rather
+    // than DELing it. JS's Number("") === 0 — without the empty-
+    // string check, a recovered room would read back as "claim
+    // active through sequence 0", a silent invariant break.
+    const data: RoomCoreData = {
+      manager: "bot-queen",
+      subject_type: "pr_review",
+      subject_ref: "hivemoot/hivemoot#508",
+      opened_at: "2026-04-28T00:00:00.000Z",
+      timing_config: {
+        max_age_secs: 3600,
+        rsvp_deadline_secs: 600,
+        contribution_deadline_secs: 1200,
+      },
+    };
+    await redis.hset(roomKey("12345", RID_A), {
+      data: JSON.stringify(data),
+      status: "awaiting_contributions", // back to awaiting after RECOVER
+      deciding_through_sequence: "", // cleared sentinel
+    });
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.deciding_through_sequence).toBeUndefined();
+    // Defensive: pin that we don't accidentally produce 0
+    expect(core.deciding_through_sequence).not.toBe(0);
+  });
+
+  it("listRooms also handles the empty-string sentinel correctly (parser is shared)", async () => {
+    // Both readers share parseRoomCoreFields — make sure the fix
+    // applies to listRooms's fan-out HGETALL too.
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // Simulate post-RECOVER state on the existing room
+    await redis.hset(roomKey("12345", RID_A), {
+      deciding_through_sequence: "",
+    });
+    const rooms = await listRooms({ installationId: "12345", redis });
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].deciding_through_sequence).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

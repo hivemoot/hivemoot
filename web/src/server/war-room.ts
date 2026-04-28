@@ -774,9 +774,15 @@ function parseRoomCoreFields(
   }
   if (
     fields.deciding_through_sequence !== undefined &&
-    fields.deciding_through_sequence !== null
+    fields.deciding_through_sequence !== null &&
+    fields.deciding_through_sequence !== ""
   ) {
     // HSET stores numbers as strings; coerce on read.
+    // Empty string is the design's "cleared" sentinel — RECOVER and
+    // CLOSE-drift paths set this field to "" rather than DELing the
+    // field (per WAR_ROOM_DESIGN.md L415, L523). JS's `Number("")`
+    // is 0, NOT NaN, which would silently misread as "claim active
+    // through sequence 0" — closes #511 builder R1.
     const n = Number(fields.deciding_through_sequence);
     if (Number.isFinite(n)) core.deciding_through_sequence = n;
   }
