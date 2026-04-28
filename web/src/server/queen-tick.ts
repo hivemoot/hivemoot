@@ -47,7 +47,8 @@ import {
   recoverDeciding,
   terminateRoom,
   timeoutParticipant,
-  type RoomCoreWithId,
+  seqKey,
+  installationIndexKey,
   type RoomParticipant,
   type SubjectRef,
   RoomNotFoundError,
@@ -60,14 +61,36 @@ import {
 } from "@/server/war-room";
 
 /**
- * Stable identity for the watchdog actor on its emitted events
- * (recovery events, terminate events, timeout events). Distinct
- * from any human/agent identity — events with these sentinels
- * indicate "system-driven, no bearer behind it" per the
- * `RoomEvent` JSDoc system-actor exception (#512 guard N5).
+ * Watchdog actor sentinels — distinct pairs per emitted event
+ * type, matching the `RoomEvent` JSDoc spec at
+ * `web/src/server/war-room.ts:307-310`. Closes #524 guard B1: the
+ * prior single pair collapsed terminate into the queen-driven
+ * `manager` lane and lost the `watchdog` correlation key on
+ * timeout, breaking forensic filtering.
+ *
+ * Two pairs:
+ *   - **TERMINATE** (`actor_role="system"`, `actor_id="vercel-cron"`):
+ *     cron-fired expiry. The "system" role distinguishes
+ *     watchdog-driven terminate from the queen's `rooms.close`
+ *     happy-path close (which uses `actor_role="manager"`).
+ *   - **TIMEOUT** (`actor_role="manager"`, `actor_id="watchdog"`):
+ *     watchdog-triggered `participant_timed_out`. Same as the
+ *     `room_recovered` event the recovery script hardcodes.
+ *
+ * Recovery events use the script-internal sentinels
+ * (`actor_role="manager"`, `actor_id="watchdog"`) baked into
+ * `ROOM_RECOVER_DECIDING_SCRIPT` — no caller-side configuration
+ * needed.
  */
-export const WATCHDOG_ACTOR_ROLE = "manager";
-export const WATCHDOG_ACTOR_ID = "vercel-cron";
+export const WATCHDOG_TERMINATE_ACTOR = {
+  role: "system",
+  id: "vercel-cron",
+} as const;
+
+export const WATCHDOG_TIMEOUT_ACTOR = {
+  role: "manager",
+  id: "watchdog",
+} as const;
 
 /**
  * Outcome counts emitted by `runQueenTick`. Each counter is
@@ -82,6 +105,23 @@ export interface QueenTickResult {
   scannedAwaitingContributions: number;
   timedOutParticipants: number;
   errors: number;
+  /**
+   * Count of rooms in the installation index that the tick did NOT
+   * read this cycle. Closes #524 guard N2 + builder R1 escalation:
+   * `listRooms` returns newest-first capped at `maxRoomsPerTick`,
+   * so under backlog (>maxRoomsPerTick open rooms) the OLDEST
+   * rooms — exactly the ones expire/timeout scans care about —
+   * are skipped. Surfacing this count lets ops alert on
+   * `rooms_unscanned > 0` so degradation is observable rather than
+   * silent. Steady state (≤ cap rooms): always 0.
+   *
+   * Note: this counts rooms in the installation INDEX (sorted set),
+   * not just open rooms. Closed rooms in the retention window count
+   * too. Tighter "open rooms unscanned" requires a separate ZCARD on
+   * each status set — deferred to V1.1 if alerting on this metric
+   * shows false positives.
+   */
+  roomsUnscanned: number;
 }
 
 interface QueenTickArgs {
@@ -124,18 +164,32 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
     scannedAwaitingContributions: 0,
     timedOutParticipants: 0,
     errors: 0,
+    roomsUnscanned: 0,
   };
 
+  // ZCARD on the installation index in parallel with listRooms.
+  // Closes #524 guard N2 + builder R1 escalation: under backlog
+  // (>maxRoomsPerTick rooms), `listRooms` returns the newest slice
+  // and the OLDEST rooms — exactly the ones expire/timeout scans
+  // need — are skipped. Surfacing the unscanned count here lets
+  // ops alert on `rooms_unscanned > 0` so the degradation is
+  // observable, not silent.
+  //
   // listRooms returns ALL rooms newest-first (status-mixed). Filter
   // on the result so the watchdog never reads more than it needs.
   // This costs N HGETALL on the room hash which is unavoidable —
   // the alternative (status-set SMEMBERS + HMGET) doesn't improve
   // the round-trip count meaningfully and adds a code path.
-  const rooms = await listRooms({
-    installationId: args.installationId,
-    redis: args.redis,
-    limit: maxRooms,
-  });
+  const indexKey = installationIndexKey(args.installationId);
+  const [rooms, totalIndexed] = await Promise.all([
+    listRooms({
+      installationId: args.installationId,
+      redis: args.redis,
+      limit: maxRooms,
+    }),
+    args.redis.zcard(indexKey).catch(() => 0),
+  ]);
+  result.roomsUnscanned = Math.max(0, totalIndexed - rooms.length);
 
   // 1. Recovery scan — every `deciding` room.
   for (const room of rooms) {
@@ -155,6 +209,12 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
       // benign skip. Other errors → count and continue.
       if (err instanceof RoomTransitionInvalidStatusError) continue;
       if (err instanceof RoomNotFoundError) continue;
+      // Idempotency replay is benign too — defensive consistency
+      // with the timeout catch (closes #524 guard N3). Recovery
+      // shouldn't normally hit this since each tick generates a
+      // fresh idemKey, but a runner crash between EVAL-success
+      // and route-return could.
+      if (err instanceof RoomEventIdempotencyReplayError) continue;
       result.errors += 1;
       // Best-effort log to stderr — production observability lives
       // in Vercel logs (the cron route wraps this and emits a
@@ -195,8 +255,8 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
             roomId: room.roomId,
             reason: "expired",
             subject,
-            actorRole: WATCHDOG_ACTOR_ROLE,
-            actorId: WATCHDOG_ACTOR_ID,
+            actorRole: WATCHDOG_TERMINATE_ACTOR.role,
+            actorId: WATCHDOG_TERMINATE_ACTOR.id,
             redis: args.redis,
             nowMs,
           });
@@ -253,9 +313,10 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
     // resolution in the storage layer where it belongs.
     let currentSequence = 0;
     try {
-      const seqRaw = await args.redis.get<string | number>(
-        `hive:v1:room:${room.roomId}:seq`,
-      );
+      // Use the war-room.ts key helper instead of an inline string —
+      // closes #524 guard N1: hardcoded key conventions silently
+      // drift from the storage module if anyone refactors the prefix.
+      const seqRaw = await args.redis.get<string | number>(seqKey(room.roomId));
       currentSequence =
         typeof seqRaw === "number"
           ? seqRaw
@@ -286,8 +347,8 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
           installationId: args.installationId,
           roomId: room.roomId,
           subjectRole: role,
-          watchdogRole: WATCHDOG_ACTOR_ROLE,
-          watchdogAgentId: WATCHDOG_ACTOR_ID,
+          watchdogRole: WATCHDOG_TIMEOUT_ACTOR.role,
+          watchdogAgentId: WATCHDOG_TIMEOUT_ACTOR.id,
           sequenceObservedByClient: currentSequence,
           redis: args.redis,
           nowMs,

@@ -26,7 +26,8 @@ vi.mock("@/server/queen-tick", () => ({
 
 import * as upstash from "@upstash/redis";
 import { runQueenTick } from "@/server/queen-tick";
-import { POST, GET } from "./route";
+import { GET, POST } from "./route";
+import { NextRequest as NextRequestType } from "next/server";
 
 const fakeRedis = (upstash as never as { __fakeRedis: { set: ReturnType<typeof vi.fn>; eval: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> } }).__fakeRedis;
 const mockedTick = vi.mocked(runQueenTick);
@@ -58,11 +59,13 @@ describe("POST /api/internal/queen/tick", () => {
     mockedTick.mockReset();
   });
 
-  it("returns 500 when CRON_SECRET is unset (server misconfiguration fail-loud)", async () => {
+  it("CRON_SECRET unset → 401 empty body (closes #524 guard B2 — no probe oracle)", async () => {
     vi.stubEnv("CRON_SECRET", "");
     const res = await POST(makeRequest({ installationId: "12345" }));
-    expect(res.status).toBe(500);
-    expect((await res.json()).code).toBe("server_misconfiguration");
+    expect(res.status).toBe(401);
+    // CRITICAL — body must be empty so an unauthenticated caller
+    // can't differentiate "fresh deployment" from "wrong bearer".
+    expect(await res.text()).toBe("");
   });
 
   it("rejects missing Authorization header → 401 with empty body (no oracle per design L967)", async () => {
@@ -90,6 +93,14 @@ describe("POST /api/internal/queen/tick", () => {
     expect((await res.json()).code).toBe("invalid_installation_id");
   });
 
+  it("rejects non-numeric installationId → 400 (closes #524 guard N4)", async () => {
+    for (const bad of ["abc", "12345; DROP", "12-345", " 12345"]) {
+      const res = await POST(makeRequest({ installationId: bad }));
+      expect(res.status, `bad: ${bad}`).toBe(400);
+      expect((await res.json()).code).toBe("invalid_installation_id");
+    }
+  });
+
   it("rejects null body → 400 invalid_body_shape", async () => {
     const res = await POST(makeRequest(null));
     expect(res.status).toBe(400);
@@ -107,6 +118,7 @@ describe("POST /api/internal/queen/tick", () => {
       scannedAwaitingContributions: 3,
       timedOutParticipants: 2,
       errors: 0,
+      roomsUnscanned: 0,
     });
 
     const res = await POST(makeRequest({ installationId: "12345" }));
@@ -173,6 +185,7 @@ describe("POST /api/internal/queen/tick", () => {
       scannedAwaitingContributions: 0,
       timedOutParticipants: 0,
       errors: 0,
+      roomsUnscanned: 0,
     });
 
     const res = await POST(makeRequest({ installationId: "12345" }));
@@ -192,6 +205,7 @@ describe("POST /api/internal/queen/tick", () => {
       scannedAwaitingContributions: 0,
       timedOutParticipants: 0,
       errors: 0,
+      roomsUnscanned: 0,
     });
 
     const res1 = await POST(makeRequest({ installationId: "12345" }));
@@ -202,10 +216,83 @@ describe("POST /api/internal/queen/tick", () => {
   });
 });
 
-describe("GET /api/internal/queen/tick", () => {
-  it("returns 405 method_not_allowed", async () => {
-    const res = await GET();
-    expect(res.status).toBe(405);
-    expect(res.headers.get("Allow")).toBe("POST");
+// GET is the actual Vercel Cron entrypoint per #524 builder B3.
+// Vercel sends GET with `Authorization: Bearer ${CRON_SECRET}` and
+// no body; installationId comes from the query string so the
+// `vercel.json` `crons` entry can fully specify the target.
+describe("GET /api/internal/queen/tick (Vercel Cron entrypoint)", () => {
+  function makeGetRequest(opts?: {
+    authHeader?: string;
+    installationIdQuery?: string;
+  }): NextRequestType {
+    const headers: Record<string, string> = {};
+    headers.authorization =
+      opts?.authHeader !== undefined ? opts.authHeader : `Bearer ${CRON_SECRET}`;
+    const url =
+      opts?.installationIdQuery !== undefined
+        ? `https://www.hivemoot.dev/api/internal/queen/tick?installationId=${opts.installationIdQuery}`
+        : "https://www.hivemoot.dev/api/internal/queen/tick";
+    return new NextRequest(url, { method: "GET", headers });
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("CRON_SECRET", CRON_SECRET);
+    fakeRedis.set.mockReset();
+    fakeRedis.eval.mockReset();
+    mockedTick.mockReset();
+  });
+
+  it("Vercel-style GET with Bearer header runs the tick (closes #524 builder B3)", async () => {
+    fakeRedis.set.mockResolvedValue("OK");
+    fakeRedis.eval.mockResolvedValue(1);
+    mockedTick.mockResolvedValue({
+      scannedDeciding: 0,
+      recovered: 0,
+      scannedOpen: 0,
+      expired: 0,
+      scannedAwaitingContributions: 0,
+      timedOutParticipants: 0,
+      errors: 0,
+      roomsUnscanned: 0,
+    });
+
+    const res = await GET(makeGetRequest({ installationIdQuery: "12345" }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped).toBe(false);
+    expect(mockedTick).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "12345" }),
+    );
+  });
+
+  it("GET without bearer → 401 empty body", async () => {
+    const req = new NextRequest(
+      "https://www.hivemoot.dev/api/internal/queen/tick?installationId=12345",
+      { method: "GET" },
+    );
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe("");
+  });
+
+  it("GET with wrong bearer → 401 empty body", async () => {
+    const res = await GET(
+      makeGetRequest({
+        installationIdQuery: "12345",
+        authHeader: "Bearer wrong",
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("GET with missing installationId query → 400", async () => {
+    const res = await GET(makeGetRequest({}));
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_installation_id");
+  });
+
+  it("GET with non-numeric installationId → 400 (regex enforced)", async () => {
+    const res = await GET(makeGetRequest({ installationIdQuery: "abc" }));
+    expect(res.status).toBe(400);
   });
 });

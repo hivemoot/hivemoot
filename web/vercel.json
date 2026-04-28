@@ -3,5 +3,12 @@
   "git": {
     "deploymentEnabled": false,
     "ignoreCommand": "exit 0"
-  }
+  },
+  "crons": [
+    {
+      "_comment": "War-room watchdog — 60s recovery/expire/timeout scan. Per WAR_ROOM_DESIGN.md L954-958, the design specifies 60s tick interval (1 minute). Per-installation cron entries: duplicate this entry with a different `installationId` query param when adding a second installation. Until per-installation entries are wired up, this single entry uses INSTALLATION_ID env-var substitution at deploy time (see deploy notes in apiary/run-hivemoot-docker.sh) — replaced before vercel.json is uploaded.",
+      "path": "/api/internal/queen/tick?installationId=$INSTALLATION_ID",
+      "schedule": "* * * * *"
+    }
+  ]
 }

@@ -8,8 +8,8 @@ import {
   queenTickLockKey,
   QUEEN_TICK_LOCK_RELEASE_SCRIPT,
   QUEEN_TICK_LOCK_TTL_SECS,
-  WATCHDOG_ACTOR_ROLE,
-  WATCHDOG_ACTOR_ID,
+  WATCHDOG_TERMINATE_ACTOR,
+  WATCHDOG_TIMEOUT_ACTOR,
 } from "./queen-tick";
 
 vi.mock("@/server/war-room", async () => {
@@ -90,7 +90,11 @@ function participant(
   };
 }
 
-const fakeRedis = { get: vi.fn(async () => 5) } as never;
+const fakeRedis = {
+  get: vi.fn(async () => 5),
+  zcard: vi.fn(async () => 0),
+};
+const fakeRedisAsRedis = fakeRedis as never;
 
 describe("runQueenTick — recovery scan", () => {
   beforeEach(() => {
@@ -114,7 +118,7 @@ describe("runQueenTick — recovery scan", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedDeciding).toBe(2);
@@ -135,7 +139,7 @@ describe("runQueenTick — recovery scan", () => {
     );
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedDeciding).toBe(1);
@@ -163,7 +167,7 @@ describe("runQueenTick — expire scan", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.expired).toBe(1);
@@ -171,8 +175,10 @@ describe("runQueenTick — expire scan", () => {
       expect.objectContaining({
         roomId: RID_A,
         reason: "expired",
-        actorRole: WATCHDOG_ACTOR_ROLE,
-        actorId: WATCHDOG_ACTOR_ID,
+        // Watchdog terminate uses the SYSTEM/vercel-cron pair per
+        // RoomEvent JSDoc spec — closes #524 guard B1.
+        actorRole: "system",
+        actorId: "vercel-cron",
         subject: { type: "pr_review", ref: `hivemoot/hivemoot#${RID_A.slice(-3)}` },
       }),
     );
@@ -185,7 +191,7 @@ describe("runQueenTick — expire scan", () => {
     mockedParticipants.mockResolvedValue({});
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.expired).toBe(0);
@@ -204,7 +210,7 @@ describe("runQueenTick — expire scan", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.expired).toBe(1);
@@ -220,7 +226,7 @@ describe("runQueenTick — expire scan", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.errors).toBe(0); // benign race
@@ -232,7 +238,7 @@ describe("runQueenTick — expire scan", () => {
     ]);
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedOpen).toBe(0);
@@ -266,7 +272,7 @@ describe("runQueenTick — timeout scan", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedAwaitingContributions).toBe(1);
@@ -276,8 +282,11 @@ describe("runQueenTick — timeout scan", () => {
       expect.objectContaining({
         roomId: RID_A,
         subjectRole: "drone",
-        watchdogRole: WATCHDOG_ACTOR_ROLE,
-        watchdogAgentId: WATCHDOG_ACTOR_ID,
+        // Watchdog timeout uses the MANAGER/watchdog pair per
+        // RoomEvent JSDoc spec — closes #524 guard B1. Distinct
+        // from terminate's SYSTEM/vercel-cron pair.
+        watchdogRole: "manager",
+        watchdogAgentId: "watchdog",
       }),
     );
   });
@@ -288,7 +297,7 @@ describe("runQueenTick — timeout scan", () => {
     ]);
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedAwaitingContributions).toBe(0);
@@ -316,7 +325,7 @@ describe("runQueenTick — timeout scan", () => {
     );
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.timedOutParticipants).toBe(0);
@@ -336,7 +345,7 @@ describe("runQueenTick — timeout scan", () => {
     });
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.expired).toBe(1);
@@ -361,7 +370,7 @@ describe("runQueenTick — orchestration + bounds", () => {
     mockedList.mockResolvedValue([]);
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result).toEqual({
@@ -372,6 +381,7 @@ describe("runQueenTick — orchestration + bounds", () => {
       scannedAwaitingContributions: 0,
       timedOutParticipants: 0,
       errors: 0,
+      roomsUnscanned: 0,
     });
   });
 
@@ -379,7 +389,7 @@ describe("runQueenTick — orchestration + bounds", () => {
     mockedList.mockResolvedValue([]);
     await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
       maxRoomsPerTick: 25,
     });
@@ -392,7 +402,7 @@ describe("runQueenTick — orchestration + bounds", () => {
     mockedList.mockResolvedValue([]);
     await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(mockedList).toHaveBeenCalledWith(
@@ -418,7 +428,7 @@ describe("runQueenTick — orchestration + bounds", () => {
 
     const result = await runQueenTick({
       installationId: "12345",
-      redis: fakeRedis,
+      redis: fakeRedisAsRedis,
       nowMs: NOW,
     });
     expect(result.scannedDeciding).toBe(1);
@@ -427,6 +437,58 @@ describe("runQueenTick — orchestration + bounds", () => {
     expect(result.timedOutParticipants).toBe(1);
     expect(result.scannedOpen).toBe(3); // all 3 are open status
     expect(result.errors).toBe(0);
+  });
+});
+
+describe("runQueenTick — roomsUnscanned counter (closes #524 guard N2 + builder backlog)", () => {
+  beforeEach(() => {
+    mockedList.mockReset();
+    mockedRecover.mockReset();
+    mockedTerm.mockReset();
+    mockedTimeout.mockReset();
+    mockedParticipants.mockReset();
+    fakeRedis.zcard.mockReset();
+  });
+
+  it("roomsUnscanned=0 when total fits within cap (steady state)", async () => {
+    mockedList.mockResolvedValue([room(RID_A, "awaiting_rsvp")]);
+    fakeRedis.zcard.mockResolvedValue(1);
+    mockedParticipants.mockResolvedValue({});
+    const result = await runQueenTick({
+      installationId: "12345",
+      redis: fakeRedisAsRedis,
+      nowMs: NOW,
+    });
+    expect(result.roomsUnscanned).toBe(0);
+  });
+
+  it("roomsUnscanned=N when index has more rooms than cap (backlog visible)", async () => {
+    // listRooms returns 100 (capped); index has 250 → 150 unscanned
+    const slice = Array.from({ length: 100 }, (_, i) =>
+      room(`${i}`.padStart(8, "0") + "-89ab-4cde-9012-3456789abcde", "awaiting_rsvp"),
+    );
+    mockedList.mockResolvedValue(slice);
+    fakeRedis.zcard.mockResolvedValue(250);
+    mockedParticipants.mockResolvedValue({});
+    const result = await runQueenTick({
+      installationId: "12345",
+      redis: fakeRedisAsRedis,
+      nowMs: NOW,
+    });
+    expect(result.roomsUnscanned).toBe(150);
+  });
+
+  it("roomsUnscanned=0 when zcard fails (defensive — never negative)", async () => {
+    mockedList.mockResolvedValue([room(RID_A, "awaiting_rsvp")]);
+    fakeRedis.zcard.mockRejectedValue(new Error("Redis hiccup"));
+    mockedParticipants.mockResolvedValue({});
+    const result = await runQueenTick({
+      installationId: "12345",
+      redis: fakeRedisAsRedis,
+      nowMs: NOW,
+    });
+    // Caught by .catch(() => 0) → 0 - 1 = -1 → max(0, -1) = 0
+    expect(result.roomsUnscanned).toBe(0);
   });
 });
 
