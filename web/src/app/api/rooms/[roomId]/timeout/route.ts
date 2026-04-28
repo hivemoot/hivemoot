@@ -26,12 +26,15 @@ import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { parseJsonBody } from "@/server/request-utils";
 import {
   timeoutParticipant,
+  validateRoleFormat,
   RoomNotFoundError,
   RoomIdFormatError,
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
+  RoomEventBodyTooLargeError,
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
+  RoomRoleFormatError,
 } from "@/server/war-room";
 
 interface TimeoutRequestBody {
@@ -68,6 +71,21 @@ export async function POST(
       { status: 400 },
     );
   }
+  // Format validation at the route boundary (closes #521 builder R1
+  // #3). Without this, a malformed subjectRole would reach
+  // timeoutParticipant's internal assertRoleFormat which throws a
+  // plain Error → unhandled 500.
+  try {
+    validateRoleFormat(body.subjectRole);
+  } catch (err) {
+    if (err instanceof RoomRoleFormatError) {
+      return NextResponse.json(
+        { code: "invalid_subject_role", message: err.message },
+        { status: 400 },
+      );
+    }
+    throw err;
+  }
   if (
     typeof body.sequenceObservedByClient !== "number" ||
     !Number.isFinite(body.sequenceObservedByClient) ||
@@ -95,6 +113,15 @@ export async function POST(
     });
     return NextResponse.json({ sequence }, { status: 200 });
   } catch (err) {
+    if (err instanceof RoomEventBodyTooLargeError) {
+      // Closes #521 builder R1 #2 for /timeout — body holds
+      // subject_role inline so an unusually long role (defensive
+      // path) could push the event over 8 KiB.
+      return NextResponse.json(
+        { code: "event_body_too_large", message: err.message, sizeBytes: err.sizeBytes },
+        { status: 400 },
+      );
+    }
     if (err instanceof RoomNotFoundError || err instanceof RoomIdFormatError) {
       return NextResponse.json(
         { code: "room_not_found", message: `Room ${roomId} not found.` },

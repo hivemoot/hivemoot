@@ -27,6 +27,7 @@ import {
   RoomIdFormatError,
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
+  RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
 } from "@/server/war-room";
 
@@ -34,6 +35,15 @@ interface PresentRequestBody {
   sequenceObservedByClient?: number;
   intentHint?: string;
 }
+
+// Carry-forward (#521 builder R1 #1, will be tracked in follow-up
+// issue): G5 (design L861-877) calls for per-runner `agent_id`.
+// Currently `agentId = auth.name` (bearer token name), so subscriber-
+// mode fleets sharing one token collapse to a single owner for the
+// first-wins gate. Drone's review noted that fixing this requires a
+// storage-layer split between agent_id (first-wins) and actor_id
+// (audit) — too invasive for this slice. Will be addressed before
+// Phase H fleet migration.
 
 export async function POST(
   request: NextRequest,
@@ -96,6 +106,19 @@ export async function POST(
 }
 
 function mapWriteError(err: unknown, roomId: string): NextResponse {
+  if (err instanceof RoomEventBodyTooLargeError) {
+    // Closes #521 builder R1 #2: a large intentHint (or other
+    // body field) would otherwise bubble out as an unhandled 500.
+    // assertEventBodySize fires for serialized event bodies > 8 KiB.
+    return NextResponse.json(
+      {
+        code: "event_body_too_large",
+        message: err.message,
+        sizeBytes: err.sizeBytes,
+      },
+      { status: 400 },
+    );
+  }
   if (err instanceof RoomNotFoundError || err instanceof RoomIdFormatError) {
     return NextResponse.json(
       { code: "room_not_found", message: `Room ${roomId} not found.` },

@@ -25,6 +25,7 @@ import {
   RoomNotFoundError,
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
+  RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
 } from "@/server/war-room";
 import { POST } from "./route";
@@ -174,6 +175,22 @@ describe("POST /api/rooms/:roomId/present", () => {
     });
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe("status_precondition_failed");
+  });
+
+  it("RoomEventBodyTooLargeError → 400 event_body_too_large with sizeBytes (closes #521 builder R1 #2)", async () => {
+    mockedAuth.mockResolvedValue(makeWorkerAuth());
+    mockedPresent.mockRejectedValue(new RoomEventBodyTooLargeError(9000));
+    const res = await POST(
+      makeRequest({
+        sequenceObservedByClient: 1,
+        intentHint: "x".repeat(9000), // overflows event-body 8 KiB cap
+      }),
+      { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("event_body_too_large");
+    expect(body.sizeBytes).toBe(9000);
   });
 
   it("RoomParticipantOwnerConflictError → 409 owner_conflict", async () => {

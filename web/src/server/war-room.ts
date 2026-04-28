@@ -2278,6 +2278,36 @@ function assertRoleFormat(role: string): void {
   }
 }
 
+/**
+ * Validate role at the BODY boundary. Distinct from the internal
+ * `assertRoleFormat` — this version is for caller-supplied role
+ * strings (e.g., `/timeout`'s `subjectRole` body field) that must
+ * be validated before hitting storage. Throws a typed
+ * `RoomRoleFormatError` so route handlers can map to 400.
+ *
+ * Closes #521 builder R1 #3: the prior `/timeout` only checked
+ * non-empty string; an invalid `subjectRole` reached
+ * `assertRoleFormat` inside `timeoutParticipant` and threw a plain
+ * Error → unhandled 500 instead of the documented 400 path.
+ */
+export function validateRoleFormat(role: string): void {
+  if (typeof role !== "string" || !ROLE_REGEX.test(role)) {
+    throw new RoomRoleFormatError(role);
+  }
+}
+
+/** Thrown by `validateRoleFormat` on a malformed body-supplied role. */
+export class RoomRoleFormatError extends Error {
+  public readonly invalidRole: unknown;
+  constructor(invalidRole: unknown) {
+    super(
+      `Role ${JSON.stringify(String(invalidRole))} failed format validation: must match /^[a-z][a-z0-9_-]{0,31}$/.`,
+    );
+    this.name = "RoomRoleFormatError";
+    this.invalidRole = invalidRole;
+  }
+}
+
 /** Throw if event body exceeds the 8 KiB cap. Measured on the
  * UTF-8 byte length of the serialized JSON (NOT the surrogate-pair
  * character count). */

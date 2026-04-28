@@ -39,6 +39,7 @@ import {
   RoomIdFormatError,
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
+  RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
@@ -221,6 +222,14 @@ export async function DELETE(
 // ---------------------------------------------------------------------------
 
 function mapWriteError(err: unknown, roomId: string): NextResponse {
+  if (err instanceof RoomEventBodyTooLargeError) {
+    // Closes #521 builder R1 #2: oversized event body (verdict +
+    // findings serialized) bubbles up via assertEventBodySize.
+    return NextResponse.json(
+      { code: "event_body_too_large", message: err.message, sizeBytes: err.sizeBytes },
+      { status: 400 },
+    );
+  }
   if (err instanceof ContributionValidationError) {
     return NextResponse.json(
       { code: "invalid_contribution_body", message: err.message },

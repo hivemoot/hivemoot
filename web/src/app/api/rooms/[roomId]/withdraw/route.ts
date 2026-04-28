@@ -24,6 +24,7 @@ import {
   RoomIdFormatError,
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
+  RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
@@ -83,6 +84,12 @@ export async function POST(
     });
     return NextResponse.json({ sequence }, { status: 200 });
   } catch (err) {
+    if (err instanceof RoomEventBodyTooLargeError) {
+      return NextResponse.json(
+        { code: "event_body_too_large", message: err.message, sizeBytes: err.sizeBytes },
+        { status: 400 },
+      );
+    }
     if (err instanceof RoomNotFoundError || err instanceof RoomIdFormatError) {
       return NextResponse.json(
         { code: "room_not_found", message: `Room ${roomId} not found.` },

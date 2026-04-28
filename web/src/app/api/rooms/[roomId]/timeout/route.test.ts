@@ -111,6 +111,24 @@ describe("POST /api/rooms/:roomId/timeout", () => {
     expect((await res.json()).code).toBe("invalid_subject_role");
   });
 
+  it("rejects malformed subjectRole at boundary → 400 invalid_subject_role (closes #521 builder R1 #3)", async () => {
+    mockedAuth.mockResolvedValue(makeBotAuth());
+    // ROLE_REGEX is `/^[a-z][a-z0-9_-]{0,31}$/`. "DRONE" (uppercase)
+    // and "drone!!" both fail format. Without route-layer validation
+    // these reached assertRoleFormat in storage which throws a plain
+    // Error → unhandled 500.
+    for (const bad of ["DRONE", "drone!!", "1drone", "a".repeat(33)]) {
+      const res = await POST(
+        makeRequest({ subjectRole: bad, sequenceObservedByClient: 1 }),
+        { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+      );
+      expect(res.status, `bad: ${bad}`).toBe(400);
+      expect((await res.json()).code).toBe("invalid_subject_role");
+    }
+    // Storage primitive should NEVER have been called for any of them
+    expect(mockedTimeout).not.toHaveBeenCalled();
+  });
+
   it("RoomParticipantStatePreconditionError → 409 (covers stale-watchdog-loses-to-resolve race)", async () => {
     mockedAuth.mockResolvedValue(makeBotAuth());
     mockedTimeout.mockRejectedValue(
