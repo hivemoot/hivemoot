@@ -129,6 +129,19 @@ describe("POST /api/agent-tokens/bootstrap — body validation", () => {
     expect((await res.json()).code).toBe("agent_tokens_v1_invalid_name");
   });
 
+  it("malformed name → 400 INVALID_NAME (boundary validation, not the storage-error fallthrough — closes #508 builder R1 #2)", async () => {
+    // Capital 'B' violates NAME_REGEX. Without boundary validation,
+    // this would fall through to issueAgentToken → CapabilityValidationError
+    // → mapV1StorageErrorToResponse → INVALID_CAPABILITIES (wrong code).
+    const res = await POST(makeRequest({ name: "Bootstrap" }));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_name");
+    expect(body.field).toBe("name");
+    expect(body.value).toBe("Bootstrap");
+    expect(mockedIssue).not.toHaveBeenCalled(); // didn't waste a storage call
+  });
+
   it("expiresIn longer than 24h → 400 INVALID_EXPIRES_IN", async () => {
     const res = await POST(
       makeRequest({ name: "bootstrap-admin", expiresIn: "30d" }),
@@ -253,6 +266,23 @@ describe("POST /api/agent-tokens/bootstrap — happy paths", () => {
       expect(entry.fingerprint).toBe(""); // cookie auth, no bearer
       expect(entry.required_capability).toBeNull();
     }
+  });
+
+  it("auth.success row uses name: '' (cookie-auth marker, not the new token's name — closes #508 builder R1 #1)", async () => {
+    // The auth.success row represents the CREDENTIAL that authenticated
+    // the request. Bootstrap authenticated with the dashboard cookie,
+    // not the new token (which doesn't exist until issueAgentToken
+    // returned). Setting name to body.name would make the auth stream
+    // look like the new token had authenticated before it existed —
+    // a temporal-ordering lie. Empty string is the cookie-auth marker.
+    // The SUBJECT token's name is captured by the matching `bootstrap`
+    // row on the :audit (mutation) stream, so investigators don't lose
+    // the linkage.
+    mockedIssue.mockResolvedValue(makeIssued());
+    await POST(makeRequest({ name: "bootstrap-admin" }));
+    const entry = mockedAuditAppend.mock.calls[0][0].entry;
+    expect(entry.name).toBe("");
+    expect(entry.name).not.toBe("bootstrap-admin");
   });
 
   it("createdBy = operator's GitHub login (not 'dashboard') so the envelope's attribution is human-readable", async () => {

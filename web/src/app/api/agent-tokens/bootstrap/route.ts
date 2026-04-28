@@ -36,6 +36,7 @@ import { requireInstallation } from "@/server/require-installation";
 import { issueAgentToken } from "@/server/agent-token-v1";
 import {
   resolvePreset,
+  validateName,
   CapabilityValidationError,
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!parsedBody.ok) return parsedBody.response;
   const body = parsedBody.body;
 
-  // ----- name (required) -----
+  // ----- name (required + format-validated at the boundary) -----
   if (typeof body.name !== "string") {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_NAME,
@@ -96,8 +97,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       400,
     );
   }
-  // Name format validation happens inside issueAgentToken via
-  // validateName — surfaces as CapabilityValidationError → 400 here.
+  // Pre-validate the name format at the route boundary (closes
+  // #508 builder R1 #2). Without this, malformed names (e.g.
+  // "Bootstrap" — capital B violates the regex) fall through to
+  // issueAgentToken which throws CapabilityValidationError, and
+  // mapV1StorageErrorToResponse maps that to INVALID_CAPABILITIES
+  // — semantically wrong (the bad input is name, not caps).
+  // Pre-validation surfaces the correct stable code AND avoids the
+  // wasteful audit-emit + lock-acquire path for a guaranteed-400.
+  try {
+    validateName(body.name);
+  } catch (err) {
+    if (err instanceof CapabilityValidationError) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_NAME,
+        err.message,
+        400,
+        { field: err.field, value: err.value },
+      );
+    }
+    throw err;
+  }
 
   // ----- expiresIn (default to and capped at 24h) -----
   // Operator can pass a SHORTER expiresIn if they want (e.g., "1h"
@@ -200,7 +220,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         // bootstrapped_by field on the mutation entry's detail is
         // the canonical attribution for the dashboard user.
         fingerprint: "",
-        name: body.name,
+        // The auth.success row represents the CREDENTIAL that
+        // authenticated this request. Bootstrap authenticated with
+        // the dashboard cookie session, NOT the new token (which
+        // doesn't exist until issueAgentToken returned). Closes
+        // #508 builder R1 #1: previously this was set to body.name,
+        // making the auth stream look like the new token had
+        // authenticated before it existed. Empty string is the
+        // cookie-auth marker — the SUBJECT token's name is already
+        // captured by the matching `bootstrap` row on the :audit
+        // (mutation) stream.
+        name: "",
         action: "auth.success",
         endpoint: "POST /api/agent-tokens/bootstrap",
         required_capability: null,
