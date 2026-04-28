@@ -129,6 +129,96 @@ function makeMockRedis() {
         return [1, roomId];
       }
 
+      // ROOM_PARTICIPANT_TRANSITION_SCRIPT — 6 keys, 12 args (D.1.a-ii R3)
+      if (
+        keys.length === 6 &&
+        argv.length === 12 &&
+        script.includes("no_participant")
+      ) {
+        const [seqK, eventsK, idemK, roomK, participantsK, contributionsK] = keys;
+        const [
+          eventTemplate,
+          idempotencyKey,
+          _eventType,
+          role,
+          ownerRequired,
+          ownerExpected,
+          allowedRoomStatuses,
+          _roomId,
+          _idemTtlSecs,
+          transform,
+          nowIso,
+          contributionFieldJson,
+        ] = argv;
+
+        // 1. Idempotency
+        if (idempotencyKey !== "") {
+          const existing = store.get(idemK);
+          if (existing !== undefined) return [-1, Number(existing)];
+        }
+        // 2. Room exists + status check
+        const roomHash = hashes.get(roomK);
+        const currStatus = roomHash?.get("status") as string | undefined;
+        if (currStatus === undefined) return [-3, "room_not_found"];
+        if (allowedRoomStatuses !== "") {
+          const allowed = allowedRoomStatuses.split(",");
+          if (!allowed.includes(currStatus)) return [-2, currStatus];
+        }
+        // 3. Participant slot must exist
+        const existingP = hashes.get(participantsK)?.get(role) as
+          | string
+          | undefined;
+        if (existingP === undefined) return [-5, "no_participant"];
+        const p = JSON.parse(existingP) as {
+          agent_id: string;
+          status: string;
+          rsvp_at: string;
+          role: string;
+        };
+        // 4. Owner check (when required)
+        if (ownerRequired === "1" && p.agent_id !== ownerExpected) {
+          return [-4, "owner_conflict", p.agent_id];
+        }
+        // 5. INCR + ZADD + idem
+        const oldSeq = (store.get(seqK) as number | undefined) ?? 0;
+        const seq = oldSeq + 1;
+        store.set(seqK, seq);
+        const eventJson = eventTemplate.replace("__SEQ__", String(seq));
+        getSortedSet(eventsK).push({ member: eventJson, score: seq });
+        if (idempotencyKey !== "") {
+          store.set(idemK, String(seq));
+        }
+        // 6. Apply transformation
+        if (transform === "resolve") {
+          const updated = {
+            ...p,
+            status: "resolved",
+            resolved_at: nowIso,
+            withdrew_at_sequence: undefined,
+          };
+          delete (updated as { withdrew_at_sequence?: unknown })
+            .withdrew_at_sequence;
+          getHash(participantsK).set(role, JSON.stringify(updated));
+        } else if (transform === "withdraw") {
+          const updated = {
+            ...p,
+            status: "withdrew",
+            resolved_at: nowIso,
+            withdrew_at_sequence: seq,
+          };
+          getHash(participantsK).set(role, JSON.stringify(updated));
+        } else if (transform === "timeout") {
+          const updated = { ...p, status: "timed_out", resolved_at: nowIso };
+          getHash(participantsK).set(role, JSON.stringify(updated));
+        }
+        // "noop" leaves slot unchanged
+        // 7. Optional contribution write
+        if (contributionFieldJson !== "") {
+          getHash(contributionsK).set(role, contributionFieldJson);
+        }
+        return [seq];
+      }
+
       // ROOM_APPEND_EVENT_SCRIPT R2 — 9 keys, 15 args (D.1.a-ii R2)
       if (
         keys.length === 9 &&
@@ -1104,6 +1194,7 @@ import {
   RoomEventBodyTooLargeError,
   RoomContributionTooLargeError,
   RoomParticipantOwnerConflictError,
+  RoomParticipantNotFoundError,
   ContributionValidationError,
 } from "./war-room";
 
@@ -1714,17 +1805,24 @@ describe("timeoutParticipant", () => {
       redis,
     });
     // Manually transition to awaiting_contributions so the watchdog
-    // path is gated correctly. (Real lifecycle does this when all
-    // expected roles RSVP — here we shortcut for the test.)
+    // path is gated correctly.
     redis._sets.delete(statusIndexKey("12345", "awaiting_rsvp"));
     redis._sets.set(
       statusIndexKey("12345", "awaiting_contributions"),
       new Set([RID_A]),
     );
-    // Bypass the public type guard and write the status directly to
-    // the hash for test setup (no public seek-status mutator yet).
-    const roomKey_ = roomKey("12345", RID_A);
-    await redis.hset(roomKey_, { status: "awaiting_contributions" });
+    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+    // Pre-populate the participant slot so the new transition script's
+    // existence check passes (per design L746, /present is required
+    // before any non-create action like /timeout).
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-original",
+        role: "drone",
+        status: "pending",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+      }),
+    });
   });
 
   it("times out a participant in awaiting_contributions → status 'timed_out'", async () => {
@@ -1773,6 +1871,173 @@ describe("timeoutParticipant", () => {
     expect(events[0].actor_role).toBe("manager");
     expect(events[0].actor_id).toBe("bot-queen");
     expect(events[0].body.subject_role).toBe("drone");
+  });
+
+  it("preserves the original agent_id + rsvp_at on the timed_out participant (R2 G N2)", async () => {
+    // The transition script reads the existing slot via cjson.decode
+    // and modifies just status + resolved_at — agent_id, role, rsvp_at
+    // are preserved. Operators reading participants.drone now see the
+    // original participant, not the watchdog's identity.
+    await timeoutParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      subjectRole: "drone",
+      watchdogRole: "manager",
+      watchdogAgentId: "bot-queen",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.agent_id).toBe("drone-original");
+    expect(participants.drone.rsvp_at).toBe("2026-04-28T00:00:00.000Z");
+    expect(participants.drone.status).toBe("timed_out");
+  });
+});
+
+// ===========================================================================
+// D.1.a-ii R3 — additional builder R2 closures (B5 + B6)
+// ===========================================================================
+
+describe("D.1.a-ii R3 / B5 — submitContribution allows awaiting_rsvp (early contribution path)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // Pre-populate participant slot — caller must /present first
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "pending",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+      }),
+    });
+    // Room is in awaiting_rsvp (NOT awaiting_contributions) — early-
+    // contribution path per design L201.
+  });
+
+  it("contribute during awaiting_rsvp succeeds (no status precondition error)", async () => {
+    const seq = await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      body: { verdict: "APPROVE", summary: "early submission" },
+      rawMd: "ok",
+      redis,
+    });
+    expect(seq).toBeGreaterThan(0);
+    const contributions = await getRoomContributions({ roomId: RID_A, redis });
+    expect(contributions.drone.body.verdict).toBe("APPROVE");
+    // Participant is now resolved (atomic dual-update)
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("resolved");
+  });
+
+  it("preserves the original rsvp_at across the early contribute (R2 R2 #2)", async () => {
+    // Original rsvp_at was "2026-04-28T00:00:00.000Z" (set in beforeEach).
+    // The transition script reads the slot via cjson.decode, modifies
+    // only status + resolved_at, re-encodes — rsvp_at is preserved
+    // atomically inside the lock.
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      body: { verdict: "APPROVE", summary: "ok" },
+      rawMd: "ok",
+      redis,
+    });
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.rsvp_at).toBe("2026-04-28T00:00:00.000Z");
+    expect(participants.drone.status).toBe("resolved");
+    expect(participants.drone.resolved_at).toBeDefined();
+    // resolved_at is later than rsvp_at
+    expect(
+      new Date(participants.drone.resolved_at!).getTime(),
+    ).toBeGreaterThan(new Date(participants.drone.rsvp_at).getTime());
+  });
+});
+
+describe("D.1.a-ii R3 / B6 — non-create actions require existing participant slot", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+    // Note: NO participant slot pre-populated — caller hasn't /present'd
+  });
+
+  it("submitContribution without prior /present → RoomParticipantNotFoundError", async () => {
+    await expect(
+      submitContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        body: { verdict: "APPROVE", summary: "ok" },
+        rawMd: "ok",
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantNotFoundError);
+    // No phantom contribution landed
+    expect(await getRoomContributions({ roomId: RID_A, redis })).toEqual({});
+  });
+
+  it("withdrawParticipant without prior /present → RoomParticipantNotFoundError", async () => {
+    await expect(
+      withdrawParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantNotFoundError);
+    expect(await getRoomParticipants({ roomId: RID_A, redis })).toEqual({});
+  });
+
+  it("withdrawContribution without prior /present → RoomParticipantNotFoundError", async () => {
+    await expect(
+      withdrawContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantNotFoundError);
+  });
+
+  it("timeoutParticipant without prior /present → RoomParticipantNotFoundError", async () => {
+    await expect(
+      timeoutParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        subjectRole: "drone",
+        watchdogRole: "manager",
+        watchdogAgentId: "bot-queen",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantNotFoundError);
   });
 });
 
@@ -2181,6 +2446,15 @@ describe("D.1.a-ii R2 / Guard B1 — __SEQ__ first-match gsub preserves user con
 
   it("contribution body summary containing '__SEQ__' is preserved verbatim", async () => {
     await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+    // submitContribution requires existing participant slot
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "pending",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+      }),
+    });
     await submitContribution({
       installationId: "12345",
       roomId: RID_A,

@@ -1003,6 +1003,32 @@ export class RoomContributionTooLargeError extends Error {
 }
 
 /**
+ * Thrown when withdraw / contribute / withdraw_contribution / timeout
+ * is called but the participant slot doesn't exist. Per
+ * WAR_ROOM_DESIGN.md L746, `/present` is required before
+ * `/contribute` (and similarly for the other transition paths).
+ *
+ * Closes #510 builder R2 #2: the prior implementation let
+ * withdraw / contribute / withdraw_contribution proceed even with
+ * a missing participant slot, creating phantom materialized state
+ * that the manager loop's RSVP-records logic couldn't reason over.
+ * The new `ROOM_PARTICIPANT_TRANSITION_SCRIPT` rejects at the
+ * boundary with -5 → this error.
+ */
+export class RoomParticipantNotFoundError extends Error {
+  public readonly roomId: string;
+  public readonly role: string;
+  constructor(roomId: string, role: string) {
+    super(
+      `Participant slot ${JSON.stringify(role)} not found in room ${roomId} — caller must /present before this action.`,
+    );
+    this.name = "RoomParticipantNotFoundError";
+    this.roomId = roomId;
+    this.role = role;
+  }
+}
+
+/**
  * Thrown when a write hits the per-(room, role) first-wins gate —
  * a different agent has already claimed this role in the room and
  * the slot is not in the `withdrew` state (which would allow re-RSVP).
@@ -1380,6 +1406,119 @@ end
 return {seq}
 `;
 
+/**
+ * Atomic participant-state transition. Used by withdraw / contribute /
+ * withdraw_contribution / timeout — actions that REQUIRE an existing
+ * participant slot and need to atomically transform its status while
+ * preserving fields like `agent_id` and `rsvp_at`.
+ *
+ * Closes #510 builder R2 #2: the prior generic `ROOM_APPEND_EVENT_SCRIPT`
+ * let these actions proceed with a missing slot, and `submitContribution`
+ * synthesized a fresh participant with `rsvp_at = now`, which would
+ * corrupt the manager-loop's quiet-period calculation. This script
+ * cjson-decodes the existing slot, applies an action-specific
+ * transformation in-place, and HSETs back. `agent_id` + `rsvp_at`
+ * are always preserved across `resolve` / `withdraw` / `timeout`.
+ *
+ * Closes #510 builder R2 #1 indirectly: `submitContribution` now
+ * uses this script with `allowedRoomStatuses = "awaiting_rsvp,
+ * awaiting_contributions"` per design L201 (RSVP'd workers may
+ * contribute during either room status).
+ *
+ * Order of operations:
+ *   1. Idempotency check (replay-safe)
+ *   2. Room exists + room status in allowed list
+ *   3. Read participant slot — MUST exist (-5 if missing)
+ *   4. Owner check (when ARGV[5]="1") — agent_id must match
+ *      ARGV[6], OR existing.status == "withdrew" (re-RSVP allowed)
+ *   5. INCR seq, ZADD event (first-match `__SEQ__` gsub), SET idem
+ *   6. Apply participant transformation in-place:
+ *        - "resolve":  status="resolved", resolved_at=now, clear withdrew_at_sequence
+ *        - "withdraw": status="withdrew", resolved_at=now, withdrew_at_sequence=seq
+ *        - "timeout":  status="timed_out", resolved_at=now
+ *        - "noop":     leave participant unchanged (used for withdraw_contribution)
+ *      `agent_id`, `role`, `rsvp_at` always preserved.
+ *   7. Optional contribution slot HSET (used by submitContribution
+ *      + withdrawContribution)
+ *
+ * KEYS:
+ *   [1] seqKey
+ *   [2] eventsKey
+ *   [3] idemKey
+ *   [4] roomKey
+ *   [5] participantsKey
+ *   [6] contributionsKey      (used when ARGV[12] != "")
+ *
+ * ARGV:
+ *   [1]  eventJsonTemplate    — JSON with first-match `__SEQ__` placeholder
+ *   [2]  idempotencyKey       — empty disables idem check
+ *   [3]  eventType            — diagnostic
+ *   [4]  role                 — participants hash field key
+ *   [5]  ownerRequired        — "1" enforces agent_id match; "" disables (watchdog)
+ *   [6]  ownerExpected        — agent_id (used only if ownerRequired)
+ *   [7]  allowedRoomStatuses  — comma-separated; empty = any
+ *   [8]  roomId               — for diagnostic / future status set ops
+ *   [9]  idemTtlSecs          — TTL for idem reverse-index
+ *   [10] participantTransform — "resolve" | "withdraw" | "timeout" | "noop"
+ *   [11] nowIso               — for resolved_at field
+ *   [12] contributionFieldJson — empty = don't write contribution slot
+ *
+ * Returns:
+ *   {seq}                                   success
+ *   {-1, existingSequence}                  idempotency replay
+ *   {-2, currentRoomStatus}                 allowed-status mismatch
+ *   {-3, "room_not_found"}                  room hash missing
+ *   {-4, "owner_conflict", existingAgentId} per-role owner mismatch
+ *   {-5, "no_participant"}                  participant slot missing
+ */
+export const ROOM_PARTICIPANT_TRANSITION_SCRIPT = `
+if ARGV[2] ~= "" then
+  local existing = redis.call("get", KEYS[3])
+  if existing then return {-1, tonumber(existing)} end
+end
+local currStatus = redis.call("hget", KEYS[4], "status")
+if not currStatus then return {-3, "room_not_found"} end
+if ARGV[7] ~= "" then
+  local found = false
+  for s in string.gmatch(ARGV[7], "[^,]+") do
+    if s == currStatus then found = true; break end
+  end
+  if not found then return {-2, currStatus} end
+end
+local existingP = redis.call("hget", KEYS[5], ARGV[4])
+if not existingP then return {-5, "no_participant"} end
+local p = cjson.decode(existingP)
+if ARGV[5] == "1" and p.agent_id ~= ARGV[6] then
+  return {-4, "owner_conflict", p.agent_id}
+end
+local seq = redis.call("incr", KEYS[1])
+local eventJson = string.gsub(ARGV[1], "__SEQ__", tostring(seq), 1)
+redis.call("zadd", KEYS[2], seq, eventJson)
+if ARGV[2] ~= "" then
+  redis.call("set", KEYS[3], tostring(seq), "EX", tonumber(ARGV[9]))
+end
+local transform = ARGV[10]
+if transform == "resolve" then
+  p.status = "resolved"
+  p.resolved_at = ARGV[11]
+  p.withdrew_at_sequence = nil
+  redis.call("hset", KEYS[5], ARGV[4], cjson.encode(p))
+elseif transform == "withdraw" then
+  p.status = "withdrew"
+  p.resolved_at = ARGV[11]
+  p.withdrew_at_sequence = seq
+  redis.call("hset", KEYS[5], ARGV[4], cjson.encode(p))
+elseif transform == "timeout" then
+  p.status = "timed_out"
+  p.resolved_at = ARGV[11]
+  redis.call("hset", KEYS[5], ARGV[4], cjson.encode(p))
+end
+if ARGV[12] ~= "" then
+  redis.call("hset", KEYS[6], ARGV[4], ARGV[12])
+end
+return {seq}
+`;
+
 // ---------------------------------------------------------------------------
 // Helpers (D.1.a-ii)
 // ---------------------------------------------------------------------------
@@ -1607,6 +1746,141 @@ export async function appendRoomEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Low-level participant-transition primitive
+// ---------------------------------------------------------------------------
+
+interface TransitionRoomParticipantArgs {
+  installationId: string;
+  roomId: string;
+  /** Participants hash field key. */
+  role: string;
+  event: {
+    timestamp: string;
+    event_type: RoomEventType;
+    actor_role: string;
+    actor_id: string;
+    body: Record<string, unknown>;
+  };
+  idempotencyKey: string;
+  /** When true, the script enforces existing participant's `agent_id`
+   * matches `ownerExpected`. Watchdog-driven actions (timeout) skip
+   * the check (set `false`) so the watchdog can act on any role. */
+  ownerRequired: boolean;
+  /** Required when `ownerRequired === true`. */
+  ownerExpected?: string;
+  allowedRoomStatuses: RoomStatus[];
+  /** Atomic in-place transformation applied to the participant slot.
+   * `noop` leaves the slot unchanged (used by withdrawContribution). */
+  transform: "resolve" | "withdraw" | "timeout" | "noop";
+  /** Optional contribution-slot HSET. The contribution JSON is passed
+   * verbatim (no `__SEQ__` substitution — contributions don't carry
+   * sequence-derived fields). */
+  contributionJson?: string;
+  idemTtlSecs?: number;
+  redis: Redis;
+}
+
+/**
+ * Atomic participant-state transition. Underlying primitive for
+ * withdraw / contribute / withdraw_contribution / timeout — actions
+ * that REQUIRE an existing participant slot (per
+ * WAR_ROOM_DESIGN.md L746) and need rsvp_at preservation.
+ *
+ * Throws:
+ *   - `RoomEventIdempotencyReplayError` (replay)
+ *   - `RoomNotFoundError` (room hash missing)
+ *   - `RoomEventStatusPreconditionError` (room status not in allowed list)
+ *   - `RoomParticipantOwnerConflictError` (owner mismatch when ownerRequired)
+ *   - `RoomParticipantNotFoundError` (participant slot missing — must
+ *      `/present` first)
+ *   - `RoomEventBodyTooLargeError` (event body > 8 KiB)
+ */
+export async function transitionRoomParticipant(
+  args: TransitionRoomParticipantArgs,
+): Promise<number> {
+  assertEventBodySize(args.event.body);
+  if (args.ownerRequired && args.ownerExpected === undefined) {
+    throw new Error(
+      "Internal: transitionRoomParticipant requires ownerExpected when ownerRequired=true",
+    );
+  }
+
+  const eventTemplate = JSON.stringify({
+    seq: "__SEQ__",
+    timestamp: args.event.timestamp,
+    event_type: args.event.event_type,
+    actor_role: args.event.actor_role,
+    actor_id: args.event.actor_id,
+    body: args.event.body,
+  });
+  const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+
+  const ttl = args.idemTtlSecs ?? idemTtlSecs(DEFAULT_MAX_AGE_SECS);
+  const allowedCsv = args.allowedRoomStatuses.join(",");
+  const nowIso = args.event.timestamp;
+
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      ROOM_PARTICIPANT_TRANSITION_SCRIPT,
+      [
+        seqKey(args.roomId),
+        eventsKey(args.roomId),
+        idemKey(args.roomId, args.idempotencyKey),
+        roomKey(args.installationId, args.roomId),
+        participantsKey(args.roomId),
+        args.contributionJson !== undefined
+          ? contributionsKey(args.roomId)
+          : "__unused__",
+      ],
+      [
+        luaTemplate,
+        args.idempotencyKey,
+        args.event.event_type,
+        args.role,
+        args.ownerRequired ? "1" : "",
+        args.ownerExpected ?? "",
+        allowedCsv,
+        args.roomId,
+        String(ttl),
+        args.transform,
+        nowIso,
+        args.contributionJson ?? "",
+      ],
+    ),
+  );
+
+  if (result.ok === -1 && typeof result.tag1 === "number") {
+    throw new RoomEventIdempotencyReplayError(args.roomId, result.tag1);
+  }
+  if (result.ok === -2 && typeof result.tag1 === "string") {
+    throw new RoomEventStatusPreconditionError(
+      args.roomId,
+      allowedCsv,
+      result.tag1,
+    );
+  }
+  if (result.ok === -3) {
+    throw new RoomNotFoundError(args.installationId, args.roomId);
+  }
+  if (result.ok === -4 && typeof result.tag2 === "string") {
+    throw new RoomParticipantOwnerConflictError(
+      args.roomId,
+      args.role,
+      result.tag2,
+      args.ownerExpected ?? "",
+    );
+  }
+  if (result.ok === -5) {
+    throw new RoomParticipantNotFoundError(args.roomId, args.role);
+  }
+  if (result.ok > 0) return result.ok;
+
+  throw new Error(
+    `ROOM_PARTICIPANT_TRANSITION_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // High-level RSVP / contribute / timeout primitives
 // ---------------------------------------------------------------------------
 
@@ -1696,45 +1970,28 @@ export async function presentParticipant(args: RSVPCommonArgs & {
 }
 
 /**
- * Worker withdraws their RSVP. Updates the participant record's
- * `status` to `"withdrew"` (per design — past tense; not "withdrawn")
- * with `withdrew_at_sequence` set to the withdrawal event's sequence.
+ * Worker withdraws their RSVP. Uses `transitionRoomParticipant` so
+ * the existing slot's `agent_id` + `rsvp_at` are preserved and the
+ * `withdrew_at_sequence` field is set atomically to the withdrawal
+ * event's sequence. Status transforms from pending/resolved →
+ * withdrew.
  *
  * Allowed statuses: room must be in awaiting_rsvp or
- * awaiting_contributions (you can't withdraw from a closed/decided
- * room). Soft — doesn't transition room status.
+ * awaiting_contributions. Soft — doesn't transition room status.
  *
- * Owner check: only the agent that holds this role's slot may
- * withdraw (other agents get `RoomParticipantOwnerConflictError`).
+ * **Requires existing participant slot** (per design L746): if the
+ * caller never `/present`ed, this returns
+ * `RoomParticipantNotFoundError`. Closes #510 builder R2 #2.
  */
 export async function withdrawParticipant(
   args: RSVPCommonArgs & { reason?: string },
 ): Promise<number> {
   assertRoleFormat(args.role);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
-  // The participant record uses `__SEQ__` as a placeholder for the
-  // withdrew_at_sequence field; the Lua script substitutes it
-  // (first-match) so the record carries the actual sequence the
-  // withdrawal event landed at — used by the watcher's re-RSVP
-  // re-eligibility filter (`?since=N` past withdrew_at_sequence).
-  const participantTemplate = {
-    agent_id: args.agentId,
-    role: args.role,
-    status: "withdrew" as const,
-    rsvp_at: nowIso,
-    resolved_at: nowIso,
-    withdrew_at_sequence: "__SEQ__",
-  };
-  // Strip the quotes around __SEQ__ so the script substitutes a
-  // bare number (matches the same pattern as the event template).
-  const participantJson = JSON.stringify(participantTemplate).replace(
-    '"__SEQ__"',
-    "__SEQ__",
-  );
-
-  return await appendRoomEvent({
+  return await transitionRoomParticipant({
     installationId: args.installationId,
     roomId: args.roomId,
+    role: args.role,
     event: {
       timestamp: nowIso,
       event_type: "participant_withdrawn",
@@ -1750,45 +2007,42 @@ export async function withdrawParticipant(
       action: "withdraw_participant",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
-    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
-    materialized1: {
-      key: participantsKey(args.roomId),
-      field: args.role,
-      json: participantJson,
-      // Withdraw is the one path that NEEDS Lua to substitute __SEQ__
-      // in materialized JSON — withdrew_at_sequence must be the
-      // actual sequence the withdrawal event landed at.
-      substituteSeq: true,
-    },
+    ownerRequired: true,
+    ownerExpected: args.agentId,
+    allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    transform: "withdraw",
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
 }
 
 /**
- * Worker submits a contribution (analysis / verdict). Latest-wins per
- * role: re-submitting overwrites the prior contribution in the
- * materialized hash.
+ * Worker submits a contribution (analysis / verdict). Uses
+ * `transitionRoomParticipant` so the participant slot is updated
+ * atomically (status → "resolved", `resolved_at` = now,
+ * `agent_id` + `rsvp_at` preserved from the original RSVP) AND the
+ * contribution slot is HSET in the same EVAL.
  *
  * **Schema validation** (closes #510 builder R1 #4): the `body`
- * MUST conform to `ContributionBody` (UPPERCASE verdict enum,
- * 1-500 char summary, ≤20 findings with bounded sub-fields).
- * Validated at the boundary via `validateContributionBody` —
- * malformed bodies throw `ContributionValidationError` BEFORE
- * any storage write.
+ * MUST conform to `ContributionBody`. Validated at the boundary
+ * via `validateContributionBody` — malformed bodies throw
+ * `ContributionValidationError` BEFORE any storage write.
  *
- * **Allowed status**: `awaiting_contributions` only. The room must
- * have already advanced past RSVP collection.
+ * **Allowed statuses** (closes #510 builder R2 #1): both
+ * `awaiting_rsvp` AND `awaiting_contributions` per design L201 —
+ * RSVP'd workers may contribute during EITHER status. The
+ * canonical timeline depends on the early-contribution path during
+ * the RSVP window.
  *
- * **Owner check**: only the agent that holds the role's RSVP slot
- * may contribute (other agents get `RoomParticipantOwnerConflictError`).
+ * **Requires existing participant slot** (closes #510 builder R2 #2):
+ * caller must have called `presentParticipant` first. Otherwise
+ * `RoomParticipantNotFoundError`.
  *
- * **Dual materialized write** (closes #510 builder R1 #3): the
- * script atomically updates BOTH the contribution slot AND the
- * participant's `status` to `"resolved"` so the queen synthesis
- * watchdog observing "all participants resolved" sees consistent
- * state without a race window.
+ * **rsvp_at preservation**: the script reads the existing
+ * participant via `cjson.decode`, modifies status / resolved_at /
+ * clears withdrew_at_sequence, and re-encodes. The original
+ * `rsvp_at` is preserved across the call so the manager loop's
+ * quiet-period calculation reasons over true RSVP times.
  *
  * Throws `RoomContributionTooLargeError` if `rawMd` exceeds 32 KiB.
  */
@@ -1801,43 +2055,24 @@ export async function submitContribution(args: RSVPCommonArgs & {
   assertContributionMdSize(args.rawMd);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
   const contribution: RoomContribution = {
-    // RoomContribution.body is Record<string, unknown> for forward
-    // compat with future contribution types; ContributionBody is the
-    // V1-canonical schema and validates as a subtype.
     body: args.body as unknown as Record<string, unknown>,
     raw_md: args.rawMd,
     contributed_at: nowIso,
   };
-  // Updated participant: status flips to "resolved", resolved_at set.
-  // agent_id stays the same as the prior RSVP (verified by owner check).
-  const resolvedParticipant: RoomParticipant = {
-    agent_id: args.agentId,
-    role: args.role,
-    status: "resolved",
-    rsvp_at: nowIso, // best effort — original rsvp_at could be read
-                     // from existing slot; for V1 the resolved_at is
-                     // the more salient timestamp and the event log
-                     // preserves the original RSVP timestamp.
-    resolved_at: nowIso,
-  };
 
-  return await appendRoomEvent({
+  return await transitionRoomParticipant({
     installationId: args.installationId,
     roomId: args.roomId,
+    role: args.role,
     event: {
       timestamp: nowIso,
       event_type: "contribution_submitted",
       actor_role: args.role,
       actor_id: args.agentId,
       body: {
-        // Spread into a generic Record so the index-signature type
-        // check (event body must be Record<string, unknown>) is
-        // satisfied — args.body is the typed ContributionBody.
         body: args.body as unknown as Record<string, unknown>,
-        // Don't include raw_md in the event body (it's bounded
-        // separately at 32 KiB; the event body's 8 KiB cap would be
-        // blown by typical-sized contributions). The materialized
-        // hash carries the full raw_md for caller retrieval.
+        // raw_md NOT in event body — bounded separately at 32 KiB
+        // in the materialized contribution slot.
       },
     },
     idempotencyKey: deriveIdempotencyKey({
@@ -1846,20 +2081,11 @@ export async function submitContribution(args: RSVPCommonArgs & {
       action: "contribute",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    allowedStatuses: ["awaiting_contributions"],
-    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
-    // Materialized 1: update participants[role] → resolved
-    materialized1: {
-      key: participantsKey(args.roomId),
-      field: args.role,
-      json: JSON.stringify(resolvedParticipant),
-    },
-    // Materialized 2: write contribution
-    materialized2: {
-      key: contributionsKey(args.roomId),
-      field: args.role,
-      json: JSON.stringify(contribution),
-    },
+    ownerRequired: true,
+    ownerExpected: args.agentId,
+    allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    transform: "resolve",
+    contributionJson: JSON.stringify(contribution),
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
@@ -1869,13 +2095,16 @@ export async function submitContribution(args: RSVPCommonArgs & {
  * Worker withdraws a previously-submitted contribution. Soft event —
  * the contribution slot in the materialized hash gets a tombstone
  * (`withdrawn: true`); queen synthesis skips withdrawn contributions.
+ * The participant's status is **unchanged** — that's a separate
+ * signal from contribution withdrawal.
  *
- * **Allowed status**: `awaiting_contributions` only. **Owner check**:
- * agent must hold the role's RSVP slot. Doesn't write to participants
- * (only the contribution slot is tombstoned); the participant remains
- * "resolved" or whatever status they were prior to the withdrawal —
- * the contribution-level withdrawal is a separate signal from the
- * participant-level withdrawal.
+ * **Allowed statuses**: `awaiting_rsvp` or `awaiting_contributions`
+ * (matches submitContribution's allowed window).
+ *
+ * **Requires existing participant slot** (closes #510 builder R2 #2):
+ * caller must have called `presentParticipant` first.
+ *
+ * **Owner check**: agent must hold the role's RSVP slot.
  */
 export async function withdrawContribution(
   args: RSVPCommonArgs & { reason?: string },
@@ -1887,9 +2116,10 @@ export async function withdrawContribution(
     contributed_at: nowIso,
   };
 
-  return await appendRoomEvent({
+  return await transitionRoomParticipant({
     installationId: args.installationId,
     roomId: args.roomId,
+    role: args.role,
     event: {
       timestamp: nowIso,
       event_type: "contribution_withdrawn",
@@ -1905,18 +2135,11 @@ export async function withdrawContribution(
       action: "withdraw_contribution",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    allowedStatuses: ["awaiting_contributions"],
-    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
-    // Single materialized: tombstone the contribution slot.
-    // Participant record is left alone (still "resolved" if a
-    // contribution was submitted before this withdrawal, otherwise
-    // "pending" — either way, withdrawal of the contribution
-    // doesn't change the participant's status).
-    materialized1: {
-      key: contributionsKey(args.roomId),
-      field: args.role,
-      json: JSON.stringify(tombstone),
-    },
+    ownerRequired: true,
+    ownerExpected: args.agentId,
+    allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    transform: "noop", // participant status unchanged
+    contributionJson: JSON.stringify(tombstone),
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
@@ -1952,33 +2175,16 @@ export async function timeoutParticipant(args: {
   assertRoleFormat(args.subjectRole);
   assertRoleFormat(args.watchdogRole);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
-  // Read the existing participant first so we can preserve the
-  // original agent_id + rsvp_at on the timeout tombstone (closes
-  // #510 guard R1 N2: previously the watchdog overwrote agent_id
-  // with its own, making operators reading the participants hash
-  // think bot-queen was the participant).
-  //
-  // Best-effort: if the existing slot is missing, the timeout still
-  // proceeds with the watchdog's identity as a placeholder — this
-  // case shouldn't happen in normal flow (you can only time out
-  // someone who RSVP'd) but we don't want to fail the watchdog.
-  const existingParticipants = await getRoomParticipants({
-    roomId: args.roomId,
-    redis: args.redis,
-  });
-  const existing = existingParticipants[args.subjectRole];
-
-  const participant: RoomParticipant = {
-    agent_id: existing?.agent_id ?? args.watchdogAgentId,
-    role: args.subjectRole,
-    status: "timed_out",
-    rsvp_at: existing?.rsvp_at ?? nowIso,
-    resolved_at: nowIso,
-  };
-
-  return await appendRoomEvent({
+  // Use transitionRoomParticipant — the script atomically reads the
+  // existing slot, preserves agent_id + rsvp_at, and applies the
+  // timed_out transformation. Closes #510 guard R1 N2 properly
+  // (previously the wrapper read participant TS-side outside the
+  // lock, then overwrote with the watchdog's identity inside the
+  // script — race window).
+  return await transitionRoomParticipant({
     installationId: args.installationId,
     roomId: args.roomId,
+    role: args.subjectRole,
     event: {
       timestamp: nowIso,
       event_type: "participant_timed_out",
@@ -1993,21 +2199,9 @@ export async function timeoutParticipant(args: {
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     // Watchdog can timeout any participant — no owner check.
-    allowedStatuses: ["awaiting_contributions"],
-    materialized1: {
-      key: participantsKey(args.roomId),
-      field: args.subjectRole,
-      json: JSON.stringify(participant),
-    },
-    // Status transition is a self-loop (awaiting_contributions →
-    // awaiting_contributions) so the SREM/SADD index updates fire
-    // but currStatus is preserved. Closes the watchdog vs `/decide`
-    // race per design G7 — script returns -2 if status drifted to
-    // deciding between the watchdog scan and the script run.
-    statusTransition: {
-      from: "awaiting_contributions",
-      to: "awaiting_contributions",
-    },
+    ownerRequired: false,
+    allowedRoomStatuses: ["awaiting_contributions"],
+    transform: "timeout",
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
