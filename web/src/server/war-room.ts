@@ -313,7 +313,13 @@ export type RoomEventType =
   | "contribution_withdrawn"
   | "room_decided"
   | "room_recovered"
-  | "room_terminated";
+  | "room_terminated"
+  // Bot/queen meta-events emitted via POST /api/rooms/{id}/event
+  // (D.1.b-ii). They DON'T transition status — the bot uses them
+  // to record context for workers (subject changed) or pose
+  // targeted questions (V1.1 follow-up).
+  | "subject_updated"
+  | "queen_question";
 
 /** Materialized RSVP entry per role (latest-state-wins). Stored as
  * JSON in the `:participants` hash, keyed by role.
@@ -1128,6 +1134,28 @@ export class RoomContributionTooLargeError extends Error {
 }
 
 /**
+ * `RoomDecision.content` exceeded the 64 KiB UTF-8 byte budget.
+ *
+ * Closes #519 guard N1 — the prior `closeRoomWithDecision`
+ * implementation threw a plain `Error` with a free-text message
+ * that the route layer had to regex-match (`/exceeds 64 KiB/`),
+ * making the mapping silently break on any copy-edit of the
+ * message string. Sibling-typed pattern restored: `RoomEventBodyTooLargeError`,
+ * `RoomContributionTooLargeError`, and now this one all carry
+ * `sizeBytes` for caller logs.
+ */
+export class RoomDecisionTooLargeError extends Error {
+  public readonly sizeBytes: number;
+  constructor(sizeBytes: number) {
+    super(
+      `RoomDecision.content exceeds 64 KiB (got ${sizeBytes} bytes). Reduce body before close — large synthesis output should reference an external gist/issue.`,
+    );
+    this.name = "RoomDecisionTooLargeError";
+    this.sizeBytes = sizeBytes;
+  }
+}
+
+/**
  * Thrown when `ROOM_DECIDE_CLAIM_SCRIPT` finds the synthesis claim
  * already held by another queen runner (benign conflict — the
  * caller should skip this tick and re-attempt on the next manager
@@ -1616,7 +1644,12 @@ export type RoomEventAction =
   | "withdraw_contribution"
   | "timeout"
   | "decide"
-  | "close";
+  | "close"
+  // Bot meta-event idempotency lanes (D.1.b-ii). Caller derives
+  // a key per (room, role, action, observed-sequence); same shape
+  // as the worker actions above.
+  | "subject_updated"
+  | "queen_question";
 
 // ---------------------------------------------------------------------------
 // ROOM_APPEND_EVENT_SCRIPT — atomic event append
@@ -3327,9 +3360,9 @@ export async function closeRoomWithDecision(args: {
   // assertEventBodySize).
   const decisionContentBytes = Buffer.byteLength(args.decision.content, "utf8");
   if (decisionContentBytes > 64 * 1024) {
-    throw new Error(
-      `RoomDecision.content exceeds 64 KiB (${decisionContentBytes} bytes); reduce body before close.`,
-    );
+    // Typed class (closes #519 guard N1) so the route layer can
+    // map via `instanceof` instead of regex-matching the message.
+    throw new RoomDecisionTooLargeError(decisionContentBytes);
   }
 
   const nowMs = args.nowMs ?? Date.now();

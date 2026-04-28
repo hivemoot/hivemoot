@@ -146,6 +146,15 @@ export const KNOWN_CAPABILITIES = [
   // with `/api/rooms/watching` in a follow-up slice.
   "rooms.read_all",
   // War rooms — bot (queen module).
+  // Note (#519 guard N5): `POST /api/rooms` 409 `subject_already_open`
+  // surfaces `existingRoomId` in the response body. Today the only
+  // preset granting `rooms.create` (queen) also includes
+  // `rooms.read_all`, so the disclosure is benign — the bearer can
+  // already enumerate every room in the installation. Any future
+  // preset with `rooms.create` but WITHOUT `rooms.read_all` would
+  // turn the 409 into a roomId-discovery oracle. Keep this pairing
+  // when adding a new preset, or strip `existingRoomId` from the
+  // 409 when the bearer lacks `rooms.read_all`.
   "rooms.create",
   "rooms.update",
   "rooms.decide",
