@@ -63,9 +63,27 @@ const DEFAULT_MAX_ROOMS_PER_TICK = 100;
 
 /** Wire codes the loop treats as benign 409 conflict modes (skip +
  * count, do not error). The list is closed; any other 409 code is
- * counted as an error so an unfamiliar conflict surfaces to ops. */
+ * counted as an error so an unfamiliar conflict surfaces to ops.
+ *
+ * Documented benign 409 codes from the route layer:
+ *   - `claim_already_held` (`/decide`): another queen runner won the
+ *     race to claim this room.
+ *   - `invalid_status_for_claim` (`/decide`): the room flipped to a
+ *     non-`awaiting_contributions` status between this loop's
+ *     `listRooms` and `claimSynthesis` — most commonly the watchdog
+ *     terminating an `awaiting_contributions` room past `max_age` or
+ *     an operator force-close. Routine ops, NOT an error condition.
+ *   - `sequence_drift` (`/close`): new events landed mid-synthesis;
+ *     watchdog or next tick re-surfaces.
+ *   - `claim_lost` (`/close`): force-close raced.
+ *   - `claim_through_seq_mismatch` (`/close`): another runner
+ *     re-claimed during synthesis.
+ *
+ * Closes #536 guard B1: `invalid_status_for_claim` was missing,
+ * causing routine watchdog activity to alert under G'.5. */
 const BENIGN_CONFLICT_CODES: ReadonlySet<string> = new Set([
   "claim_already_held",
+  "invalid_status_for_claim",
   "sequence_drift",
   "claim_lost",
   "claim_through_seq_mismatch",
@@ -118,6 +136,15 @@ export interface QueenManagerLoopResult {
    * `sequence_drift` / `claim_lost` / `claim_through_seq_mismatch`
    * (close phase). */
   conflicts: number;
+  /** Claims that succeeded but were abandoned (no `closeRoom` issued)
+   * because post-claim re-validation showed a `withdrew` participant
+   * is now re-eligible per the worker's `/watching` contract — i.e.
+   * `withdrew_at_sequence < throughSequence`. The watchdog's
+   * `recoverDeciding` scan reverts the room after the claim TTL
+   * (~5min default) and the role gets surfaced again to workers.
+   * Closes #536 builder R1: prior code unconditionally treated
+   * `withdrew` as synthesis-permitting, racing the re-RSVP path. */
+  staleClaimsAbandoned: number;
   /** Non-benign errors: synthesizer threw, decision_too_large 400,
    * wire failure, unfamiliar 409 code. Loop continues; ops alert. */
   errors: number;
@@ -140,6 +167,7 @@ export async function runQueenManagerLoop(
     claimed: 0,
     closed: 0,
     conflicts: 0,
+    staleClaimsAbandoned: 0,
     errors: 0,
   };
 
@@ -185,16 +213,35 @@ export async function runQueenManagerLoop(
 }
 
 /**
- * Process a single `awaiting_contributions` room. Outcomes (mutates
- * `result`):
- *   - eligibility-fail (any participant pending) → no counter change
- *   - claim succeeds + synthesize + close → eligible++, claimed++,
- *     closed++
- *   - claim conflict (already held) → eligible++, conflicts++
- *   - close conflict (sequence_drift / claim_lost / mismatch) →
- *     eligible++, claimed++, conflicts++
- *   - synthesizer error / decision_too_large / wire fail →
- *     eligible++ (and claimed++ if claim succeeded), errors++
+ * Process a single `awaiting_contributions` room.
+ *
+ * State machine (mutates `result`):
+ *
+ *   1. **Pre-claim eligibility.** Read participants. Skip if any are
+ *      `pending` OR if there's no `resolved` participant at all
+ *      (synthesis on all-withdrew/all-timed_out is meaningless —
+ *      let the watchdog `expired` path handle it).
+ *   2. **Claim.** `claimSynthesis` → `throughSequence`. Benign 409
+ *      (claim_already_held, invalid_status_for_claim) → conflicts++.
+ *   3. **Post-claim withdraw validation.** Re-read participants. For
+ *      each `withdrew`, check `withdrew_at_sequence >= throughSequence`.
+ *      A withdrew participant whose seq is LESS THAN the claim's
+ *      throughSequence is re-eligible per the worker `/watching`
+ *      contract (`canRoleRsvpToRoom`) — closing now would race the
+ *      worker's re-RSVP. Abandon: return without `closeRoom`. The
+ *      watchdog's `recoverDeciding` reverts the claim after TTL.
+ *      Closes #536 builder B1.
+ *   4. **Synthesize.** Fetch contributions, hand to synthesizer.
+ *      Either I/O failure logs as `contributions_read_failed`, the
+ *      synthesizer's own throw logs as `synthesize_failed` (closes
+ *      #536 guard NB3 — distinct keys for ops triage).
+ *   5. **Close.** Pass `expectedThroughSequence` from the claim;
+ *      server enforces drift detection. Benign 409s map to
+ *      conflicts++, anything else to errors++.
+ *
+ * 404 `room_not_found` from any read step is treated as a benign
+ * conflict (room GC'd between `listRooms` and the read — closes
+ * #536 guard NB2).
  */
 async function processOneRoom(args: {
   room: RoomListEntry;
@@ -207,17 +254,30 @@ async function processOneRoom(args: {
 }): Promise<void> {
   const { room, client, synthesizer, runnerId, nowMs, log, result } = args;
 
-  const participantsResp = await client.getRoomParticipants(room.roomId);
-  if (!allParticipantsResolved(participantsResp.participants)) {
+  // 1. Pre-claim eligibility.
+  let participantsResp;
+  try {
+    participantsResp = await client.getRoomParticipants(room.roomId);
+  } catch (err) {
+    if (isRoomGone(err)) {
+      result.conflicts += 1;
+      log.info("queen.manager_loop.room_gc_pre_claim", {
+        roomId: room.roomId,
+      });
+      return;
+    }
+    throw err;
+  }
+  if (!isSynthesisEligible(participantsResp.participants)) {
     log.info("queen.manager_loop.room_not_ready", {
       roomId: room.roomId,
-      pending: countPending(participantsResp.participants),
+      ...participantStatusBreakdown(participantsResp.participants),
     });
     return;
   }
   result.eligible += 1;
 
-  // Claim phase.
+  // 2. Claim.
   let throughSequence: number;
   try {
     const claim = await client.claimSynthesis({
@@ -243,14 +303,56 @@ async function processOneRoom(args: {
     return;
   }
 
-  // Synthesize.
+  // 3. Post-claim withdraw validation.
+  let postClaimParticipants;
+  try {
+    postClaimParticipants = await client.getRoomParticipants(room.roomId);
+  } catch (err) {
+    if (isRoomGone(err)) {
+      result.conflicts += 1;
+      log.info("queen.manager_loop.room_gc_post_claim", {
+        roomId: room.roomId,
+      });
+      return;
+    }
+    throw err;
+  }
+  if (!withdrawalsAreFinal(postClaimParticipants.participants, throughSequence)) {
+    result.staleClaimsAbandoned += 1;
+    log.info("queen.manager_loop.claim_abandoned_stale_withdraw", {
+      roomId: room.roomId,
+      throughSequence,
+    });
+    return;
+  }
+
+  // 4a. Read contributions for synthesis.
+  let contributionsResp;
+  try {
+    contributionsResp = await client.getRoomContributions(room.roomId);
+  } catch (err) {
+    if (isRoomGone(err)) {
+      result.conflicts += 1;
+      log.info("queen.manager_loop.room_gc_pre_synthesis", {
+        roomId: room.roomId,
+      });
+      return;
+    }
+    log.error("queen.manager_loop.contributions_read_failed", {
+      roomId: room.roomId,
+      error: errMeta(err),
+    });
+    result.errors += 1;
+    return;
+  }
+
+  // 4b. Synthesize.
   let content: string;
   try {
-    const contributionsResp = await client.getRoomContributions(room.roomId);
     const synthesis = await synthesizer.synthesize({
       roomId: room.roomId,
       room: stripRoomId(room),
-      participants: participantsResp.participants,
+      participants: postClaimParticipants.participants,
       contributions: contributionsResp.contributions,
       throughSequence,
     });
@@ -261,14 +363,10 @@ async function processOneRoom(args: {
       error: errMeta(err),
     });
     result.errors += 1;
-    // Note: leaving the claim outstanding. The watchdog's
-    // recoverDeciding scan will revert it after the claim TTL
-    // (~5min default per storage spec). V1.1 may add an explicit
-    // `failed_synthesis` terminate path here.
     return;
   }
 
-  // Close.
+  // 5. Close.
   try {
     await client.closeRoom({
       roomId: room.roomId,
@@ -302,18 +400,85 @@ async function processOneRoom(args: {
   }
 }
 
-function allParticipantsResolved(
+/**
+ * Pre-claim eligibility predicate. The room is eligible for synthesis
+ * when:
+ *   1. There's at least one participant.
+ *   2. NO participant is `pending` (still working).
+ *   3. At LEAST one participant is `resolved` (has actual input —
+ *      otherwise the synthesizer is producing a decision out of all-
+ *      withdrew/all-timed_out, which is meaningless. Closes #536
+ *      guard NB4. Watchdog's `expired` terminate path handles those
+ *      rooms via `max_age_secs`).
+ */
+function isSynthesisEligible(
   participants: Record<string, RoomParticipant>,
 ): boolean {
-  // Empty hash → not eligible (no one RSVP'd, nothing to synthesize).
-  // Pending → blocks. resolved / withdrew / timed_out → permits.
   const entries = Object.values(participants);
   if (entries.length === 0) return false;
-  return entries.every((p) => p.status !== "pending");
+  let hasResolved = false;
+  for (const p of entries) {
+    if (p.status === "pending") return false;
+    if (p.status === "resolved") hasResolved = true;
+  }
+  return hasResolved;
 }
 
-function countPending(participants: Record<string, RoomParticipant>): number {
-  return Object.values(participants).filter((p) => p.status === "pending").length;
+/**
+ * Post-claim withdraw-finality predicate. Closes #536 builder B1.
+ *
+ * The worker's `/watching` endpoint re-includes a withdrawn role
+ * when the room has events past `withdrew_at_sequence` — meaning
+ * the role can re-RSVP and contribute again. Synthesizing in that
+ * window races the re-RSVP path.
+ *
+ * After `claimSynthesis` succeeds, the claim's `throughSequence` is
+ * the latest event seq at claim time. For each `withdrew`
+ * participant, compare `withdrew_at_sequence` against `throughSequence`:
+ *
+ *   - `withdrew_at_sequence >= throughSequence` → withdrawal is final
+ *     (no events past it). Permits close.
+ *   - `withdrew_at_sequence < throughSequence` → events have advanced
+ *     past the withdraw point; participant is re-eligible per the
+ *     worker contract. Block close.
+ *   - `withdrew_at_sequence` undefined → defensive block (we can't
+ *     prove finality without the seq).
+ *
+ * "Block" here means abandon the claim — return without `closeRoom`.
+ * The watchdog's `recoverDeciding` reverts the claim after TTL,
+ * surfacing the room to workers + queen on the next pass.
+ */
+function withdrawalsAreFinal(
+  participants: Record<string, RoomParticipant>,
+  throughSequence: number,
+): boolean {
+  for (const p of Object.values(participants)) {
+    if (p.status !== "withdrew") continue;
+    if (p.withdrew_at_sequence === undefined) return false;
+    if (p.withdrew_at_sequence < throughSequence) return false;
+  }
+  return true;
+}
+
+function participantStatusBreakdown(
+  participants: Record<string, RoomParticipant>,
+): { pending: number; resolved: number; withdrew: number; timed_out: number } {
+  const counts = { pending: 0, resolved: 0, withdrew: 0, timed_out: 0 };
+  for (const p of Object.values(participants)) {
+    counts[p.status] += 1;
+  }
+  return counts;
+}
+
+function isRoomGone(err: unknown): err is WarRoomApiError {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    "code" in err &&
+    (err as WarRoomApiError).status === 404 &&
+    (err as WarRoomApiError).code === "room_not_found"
+  );
 }
 
 /** Extract the bare `RoomCoreResponse` from a `RoomListEntry` for

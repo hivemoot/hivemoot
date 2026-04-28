@@ -74,7 +74,15 @@ export interface Synthesizer {
  */
 export class StubSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisOutput> {
-    const participantCount = Object.keys(input.participants).length;
+    // Closes #536 guard NB4: prior label was `Participants resolved:
+    // ${total}` which counted withdrew + timed_out as "resolved" —
+    // wrong on the wire. Break the count down by status so operators
+    // scanning closed-room decisions see honest numbers (and so G'.3
+    // has the breakdown when the real LLM prompt is built).
+    const counts = { resolved: 0, withdrew: 0, timed_out: 0, pending: 0 };
+    for (const p of Object.values(input.participants)) {
+      counts[p.status] += 1;
+    }
     const contributionCount = Object.values(input.contributions).filter(
       (c) => !c.withdrawn,
     ).length;
@@ -88,7 +96,7 @@ export class StubSynthesizer implements Synthesizer {
       `**Subject:** ${input.room.subject_type} \`${input.room.subject_ref}\``,
       `**Through sequence:** ${input.throughSequence}`,
       "",
-      `**Participants resolved:** ${participantCount}`,
+      `**Participants:** ${counts.resolved} resolved, ${counts.withdrew} withdrew, ${counts.timed_out} timed out`,
       `**Contributions:** ${contributionCount} present, ${withdrawnCount} withdrawn`,
       "",
       `_The queen module is operating in stub mode; this room was synthesized by the manager loop without invoking an LLM. See WAR_ROOM_DESIGN.md and Phase G'.3._`,
