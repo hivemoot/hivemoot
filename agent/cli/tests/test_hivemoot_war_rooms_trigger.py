@@ -243,7 +243,7 @@ class WarRoomWatcherTriggerTickTests(unittest.TestCase):
 
 
 class WarRoomWatcherTriggerStartStopTests(unittest.TestCase):
-    """Lifecycle: start runs the loop, stop signals shutdown."""
+    """Lifecycle: start(config, dispatcher) runs the loop, stop signals shutdown."""
 
     def test_stop_exits_loop_promptly(self) -> None:
         list_fn = MagicMock(return_value=[])
@@ -256,7 +256,7 @@ class WarRoomWatcherTriggerStartStopTests(unittest.TestCase):
         )
 
         thread = threading.Thread(
-            target=trigger.start, args=(dispatcher,), daemon=True,
+            target=trigger.start, args=(None, dispatcher), daemon=True,
         )
         thread.start()
         # Let the loop tick at least once
@@ -266,6 +266,46 @@ class WarRoomWatcherTriggerStartStopTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         # At least one list_watching call happened
         self.assertGreaterEqual(list_fn.call_count, 1)
+
+
+class TriggerProtocolConformanceTests(unittest.TestCase):
+    """Closes #532 builder R1: trigger must satisfy
+    `plugins.interfaces.Trigger` so the engine's `triggers()`
+    reflection accepts it for F.4 manifest wiring."""
+
+    def test_satisfies_trigger_protocol(self) -> None:
+        from hivemoot_agent.plugins.interfaces import Trigger
+
+        trigger = WarRoomWatcherTrigger(
+            base_url="https://api.example",
+            token_resolver=lambda: "tok",
+        )
+        self.assertIsInstance(trigger, Trigger)
+
+    def test_validate_returns_empty_list(self) -> None:
+        trigger = WarRoomWatcherTrigger(
+            base_url="https://api.example",
+            token_resolver=lambda: "tok",
+        )
+        self.assertEqual(trigger.validate(None), [])
+
+    def test_start_signature_takes_config_then_dispatcher(self) -> None:
+        # If the signature were start(self, dispatcher) only, calling
+        # with (config, dispatcher) would either bind config as
+        # dispatcher (running the loop) or raise TypeError. The
+        # protocol contract is start(config, dispatcher); confirm
+        # via inspect.
+        import inspect
+
+        trigger = WarRoomWatcherTrigger(
+            base_url="https://api.example",
+            token_resolver=lambda: "tok",
+        )
+        sig = inspect.signature(trigger.start)
+        param_names = list(sig.parameters.keys())
+        # Two named parameters (config, dispatcher) — `self` excluded
+        # via instance-bound method.
+        self.assertEqual(param_names, ["config", "dispatcher"])
 
 
 if __name__ == "__main__":

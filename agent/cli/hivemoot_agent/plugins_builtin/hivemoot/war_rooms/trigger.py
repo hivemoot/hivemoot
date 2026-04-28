@@ -129,17 +129,43 @@ class WarRoomWatcherTrigger:
     def stop(self) -> None:
         self._stop_event.set()
 
+    def validate(self, config: Any) -> list[str]:
+        """Return config errors (empty = valid).
+
+        Conforms to `plugins.interfaces.Trigger.validate`. F.2's
+        construction takes its config via __init__ kwargs (base_url,
+        token_resolver, etc.), so there's nothing to validate here
+        — the engine's plugin-manifest wiring (deferred to F.4)
+        will route config-schema fields through __init__ instead
+        of through this hook. Always returns `[]` until F.4 lands.
+
+        Closes #532 builder R1: protocol-compatibility now, even
+        though config-schema wiring is deferred. The class must
+        satisfy `isinstance(trigger, Trigger)` so the engine's
+        `triggers()` reflection accepts it.
+        """
+        del config  # unused in F.2; F.4 will wire schema through here
+        return []
+
     def start(
         self,
-        dispatcher: Any,  # `JobDispatcher` shape — duck-typed to avoid
-                          # plugin-interface import in F.2 (lands in F.4)
+        config: Any,  # `PluginConfig` shape — kept generic in F.2
+        dispatcher: Any,  # `JobDispatcher` shape
     ) -> None:
         """Run the poll loop. Blocks until `stop()` is called.
+
+        Signature matches `plugins.interfaces.Trigger.start(config, dispatcher)`
+        (closes #532 builder R1 — runtime needs (config, dispatcher),
+        not (dispatcher) alone). F.2 ignores `config` since
+        construction injected the runtime parameters via __init__;
+        F.4 will read the war-room block off `config.typed` instead.
+
 
         Errors are logged and the loop continues — a transient API
         failure shouldn't kill the trigger; the next tick will
         retry. The 60s tick interval bounds backoff.
         """
+        del config  # unused in F.2 — see method docstring
         self._stop_event.clear()
         print(
             f"{self._log_prefix} polling {self._base_url}/api/rooms/watching "
