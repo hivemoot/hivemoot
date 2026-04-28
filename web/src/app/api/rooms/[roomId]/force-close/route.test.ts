@@ -243,4 +243,32 @@ describe("POST /api/rooms/:roomId/force-close", () => {
     expect((await res.json()).code).toBe("invalid_body_shape");
     expect(mockedTerm).not.toHaveBeenCalled();
   });
+
+  it("BLOCKING regression #519 R3: no body / no Content-Length header → 200 with default force_close reason", async () => {
+    mockedAuth.mockResolvedValue(makeAdminAuth());
+    mockedGetCore.mockResolvedValue(makeFakeRoom());
+    mockedTerm.mockResolvedValue(8);
+    // operator one-liner: `curl -X POST .../force-close` with no -d
+    // sends NO Content-Length header at all. The prior R2 heuristic
+    // (`content-length === "0"` skip) returned `null` from get(),
+    // entered the parse branch, and `request.json()` threw on
+    // empty body → 400. This regression pins the operator-friendly
+    // path: empty body → defaults reason → 200.
+    const req = new NextRequest(
+      `https://www.hivemoot.dev/api/rooms/${VALID_ROOM_ID}/force-close`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer hmt_test" }, // NO content-length, NO content-type
+      },
+    );
+    const res = await POST(req, {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reason).toBe("force_close");
+    expect(mockedTerm).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "force_close" }),
+    );
+  });
 });

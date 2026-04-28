@@ -26,7 +26,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
-import { parseJsonBody } from "@/server/request-utils";
+import { parseOptionalJsonObjectBody } from "@/server/request-utils";
 import {
   terminateRoom,
   getRoomCore,
@@ -56,21 +56,26 @@ export async function POST(
   const { roomId } = await params;
 
   // Body is optional — empty body defaults reason to "force_close".
-  // Closes #519 builder R1: malformed JSON MUST NOT silently fall
-  // back to defaults and continue to a real terminal state change
-  // (operator panic-button must fail-loud on bad payload, not
-  // accidentally terminate with `force_close` reason).
-  let body: Record<string, unknown> = {};
-  if (request.headers.get("content-length") !== "0") {
-    const parsed = await parseJsonBody(request);
-    if (!parsed.ok) {
-      return NextResponse.json(
-        { code: parsed.code, message: parsed.message },
-        { status: 400 },
-      );
-    }
-    body = parsed.body;
+  // Two requirements that conflict if you naively `request.json()`:
+  //   1. Closes #519 builder R1: malformed JSON MUST fail-loud
+  //      (returns 400, terminateRoom NEVER called) so a bad/truncated
+  //      operator payload doesn't silently force-close with the
+  //      default reason.
+  //   2. Closes #519 builder R3: a valid empty POST (`curl -X POST`
+  //      with no `-d`) sends NO `Content-Length` header at all —
+  //      `request.json()` throws on empty body, which the prior
+  //      heuristic (`content-length === "0"` skip) didn't cover.
+  // `parseOptionalJsonObjectBody` reads body as text first, treats
+  // empty as `{}` (defaults), and JSON-parses non-empty (fail loud
+  // on bad payload). Both requirements satisfied by one helper.
+  const parsed = await parseOptionalJsonObjectBody(request);
+  if (!parsed.ok) {
+    return NextResponse.json(
+      { code: parsed.code, message: parsed.message },
+      { status: 400 },
+    );
   }
+  const body = parsed.body;
   const rawReason = body.reason;
   if (rawReason !== undefined && typeof rawReason !== "string") {
     return NextResponse.json(
