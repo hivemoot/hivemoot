@@ -221,17 +221,41 @@ describe("POST /api/rooms/:roomId/close", () => {
     expect((await res.json()).code).toBe("invalid_synthesis_runner");
   });
 
-  it("decision >64 KiB → 400 decision_too_large", async () => {
+  it("decision >64 KiB → 400 decision_too_large via typed RoomDecisionTooLargeError (closes #519 guard N1)", async () => {
     mockedAuth.mockResolvedValue(makeQueenAuth());
     mockedGetCore.mockResolvedValue(makeFakeRoom());
-    mockedClose.mockRejectedValue(
-      new Error("RoomDecision.content exceeds 64 KiB (88000 bytes); reduce body before close."),
-    );
+    // Use the typed class — closes the regex-fragility carry-forward.
+    // If the storage primitive's message text changes, the route
+    // mapping still fires via instanceof.
+    const { RoomDecisionTooLargeError } = await import("@/server/war-room");
+    mockedClose.mockRejectedValue(new RoomDecisionTooLargeError(88000));
     const res = await POST(
       makeRequest({ expectedThroughSequence: 7, decision: VALID_DECISION }),
       { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
     );
     expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("decision_too_large");
+    const body = await res.json();
+    expect(body.code).toBe("decision_too_large");
+    expect(body.sizeBytes).toBe(88000);
+  });
+
+  it("body=null → 400 invalid_body_shape (closes #519 builder R1)", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest(null), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedClose).not.toHaveBeenCalled();
+  });
+
+  it("body=array → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest([VALID_DECISION]), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedClose).not.toHaveBeenCalled();
   });
 });

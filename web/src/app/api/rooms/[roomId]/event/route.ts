@@ -36,6 +36,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
+import { parseJsonBody } from "@/server/request-utils";
 import {
   appendRoomEvent,
   deriveIdempotencyKey,
@@ -80,15 +81,14 @@ export async function POST(
 
   const { roomId } = await params;
 
-  let body: EventRequestBody;
-  try {
-    body = (await request.json()) as EventRequestBody;
-  } catch {
+  const parsed = await parseJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json(
-      { code: "invalid_json", message: "Request body must be valid JSON." },
+      { code: parsed.code, message: parsed.message },
       { status: 400 },
     );
   }
+  const body = parsed.body as EventRequestBody;
 
   if (
     typeof body.event_type !== "string" ||
@@ -150,6 +150,19 @@ export async function POST(
         body: body.body,
       },
       idempotencyKey,
+      // Closes #519 guard B1 (BLOCKER): the script's status gate
+      // only fires when allowedStatuses is non-empty. Without it,
+      // `subject_updated` and `queen_question` events would land on:
+      //   - `deciding` rooms — breaking the bot's
+      //     webhook-on-deciding deferral mechanism (design L919-932)
+      //   - `closed` / terminated rooms — polluting the audit log
+      //     for the entire retention window AND resurfacing dead
+      //     rooms on `/api/rooms/watching`
+      // Both `awaiting_rsvp` and `awaiting_contributions` accept
+      // bot meta-events; status-precondition failure → 409
+      // `status_precondition_failed` so the bot enqueues into its
+      // webhook-buffer and re-tries after the queen releases.
+      allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
       redis: auth.redis,
     });
     return NextResponse.json({ sequence }, { status: 200 });

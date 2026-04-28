@@ -16,6 +16,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
+import { parseJsonBody } from "@/server/request-utils";
 import {
   listRooms,
   createRoom,
@@ -77,15 +78,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   });
   if (!auth.ok) return auth.response;
 
-  let body: CreateRoomRequestBody;
-  try {
-    body = (await request.json()) as CreateRoomRequestBody;
-  } catch {
+  // parseJsonBody rejects null / arrays / primitives + invalid JSON
+  // up-front, so the body-shape branches below can read fields
+  // without TypeError on a null bypass (closes #519 builder R1).
+  const parsed = await parseJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json(
-      { code: "invalid_json", message: "Request body must be valid JSON." },
+      { code: parsed.code, message: parsed.message },
       { status: 400 },
     );
   }
+  const body = parsed.body as CreateRoomRequestBody;
 
   // Subject is required and must conform to the SubjectRef shape.
   // Boundary validation happens here; the storage primitive does

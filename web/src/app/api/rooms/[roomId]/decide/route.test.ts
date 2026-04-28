@@ -191,6 +191,26 @@ describe("POST /api/rooms/:roomId/decide", () => {
     expect(body.actualStatus).toBe("deciding");
   });
 
+  it("body=null → 400 invalid_body_shape (closes #519 builder R1)", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest(null), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedClaim).not.toHaveBeenCalled();
+  });
+
+  it("body=array → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest([{ queenRunner: "q" }]), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedClaim).not.toHaveBeenCalled();
+  });
+
   it("RoomClaimPayloadCorruptError → 409 claim_payload_corrupt", async () => {
     mockedAuth.mockResolvedValue(makeQueenAuth());
     mockedClaim.mockRejectedValue(new RoomClaimPayloadCorruptError(VALID_ROOM_ID));

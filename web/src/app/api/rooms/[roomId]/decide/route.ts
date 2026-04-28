@@ -22,6 +22,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
+import { parseJsonBody } from "@/server/request-utils";
 import {
   claimSynthesis,
   RoomNotFoundError,
@@ -48,15 +49,14 @@ export async function POST(
 
   const { roomId } = await params;
 
-  let body: DecideRequestBody;
-  try {
-    body = (await request.json()) as DecideRequestBody;
-  } catch {
+  const parsed = await parseJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json(
-      { code: "invalid_json", message: "Request body must be valid JSON." },
+      { code: parsed.code, message: parsed.message },
       { status: 400 },
     );
   }
+  const body = parsed.body as DecideRequestBody;
 
   if (typeof body.queenRunner !== "string" || body.queenRunner.length === 0) {
     return NextResponse.json(

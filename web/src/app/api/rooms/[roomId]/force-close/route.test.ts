@@ -198,4 +198,49 @@ describe("POST /api/rooms/:roomId/force-close", () => {
       expect.objectContaining({ reason: "force_close" }),
     );
   });
+
+  it("BLOCKING regression #519 R1: malformed JSON → 400, terminateRoom NEVER called", async () => {
+    mockedAuth.mockResolvedValue(makeAdminAuth());
+    // Operator request with truncated/garbage body must NOT silently
+    // fall back to defaults and trigger a real terminal state change.
+    const req = new NextRequest(
+      `https://www.hivemoot.dev/api/rooms/${VALID_ROOM_ID}/force-close`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer hmt_test",
+          "content-type": "application/json",
+        },
+        body: "not json at all{{{",
+      },
+    );
+    const res = await POST(req, {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_json");
+    // CRITICAL: room is NOT actually terminated.
+    expect(mockedTerm).not.toHaveBeenCalled();
+    expect(mockedGetCore).not.toHaveBeenCalled();
+  });
+
+  it("body=null → 400 invalid_body_shape (closes #519 R1 cast-bypass)", async () => {
+    mockedAuth.mockResolvedValue(makeAdminAuth());
+    const res = await POST(makeRequest(null), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedTerm).not.toHaveBeenCalled();
+  });
+
+  it("body=array → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeAdminAuth());
+    const res = await POST(makeRequest([{ reason: "manual" }]), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedTerm).not.toHaveBeenCalled();
+  });
 });

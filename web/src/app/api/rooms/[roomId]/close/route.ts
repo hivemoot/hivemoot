@@ -31,6 +31,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
+import { parseJsonBody } from "@/server/request-utils";
 import {
   closeRoomWithDecision,
   getRoomCore,
@@ -43,6 +44,7 @@ import {
   RoomCloseDriftError,
   RoomClaimPayloadCorruptError,
   RoomRunnerFormatError,
+  RoomDecisionTooLargeError,
 } from "@/server/war-room";
 
 interface CloseRequestBody {
@@ -61,15 +63,14 @@ export async function POST(
 
   const { roomId } = await params;
 
-  let body: CloseRequestBody;
-  try {
-    body = (await request.json()) as CloseRequestBody;
-  } catch {
+  const parsed = await parseJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json(
-      { code: "invalid_json", message: "Request body must be valid JSON." },
+      { code: parsed.code, message: parsed.message },
       { status: 400 },
     );
   }
+  const body = parsed.body as CloseRequestBody;
 
   if (
     typeof body.expectedThroughSequence !== "number" ||
@@ -186,9 +187,13 @@ export async function POST(
         { status: 409 },
       );
     }
-    if (err instanceof Error && /exceeds 64 KiB/.test(err.message)) {
+    if (err instanceof RoomDecisionTooLargeError) {
       return NextResponse.json(
-        { code: "decision_too_large", message: err.message },
+        {
+          code: "decision_too_large",
+          message: err.message,
+          sizeBytes: err.sizeBytes,
+        },
         { status: 400 },
       );
     }

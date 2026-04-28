@@ -227,6 +227,49 @@ describe("POST /api/rooms/:roomId/event", () => {
     expect((await res.json()).code).toBe("event_body_too_large");
   });
 
+  it("BLOCKING regression #519 guard B1: passes allowedStatuses to gate deciding/closed rooms", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    mockedAppend.mockResolvedValue(5);
+    await POST(
+      makeRequest({
+        event_type: "subject_updated",
+        body: { reason: "rebased" },
+        sequenceObservedByClient: 4,
+      }),
+      { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+    );
+    // Without this check, the script's status gate would silently
+    // never fire — `subject_updated` would land on closed rooms,
+    // breaking the bot's webhook-on-deciding deferral mechanism
+    // (design L919-932) AND polluting the audit log of terminal
+    // rooms during the retention window.
+    expect(mockedAppend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+      }),
+    );
+  });
+
+  it("body=null → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest(null), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedAppend).not.toHaveBeenCalled();
+  });
+
+  it("body=array → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makeRequest([{ event_type: "subject_updated" }]), {
+      params: Promise.resolve({ roomId: VALID_ROOM_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedAppend).not.toHaveBeenCalled();
+  });
+
   it("RoomEventStatusPreconditionError → 409 status_precondition_failed", async () => {
     mockedAuth.mockResolvedValue(makeQueenAuth());
     mockedAppend.mockRejectedValue(

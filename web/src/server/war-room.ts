@@ -1134,6 +1134,28 @@ export class RoomContributionTooLargeError extends Error {
 }
 
 /**
+ * `RoomDecision.content` exceeded the 64 KiB UTF-8 byte budget.
+ *
+ * Closes #519 guard N1 — the prior `closeRoomWithDecision`
+ * implementation threw a plain `Error` with a free-text message
+ * that the route layer had to regex-match (`/exceeds 64 KiB/`),
+ * making the mapping silently break on any copy-edit of the
+ * message string. Sibling-typed pattern restored: `RoomEventBodyTooLargeError`,
+ * `RoomContributionTooLargeError`, and now this one all carry
+ * `sizeBytes` for caller logs.
+ */
+export class RoomDecisionTooLargeError extends Error {
+  public readonly sizeBytes: number;
+  constructor(sizeBytes: number) {
+    super(
+      `RoomDecision.content exceeds 64 KiB (got ${sizeBytes} bytes). Reduce body before close — large synthesis output should reference an external gist/issue.`,
+    );
+    this.name = "RoomDecisionTooLargeError";
+    this.sizeBytes = sizeBytes;
+  }
+}
+
+/**
  * Thrown when `ROOM_DECIDE_CLAIM_SCRIPT` finds the synthesis claim
  * already held by another queen runner (benign conflict — the
  * caller should skip this tick and re-attempt on the next manager
@@ -3338,9 +3360,9 @@ export async function closeRoomWithDecision(args: {
   // assertEventBodySize).
   const decisionContentBytes = Buffer.byteLength(args.decision.content, "utf8");
   if (decisionContentBytes > 64 * 1024) {
-    throw new Error(
-      `RoomDecision.content exceeds 64 KiB (${decisionContentBytes} bytes); reduce body before close.`,
-    );
+    // Typed class (closes #519 guard N1) so the route layer can
+    // map via `instanceof` instead of regex-matching the message.
+    throw new RoomDecisionTooLargeError(decisionContentBytes);
   }
 
   const nowMs = args.nowMs ?? Date.now();

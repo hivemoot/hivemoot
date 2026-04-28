@@ -26,6 +26,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
+import { parseJsonBody } from "@/server/request-utils";
 import {
   terminateRoom,
   getRoomCore,
@@ -43,10 +44,6 @@ const VALID_REASONS: ReadonlySet<TerminalReason> = new Set<TerminalReason>([
   "manual",
 ]);
 
-interface ForceCloseRequestBody {
-  reason?: string;
-}
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ roomId: string }> },
@@ -59,23 +56,31 @@ export async function POST(
   const { roomId } = await params;
 
   // Body is optional — empty body defaults reason to "force_close".
-  let body: ForceCloseRequestBody = {};
+  // Closes #519 builder R1: malformed JSON MUST NOT silently fall
+  // back to defaults and continue to a real terminal state change
+  // (operator panic-button must fail-loud on bad payload, not
+  // accidentally terminate with `force_close` reason).
+  let body: Record<string, unknown> = {};
   if (request.headers.get("content-length") !== "0") {
-    try {
-      body = (await request.json()) as ForceCloseRequestBody;
-    } catch {
-      // Defensive: malformed JSON falls back to defaults.
-      body = {};
+    const parsed = await parseJsonBody(request);
+    if (!parsed.ok) {
+      return NextResponse.json(
+        { code: parsed.code, message: parsed.message },
+        { status: 400 },
+      );
     }
+    body = parsed.body;
   }
-  const reason: TerminalReason =
-    typeof body.reason === "string" && VALID_REASONS.has(body.reason as TerminalReason)
-      ? (body.reason as TerminalReason)
-      : "force_close";
-
+  const rawReason = body.reason;
+  if (rawReason !== undefined && typeof rawReason !== "string") {
+    return NextResponse.json(
+      { code: "invalid_reason", message: "reason must be a string." },
+      { status: 400 },
+    );
+  }
   if (
-    body.reason !== undefined &&
-    !VALID_REASONS.has(body.reason as TerminalReason)
+    rawReason !== undefined &&
+    !VALID_REASONS.has(rawReason as TerminalReason)
   ) {
     return NextResponse.json(
       {
@@ -85,6 +90,8 @@ export async function POST(
       { status: 400 },
     );
   }
+  const reason: TerminalReason =
+    rawReason !== undefined ? (rawReason as TerminalReason) : "force_close";
 
   let subject: SubjectRef;
   try {

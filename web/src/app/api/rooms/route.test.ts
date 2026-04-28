@@ -260,6 +260,24 @@ describe("POST /api/rooms (D.1.b-ii — create room)", () => {
     );
   });
 
+  it("body=null → 400 invalid_body_shape (closes #519 builder R1)", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(makePostRequest(null));
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedCreateRoom).not.toHaveBeenCalled();
+  });
+
+  it("body=array → 400 invalid_body_shape", async () => {
+    mockedAuth.mockResolvedValue(makeQueenAuth());
+    const res = await POST(
+      makePostRequest([{ subject: { type: "pr_review", ref: "x/y#1" } }]),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_body_shape");
+    expect(mockedCreateRoom).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid JSON body → 400 invalid_json", async () => {
     mockedAuth.mockResolvedValue(makeQueenAuth());
     const req = new NextRequest("https://www.hivemoot.dev/api/rooms", {
