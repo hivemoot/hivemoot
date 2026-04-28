@@ -12,12 +12,22 @@
  *     409 is treated as success; the existing room is reused.
  *   - Non-fatal on error — war-room failures are logged but never
  *     thrown, so a 500 from the API can't break the PR's existing
- *     intake / governance flow. GitHub re-delivers webhooks on its
- *     own cadence; we'll get another shot.
+ *     intake / governance flow.
+ *
+ * **Recovery story (closes #526 guard N1):** because the routing
+ * helper SWALLOWS errors and returns 200 to GitHub, GitHub does NOT
+ * automatically re-deliver. A single transient war-room API failure
+ * on `pull_request.opened` means the war-room is never created for
+ * that PR until E.2 (`pull_request.synchronize` re-attempt) or
+ * operator intervention. Re-throwing on 5xx is the alternative —
+ * but that re-runs the existing intake/comment-posting flow, whose
+ * idempotency under repeat deliveries isn't asserted today. Tracked
+ * as a follow-up; pre-Phase H opt-in posture limits blast radius.
  */
 
 import { WarRoomClient, WarRoomApiError, prSubjectRef } from "./war-room-client.js";
 import type { Logger } from "pino";
+import { randomUUID } from "node:crypto";
 
 interface MaybeCreatePrReviewRoomArgs {
   owner: string;
@@ -86,18 +96,31 @@ export async function maybeCreatePrReviewRoom(
     prNumber: args.prNumber,
   });
 
+  // Bot-side mint of the roomId (closes #526 guard B1). The server
+  // accepts a caller-supplied roomId via POST /api/rooms body and
+  // falls back to its own crypto.randomUUID() if omitted. The
+  // 201 response serializes RoomCore (NOT RoomCoreWithId) — no
+  // roomId in the body — so threading the minted value through
+  // makes the contract self-consistent: caller knows the roomId
+  // before the round-trip, no response-shape dependency.
+  //
+  // Future E.x slices (subject_updated, terminate, post-PR-comment
+  // referencing the room) get the roomId for free via this return
+  // value.
+  const roomId = randomUUID();
+
   try {
-    const room = await client.createRoom({ subject });
+    await client.createRoom({ subject, roomId });
     args.log.info(
       {
         owner: args.owner,
         repo: args.repo,
         pr: args.prNumber,
-        roomId: extractRoomIdFromCore(room),
+        roomId,
       },
       "[war-room] created pr_review room",
     );
-    return { roomId: extractRoomIdFromCore(room) };
+    return { roomId };
   } catch (err) {
     if (err instanceof WarRoomApiError) {
       // Idempotent re-delivery — server already has a room for this
@@ -147,22 +170,3 @@ export async function maybeCreatePrReviewRoom(
   }
 }
 
-/**
- * Server returns the RoomCore record on POST /api/rooms 201 — the
- * response shape includes `roomId` as a top-level field (mirrored
- * from the storage layer's `RoomCoreWithId` type added in
- * D.1.b-iii). Extract it defensively in case the wire shape adds
- * fields.
- */
-function extractRoomIdFromCore(room: unknown): string {
-  if (typeof room !== "object" || room === null) return "";
-  const roomId = (room as Record<string, unknown>).roomId;
-  if (typeof roomId !== "string") {
-    // Server response without roomId — log + return empty; caller
-    // will surface it as a regular result with no roomId, since
-    // the room WAS created (server returned 201). The bot just
-    // can't reference it.
-    return "";
-  }
-  return roomId;
-}

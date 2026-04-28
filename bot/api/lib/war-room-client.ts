@@ -198,12 +198,16 @@ export class WarRoomClient {
     const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${this.agentToken}`,
+      };
+      // Only send Content-Type when there's a body — closes #526
+      // guard N2 (the prior ternary `body ? json : json` was a
+      // dead-code refactor leftover).
+      if (body) headers["content-type"] = "application/json";
       const response = await this.fetchImpl(url, {
         method,
-        headers: {
-          authorization: `Bearer ${this.agentToken}`,
-          "content-type": body ? "application/json" : "application/json",
-        },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });

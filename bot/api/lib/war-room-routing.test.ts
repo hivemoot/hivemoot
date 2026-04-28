@@ -52,15 +52,20 @@ describe("maybeCreatePrReviewRoom", () => {
     );
   });
 
-  it("happy path: 201 → returns roomId", async () => {
+  it("happy path: 201 — bot mints roomId + threads it through (closes #526 B1)", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    // CRITICAL: server's POST /api/rooms 201 response serializes
+    // RoomCore (NOT RoomCoreWithId), so the body has NO roomId
+    // field. The bot mints the roomId and passes it as args.roomId;
+    // the round-trip identity check is what we pin here so the next
+    // contract drift is caught.
     const createRoom = vi.fn(async () => ({
-      roomId: ROOM_ID,
       manager: "bot-queen",
       subject_type: "pr_review",
       subject_ref: "hivemoot/hivemoot#42",
       status: "awaiting_rsvp",
       opened_at: "2026-04-28T10:00:00.000Z",
+      // NOTE: no `roomId` here — pinning the actual server contract.
     }));
     // Class-mock pattern: prototype-chain a fake class that returns
     // an object with createRoom. The naive `mockImplementation`
@@ -78,12 +83,20 @@ describe("maybeCreatePrReviewRoom", () => {
       prNumber: 42,
       log,
     });
-    expect(result.roomId).toBe(ROOM_ID);
+
+    // Round-trip equality: the roomId returned by the helper must
+    // be the same UUIDv4 it passed into createRoom. If a future
+    // refactor breaks this thread-through, this test catches it.
+    expect(typeof result.roomId).toBe("string");
+    expect(result.roomId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(createRoom).toHaveBeenCalledWith({
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#42" },
+      roomId: result.roomId,
     });
     expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ roomId: ROOM_ID }),
+      expect.objectContaining({ roomId: result.roomId }),
       expect.stringContaining("created pr_review room"),
     );
   });
