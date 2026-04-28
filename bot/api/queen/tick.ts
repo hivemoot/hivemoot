@@ -138,51 +138,213 @@ function writeJson(
 }
 
 /**
+ * Build the log adapter passed to `runQueenManagerLoop`. Formats
+ * any structured `meta` argument into the message string so the
+ * bot's single-string Logger (which doesn't accept a meta object)
+ * preserves it for ops triage.
+ *
+ * Closes #542 guard B1: without this, every manager-loop log site
+ * (`list_rooms_failed`, `unexpected_error`, `synthesize_failed`,
+ * `contributions_read_failed`, `close_failed`, `post_failed`) would
+ * silently drop its roomId / error class — leaving operators
+ * staring at "[queen-tick] queen.manager_loop.unexpected_error" with
+ * no context when alerts fire.
+ */
+export function makeManagerLoopLogAdapter(): {
+  info: (message: string, meta?: Record<string, unknown>) => void;
+  warn: (message: string, meta?: Record<string, unknown>) => void;
+  error: (message: string, meta?: Record<string, unknown>) => void;
+} {
+  const fmt = (msg: string, meta?: Record<string, unknown>): string => {
+    if (!meta || Object.keys(meta).length === 0) {
+      return `[queen-tick] ${msg}`;
+    }
+    return `[queen-tick] ${msg} ${JSON.stringify(meta)}`;
+  };
+  return {
+    info: (msg, meta) => logger.info(fmt(msg, meta)),
+    warn: (msg, meta) => logger.warn(fmt(msg, meta)),
+    error: (msg, meta) => logger.error(fmt(msg, meta)),
+  };
+}
+
+/**
  * Run one queen tick for the resolved installation. Wraps the
  * dependencies (WarRoomClient + Synthesizer + DecisionPoster) and
  * delegates to runQueenManagerLoop.
  *
- * No per-installation lock: at V1 scale (one Hive, one
- * installation) the cron interval (suggested every 2 minutes) is
- * larger than a typical tick (≪ 30s). Overlapping ticks are
- * already idempotent at the storage layer (claim_already_held +
- * sequence_drift catch any collisions). If multi-installation
- * scaling lands in V1.1, add the same compare-and-DEL Lua lock
- * pattern the watchdog uses.
+ * Per-installation lock: SET NX EX 290 + compare-and-DEL release.
+ * Closes #542 builder R1. Required by WAR_ROOM_DESIGN.md §971: at
+ * 2-minute schedule with 5-minute maxDuration, overlap between
+ * fires is real, and while storage-layer `claim_already_held`
+ * catches correctness collisions, we still want to avoid burning
+ * duplicate LLM credits on the same room. TTL of 290s leaves a
+ * 10s margin under the function timeout so a runaway tick that
+ * exceeds maxDuration still releases its lock before a follow-up
+ * fire would block.
+ *
+ * Lock is best-effort in two senses:
+ *   - When `HIVEMOOT_REDIS_REST_URL` / `TOKEN` env aren't configured,
+ *     run unlocked (V1 single-installation dev deployments).
+ *   - When Redis is unreachable mid-tick, log + run unlocked rather
+ *     than skipping the tick (availability over duplicate-work
+ *     prevention).
  */
 async function runOneTick(installationId: string): Promise<{
   runnerId: string;
   result: Awaited<ReturnType<typeof runQueenManagerLoop>>;
+  skipped?: boolean;
 }> {
-  const appConfig = getAppConfig();
-  const app = new App({
-    appId: String(appConfig.appId),
-    privateKey: appConfig.privateKey,
-  });
-  const octokit = await app.getInstallationOctokit(Number(installationId));
-
-  const baseUrl = process.env.HIVEMOOT_API_BASE_URL ?? DEFAULT_BASE_URL;
-  const client = new WarRoomClient({ baseUrl });
-  const synthesizer = await createSynthesizer({
-    installationId: Number(installationId),
-  });
-  const poster = new GitHubDecisionPoster({ octokit });
   const runnerId = makeRunnerId();
 
-  const result = await runQueenManagerLoop({
-    client,
-    synthesizer,
-    decisionPoster: poster,
-    runnerId,
-    maxRoomsPerTick: parseMaxRoomsPerTick(),
-    log: {
-      info: (msg) => logger.info(`[queen-tick] ${msg}`),
-      warn: (msg) => logger.warn(`[queen-tick] ${msg}`),
-      error: (msg) => logger.error(`[queen-tick] ${msg}`),
-    },
-  });
+  const acquired = await tryAcquireTickLock(installationId, runnerId);
+  if (acquired === "contention") {
+    logger.info(
+      `[queen-tick] lock contention installation=${installationId} — skip`,
+    );
+    // Return zeroed result so caller can serialize it consistently.
+    return { runnerId, result: emptyManagerLoopResult(), skipped: true };
+  }
 
-  return { runnerId, result };
+  try {
+    const appConfig = getAppConfig();
+    const app = new App({
+      appId: String(appConfig.appId),
+      privateKey: appConfig.privateKey,
+    });
+    const octokit = await app.getInstallationOctokit(Number(installationId));
+
+    const baseUrl = process.env.HIVEMOOT_API_BASE_URL ?? DEFAULT_BASE_URL;
+    const client = new WarRoomClient({ baseUrl });
+    const synthesizer = await createSynthesizer({
+      installationId: Number(installationId),
+    });
+    const poster = new GitHubDecisionPoster({ octokit });
+
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer,
+      decisionPoster: poster,
+      runnerId,
+      maxRoomsPerTick: parseMaxRoomsPerTick(),
+      log: makeManagerLoopLogAdapter(),
+    });
+
+    return { runnerId, result };
+  } finally {
+    await releaseTickLock(installationId, runnerId);
+  }
+}
+
+function emptyManagerLoopResult(): Awaited<
+  ReturnType<typeof runQueenManagerLoop>
+> {
+  return {
+    totalRoomsScanned: 0,
+    scannedAwaitingContributions: 0,
+    eligible: 0,
+    claimed: 0,
+    closed: 0,
+    conflicts: 0,
+    staleClaimsAbandoned: 0,
+    postsSucceeded: 0,
+    postsFailed: 0,
+    postsSkipped: 0,
+    errors: 0,
+  };
+}
+
+/** TTL on the per-installation tick lock. 290s = 10s margin under
+ * the function's `maxDuration: 300` so a runaway tick releases its
+ * lock by TTL-expiry before the next 2-minute fire would block. */
+const TICK_LOCK_TTL_SECS = 290;
+
+const TICK_LOCK_KEY_PREFIX = "queen:tick:lock:installation:";
+
+/** Compare-and-DEL Lua: only DEL the lock key if it's still owned by
+ * this runner. Prevents a tick whose work outlasted the TTL from
+ * releasing a follow-up runner's lock. */
+const TICK_LOCK_RELEASE_SCRIPT =
+  'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
+
+/** Returns "ok" if the lock was acquired (or skipped because no
+ * Redis configured), "contention" if another runner holds it. */
+async function tryAcquireTickLock(
+  installationId: string,
+  runnerId: string,
+): Promise<"ok" | "contention"> {
+  const redis = getUpstashRedisConfig();
+  if (!redis) return "ok"; // No Redis → run unlocked.
+  const key = TICK_LOCK_KEY_PREFIX + installationId;
+  try {
+    const url = `${redis.url}/set/${encodeURIComponent(key)}/${encodeURIComponent(runnerId)}?NX&EX=${TICK_LOCK_TTL_SECS}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${redis.token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      logger.warn(
+        `[queen-tick] lock acquire HTTP ${response.status} — running unlocked`,
+      );
+      return "ok";
+    }
+    const body = (await response.json()) as { result?: string | null };
+    // Upstash returns { result: "OK" } on success, { result: null }
+    // on NX conflict.
+    return body.result === "OK" ? "ok" : "contention";
+  } catch (err) {
+    logger.warn(
+      `[queen-tick] lock acquire error: ${err instanceof Error ? err.message : String(err)} — running unlocked`,
+    );
+    return "ok";
+  }
+}
+
+async function releaseTickLock(
+  installationId: string,
+  runnerId: string,
+): Promise<void> {
+  const redis = getUpstashRedisConfig();
+  if (!redis) return;
+  const key = TICK_LOCK_KEY_PREFIX + installationId;
+  try {
+    const response = await fetch(redis.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${redis.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([
+        "EVAL",
+        TICK_LOCK_RELEASE_SCRIPT,
+        "1",
+        key,
+        runnerId,
+      ]),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      logger.warn(`[queen-tick] lock release HTTP ${response.status}`);
+    }
+  } catch (err) {
+    logger.warn(
+      `[queen-tick] lock release error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+interface UpstashRedisConfig {
+  url: string;
+  token: string;
+}
+
+function getUpstashRedisConfig(): UpstashRedisConfig | null {
+  const url = process.env.HIVEMOOT_REDIS_REST_URL;
+  const token = process.env.HIVEMOOT_REDIS_REST_TOKEN;
+  if (typeof url !== "string" || url.length === 0) return null;
+  if (typeof token !== "string" || token.length === 0) return null;
+  return { url, token };
 }
 
 export default async function handler(
@@ -229,10 +391,14 @@ export default async function handler(
 
   // Run the tick.
   try {
-    const { runnerId, result } = await runOneTick(idResult.installationId);
+    const { runnerId, result, skipped } = await runOneTick(
+      idResult.installationId,
+    );
     writeJson(res, 200, {
       runnerId,
       installationId: idResult.installationId,
+      skipped: skipped ?? false,
+      ...(skipped ? { reason: "lock_contention" } : {}),
       result,
     });
   } catch (err) {

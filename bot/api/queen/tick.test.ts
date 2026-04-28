@@ -364,3 +364,186 @@ describe("GET /api/queen/tick — error paths", () => {
     expect(JSON.parse(res._body).code).toBe("tick_failed");
   });
 });
+
+describe("makeManagerLoopLogAdapter (R1 #542 guard B1)", () => {
+  // Closes #542 guard B1: prior adapter signature was (msg) => ...
+  // which dropped the meta arg silently. Without this regression,
+  // a future refactor could reintroduce the same drop without
+  // tripping any test.
+  it("preserves structured meta when present", async () => {
+    const { makeManagerLoopLogAdapter } = await import("./tick.js");
+    const { logger: realLogger } = await import("../lib/logger.js");
+    const errorSpy = vi.spyOn(realLogger, "error").mockImplementation(() => {});
+    const adapter = makeManagerLoopLogAdapter();
+    adapter.error("manager_loop.unexpected_error", {
+      roomId: "room-123",
+      reason: "explosion",
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("room-123"),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("explosion"));
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[queen-tick]"),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("formats meta-less calls without trailing JSON", async () => {
+    const { makeManagerLoopLogAdapter } = await import("./tick.js");
+    const { logger: realLogger } = await import("../lib/logger.js");
+    const infoSpy = vi.spyOn(realLogger, "info").mockImplementation(() => {});
+    const adapter = makeManagerLoopLogAdapter();
+    adapter.info("queen.startup");
+    expect(infoSpy).toHaveBeenCalledWith("[queen-tick] queen.startup");
+    infoSpy.mockRestore();
+  });
+
+  it("handles empty meta object as meta-less", async () => {
+    const { makeManagerLoopLogAdapter } = await import("./tick.js");
+    const { logger: realLogger } = await import("../lib/logger.js");
+    const warnSpy = vi.spyOn(realLogger, "warn").mockImplementation(() => {});
+    const adapter = makeManagerLoopLogAdapter();
+    adapter.warn("warning", {});
+    expect(warnSpy).toHaveBeenCalledWith("[queen-tick] warning");
+    warnSpy.mockRestore();
+  });
+});
+
+describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () => {
+  // Closes #542 builder R1: tick lock required by WAR_ROOM_DESIGN.md
+  // §971 to prevent overlapping fires from burning duplicate LLM
+  // credits at the 2-minute schedule + 5-minute maxDuration.
+  // Lock is best-effort: when Redis env unset, runs unlocked (V1
+  // single-installation dev). When Redis is reachable, SET NX EX
+  // 290 acquire + compare-and-DEL release.
+
+  beforeEach(() => {
+    delete process.env.HIVEMOOT_REDIS_REST_URL;
+    delete process.env.HIVEMOOT_REDIS_REST_TOKEN;
+  });
+
+  it("runs unlocked when Redis env is not configured", async () => {
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("acquires lock via SET NX EX when Redis configured", async () => {
+    process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
+    process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: "OK" }), { status: 200 }),
+      ) // acquire
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: 1 }), { status: 200 }),
+      ); // release
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    expect(fetchSpy.mock.calls[0][0]).toMatch(
+      /\/set\/queen%3Atick%3Alock%3Ainstallation%3A67890\/.*\?NX&EX=290/,
+    );
+    expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it("returns skipped=true when another runner holds the lock (NX result null)", async () => {
+    process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
+    process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: null }), { status: 200 }),
+      );
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.skipped).toBe(true);
+    expect(body.reason).toBe("lock_contention");
+    expect(runQueenManagerLoopMock).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("releases lock with compare-and-DEL on successful tick completion", async () => {
+    process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
+    process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: "OK" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: 1 }), { status: 200 }),
+      );
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    // Second fetch is the release — POST to base URL with EVAL body.
+    const releaseCall = fetchSpy.mock.calls[1];
+    expect(releaseCall[0]).toBe("https://fake-redis.upstash.io");
+    const body = JSON.parse((releaseCall[1] as RequestInit).body as string);
+    expect(body[0]).toBe("EVAL");
+    expect(body[1]).toContain("redis.call");
+    fetchSpy.mockRestore();
+  });
+
+  it("releases lock even when manager loop throws", async () => {
+    process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
+    process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
+    runQueenManagerLoopMock.mockRejectedValueOnce(new Error("loop crash"));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: "OK" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: 1 }), { status: 200 }),
+      );
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(500);
+    // Release was still attempted via finally.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const releaseCall = fetchSpy.mock.calls[1];
+    expect(JSON.parse((releaseCall[1] as RequestInit).body as string)[0]).toBe(
+      "EVAL",
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it("falls through to unlocked when acquire HTTP fails (availability)", async () => {
+    process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
+    process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ISE", { status: 500 }));
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+});
