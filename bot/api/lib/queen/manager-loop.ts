@@ -57,6 +57,7 @@ import type {
   WarRoomClient,
   WarRoomApiError,
 } from "../war-room-client.js";
+import type { DecisionPoster } from "./decision-poster.js";
 import type { Synthesizer } from "./synthesizer.js";
 
 const DEFAULT_MAX_ROOMS_PER_TICK = 100;
@@ -92,6 +93,14 @@ const BENIGN_CONFLICT_CODES: ReadonlySet<string> = new Set([
 export interface QueenManagerLoopArgs {
   client: WarRoomClient;
   synthesizer: Synthesizer;
+  /** Optional decision poster (G'.4). When provided, the loop calls
+   * `poster.postDecision(...)` after a successful `closeRoom` so the
+   * synthesized markdown lands on the GitHub PR thread. Failures
+   * count as `postsFailed` and DO NOT undo the room close — the
+   * decision is durably stored on the room either way. When omitted
+   * (e.g. in unit tests, or pre-G'.5 deployments without an
+   * Octokit), close path runs unchanged and post counters stay 0. */
+  decisionPoster?: DecisionPoster;
   /** Stable runner identity (passed as `queenRunner` on
    * `claimSynthesis` and folded into the decision payload's
    * `synthesis_runner` field). Operator-set; e.g.
@@ -145,6 +154,16 @@ export interface QueenManagerLoopResult {
    * Closes #536 builder R1: prior code unconditionally treated
    * `withdrew` as synthesis-permitting, racing the re-RSVP path. */
   staleClaimsAbandoned: number;
+  /** Decisions successfully posted to GitHub via `decisionPoster`.
+   * Set to 0 when no poster configured. Closes #538 follow-on G'.4. */
+  postsSucceeded: number;
+  /** Post attempts that threw. The room close already succeeded; the
+   * decision is stored. V1 logs + counts; V1.1 may add retry. */
+  postsFailed: number;
+  /** Posts intentionally skipped (subject_type not yet supported in
+   * V1). Tracked separately from postsSucceeded so ops can alert on
+   * `mentions / triages reaching the queen` independently. */
+  postsSkipped: number;
   /** Non-benign errors: synthesizer threw, decision_too_large 400,
    * wire failure, unfamiliar 409 code. Loop continues; ops alert. */
   errors: number;
@@ -168,6 +187,9 @@ export async function runQueenManagerLoop(
     closed: 0,
     conflicts: 0,
     staleClaimsAbandoned: 0,
+    postsSucceeded: 0,
+    postsFailed: 0,
+    postsSkipped: 0,
     errors: 0,
   };
 
@@ -192,6 +214,7 @@ export async function runQueenManagerLoop(
         room,
         client: args.client,
         synthesizer: args.synthesizer,
+        decisionPoster: args.decisionPoster,
         runnerId: args.runnerId,
         nowMs: args.nowMs ?? Date.now(),
         log,
@@ -247,12 +270,13 @@ async function processOneRoom(args: {
   room: RoomListEntry;
   client: WarRoomClient;
   synthesizer: Synthesizer;
+  decisionPoster: DecisionPoster | undefined;
   runnerId: string;
   nowMs: number;
   log: ManagerLoopLogger;
   result: QueenManagerLoopResult;
 }): Promise<void> {
-  const { room, client, synthesizer, runnerId, nowMs, log, result } = args;
+  const { room, client, synthesizer, decisionPoster, runnerId, nowMs, log, result } = args;
 
   // 1. Pre-claim eligibility.
   let participantsResp;
@@ -421,6 +445,35 @@ async function processOneRoom(args: {
       error: errMeta(err),
     });
     result.errors += 1;
+    return;
+  }
+
+  // 6. Post the decision to GitHub (G'.4). Failure does NOT undo the
+  //    close — the decision is durably stored. Counted separately so
+  //    ops can alert on post-only failures without conflating with
+  //    storage errors.
+  if (decisionPoster === undefined) {
+    return;
+  }
+  try {
+    const postResult = await decisionPoster.postDecision({
+      subjectType: room.subject_type,
+      subjectRef: room.subject_ref,
+      content,
+      roomId: room.roomId,
+    });
+    if (postResult.attempted) {
+      result.postsSucceeded += 1;
+    } else {
+      result.postsSkipped += 1;
+    }
+  } catch (err) {
+    result.postsFailed += 1;
+    log.error("queen.manager_loop.post_failed", {
+      roomId: room.roomId,
+      subjectRef: room.subject_ref,
+      error: errMeta(err),
+    });
   }
 }
 
