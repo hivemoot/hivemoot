@@ -313,7 +313,13 @@ export type RoomEventType =
   | "contribution_withdrawn"
   | "room_decided"
   | "room_recovered"
-  | "room_terminated";
+  | "room_terminated"
+  // Bot/queen meta-events emitted via POST /api/rooms/{id}/event
+  // (D.1.b-ii). They DON'T transition status — the bot uses them
+  // to record context for workers (subject changed) or pose
+  // targeted questions (V1.1 follow-up).
+  | "subject_updated"
+  | "queen_question";
 
 /** Materialized RSVP entry per role (latest-state-wins). Stored as
  * JSON in the `:participants` hash, keyed by role.
@@ -1616,7 +1622,12 @@ export type RoomEventAction =
   | "withdraw_contribution"
   | "timeout"
   | "decide"
-  | "close";
+  | "close"
+  // Bot meta-event idempotency lanes (D.1.b-ii). Caller derives
+  // a key per (room, role, action, observed-sequence); same shape
+  // as the worker actions above.
+  | "subject_updated"
+  | "queen_question";
 
 // ---------------------------------------------------------------------------
 // ROOM_APPEND_EVENT_SCRIPT — atomic event append
