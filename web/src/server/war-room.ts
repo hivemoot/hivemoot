@@ -259,6 +259,21 @@ export interface RoomCore extends RoomCoreData {
 }
 
 /**
+ * `RoomCore` enriched with its `roomId`. Returned by `listRooms` so
+ * callers can correlate core records with sibling keys (events,
+ * participants, contributions) without a second lookup. The base
+ * `RoomCore` intentionally omits `roomId` (the room hash key is the
+ * roomId, so it's redundant on `getRoomCore` — the caller already
+ * knows it).
+ *
+ * Used by `GET /api/rooms` and `GET /api/rooms/watching` so the
+ * wire response associates each core with its identifier.
+ */
+export interface RoomCoreWithId extends RoomCore {
+  roomId: string;
+}
+
+/**
  * Decision metadata captured at queen-close time. Body content is
  * the synthesis (markdown) the queen produced; runner identifies
  * which queen instance ran the synthesis (for forensic correlation
@@ -892,7 +907,7 @@ export async function listRooms(args: {
   installationId: string;
   redis: Redis;
   limit?: number;
-}): Promise<RoomCore[]> {
+}): Promise<RoomCoreWithId[]> {
   const limit = args.limit ?? 50;
   const indexKey = installationIndexKey(args.installationId);
 
@@ -911,7 +926,7 @@ export async function listRooms(args: {
     ),
   );
 
-  const out: RoomCore[] = [];
+  const out: RoomCoreWithId[] = [];
   const orphans: string[] = [];
   for (let i = 0; i < fanout.length; i++) {
     const core = parseRoomCoreFields(fanout[i]);
@@ -919,7 +934,10 @@ export async function listRooms(args: {
       orphans.push(roomIds[i]);
       continue;
     }
-    out.push(core);
+    // Attach roomId so callers can correlate with sibling keys
+    // (participants, events, contributions) without a second
+    // round-trip. /watching uses this for its enriched response.
+    out.push({ ...core, roomId: roomIds[i] });
   }
 
   // Best-effort cleanup of orphaned installation-index entries.
@@ -3516,4 +3534,64 @@ export async function getRoomContributions(args: {
         : value;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Worker visibility (D.1.b-iii)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether a role can act on a room — used by GET
+ * /api/rooms/watching to filter the list to rooms a worker bearer
+ * should attend to.
+ *
+ * Per WAR_ROOM_DESIGN.md L780-790, /watching surfaces rooms where
+ * the role is EITHER:
+ *   - Not yet a participant (eligible to RSVP)
+ *   - A participant whose work is incomplete (still needs to
+ *     contribute or react to a subject change)
+ *
+ * Excluded:
+ *   - `resolved` — already contributed; no further action needed
+ *   - `timed_out` — terminal, watcher has nothing to do
+ *   - `withdrew` AT current sequence — withdrew with no new events
+ *     since (re-RSVP only on subject_updated post-withdrawal)
+ *
+ * Closed/terminated rooms are excluded by the caller's status filter
+ * (this predicate assumes the room is open).
+ */
+export function canRoleRsvpToRoom(args: {
+  participants: Record<string, RoomParticipant>;
+  bearerRole: string;
+  currentSequence: number;
+}): boolean {
+  const slot = args.participants[args.bearerRole];
+  if (!slot) {
+    // No participant entry yet — role can still RSVP fresh.
+    return true;
+  }
+  switch (slot.status) {
+    case "pending":
+      // Still in the contribution window — visible.
+      return true;
+    case "resolved":
+      // Already contributed — done, hide from watching.
+      return false;
+    case "timed_out":
+      // Terminal for this role — watchdog already moved on.
+      return false;
+    case "withdrew":
+      // Re-RSVP gated on new events past withdrew_at_sequence
+      // (closes design L780-783). If withdrew_at_sequence is
+      // unset we conservatively treat the slot as not-visible
+      // (the field is set by transitionRoomParticipant on withdraw,
+      // so absence means a malformed slot — fail closed).
+      if (typeof slot.withdrew_at_sequence !== "number") return false;
+      return args.currentSequence > slot.withdrew_at_sequence;
+    default:
+      // Defensive: an unknown status (future enum addition) is
+      // hidden. The caller's status filter should also have
+      // excluded the room, but belt + braces.
+      return false;
+  }
 }
