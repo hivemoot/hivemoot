@@ -916,6 +916,21 @@ export const ROOM_CONTRIBUTION_RAW_MD_MAX_BYTES = 32 * 1024;
  *   max_age_secs default 3600 → idem TTL default 7200 (2 h). */
 export const IDEM_TTL_MULTIPLIER = 2;
 
+/**
+ * Synthesis claim TTL in seconds. Per WAR_ROOM_DESIGN.md
+ * §"Storage layout" claim row: **6 minutes — intentionally 1 minute
+ * ABOVE Vercel Pro's `maxDuration` of 5 minutes** (closes guard R3
+ * N7 recovery-vs-synthesis double-post race).
+ *
+ * The +1m buffer means a queen runner that's still mid-synthesis
+ * when its serverless function's 5-minute maxDuration kills it
+ * will have already had its claim TTL refreshed (or be on a fresh
+ * tick). Recovery scripts only fire when the claim has GENUINELY
+ * expired, so a stale recovery can't race a still-active queen
+ * runner that hasn't quite finished posting `/close`.
+ */
+export const SYNTHESIS_CLAIM_TTL_SECS = 360;
+
 /** Contribution body bounds per WAR_ROOM_DESIGN.md L1166-1188. */
 export const CONTRIBUTION_SUMMARY_MAX_CHARS = 500;
 export const CONTRIBUTION_FINDING_AREA_MAX_CHARS = 80;
@@ -1061,6 +1076,68 @@ export class RoomContributionTooLargeError extends Error {
     );
     this.name = "RoomContributionTooLargeError";
     this.sizeBytes = sizeBytes;
+  }
+}
+
+/**
+ * Thrown when `ROOM_DECIDE_CLAIM_SCRIPT` finds the synthesis claim
+ * already held by another queen runner (benign conflict — the
+ * caller should skip this tick and re-attempt on the next manager
+ * loop cycle, OR observe the holder via `heldByRunner`).
+ *
+ * Per WAR_ROOM_DESIGN.md the claim TTL is 6 minutes (1 minute above
+ * Vercel Pro's 5-minute maxDuration cap), so a true crash recovery
+ * is bounded — `recoverDeciding` runs against rooms whose claims
+ * have actually expired.
+ */
+export class RoomClaimAlreadyHeldError extends Error {
+  public readonly roomId: string;
+  public readonly heldByRunner: string;
+  public readonly throughSequence: number;
+  constructor(
+    roomId: string,
+    heldByRunner: string,
+    throughSequence: number,
+  ) {
+    super(
+      `Synthesis claim for room ${roomId} is already held by ${JSON.stringify(heldByRunner)} through sequence ${throughSequence}. Skip this tick; the claim TTL will release on crash.`,
+    );
+    this.name = "RoomClaimAlreadyHeldError";
+    this.roomId = roomId;
+    this.heldByRunner = heldByRunner;
+    this.throughSequence = throughSequence;
+  }
+}
+
+/**
+ * Thrown when a status-changing transition (claim, recover) is
+ * called on a room whose current status doesn't match the action's
+ * allowed-from list.
+ *
+ * For `claimSynthesis`: room must be in `awaiting_contributions`.
+ * For `recoverDeciding`: room must be in `deciding`. (Other status
+ * transitions — TERMINATE, CLOSE — land in D.1.a-iii.c with their
+ * own allowed-from lists.)
+ */
+export class RoomTransitionInvalidStatusError extends Error {
+  public readonly roomId: string;
+  public readonly action: string;
+  public readonly expectedStatuses: RoomStatus[];
+  public readonly actualStatus: string;
+  constructor(
+    roomId: string,
+    action: string,
+    expectedStatuses: RoomStatus[],
+    actualStatus: string,
+  ) {
+    super(
+      `Room ${roomId} is in status ${JSON.stringify(actualStatus)}; ${action} requires one of [${expectedStatuses.map((s) => JSON.stringify(s)).join(", ")}].`,
+    );
+    this.name = "RoomTransitionInvalidStatusError";
+    this.roomId = roomId;
+    this.action = action;
+    this.expectedStatuses = expectedStatuses;
+    this.actualStatus = actualStatus;
   }
 }
 
@@ -1640,6 +1717,114 @@ if ARGV[12] ~= "" then
   redis.call("hset", KEYS[6], ARGV[4], ARGV[12])
 end
 return {seq}
+`;
+
+/**
+ * ROOM_DECIDE_CLAIM_SCRIPT — atomic synthesis claim acquisition.
+ *
+ * Per WAR_ROOM_DESIGN.md §"Storage layout" + §"Manager loop", a
+ * single queen runner claims the synthesis lane for a room atomically:
+ *   1. Room must be in `awaiting_contributions` (status precondition)
+ *   2. Claim key must be unset (TTL'd or never claimed)
+ *   3. Atomically: SET claim with TTL + HSET status="deciding" +
+ *      HSET deciding_through_sequence=currentSeq + status-set membership
+ *
+ * The claim record is `{runner, throughSequence}` JSON. The
+ * `throughSequence` is captured at claim time and verified at
+ * `ROOM_CLOSE` time to detect new-event drift during synthesis
+ * (D.1.a-iii.c). The TTL (6 min, see SYNTHESIS_CLAIM_TTL_SECS) is
+ * 1 min above Vercel Pro's maxDuration so a crash recovery is
+ * bounded but doesn't race the still-running queen.
+ *
+ * KEYS:
+ *   [1] roomKey                  — room hash (status + deciding_through_sequence)
+ *   [2] claimKey                 — synthesis claim with TTL
+ *   [3] statusSetAwaitingKey     — status:awaiting_contributions index
+ *   [4] statusSetDecidingKey     — status:deciding index
+ *   [5] seqKey                   — current sequence counter (read for throughSequence)
+ *
+ * ARGV:
+ *   [1] roomId                   — for set membership updates
+ *   [2] queenRunner              — opaque runner identity string
+ *   [3] claimTtlSecs             — TTL for the claim key
+ *
+ * Returns:
+ *   {1, throughSequence}                      claim acquired
+ *   {0, "already_claimed", runner, throughSeq} another runner holds it
+ *   {-1, currentStatus}                       not in awaiting_contributions
+ */
+export const ROOM_DECIDE_CLAIM_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus ~= "awaiting_contributions" then
+  return {-1, currStatus}
+end
+local existingClaim = redis.call("get", KEYS[2])
+if existingClaim then
+  local parsed = cjson.decode(existingClaim)
+  return {0, "already_claimed", parsed.runner, parsed.throughSequence}
+end
+local seq = redis.call("get", KEYS[5])
+if not seq then return {-1, "no_seq"} end
+local seqNum = tonumber(seq)
+local claimJson = cjson.encode({runner = ARGV[2], throughSequence = seqNum})
+redis.call("set", KEYS[2], claimJson, "EX", tonumber(ARGV[3]))
+redis.call("hset", KEYS[1], "status", "deciding", "deciding_through_sequence", tostring(seqNum))
+redis.call("srem", KEYS[3], ARGV[1])
+redis.call("sadd", KEYS[4], ARGV[1])
+return {1, seqNum}
+`;
+
+/**
+ * ROOM_RECOVER_DECIDING_SCRIPT — revert deciding → awaiting_contributions
+ * when the synthesis claim TTL has expired.
+ *
+ * Called by the manager loop's recovery branch. Critical: only
+ * fires when the claim KEY is genuinely gone (TTL'd by Redis), NOT
+ * when a queen runner is still actively claimed. The script
+ * verifies via `EXISTS claim` and returns benignly if the claim
+ * is still active (caller skips this tick).
+ *
+ * Atomicity:
+ *   1. Room status precondition (must be `deciding`)
+ *   2. Claim key existence check (must be MISSING for recovery to fire)
+ *   3. Atomically: INCR seq + ZADD recovery event + HSET status →
+ *      awaiting_contributions + clear deciding_through_sequence (via
+ *      empty-string sentinel per design L415) + status-set membership
+ *
+ * KEYS:
+ *   [1] roomKey                — room hash
+ *   [2] claimKey               — synthesis claim (must NOT exist)
+ *   [3] statusSetDecidingKey   — status:deciding index (SREM)
+ *   [4] statusSetAwaitingKey   — status:awaiting_contributions index (SADD)
+ *   [5] seqKey                 — sequence counter (for recovery event)
+ *   [6] eventsKey              — event log sorted set
+ *
+ * ARGV:
+ *   [1] roomId                 — for set membership updates
+ *   [2] recoveryEventTemplate  — JSON with `__SEQ__` placeholder
+ *
+ * Returns:
+ *   {1, sequence}              recovered (event emitted, status reverted)
+ *   {0, "claim_active"}        claim still alive — caller skips this tick
+ *   {-1, currentStatus}        room not in `deciding` (already moved on)
+ */
+export const ROOM_RECOVER_DECIDING_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus ~= "deciding" then
+  return {-1, currStatus}
+end
+if redis.call("exists", KEYS[2]) == 1 then
+  return {0, "claim_active"}
+end
+local seq = redis.call("incr", KEYS[5])
+local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq), 1)
+redis.call("zadd", KEYS[6], seq, eventJson)
+redis.call("hset", KEYS[1], "status", "awaiting_contributions", "deciding_through_sequence", "")
+redis.call("srem", KEYS[3], ARGV[1])
+redis.call("sadd", KEYS[4], ARGV[1])
+return {1, seq}
 `;
 
 // ---------------------------------------------------------------------------
@@ -2366,6 +2551,212 @@ export async function timeoutParticipant(args: {
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Synthesis claim / recovery primitives (D.1.a-iii.b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a successful synthesis claim acquisition. The
+ * `throughSequence` is captured atomically by the script and is
+ * the value that ROOM_CLOSE will compare against the current
+ * sequence at close-time to detect new-event drift during
+ * synthesis (D.1.a-iii.c).
+ */
+export interface ClaimSynthesisResult {
+  throughSequence: number;
+  claimTtlSecs: number;
+}
+
+/**
+ * Acquire the synthesis claim for a room — atomic transition from
+ * `awaiting_contributions` → `deciding` with claim TTL.
+ *
+ * Single-runner-wins: only one queen runner across the fleet can
+ * hold the claim at a time. The TTL (default 6 minutes — see
+ * `SYNTHESIS_CLAIM_TTL_SECS`) is intentionally 1 minute above
+ * Vercel Pro's 5-minute `maxDuration` so that a queen runner that
+ * crashes mid-synthesis releases its claim only after a buffer
+ * window. `recoverDeciding` then fires on the next manager tick.
+ *
+ * Sibling effects (all atomic):
+ *   - Status flips `awaiting_contributions` → `deciding`
+ *   - `deciding_through_sequence` is set to the current sequence
+ *     (frozen at claim time so close-time drift detection can fire)
+ *   - Status-set membership migrates from awaiting → deciding
+ *
+ * Throws:
+ *   - `RoomClaimAlreadyHeldError` when another runner holds it
+ *     (carries `heldByRunner` + `throughSequence` for caller log)
+ *   - `RoomTransitionInvalidStatusError` when the room is not in
+ *     `awaiting_contributions` (already deciding / closed / etc.)
+ *   - `RoomNotFoundError` when the room hash is gone (TTL'd or
+ *     never opened)
+ */
+export async function claimSynthesis(args: {
+  installationId: string;
+  roomId: string;
+  /** Opaque queen runner identity (hostname + pid + monotonic).
+   * Stored in the claim record so observers know who holds it. */
+  queenRunner: string;
+  claimTtlSecs?: number;
+  redis: Redis;
+}): Promise<ClaimSynthesisResult> {
+  const ttl = args.claimTtlSecs ?? SYNTHESIS_CLAIM_TTL_SECS;
+
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      ROOM_DECIDE_CLAIM_SCRIPT,
+      [
+        roomKey(args.installationId, args.roomId),
+        claimKey(args.roomId),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        statusIndexKey(args.installationId, "deciding"),
+        seqKey(args.roomId),
+      ],
+      [args.roomId, args.queenRunner, String(ttl)],
+    ),
+  );
+
+  if (result.ok === 1 && typeof result.tag1 === "number") {
+    return { throughSequence: result.tag1, claimTtlSecs: ttl };
+  }
+  if (
+    result.ok === 0 &&
+    result.tag1 === "already_claimed" &&
+    typeof result.tag2 === "string"
+  ) {
+    // Script returns {0, "already_claimed", runner, throughSeq} — but
+    // ScriptResult only captures tag1+tag2. Re-decode the existing
+    // claim payload to surface the through-sequence, since the script
+    // already validated the status precondition before this branch.
+    const existing = await args.redis.get<string>(claimKey(args.roomId));
+    let heldByRunner = result.tag2;
+    let throughSequence = 0;
+    if (existing) {
+      try {
+        const parsed =
+          typeof existing === "string"
+            ? (JSON.parse(existing) as { runner?: string; throughSequence?: number })
+            : (existing as { runner?: string; throughSequence?: number });
+        if (typeof parsed.runner === "string") heldByRunner = parsed.runner;
+        if (typeof parsed.throughSequence === "number") {
+          throughSequence = parsed.throughSequence;
+        }
+      } catch {
+        // Fall through with tag2 as runner, 0 as throughSequence.
+      }
+    }
+    throw new RoomClaimAlreadyHeldError(
+      args.roomId,
+      heldByRunner,
+      throughSequence,
+    );
+  }
+  if (result.ok === -1 && typeof result.tag1 === "string") {
+    if (result.tag1 === "room_not_found" || result.tag1 === "no_seq") {
+      throw new RoomNotFoundError(args.installationId, args.roomId);
+    }
+    throw new RoomTransitionInvalidStatusError(
+      args.roomId,
+      "claim_synthesis",
+      ["awaiting_contributions"],
+      result.tag1,
+    );
+  }
+  throw new Error(
+    `ROOM_DECIDE_CLAIM_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
+}
+
+/**
+ * Recover a stuck `deciding` room when its synthesis claim TTL has
+ * expired. Reverts status to `awaiting_contributions` and emits a
+ * `room_recovered` event so observers can see why the manager
+ * loop re-opened it.
+ *
+ * Called from the bot's manager loop. Critical guard: the script
+ * verifies the claim key has GENUINELY expired (`EXISTS` returns 0)
+ * before reverting. If a still-active queen runner holds the claim,
+ * the script returns `{0, "claim_active"}` and this primitive
+ * returns `null` — the caller skips this tick and re-scans next.
+ *
+ * Atomicity:
+ *   - INCR seq + ZADD recovery event + HSET status + clear
+ *     `deciding_through_sequence` (empty-string sentinel) + status-set
+ *     membership update — all in one EVAL.
+ *
+ * Returns:
+ *   - `{ recovered: true, sequence }` — recovery event emitted
+ *   - `{ recovered: false, reason: "claim_active" }` — still active
+ *
+ * Throws:
+ *   - `RoomTransitionInvalidStatusError` if the room is not
+ *     `deciding` (already closed / terminated / awaiting via another
+ *     recovery path)
+ *   - `RoomNotFoundError` if the room hash is gone entirely
+ */
+export async function recoverDeciding(args: {
+  installationId: string;
+  roomId: string;
+  redis: Redis;
+  nowMs?: number;
+}): Promise<
+  | { recovered: true; sequence: number }
+  | { recovered: false; reason: "claim_active" }
+> {
+  const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
+
+  // Build the recovery event template with __SEQ__ placeholder; Lua
+  // gsub (capped at first match) substitutes the actual sequence
+  // atomically with the status revert. The template uses the same
+  // pattern as `appendRoomEvent` for consistency.
+  const eventTemplate = JSON.stringify({
+    seq: "__SEQ__",
+    timestamp: nowIso,
+    event_type: "room_recovered",
+    actor_role: "manager",
+    actor_id: "watchdog",
+    body: { reason: "claim_ttl_expired" },
+  });
+  const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      ROOM_RECOVER_DECIDING_SCRIPT,
+      [
+        roomKey(args.installationId, args.roomId),
+        claimKey(args.roomId),
+        statusIndexKey(args.installationId, "deciding"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        seqKey(args.roomId),
+        eventsKey(args.roomId),
+      ],
+      [args.roomId, luaTemplate],
+    ),
+  );
+
+  if (result.ok === 1 && typeof result.tag1 === "number") {
+    return { recovered: true, sequence: result.tag1 };
+  }
+  if (result.ok === 0 && result.tag1 === "claim_active") {
+    return { recovered: false, reason: "claim_active" };
+  }
+  if (result.ok === -1 && typeof result.tag1 === "string") {
+    if (result.tag1 === "room_not_found") {
+      throw new RoomNotFoundError(args.installationId, args.roomId);
+    }
+    throw new RoomTransitionInvalidStatusError(
+      args.roomId,
+      "recover_deciding",
+      ["deciding"],
+      result.tag1,
+    );
+  }
+  throw new Error(
+    `ROOM_RECOVER_DECIDING_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
