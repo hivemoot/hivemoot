@@ -284,10 +284,19 @@ export interface RoomEvent {
   event_type: RoomEventType;
   /** Server-derived from the bearer envelope's `agent_role` —
    * NEVER from request body. Lets investigators map an event to
-   * a role even if the actor's bearer is later rotated/revoked. */
+   * a role even if the actor's bearer is later rotated/revoked.
+   *
+   * **System-actor exception** (closes #512 guard N5): for
+   * cron/watchdog-driven transitions there is no bearer behind the
+   * action — the manager loop emits these events on its own tick.
+   * Such events use sentinel values (`actor_role="manager"`,
+   * `actor_id="watchdog"` for `room_recovered` and watchdog-triggered
+   * `participant_timed_out`; `actor_role="system"`, `actor_id="vercel-cron"`
+   * for cron-fired TERMINATE on expiry). The "never from body" rule
+   * still holds — system sentinels are server-issued, not client-supplied. */
   actor_role: string;
-  /** Server-derived: the bearer's `name` field. Same caveat as
-   * `actor_role` — never accepts a body-supplied identity. */
+  /** Server-derived: the bearer's `name` field. Same caveat AND same
+   * system-actor exception as `actor_role` (see above). */
   actor_id: string;
   /** Action-specific payload. Bounded ≤ 8 KiB serialized; events
    * exceeding the cap are rejected at append time. */
@@ -494,6 +503,45 @@ const ROOM_ID_REGEX =
 export function validateRoomId(roomId: string): void {
   if (!ROOM_ID_REGEX.test(roomId)) {
     throw new RoomIdFormatError(roomId);
+  }
+}
+
+/**
+ * Bounds on a queen runner identity (`queenRunner` for
+ * `claimSynthesis`, `synthesis_runner` in `RoomDecision`). Closes
+ * #512 guard N6 — defense-in-depth boundary check at the route
+ * layer so any string that flows through Lua `gsub` sentinel
+ * substitution is guaranteed not to collide with the sentinel.
+ *
+ * The shape covers the common queen identity formats:
+ *   `<host>.pid<N>.tick<N>`        — bot-as-queen
+ *   `queen-<short-hash>`            — standalone queen (post-V1)
+ *   `<owner>/<repo>:<runId>`        — GitHub Actions queen variant
+ *
+ * Constraints (any one violation rejects):
+ *   - 1-128 chars
+ *   - Only ASCII alphanumeric, `.`, `-`, `_`, `:`, `/`, `+`
+ *   - No literal `__SEQ__` substring (sentinel collision guard)
+ *   - No surrounding whitespace
+ */
+const RUNNER_FORMAT_REGEX = /^[A-Za-z0-9._:/+\-]{1,128}$/;
+const SEQ_SENTINEL = "__SEQ__";
+
+export function validateRunnerFormat(runner: string): void {
+  if (typeof runner !== "string" || runner.length === 0) {
+    throw new RoomRunnerFormatError(String(runner), "must be a non-empty string");
+  }
+  if (!RUNNER_FORMAT_REGEX.test(runner)) {
+    throw new RoomRunnerFormatError(
+      runner,
+      "must match /^[A-Za-z0-9._:/+\\-]{1,128}$/ (no whitespace, no special chars)",
+    );
+  }
+  if (runner.includes(SEQ_SENTINEL)) {
+    throw new RoomRunnerFormatError(
+      runner,
+      `must not contain the literal "${SEQ_SENTINEL}" sentinel — defense-in-depth against future gsub substitutions`,
+    );
   }
 }
 
@@ -1142,6 +1190,142 @@ export class RoomTransitionInvalidStatusError extends Error {
 }
 
 /**
+ * Thrown when a Lua script's `cjson.decode` fails on a stored claim
+ * payload (corrupted/partial-write/manual ops intervention). Closes
+ * #512 guard N2: even the defensive `already_claimed` branch shouldn't
+ * panic on payload corruption — the script returns `{-3, "decode_error"}`
+ * and the caller surfaces this typed error so an operator can DEL the
+ * claim key out-of-band.
+ */
+export class RoomClaimPayloadCorruptError extends Error {
+  public readonly roomId: string;
+  constructor(roomId: string) {
+    super(
+      `Claim payload for room ${roomId} could not be decoded — likely partial write or manual intervention. DEL the claim key out-of-band and re-attempt synthesis on the next manager tick.`,
+    );
+    this.name = "RoomClaimPayloadCorruptError";
+    this.roomId = roomId;
+  }
+}
+
+/**
+ * Thrown by `terminateRoom` when the room is already in `closed`
+ * status (operator double-tap or watchdog race after a queen close).
+ * Carries the actual status so the caller can distinguish "already
+ * terminal" (benign) from "wrong status" (programming error).
+ *
+ * Per design L443 — TERMINATE returns `{-1, currentStatus}` only on
+ * `closed`; any non-closed status proceeds with termination.
+ */
+export class RoomAlreadyClosedError extends Error {
+  public readonly roomId: string;
+  public readonly status: RoomStatus;
+  constructor(roomId: string, status: RoomStatus) {
+    super(
+      `Room ${roomId} is already in status ${JSON.stringify(status)}; terminate is a no-op.`,
+    );
+    this.name = "RoomAlreadyClosedError";
+    this.roomId = roomId;
+    this.status = status;
+  }
+}
+
+/**
+ * Thrown by `closeRoomWithDecision` when the synthesis claim has
+ * been DELed out from under the queen runner — typically by an
+ * `force_close` TERMINATE racing the queen's `/close`. The queen
+ * MUST abort the GitHub posting and let the operator's force-close
+ * stand (per design L508).
+ */
+export class RoomCloseClaimLostError extends Error {
+  public readonly roomId: string;
+  constructor(roomId: string) {
+    super(
+      `Synthesis claim for room ${roomId} was deleted before close completed (likely a force-close TERMINATE). Abort the GitHub post and surface the terminal state to the operator.`,
+    );
+    this.name = "RoomCloseClaimLostError";
+    this.roomId = roomId;
+  }
+}
+
+/**
+ * Thrown by `closeRoomWithDecision` when the claim record's stored
+ * `throughSequence` doesn't match the caller's `expectedThroughSequence`.
+ * Indicates a different runner re-claimed the room since this caller
+ * acquired the claim — should never happen in normal flow (claim TTL
+ * + atomic acquisition prevents it) but the script defends against
+ * partial-write desync.
+ */
+export class RoomCloseClaimThroughSeqMismatchError extends Error {
+  public readonly roomId: string;
+  public readonly expectedThroughSequence: number;
+  public readonly actualThroughSequence: number;
+  constructor(
+    roomId: string,
+    expectedThroughSequence: number,
+    actualThroughSequence: number,
+  ) {
+    super(
+      `Claim throughSequence mismatch for room ${roomId}: expected ${expectedThroughSequence}, got ${actualThroughSequence}. Another runner re-claimed mid-flight; abort and re-claim.`,
+    );
+    this.name = "RoomCloseClaimThroughSeqMismatchError";
+    this.roomId = roomId;
+    this.expectedThroughSequence = expectedThroughSequence;
+    this.actualThroughSequence = actualThroughSequence;
+  }
+}
+
+/**
+ * Thrown by `closeRoomWithDecision` when new events arrived between
+ * claim acquisition and close attempt — the script atomically reverts
+ * status to `awaiting_contributions` AND DELs the claim, so the queen
+ * runner aborts its GitHub post and the manager loop re-claims on the
+ * next tick (closes design L506-528: drift signal triggers
+ * synthesize-retry, not a hard error).
+ *
+ * The `lastSeq` field carries the live sequence at the close attempt
+ * — useful for caller logs ("synthesized through 7, but 9 events landed").
+ */
+export class RoomCloseDriftError extends Error {
+  public readonly roomId: string;
+  public readonly expectedThroughSequence: number;
+  public readonly lastSeq: number;
+  constructor(
+    roomId: string,
+    expectedThroughSequence: number,
+    lastSeq: number,
+  ) {
+    super(
+      `Sequence drift on room ${roomId}: synthesized through ${expectedThroughSequence}, but ${lastSeq - expectedThroughSequence} new event(s) landed during synthesis. Status reverted to awaiting_contributions; re-claim on next manager tick.`,
+    );
+    this.name = "RoomCloseDriftError";
+    this.roomId = roomId;
+    this.expectedThroughSequence = expectedThroughSequence;
+    this.lastSeq = lastSeq;
+  }
+}
+
+/**
+ * Thrown when a runner identity (`queenRunner` or
+ * `RoomDecision.synthesis_runner`) fails the boundary format check.
+ * Closes #512 guard N6: any string that flows through Lua `gsub`
+ * sentinel substitution must be guaranteed not to collide with the
+ * sentinel literal. Even though the claim script doesn't `gsub` the
+ * runner string today, validating at the boundary is the
+ * defense-in-depth pattern from #510 R2 N2.
+ */
+export class RoomRunnerFormatError extends Error {
+  public readonly invalidRunner: string;
+  constructor(invalidRunner: string, reason: string) {
+    super(
+      `Runner identity ${JSON.stringify(invalidRunner)} failed format validation: ${reason}.`,
+    );
+    this.name = "RoomRunnerFormatError";
+    this.invalidRunner = invalidRunner;
+  }
+}
+
+/**
  * Thrown when a participant transition's source state is illegal.
  *
  * Closes #510 builder R3: the manager loop's contract (per
@@ -1749,9 +1933,22 @@ return {seq}
  *   [3] claimTtlSecs             — TTL for the claim key
  *
  * Returns:
- *   {1, throughSequence}                      claim acquired
- *   {0, "already_claimed", runner, throughSeq} another runner holds it
- *   {-1, currentStatus}                       not in awaiting_contributions
+ *   {1, throughSequence}                       claim acquired
+ *   {0, "already_claimed", holderJson}         another runner holds it
+ *                                              (holderJson = JSON-encoded
+ *                                              {runner, throughSequence})
+ *   {-1, currentStatus}                        not in awaiting_contributions
+ *   {-3, "decode_error"}                       claim payload corruption
+ *                                              (cjson.decode failed —
+ *                                              defensive against partial
+ *                                              writes / manual ops; closes
+ *                                              #512 guard N2)
+ *
+ * R3 (D.1.a-iii.c): the conflict response now JSON-packs the holder
+ * info into a single tag2 string instead of using positional
+ * tag3+tag4. Closes #512 guard N1: previously `dispatchScriptResult`
+ * dropped the 4th element, forcing a post-EVAL `GET` to recover the
+ * throughSequence (racy if claim TTL'd between EVAL and re-read).
  */
 export const ROOM_DECIDE_CLAIM_SCRIPT = `
 local currStatus = redis.call("hget", KEYS[1], "status")
@@ -1761,8 +1958,9 @@ if currStatus ~= "awaiting_contributions" then
 end
 local existingClaim = redis.call("get", KEYS[2])
 if existingClaim then
-  local parsed = cjson.decode(existingClaim)
-  return {0, "already_claimed", parsed.runner, parsed.throughSequence}
+  local ok, parsed = pcall(cjson.decode, existingClaim)
+  if not ok then return {-3, "decode_error"} end
+  return {0, "already_claimed", cjson.encode({runner = parsed.runner, throughSequence = parsed.throughSequence})}
 end
 local seq = redis.call("get", KEYS[5])
 if not seq then return {-1, "no_seq"} end
@@ -1825,6 +2023,194 @@ redis.call("hset", KEYS[1], "status", "awaiting_contributions", "deciding_throug
 redis.call("srem", KEYS[3], ARGV[1])
 redis.call("sadd", KEYS[4], ARGV[1])
 return {1, seq}
+`;
+
+/**
+ * ROOM_TERMINATE_SCRIPT — atomic terminal close without claim.
+ *
+ * Per WAR_ROOM_DESIGN.md L428-470: covers the four non-decided
+ * terminal paths — `expired` (watchdog past max_age), `failed_synthesis`
+ * (queen consecutive failures), `force_close` (operator UI), `manual`
+ * (operator UI happy path). Distinct from `ROOM_CLOSE_SCRIPT` which
+ * requires a claim and represents the queen's clean synthesis path.
+ *
+ * Critical: if the room is in `deciding`, the queen had a claim — DEL
+ * it. The queen's mid-flight `/close` will then return
+ * `RoomCloseClaimLostError` and abort the GitHub post (closes design
+ * R3 N8: stuck-deciding past max_age was unreachable by the prior
+ * `ROOM_EXPIRE_SCRIPT`; same path covers force-close on a deciding
+ * room from S5).
+ *
+ * Atomicity:
+ *   1. Status precondition: must NOT be `closed` (already-terminal
+ *      check; benign no-op for operator double-tap)
+ *   2. DEL claim if any (covers deciding-state cleanup)
+ *   3. INCR seq + ZADD `room_terminated` event (`__SEQ__` substituted,
+ *      capped at first match per #510 guard B1)
+ *   4. HSET status="closed" + closed_at + closed_reason
+ *   5. DEL subject index (release the per-installation subject lock)
+ *   6. SREM from ALL non-terminal status sets idempotently (closes
+ *      #515 builder R1: a stale caller-supplied `currentStatus` could
+ *      race a concurrent `claimSynthesis` and SREM the wrong set,
+ *      leaving phantom membership in the live status set). ZREM/SREM
+ *      from installation + per-repo indexes (closes Queen R2 #2 / M3).
+ *   7. EXPIRE all sibling keys at retentionSecs (closes Queen R2 #1
+ *      — TTL leak)
+ *
+ * KEYS:
+ *   [1] roomKey
+ *   [2] subjectIndexKey
+ *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
+ *   [4] statusSetAwaitingContribKey    — SREM idempotent
+ *   [5] statusSetDecidingKey           — SREM idempotent
+ *   [6] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [7] repoIndexKey                   — per-repo set
+ *   [8] seqKey
+ *   [9] eventsKey
+ *   [10] participantsKey               — for TTL only
+ *   [11] contributionsKey              — for TTL only
+ *   [12] claimKey                      — DELed if held (deciding-state cleanup)
+ *
+ * ARGV:
+ *   [1] roomId
+ *   [2] terminalEventJson     — JSON template with `__SEQ__` placeholder
+ *   [3] closedAt              — ISO 8601
+ *   [4] retentionSecs         — sibling-keys TTL after terminate
+ *   [5] closedReason          — TerminalReason
+ *
+ * Returns:
+ *   {1, sequence}             terminated cleanly
+ *   {-1, currentStatus}       already closed (no-op for operator double-tap)
+ */
+export const ROOM_TERMINATE_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus == "closed" then
+  return {-1, currStatus}
+end
+redis.call("del", KEYS[12])
+local seq = redis.call("incr", KEYS[8])
+local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq), 1)
+redis.call("zadd", KEYS[9], seq, eventJson)
+redis.call("hset", KEYS[1], "status", "closed",
+                          "closed_at", ARGV[3],
+                          "closed_reason", ARGV[5])
+redis.call("del", KEYS[2])
+redis.call("srem", KEYS[3], ARGV[1])
+redis.call("srem", KEYS[4], ARGV[1])
+redis.call("srem", KEYS[5], ARGV[1])
+redis.call("zrem", KEYS[6], ARGV[1])
+redis.call("srem", KEYS[7], ARGV[1])
+local retention = tonumber(ARGV[4])
+redis.call("expire", KEYS[1], retention)
+redis.call("expire", KEYS[8], retention)
+redis.call("expire", KEYS[9], retention)
+redis.call("expire", KEYS[10], retention)
+redis.call("expire", KEYS[11], retention)
+return {1, seq}
+`;
+
+/**
+ * ROOM_CLOSE_SCRIPT — queen happy-path close with sequence-consistency.
+ *
+ * Per WAR_ROOM_DESIGN.md L493-550: only the queen's `/close` path
+ * uses this script. Requires a live claim (DELed claim → abort
+ * GitHub post via `RoomCloseClaimLostError`) AND the claim's
+ * `throughSequence` to match the caller's `expectedThroughSequence`
+ * (mismatch → another runner re-claimed; abort).
+ *
+ * The drift detection (lastSeq != expectedThroughSequence) means
+ * NEW EVENTS arrived during synthesis — typically `subject_updated`
+ * from the bot's webhook layer when a worker re-pushed to the PR.
+ * The queen's synthesis is now stale; the script atomically:
+ *   - DELs the claim
+ *   - Reverts status to `awaiting_contributions`
+ *   - Restores the deciding → awaiting_contributions status-set
+ *     membership (closes design B2)
+ *   - Returns `{-2, lastSeq}` so the caller can log the drift and
+ *     not panic — manager loop will re-claim on the next tick.
+ *
+ * Happy path:
+ *   - Sequence-stamps the `room_decided` event JSON via `__SEQ__`
+ *     substitution (capped at first match)
+ *   - HSET status="closed", decision=<json>, closed_at
+ *   - ZADD the closed event at the new sequence
+ *   - SET seq counter to new sequence (so post-close reads are stable)
+ *   - DEL claim, subject index
+ *   - SREM/ZREM/SREM from deciding-status, installation, repo indexes
+ *   - EXPIRE all siblings at retentionSecs
+ *
+ * KEYS:
+ *   [1] roomKey
+ *   [2] claimKey
+ *   [3] seqKey
+ *   [4] statusSetDecidingKey
+ *   [5] statusSetAwaitingContribKey
+ *   [6] subjectIndexKey
+ *   [7] eventsKey
+ *   [8] participantsKey       — TTL only
+ *   [9] contributionsKey      — TTL only
+ *   [10] installationIndexKey
+ *   [11] repoIndexKey
+ *
+ * ARGV:
+ *   [1] roomId
+ *   [2] expectedThroughSequence  — caller's claim-time sequence (from claimSynthesis)
+ *   [3] decisionJson             — RoomDecision serialized
+ *   [4] closedEventJsonTemplate  — JSON with `__SEQ__` placeholder
+ *   [5] closedAt                 — ISO 8601
+ *   [6] retentionSecs            — sibling TTL
+ *
+ * Returns:
+ *   {1, sequence}                                    closed cleanly
+ *   {-2, lastSeq}                                    sequence drift (revert + retry)
+ *   {-3, "claim_lost"}                               claim DELed (force-close raced)
+ *   {-3, "claim_throughSeq_mismatch", actualThroughSeq}
+ *                                                    different runner re-claimed
+ *   {-3, "decode_error"}                             claim payload corruption
+ */
+export const ROOM_CLOSE_SCRIPT = `
+local claim = redis.call("get", KEYS[2])
+if not claim then return {-3, "claim_lost"} end
+local ok, parsed = pcall(cjson.decode, claim)
+if not ok then return {-3, "decode_error"} end
+local claimThroughSeq = tonumber(parsed.throughSequence)
+local expectedThroughSeq = tonumber(ARGV[2])
+if claimThroughSeq ~= expectedThroughSeq then
+  return {-3, "claim_throughSeq_mismatch", claimThroughSeq}
+end
+local lastSeq = tonumber(redis.call("get", KEYS[3])) or 0
+if lastSeq ~= expectedThroughSeq then
+  -- Drift: new events arrived during synthesis. Revert atomically
+  -- (closes design B2: prior implementation orphaned rooms from
+  -- both deciding and awaiting_contributions sets, making them
+  -- invisible to subsequent ticks).
+  redis.call("del", KEYS[2])
+  redis.call("hset", KEYS[1], "status", "awaiting_contributions",
+                            "deciding_through_sequence", "")
+  redis.call("srem", KEYS[4], ARGV[1])
+  redis.call("sadd", KEYS[5], ARGV[1])
+  return {-2, lastSeq}
+end
+local closedSeq = lastSeq + 1
+local closedEventJson = string.gsub(ARGV[4], "__SEQ__", tostring(closedSeq), 1)
+redis.call("hset", KEYS[1], "status", "closed",
+                          "decision", ARGV[3],
+                          "closed_at", ARGV[5])
+redis.call("zadd", KEYS[7], closedSeq, closedEventJson)
+redis.call("set", KEYS[3], tostring(closedSeq))
+redis.call("del", KEYS[2])
+redis.call("del", KEYS[6])
+redis.call("srem", KEYS[4], ARGV[1])
+redis.call("zrem", KEYS[10], ARGV[1])
+redis.call("srem", KEYS[11], ARGV[1])
+local retention = tonumber(ARGV[6])
+redis.call("expire", KEYS[1], retention)
+redis.call("expire", KEYS[3], retention)
+redis.call("expire", KEYS[7], retention)
+redis.call("expire", KEYS[8], retention)
+redis.call("expire", KEYS[9], retention)
+return {1, closedSeq}
 `;
 
 // ---------------------------------------------------------------------------
@@ -2598,11 +2984,14 @@ export async function claimSynthesis(args: {
   installationId: string;
   roomId: string;
   /** Opaque queen runner identity (hostname + pid + monotonic).
-   * Stored in the claim record so observers know who holds it. */
+   * Stored in the claim record so observers know who holds it.
+   * Boundary-validated via `validateRunnerFormat` (closes #512
+   * guard N6: defense-in-depth against gsub-sentinel collision). */
   queenRunner: string;
   claimTtlSecs?: number;
   redis: Redis;
 }): Promise<ClaimSynthesisResult> {
+  validateRunnerFormat(args.queenRunner);
   const ttl = args.claimTtlSecs ?? SYNTHESIS_CLAIM_TTL_SECS;
 
   const result = dispatchScriptResult(
@@ -2627,26 +3016,26 @@ export async function claimSynthesis(args: {
     result.tag1 === "already_claimed" &&
     typeof result.tag2 === "string"
   ) {
-    // Script returns {0, "already_claimed", runner, throughSeq} — but
-    // ScriptResult only captures tag1+tag2. Re-decode the existing
-    // claim payload to surface the through-sequence, since the script
-    // already validated the status precondition before this branch.
-    const existing = await args.redis.get<string>(claimKey(args.roomId));
-    let heldByRunner = result.tag2;
+    // Script JSON-packs the holder info into tag2 (closes #512 guard
+    // N1: previously the script returned 4 elements but
+    // `dispatchScriptResult` only captures tag1+tag2, forcing a
+    // post-EVAL `GET` to recover the throughSequence. The re-read
+    // was racy — the claim could TTL between EVAL and GET, leaving
+    // throughSequence as 0 in the surfaced error.
+    let heldByRunner = "(unparsed)";
     let throughSequence = 0;
-    if (existing) {
-      try {
-        const parsed =
-          typeof existing === "string"
-            ? (JSON.parse(existing) as { runner?: string; throughSequence?: number })
-            : (existing as { runner?: string; throughSequence?: number });
-        if (typeof parsed.runner === "string") heldByRunner = parsed.runner;
-        if (typeof parsed.throughSequence === "number") {
-          throughSequence = parsed.throughSequence;
-        }
-      } catch {
-        // Fall through with tag2 as runner, 0 as throughSequence.
+    try {
+      const parsed = JSON.parse(result.tag2) as {
+        runner?: string;
+        throughSequence?: number;
+      };
+      if (typeof parsed.runner === "string") heldByRunner = parsed.runner;
+      if (typeof parsed.throughSequence === "number") {
+        throughSequence = parsed.throughSequence;
       }
+    } catch {
+      // Defensive: script-emitted JSON should never fail to parse,
+      // but if it does we still raise the error rather than swallow it.
     }
     throw new RoomClaimAlreadyHeldError(
       args.roomId,
@@ -2664,6 +3053,13 @@ export async function claimSynthesis(args: {
       ["awaiting_contributions"],
       result.tag1,
     );
+  }
+  if (result.ok === -3 && result.tag1 === "decode_error") {
+    // Claim payload corrupted (cjson.decode failed in script).
+    // Surfaces #512 guard N2: defensive against partial writes /
+    // manual ops intervention. Operator should inspect the claim
+    // key directly and decide whether to DEL it.
+    throw new RoomClaimPayloadCorruptError(args.roomId);
   }
   throw new Error(
     `ROOM_DECIDE_CLAIM_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
@@ -2756,6 +3152,266 @@ export async function recoverDeciding(args: {
   }
   throw new Error(
     `ROOM_RECOVER_DECIDING_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Termination / close primitives (D.1.a-iii.c)
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminate a room — atomic close without claim. Called from the
+ * watchdog (expired / failed_synthesis) AND from operator UI
+ * (force_close / manual). Distinct from `closeRoomWithDecision`
+ * which is the queen's clean synthesis-complete path.
+ *
+ * If the room is in `deciding`, the queen's claim is DELed so the
+ * queen's mid-flight `closeRoomWithDecision` returns
+ * `RoomCloseClaimLostError` and aborts the GitHub post.
+ *
+ * Idempotent on already-closed rooms: returns
+ * `RoomAlreadyClosedError` instead of double-emitting a terminate
+ * event. Caller chooses to swallow or surface.
+ *
+ * Status effects:
+ *   - status flips to `closed`
+ *   - closed_at = nowIso
+ *   - closed_reason = args.reason
+ *   - claim DELed if any
+ *   - subject index DELed (releases per-installation subject lock)
+ *   - removed from ALL secondary indexes (status / installation / repo)
+ *   - sibling keys EXPIRE at retentionSecs
+ *
+ * Throws:
+ *   - `RoomAlreadyClosedError` when status is already `closed`
+ *   - `RoomNotFoundError` when the room hash is gone
+ */
+export async function terminateRoom(args: {
+  installationId: string;
+  roomId: string;
+  reason: TerminalReason;
+  /** Subject ref needed to compute the subject index key (the
+   * subject lock to release). Caller-supplied because the room hash
+   * stores subject_ref inside the `data` JSON blob — passing it
+   * explicitly avoids a pre-EVAL HGETALL. */
+  subject: SubjectRef;
+  /** Source actor for the `room_terminated` event. System-driven
+   * paths (watchdog / cron) use sentinel actors; operator UI uses
+   * the bearer envelope's role+id. */
+  actorRole: string;
+  actorId: string;
+  retentionSecs?: number;
+  redis: Redis;
+  nowMs?: number;
+}): Promise<number> {
+  validateSubjectRef(args.subject);
+
+  const nowMs = args.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const retention = args.retentionSecs ?? ROOM_RETENTION_AFTER_CLOSE_SECS;
+
+  const eventTemplate = JSON.stringify({
+    seq: "__SEQ__",
+    timestamp: nowIso,
+    event_type: "room_terminated",
+    actor_role: args.actorRole,
+    actor_id: args.actorId,
+    body: { reason: args.reason },
+  });
+  const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+
+  const repo = repoFromSubjectRef(args.subject.ref);
+
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      ROOM_TERMINATE_SCRIPT,
+      [
+        roomKey(args.installationId, args.roomId),
+        subjectIndexKey(
+          args.installationId,
+          args.subject.type,
+          args.subject.ref,
+        ),
+        // All three non-terminal status sets — script SREMs each
+        // idempotently. Closes #515 builder R1: a stale
+        // caller-supplied currentStatus could SREM the wrong set
+        // and leave phantom membership in the live one.
+        statusIndexKey(args.installationId, "awaiting_rsvp"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        statusIndexKey(args.installationId, "deciding"),
+        installationIndexKey(args.installationId),
+        repoIndexKey(args.installationId, repo),
+        seqKey(args.roomId),
+        eventsKey(args.roomId),
+        participantsKey(args.roomId),
+        contributionsKey(args.roomId),
+        claimKey(args.roomId),
+      ],
+      [
+        args.roomId,
+        luaTemplate,
+        nowIso,
+        String(retention),
+        args.reason,
+      ],
+    ),
+  );
+
+  if (result.ok === 1 && typeof result.tag1 === "number") {
+    return result.tag1;
+  }
+  if (result.ok === -1 && typeof result.tag1 === "string") {
+    if (result.tag1 === "room_not_found") {
+      throw new RoomNotFoundError(args.installationId, args.roomId);
+    }
+    if (result.tag1 === "closed") {
+      throw new RoomAlreadyClosedError(args.roomId, "closed");
+    }
+    // Defensive: any other status value would be a programming error
+    // (TERMINATE allows ALL non-closed statuses); surface it loudly.
+    throw new Error(
+      `ROOM_TERMINATE_SCRIPT returned unexpected status: ${result.tag1}`,
+    );
+  }
+  throw new Error(
+    `ROOM_TERMINATE_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
+  );
+}
+
+/**
+ * Close a room with the queen's synthesized decision — happy-path
+ * close that requires a live claim AND sequence consistency.
+ *
+ * The queen calls this AFTER `claimSynthesis` returns
+ * `{throughSequence, claimTtlSecs}` and AFTER the queen's runtime
+ * has produced a `RoomDecision`. The script verifies:
+ *   1. Claim still exists (DEL'd → force-close raced; abort)
+ *   2. Claim's `throughSequence` matches caller's expectation
+ *      (mismatch → another runner re-claimed; abort)
+ *   3. Live `seq` matches `expectedThroughSequence` (drift → new
+ *      events arrived during synthesis; revert + retry)
+ *
+ * Drift handling: revert is atomic. The queen aborts its GitHub
+ * post on `RoomCloseDriftError`, and the manager loop re-claims on
+ * the next tick (the room's status is back at
+ * `awaiting_contributions` — synthesis re-enters cleanly).
+ *
+ * Throws (each typed for caller decision):
+ *   - `RoomCloseClaimLostError` — claim DELed (likely force-close);
+ *     ABORT the GitHub post and surface terminal state to operator
+ *   - `RoomCloseClaimThroughSeqMismatchError` — different runner
+ *     re-claimed; ABORT, do NOT post
+ *   - `RoomCloseDriftError` — sequence drift; revert is already
+ *     applied, queen logs and exits, manager re-claims
+ *   - `RoomClaimPayloadCorruptError` — claim payload corrupted;
+ *     ABORT, operator inspects
+ */
+export async function closeRoomWithDecision(args: {
+  installationId: string;
+  roomId: string;
+  /** Captured at claim time from `claimSynthesis(...).throughSequence`. */
+  expectedThroughSequence: number;
+  decision: RoomDecision;
+  subject: SubjectRef;
+  retentionSecs?: number;
+  redis: Redis;
+  nowMs?: number;
+}): Promise<number> {
+  validateSubjectRef(args.subject);
+  validateRunnerFormat(args.decision.synthesis_runner);
+  // BYTE length, not UTF-16 code-unit `.length`. A multi-byte
+  // synthesis (emoji, non-ASCII narrative) can have `.length` < byte
+  // budget while the actual storage payload exceeds 64 KiB. Closes
+  // #515 builder R1 — file uses Buffer.byteLength elsewhere for
+  // consistency (see ROOM_EVENT_BODY_MAX_BYTES enforcement at
+  // assertEventBodySize).
+  const decisionContentBytes = Buffer.byteLength(args.decision.content, "utf8");
+  if (decisionContentBytes > 64 * 1024) {
+    throw new Error(
+      `RoomDecision.content exceeds 64 KiB (${decisionContentBytes} bytes); reduce body before close.`,
+    );
+  }
+
+  const nowMs = args.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const retention = args.retentionSecs ?? ROOM_RETENTION_AFTER_CLOSE_SECS;
+
+  // Top-level `seq` carries the sequence; body intentionally does
+  // NOT duplicate it (would force an uncapped gsub and reintroduce
+  // #510 B1 — user-content collision risk on the synthesis_runner
+  // string). Consumers read seq from the event's top-level field.
+  const eventTemplate = JSON.stringify({
+    seq: "__SEQ__",
+    timestamp: nowIso,
+    event_type: "room_decided",
+    actor_role: "manager",
+    actor_id: args.decision.synthesis_runner,
+    body: { synthesis_runner: args.decision.synthesis_runner },
+  });
+  const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+
+  const repo = repoFromSubjectRef(args.subject.ref);
+
+  const result = dispatchScriptResult(
+    await args.redis.eval(
+      ROOM_CLOSE_SCRIPT,
+      [
+        roomKey(args.installationId, args.roomId),
+        claimKey(args.roomId),
+        seqKey(args.roomId),
+        statusIndexKey(args.installationId, "deciding"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        subjectIndexKey(
+          args.installationId,
+          args.subject.type,
+          args.subject.ref,
+        ),
+        eventsKey(args.roomId),
+        participantsKey(args.roomId),
+        contributionsKey(args.roomId),
+        installationIndexKey(args.installationId),
+        repoIndexKey(args.installationId, repo),
+      ],
+      [
+        args.roomId,
+        String(args.expectedThroughSequence),
+        JSON.stringify(args.decision),
+        luaTemplate,
+        nowIso,
+        String(retention),
+      ],
+    ),
+  );
+
+  if (result.ok === 1 && typeof result.tag1 === "number") {
+    return result.tag1;
+  }
+  if (result.ok === -2 && typeof result.tag1 === "number") {
+    throw new RoomCloseDriftError(
+      args.roomId,
+      args.expectedThroughSequence,
+      result.tag1,
+    );
+  }
+  if (result.ok === -3 && typeof result.tag1 === "string") {
+    if (result.tag1 === "claim_lost") {
+      throw new RoomCloseClaimLostError(args.roomId);
+    }
+    if (result.tag1 === "decode_error") {
+      throw new RoomClaimPayloadCorruptError(args.roomId);
+    }
+    if (result.tag1 === "claim_throughSeq_mismatch") {
+      const actual =
+        typeof result.tag2 === "number" ? result.tag2 : -1;
+      throw new RoomCloseClaimThroughSeqMismatchError(
+        args.roomId,
+        args.expectedThroughSequence,
+        actual,
+      );
+    }
+  }
+  throw new Error(
+    `ROOM_CLOSE_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
   );
 }
 

@@ -346,7 +346,7 @@ function makeMockRedis() {
         return [seq];
       }
 
-      // ROOM_DECIDE_CLAIM_SCRIPT — 5 keys, 3 args (D.1.a-iii.b)
+      // ROOM_DECIDE_CLAIM_SCRIPT — 5 keys, 3 args (D.1.a-iii.b/c)
       if (
         keys.length === 5 &&
         argv.length === 3 &&
@@ -364,21 +364,33 @@ function makeMockRedis() {
         }
         const existingClaim = store.get(claimK);
         if (existingClaim !== undefined) {
-          const parsed =
-            typeof existingClaim === "string"
-              ? (JSON.parse(existingClaim) as {
-                  runner: string;
-                  throughSequence: number;
-                })
-              : (existingClaim as {
-                  runner: string;
-                  throughSequence: number;
-                });
+          // Mirror the script's pcall(cjson.decode, ...) — corrupted
+          // payloads return decode_error rather than panicking.
+          let parsed: { runner: string; throughSequence: number };
+          try {
+            parsed =
+              typeof existingClaim === "string"
+                ? (JSON.parse(existingClaim) as {
+                    runner: string;
+                    throughSequence: number;
+                  })
+                : (existingClaim as {
+                    runner: string;
+                    throughSequence: number;
+                  });
+          } catch {
+            return [-3, "decode_error"];
+          }
+          // R3 (D.1.a-iii.c): JSON-pack holder info into single
+          // tag2 string instead of positional tag3+tag4 (closes
+          // #512 guard N1 — dispatchScriptResult was dropping tag3+).
           return [
             0,
             "already_claimed",
-            parsed.runner,
-            parsed.throughSequence,
+            JSON.stringify({
+              runner: parsed.runner,
+              throughSequence: parsed.throughSequence,
+            }),
           ];
         }
         const seq = store.get(seqK) as number | undefined;
@@ -428,6 +440,156 @@ function makeMockRedis() {
         getSet(statusFromK).delete(roomId);
         getSet(statusToK).add(roomId);
         return [1, seq];
+      }
+
+      // ROOM_TERMINATE_SCRIPT — 12 keys, 5 args (D.1.a-iii.c R2)
+      if (
+        keys.length === 12 &&
+        argv.length === 5 &&
+        script.includes("closed_reason")
+      ) {
+        const [
+          roomK,
+          subjectIdxK,
+          statusAwaitingRsvpK,
+          statusAwaitingContribK,
+          statusDecidingK,
+          installK,
+          repoK,
+          seqK,
+          eventsK,
+          _participantsK,
+          _contributionsK,
+          claimK,
+        ] = keys;
+        const [roomId, eventTemplate, closedAt, retentionSecs, closedReason] =
+          argv;
+
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus === "closed") return [-1, currStatus];
+
+        // DEL claim if any (deciding-state cleanup; closes design R3 N8)
+        store.delete(claimK);
+
+        const oldSeq = (store.get(seqK) as number | undefined) ?? 0;
+        const seq = oldSeq + 1;
+        store.set(seqK, seq);
+        const eventJson = eventTemplate.replace("__SEQ__", String(seq));
+        getSortedSet(eventsK).push({ member: eventJson, score: seq });
+        getHash(roomK).set("status", "closed");
+        getHash(roomK).set("closed_at", closedAt);
+        getHash(roomK).set("closed_reason", closedReason);
+        store.delete(subjectIdxK);
+        // SREM all three non-terminal status sets idempotently
+        // (closes #515 builder R1 — defensive against stale
+        // caller-observed status).
+        getSet(statusAwaitingRsvpK).delete(roomId);
+        getSet(statusAwaitingContribK).delete(roomId);
+        getSet(statusDecidingK).delete(roomId);
+        // installation index is a sorted set — emulate ZREM
+        const installSet = sortedSets.get(installK);
+        if (installSet) {
+          const idx = installSet.findIndex((e) => e.member === roomId);
+          if (idx !== -1) installSet.splice(idx, 1);
+        }
+        getSet(repoK).delete(roomId);
+        // EXPIRE intentionally ignored — TTL not simulated
+        void retentionSecs;
+        return [1, seq];
+      }
+
+      // ROOM_CLOSE_SCRIPT — 11 keys, 6 args (D.1.a-iii.c)
+      if (
+        keys.length === 11 &&
+        argv.length === 6 &&
+        script.includes("claim_lost")
+      ) {
+        const [
+          roomK,
+          claimK,
+          seqK,
+          statusFromK,
+          statusToK,
+          subjectIdxK,
+          eventsK,
+          _participantsK,
+          _contributionsK,
+          installK,
+          repoK,
+        ] = keys;
+        const [
+          roomId,
+          expectedThroughSeqStr,
+          decisionJson,
+          closedEventTemplate,
+          closedAt,
+          retentionSecs,
+        ] = argv;
+
+        const claim = store.get(claimK);
+        if (claim === undefined) return [-3, "claim_lost"];
+
+        // pcall(cjson.decode, claim) emulation
+        let parsedClaim: { runner: string; throughSequence: number };
+        try {
+          parsedClaim =
+            typeof claim === "string"
+              ? (JSON.parse(claim) as {
+                  runner: string;
+                  throughSequence: number;
+                })
+              : (claim as { runner: string; throughSequence: number });
+        } catch {
+          return [-3, "decode_error"];
+        }
+        const expectedThroughSeq = Number(expectedThroughSeqStr);
+        if (parsedClaim.throughSequence !== expectedThroughSeq) {
+          return [
+            -3,
+            "claim_throughSeq_mismatch",
+            parsedClaim.throughSequence,
+          ];
+        }
+
+        const lastSeq = (store.get(seqK) as number | undefined) ?? 0;
+        if (lastSeq !== expectedThroughSeq) {
+          // Drift — atomic revert
+          store.delete(claimK);
+          getHash(roomK).set("status", "awaiting_contributions");
+          getHash(roomK).set("deciding_through_sequence", "");
+          getSet(statusFromK).delete(roomId);
+          getSet(statusToK).add(roomId);
+          return [-2, lastSeq];
+        }
+
+        // Happy path
+        const closedSeq = lastSeq + 1;
+        const closedEventJson = closedEventTemplate.replace(
+          "__SEQ__",
+          String(closedSeq),
+        );
+        getHash(roomK).set("status", "closed");
+        getHash(roomK).set("decision", decisionJson);
+        getHash(roomK).set("closed_at", closedAt);
+        getSortedSet(eventsK).push({
+          member: closedEventJson,
+          score: closedSeq,
+        });
+        store.set(seqK, closedSeq);
+        store.delete(claimK);
+        store.delete(subjectIdxK);
+        getSet(statusFromK).delete(roomId);
+        const installSet = sortedSets.get(installK);
+        if (installSet) {
+          const idx = installSet.findIndex((e) => e.member === roomId);
+          if (idx !== -1) installSet.splice(idx, 1);
+        }
+        getSet(repoK).delete(roomId);
+        void retentionSecs;
+        return [1, closedSeq];
       }
 
       return null;
@@ -3440,5 +3602,738 @@ describe("recoverDeciding", () => {
     const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
     const recovery = events.find((e) => e.event_type === "room_recovered");
     expect(recovery?.seq).toBe(result.sequence);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D.1.a-iii.c — TERMINATE + CLOSE + drift detection + carry-forwards
+// ---------------------------------------------------------------------------
+
+import {
+  ROOM_TERMINATE_SCRIPT,
+  ROOM_CLOSE_SCRIPT,
+  validateRunnerFormat,
+  terminateRoom,
+  closeRoomWithDecision,
+  RoomAlreadyClosedError,
+  RoomCloseClaimLostError,
+  RoomCloseClaimThroughSeqMismatchError,
+  RoomCloseDriftError,
+  RoomClaimPayloadCorruptError,
+  RoomRunnerFormatError,
+  type RoomDecision,
+} from "./war-room";
+
+describe("D.1.a-iii.c ROOM_TERMINATE_SCRIPT source", () => {
+  it("references closed_reason ARGV + claim DEL + index cleanup + sibling EXPIRE", () => {
+    expect(ROOM_TERMINATE_SCRIPT).toContain("closed_reason");
+    expect(ROOM_TERMINATE_SCRIPT).toContain('"closed"');
+    // Claim DEL covers deciding-state cleanup (closes design R3 N8 +
+    // #515 builder R1 — KEYS[12] after the 3-status-set expansion)
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[12])');
+    // Subject lock release
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[2])');
+    // Idempotent SREM from ALL non-terminal status sets (#515 R1):
+    // KEYS[3]=awaiting_rsvp, KEYS[4]=awaiting_contributions, KEYS[5]=deciding
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[3], ARGV[1])');
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[4], ARGV[1])');
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[5], ARGV[1])');
+    // ZREM from installation index (closes Queen R2 #2)
+    expect(ROOM_TERMINATE_SCRIPT).toContain("zrem");
+    // Sibling TTL (closes Queen R2 #1)
+    expect(ROOM_TERMINATE_SCRIPT).toContain("expire");
+    // First-match gsub (closes #510 guard B1)
+    expect(ROOM_TERMINATE_SCRIPT).toContain(", 1)");
+  });
+});
+
+describe("D.1.a-iii.c ROOM_CLOSE_SCRIPT source", () => {
+  it("references claim_lost + claim_throughSeq_mismatch + drift revert + pcall decode + capped gsub", () => {
+    expect(ROOM_CLOSE_SCRIPT).toContain("claim_lost");
+    expect(ROOM_CLOSE_SCRIPT).toContain("claim_throughSeq_mismatch");
+    // pcall wrap on cjson.decode (closes #512 guard N2)
+    expect(ROOM_CLOSE_SCRIPT).toContain("pcall(cjson.decode");
+    expect(ROOM_CLOSE_SCRIPT).toContain("decode_error");
+    // Drift revert: reverts status AND restores status-set membership (closes design B2)
+    expect(ROOM_CLOSE_SCRIPT).toContain('"awaiting_contributions"');
+    expect(ROOM_CLOSE_SCRIPT).toContain('"deciding_through_sequence", ""');
+    // Capped gsub on closed event template (closes #510 guard B1)
+    expect(ROOM_CLOSE_SCRIPT).toContain(", 1)");
+    // Sibling TTL on close
+    expect(ROOM_CLOSE_SCRIPT).toContain("expire");
+  });
+});
+
+describe("validateRunnerFormat", () => {
+  it("accepts canonical formats", () => {
+    expect(() => validateRunnerFormat("queen-host-1.pid42.tick0")).not.toThrow();
+    expect(() => validateRunnerFormat("queen-abc123")).not.toThrow();
+    expect(() =>
+      validateRunnerFormat("hivemoot/hivemoot:42"),
+    ).not.toThrow();
+    expect(() => validateRunnerFormat("a")).not.toThrow();
+    expect(() => validateRunnerFormat("a".repeat(128))).not.toThrow();
+  });
+
+  it("rejects empty string", () => {
+    expect(() => validateRunnerFormat("")).toThrow(RoomRunnerFormatError);
+  });
+
+  it("rejects whitespace", () => {
+    expect(() => validateRunnerFormat("queen 1")).toThrow(
+      RoomRunnerFormatError,
+    );
+    expect(() => validateRunnerFormat("\tqueen")).toThrow(RoomRunnerFormatError);
+  });
+
+  it("rejects > 128 chars", () => {
+    expect(() => validateRunnerFormat("a".repeat(129))).toThrow(
+      RoomRunnerFormatError,
+    );
+  });
+
+  it("rejects __SEQ__ literal (sentinel collision guard)", () => {
+    expect(() => validateRunnerFormat("queen__SEQ__1")).toThrow(
+      RoomRunnerFormatError,
+    );
+    try {
+      validateRunnerFormat("queen__SEQ__1");
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomRunnerFormatError);
+      expect((err as RoomRunnerFormatError).message).toContain("__SEQ__");
+    }
+  });
+
+  it("rejects unsafe chars (quotes, control, etc.)", () => {
+    expect(() => validateRunnerFormat("queen'1")).toThrow(RoomRunnerFormatError);
+    expect(() => validateRunnerFormat('queen"1')).toThrow(RoomRunnerFormatError);
+    expect(() => validateRunnerFormat("queen\x00")).toThrow(
+      RoomRunnerFormatError,
+    );
+  });
+});
+
+describe("claimSynthesis (R3 — JSON-packed tag2 closes #512 guard N1)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+  });
+
+  it("desync edge case: surfaces holder identity AND throughSequence WITHOUT post-EVAL re-read", async () => {
+    // Manually rig the desync state. The R3 reshape means no race —
+    // the script returns the holder JSON in tag2 directly.
+    await redis.set(
+      claimKey(RID_A),
+      JSON.stringify({ runner: "queen-A.pid42", throughSequence: 7 }),
+    );
+    try {
+      await claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-B.pid99",
+        redis,
+      });
+      throw new Error("expected RoomClaimAlreadyHeldError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomClaimAlreadyHeldError);
+      const e = err as RoomClaimAlreadyHeldError;
+      expect(e.heldByRunner).toBe("queen-A.pid42");
+      // CRITICAL — pre-R3 this was 0 because the script's tag3 was
+      // dropped by dispatchScriptResult and the post-EVAL re-read
+      // could race the claim TTL. Now it's the actual sequence.
+      expect(e.throughSequence).toBe(7);
+    }
+  });
+
+  it("rejects malformed queenRunner with RoomRunnerFormatError BEFORE storage call (closes #512 guard N6)", async () => {
+    await expect(
+      claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen__SEQ__bad",
+        redis,
+      }),
+    ).rejects.toThrow(RoomRunnerFormatError);
+    // Verify NO storage write happened — claim key is still empty.
+    const claim = await redis.get(claimKey(RID_A));
+    expect(claim).toBeNull();
+  });
+
+  it("corrupted claim payload → RoomClaimPayloadCorruptError (closes #512 guard N2)", async () => {
+    // Write garbage to the claim key to simulate partial write or
+    // manual ops intervention.
+    await redis.set(claimKey(RID_A), "not-json-at-all{{{");
+    await expect(
+      claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-A",
+        redis,
+      }),
+    ).rejects.toThrow(RoomClaimPayloadCorruptError);
+  });
+});
+
+describe("terminateRoom", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("terminates from awaiting_rsvp — emits event, flips status, releases subject lock", async () => {
+    const seq = await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "manual",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+    expect(seq).toBe(2);
+
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("closed");
+    expect(room?.closed_at).toBeDefined();
+    expect(room?.closed_reason).toBe("manual");
+
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    expect(events[0].event_type).toBe("room_terminated");
+    expect((events[0].body as { reason: string }).reason).toBe("manual");
+
+    // Subject index released — opening a fresh room with the same
+    // subject should now succeed.
+    await expect(
+      createRoom({
+        installationId: "12345",
+        roomId: RID_B,
+        manager: "bot-queen",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("terminates from deciding — DELs the queen's claim (closes design R3 N8 — stuck-deciding path)", async () => {
+    // Drive room into deciding via claimSynthesis
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-stuck",
+      redis,
+    });
+    expect(await redis.get(claimKey(RID_A))).toBeTruthy();
+
+    // Force-close via terminate
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "force_close",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+    // Claim DELed — the queen's mid-flight close will see claim_lost.
+    expect(await redis.get(claimKey(RID_A))).toBeNull();
+  });
+
+  it("idempotent on already-closed: returns RoomAlreadyClosedError on second call", async () => {
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "expired",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "watchdog",
+      redis,
+    });
+    await expect(
+      terminateRoom({
+        installationId: "12345",
+        roomId: RID_A,
+        reason: "manual",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        actorRole: "system",
+        actorId: "operator-2",
+        redis,
+      }),
+    ).rejects.toThrow(RoomAlreadyClosedError);
+  });
+
+  it("rejects malformed subject_ref BEFORE storage call", async () => {
+    await expect(
+      terminateRoom({
+        installationId: "12345",
+        roomId: RID_A,
+        reason: "manual",
+        subject: { type: "pr_review", ref: "no-slash-no-hash" },
+        actorRole: "system",
+        actorId: "operator-1",
+        redis,
+      }),
+    ).rejects.toThrow(RoomSubjectRefError);
+  });
+
+  it("missing room → RoomNotFoundError", async () => {
+    await expect(
+      terminateRoom({
+        installationId: "12345",
+        roomId: RID_C,
+        reason: "manual",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        actorRole: "system",
+        actorId: "operator-1",
+        redis,
+      }),
+    ).rejects.toThrow(RoomNotFoundError);
+  });
+
+  it("event actor_role uses sentinel `system` for cron/watchdog (N5 system-actor exception)", async () => {
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "expired",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "vercel-cron",
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    const term = events.find((e) => e.event_type === "room_terminated");
+    expect(term?.actor_role).toBe("system");
+    expect(term?.actor_id).toBe("vercel-cron");
+  });
+
+  it("stale-currentStatus race: room moves awaiting_contributions → deciding via concurrent claim, terminate STILL cleans all open status sets (closes #515 builder R1)", async () => {
+    // Promote and put room into the contention window: caller's
+    // observation says "awaiting_contributions" but a concurrent
+    // claimSynthesis flips status to "deciding" + adds it to the
+    // deciding status set.
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    // Replicate the claim's status-set membership migration that
+    // happens during normal claim flow — the room is now in the
+    // deciding status set. (createRoom put it in awaiting_rsvp; we
+    // simulate the awaiting_rsvp → awaiting_contributions and then
+    // → deciding moves explicitly here.)
+    const awaitingRsvpSetKey = statusIndexKey("12345", "awaiting_rsvp");
+    const decidingSetKey = statusIndexKey("12345", "deciding");
+    // Ensure the room id is in the deciding set (concurrent claim's
+    // post-state) and NOT in the awaiting_contributions set.
+    redis._sets.get(awaitingRsvpSetKey)?.delete(RID_A);
+    let decidingSet = redis._sets.get(decidingSetKey);
+    if (!decidingSet) {
+      decidingSet = new Set<string>();
+      redis._sets.set(decidingSetKey, decidingSet);
+    }
+    decidingSet.add(RID_A);
+    // Force the room hash status to deciding to mirror the claim's
+    // atomic flip (without going through claimSynthesis to keep the
+    // test focused on the index-cleanup property).
+    await redis.hset(roomKey("12345", RID_A), { status: "deciding" });
+
+    // Operator force-closes — but had OBSERVED awaiting_contributions
+    // on a stale read. (The new contract drops `currentStatus` —
+    // whatever the caller observed, the script handles all sets.)
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "force_close",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+
+    // CRITICAL — the room id is gone from EVERY non-terminal status set,
+    // not just the one the caller might have observed.
+    expect(redis._sets.get(awaitingRsvpSetKey)?.has(RID_A) ?? false).toBe(false);
+    expect(
+      redis._sets
+        .get(statusIndexKey("12345", "awaiting_contributions"))
+        ?.has(RID_A) ?? false,
+    ).toBe(false);
+    expect(redis._sets.get(decidingSetKey)?.has(RID_A) ?? false).toBe(false);
+
+    // Sanity: room hash is at status closed.
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("closed");
+  });
+});
+
+describe("closeRoomWithDecision", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  let claimResult: { throughSequence: number; claimTtlSecs: number };
+
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // Promote the room to awaiting_contributions, then claim.
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    claimResult = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A.pid42",
+      redis,
+    });
+  });
+
+  function makeDecision(overrides?: Partial<RoomDecision>): RoomDecision {
+    return {
+      synthesized_at: "2026-04-28T07:00:00.000Z",
+      synthesis_runner: "queen-A.pid42",
+      content: "## Synthesis\n\nApprove with notes.",
+      sequence_closed: claimResult.throughSequence,
+      ...overrides,
+    };
+  }
+
+  it("happy path: closes room, writes decision, emits room_decided event, releases subject + indexes", async () => {
+    const closedSeq = await closeRoomWithDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedThroughSequence: claimResult.throughSequence,
+      decision: makeDecision(),
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    expect(closedSeq).toBeGreaterThan(claimResult.throughSequence);
+
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("closed");
+    expect(room?.closed_at).toBeDefined();
+    expect(room?.decision).toBeDefined();
+    expect(room?.decision?.synthesis_runner).toBe("queen-A.pid42");
+
+    // Claim DELed
+    expect(await redis.get(claimKey(RID_A))).toBeNull();
+
+    // Subject index released — fresh room with same subject succeeds.
+    await expect(
+      createRoom({
+        installationId: "12345",
+        roomId: RID_B,
+        manager: "bot-queen",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).resolves.toBeDefined();
+
+    // Event emitted with capped __SEQ__ substitution
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    const decided = events.find((e) => e.event_type === "room_decided");
+    expect(decided).toBeDefined();
+    expect(decided?.seq).toBe(closedSeq);
+  });
+
+  it("claim_lost (race with force-close TERMINATE) → RoomCloseClaimLostError", async () => {
+    // Simulate force-close racing the queen: TERMINATE DELs the
+    // claim. The queen's subsequent close attempt must abort.
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "force_close",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision(),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(RoomCloseClaimLostError);
+  });
+
+  it("claim_throughSeq_mismatch: another runner re-claimed → RoomCloseClaimThroughSeqMismatchError", async () => {
+    // Manually rewrite the claim so its throughSequence differs
+    // from what queen-A captured. (In real life this can't happen
+    // because claim acquisition is atomic — but the script defends
+    // against partial-write desync.)
+    await redis.set(
+      claimKey(RID_A),
+      JSON.stringify({ runner: "queen-A.pid42", throughSequence: 99 }),
+    );
+    try {
+      await closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence, // 1
+        decision: makeDecision(),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      });
+      throw new Error("expected RoomCloseClaimThroughSeqMismatchError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomCloseClaimThroughSeqMismatchError);
+      const e = err as RoomCloseClaimThroughSeqMismatchError;
+      expect(e.expectedThroughSequence).toBe(1);
+      expect(e.actualThroughSequence).toBe(99);
+    }
+  });
+
+  it("drift detection: new event arrived during synthesis → RoomCloseDriftError + atomic revert", async () => {
+    // Bump the seq counter directly to simulate a new event landing
+    // between claim and close (e.g., subject_updated webhook).
+    await redis.set(seqKey(RID_A), 5);
+    try {
+      await closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence, // 1
+        decision: makeDecision(),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      });
+      throw new Error("expected RoomCloseDriftError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomCloseDriftError);
+      const e = err as RoomCloseDriftError;
+      expect(e.expectedThroughSequence).toBe(1);
+      expect(e.lastSeq).toBe(5);
+    }
+
+    // Revert effects: status reverted, claim DELed, status-set
+    // membership restored — the manager loop can re-claim cleanly.
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("awaiting_contributions");
+    expect(room?.deciding_through_sequence).toBeUndefined();
+    expect(await redis.get(claimKey(RID_A))).toBeNull();
+  });
+
+  it("after drift revert → re-claim cycle works (manager loop retry path)", async () => {
+    // Simulate drift then re-claim
+    await redis.set(seqKey(RID_A), 3);
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision(),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(RoomCloseDriftError);
+
+    // Now re-claim — should succeed at throughSequence=3
+    const c2 = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-B.pid99",
+      redis,
+    });
+    expect(c2.throughSequence).toBe(3);
+
+    // Close at the new throughSequence — happy path
+    const closed = await closeRoomWithDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedThroughSequence: c2.throughSequence,
+      decision: makeDecision({
+        synthesis_runner: "queen-B.pid99",
+        sequence_closed: c2.throughSequence,
+      }),
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    expect(closed).toBe(4);
+  });
+
+  it("rejects malformed synthesis_runner BEFORE storage call (N6 boundary check)", async () => {
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision({ synthesis_runner: "queen__SEQ__bad" }),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(RoomRunnerFormatError);
+    // Claim still alive — no storage modification happened.
+    expect(await redis.get(claimKey(RID_A))).toBeTruthy();
+  });
+
+  it("rejects content > 64 KiB BEFORE storage call", async () => {
+    const huge = "x".repeat(65 * 1024);
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision({ content: huge }),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(/exceeds 64 KiB/);
+  });
+
+  it("64 KiB cap counts BYTES not UTF-16 code units (multi-byte regression — closes #515 builder R1)", async () => {
+    // 22000 emoji × 4 bytes/emoji = 88000 bytes (> 64 KiB) but only
+    // 44000 UTF-16 code units (< 64 KiB cap if we used .length).
+    // The byte-aware check rejects; the code-unit check would have
+    // let it through, exceeding the storage budget.
+    const emoji = "🐝"; // 4 bytes UTF-8, 2 UTF-16 code units
+    const multiByteContent = emoji.repeat(22000);
+    expect(multiByteContent.length).toBeLessThan(64 * 1024); // .length check would pass
+    expect(Buffer.byteLength(multiByteContent, "utf8")).toBeGreaterThan(64 * 1024); // bytes exceed
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision({ content: multiByteContent }),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(/exceeds 64 KiB/);
+  });
+
+  it("__SEQ__ in decision content is preserved (capped gsub closes #510 guard B1)", async () => {
+    const closedSeq = await closeRoomWithDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedThroughSequence: claimResult.throughSequence,
+      decision: makeDecision({
+        content: "Synthesis ref __SEQ__ as intended",
+      }),
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    // Decision content preserved verbatim
+    expect(room?.decision?.content).toBe("Synthesis ref __SEQ__ as intended");
+    // Event seq stamped via FIRST-match gsub on event template, not decision body
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    const decided = events.find((e) => e.event_type === "room_decided");
+    expect(decided?.seq).toBe(closedSeq);
+  });
+});
+
+describe("D.1.a-iii.c end-to-end: claim → close happy path", () => {
+  it("RSVP → contribute → claim → close → terminal closed state with full event log", async () => {
+    const redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    // Bump status to awaiting_contributions for synth path
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 2,
+      body: { verdict: "APPROVE", summary: "ship it" },
+      rawMd: "# OK",
+      redis,
+    });
+    const c = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-prod.pid7",
+      redis,
+    });
+    const closedSeq = await closeRoomWithDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedThroughSequence: c.throughSequence,
+      decision: {
+        synthesized_at: "2026-04-28T08:00:00.000Z",
+        synthesis_runner: "queen-prod.pid7",
+        content: "Decision: ship.",
+        sequence_closed: c.throughSequence,
+      },
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+
+    const events = await listRoomEvents({ roomId: RID_A, since: 0, redis });
+    const types = events.map((e) => e.event_type);
+    expect(types).toContain("room_opened");
+    expect(types).toContain("participant_presented");
+    expect(types).toContain("contribution_submitted");
+    expect(types).toContain("room_decided");
+    expect(events.find((e) => e.event_type === "room_decided")?.seq).toBe(
+      closedSeq,
+    );
+
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("closed");
+    expect(room?.decision?.content).toBe("Decision: ship.");
   });
 });
