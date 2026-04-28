@@ -6,8 +6,17 @@
   "functions": {
     "api/github/webhooks/index.ts": {
       "maxDuration": 120
+    },
+    "api/queen/tick.ts": {
+      "maxDuration": 300
     }
   },
+  "crons": [
+    {
+      "path": "/api/queen/tick",
+      "schedule": "*/2 * * * *"
+    }
+  ],
   "git": {
     "deploymentEnabled": false,
     "ignoreCommand": "exit 0"
