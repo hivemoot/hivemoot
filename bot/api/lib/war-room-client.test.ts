@@ -333,15 +333,59 @@ describe("WarRoomClient queen-side reads (G'.1)", () => {
     }
   });
 
-  it("getRoomCore parses the response", async () => {
+  it("getRoomCore parses the bare RoomCore response (NO roomId)", async () => {
+    // Pin the wire contract: server route at
+    // `web/src/app/api/rooms/[roomId]/route.ts:45` returns the bare
+    // `RoomCore` from storage, which intentionally OMITS roomId per
+    // war-room.ts:264-267. Earlier R0 fixture mocked `{roomId,
+    // status}` and let the contract drift — closes #534 builder B1
+    // + guard B1.
     const fetchSpy = makeFetch({
       status: 200,
-      body: { roomId: ROOM_ID, status: "deciding" },
+      body: {
+        manager: "bot-queen",
+        subject_type: "pr_review",
+        subject_ref: "owner/repo#42",
+        status: "deciding",
+        opened_at: "2026-04-28T20:00:00Z",
+      },
     });
     const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
     const room = await client.getRoomCore(ROOM_ID);
-    expect(room.roomId).toBe(ROOM_ID);
     expect(room.status).toBe("deciding");
+    expect(room.manager).toBe("bot-queen");
+    // Critical assertion: the response does NOT carry roomId — the
+    // caller must use the id they passed to the call. Type-level
+    // this is enforced by `Promise<RoomCoreResponse>`; the runtime
+    // assertion guards against a fixture-shape regression.
+    expect((room as unknown as { roomId?: string }).roomId).toBeUndefined();
+  });
+
+  it("getRoomCore parses transition fields when present", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: {
+        manager: "bot-queen",
+        subject_type: "pr_review",
+        subject_ref: "owner/repo#42",
+        status: "closed",
+        opened_at: "2026-04-28T20:00:00Z",
+        closed_at: "2026-04-28T20:30:00Z",
+        deciding_through_sequence: 7,
+        decision: {
+          synthesized_at: "2026-04-28T20:29:00Z",
+          synthesis_runner: "queen-bot",
+          content: "## Decision\n\nLGTM.",
+          sequence_closed: 7,
+        },
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const room = await client.getRoomCore(ROOM_ID);
+    expect(room.status).toBe("closed");
+    expect(room.closed_at).toBe("2026-04-28T20:30:00Z");
+    expect(room.deciding_through_sequence).toBe(7);
+    expect(room.decision?.content).toContain("LGTM");
   });
 
   it("getRoomCore 404 → WarRoomApiError(code='room_not_found')", async () => {
@@ -587,6 +631,75 @@ describe("WarRoomClient queen-side writes (G'.1)", () => {
       throw new Error("expected throw");
     } catch (err) {
       expect((err as WarRoomApiError).code).toBe("claim_lost");
+    }
+  });
+
+  it("closeRoom 409 claim_through_seq_mismatch surfaces (re-claimed)", async () => {
+    // Fourth 409 mode: the claim was DELed and a different runner
+    // re-claimed before this caller's close landed. Pins the wire
+    // shape returned by `web/src/app/api/rooms/[roomId]/close/route.ts`
+    // so the queen's manager-loop in G'.2 can branch on it.
+    const fetchSpy = makeFetch({
+      status: 409,
+      body: {
+        code: "claim_through_seq_mismatch",
+        message: "claim through seq does not match expected",
+        expectedThroughSequence: 7,
+        actualThroughSequence: 9,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.closeRoom({
+        roomId: ROOM_ID,
+        expectedThroughSequence: 7,
+        decision: {
+          synthesized_at: "x",
+          synthesis_runner: "y",
+          content: "z",
+          sequence_closed: 7,
+        },
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      const apiErr = err as WarRoomApiError;
+      expect(apiErr.code).toBe("claim_through_seq_mismatch");
+      expect(apiErr.response.expectedThroughSequence).toBe(7);
+      expect(apiErr.response.actualThroughSequence).toBe(9);
+    }
+  });
+
+  it("closeRoom 400 decision_too_large surfaces sizeBytes", async () => {
+    // Server route at `close/route.ts:190-198` maps the storage's
+    // RoomDecisionTooLargeError to a 400 with `code:
+    // decision_too_large` + `sizeBytes`. The queen's G'.3 synthesis
+    // path needs to branch on this to truncate + retry.
+    const fetchSpy = makeFetch({
+      status: 400,
+      body: {
+        code: "decision_too_large",
+        message: "Decision exceeds 64 KiB",
+        sizeBytes: 70_000,
+      },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.closeRoom({
+        roomId: ROOM_ID,
+        expectedThroughSequence: 7,
+        decision: {
+          synthesized_at: "x",
+          synthesis_runner: "y",
+          content: "z",
+          sequence_closed: 7,
+        },
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      const apiErr = err as WarRoomApiError;
+      expect(apiErr.status).toBe(400);
+      expect(apiErr.code).toBe("decision_too_large");
+      expect(apiErr.response.sizeBytes).toBe(70_000);
     }
   });
 });

@@ -9,10 +9,12 @@
  *
  * Configuration (env-driven, evaluated at construction time):
  *   - `HIVEMOOT_API_BASE_URL` — default `https://www.hivemoot.dev`
- *   - `HIVEMOOT_BOT_AGENT_TOKEN` — V1 capability bearer (must hold
- *     `rooms.create`, `rooms.update`, `rooms.close`, `rooms.read_all`
- *     for full bot operation; a `rooms.create`-only token is
- *     sufficient for E.1)
+ *   - `HIVEMOOT_BOT_AGENT_TOKEN` — V1 capability bearer. Required
+ *     capability set depends on which methods the caller invokes:
+ *       - E.1/E.2 (webhook routing): `rooms.create`, `rooms.update`
+ *       - G'.1+ (queen module): `rooms.read_all`, `rooms.decide`,
+ *         `rooms.close` (the queen preset already grants all of
+ *         these; see `agent-token-capabilities.ts`)
  *
  * Error model: thrown errors carry the wire `code` field from the
  * server's JSON body so handlers can distinguish:
@@ -63,28 +65,48 @@ export interface CreateRoomArgs {
   roomId?: string;
 }
 
+/**
+ * Canonical wire shape for a room's core record. Mirrors the storage
+ * layer's `RoomCore` type — the immutable RoomCoreData fields plus
+ * the optional mutable transition fields that progress with the
+ * room's lifecycle.
+ *
+ * `roomId` is intentionally absent: the server's `GET /api/rooms/:id`
+ * route returns the bare `RoomCore` (war-room.ts:242-259, the route
+ * at `web/src/app/api/rooms/[roomId]/route.ts:45`). For `listRooms`
+ * which DOES include the id, see `RoomListEntry`.
+ */
 export interface RoomCoreResponse {
   manager: string;
   subject_type: WarRoomSubjectType;
   subject_ref: string;
-  status: "awaiting_rsvp" | "awaiting_contributions" | "deciding" | "closed";
+  status:
+    | "awaiting_rsvp"
+    | "awaiting_contributions"
+    | "deciding"
+    | "closed"
+    | "expired";
   opened_at: string;
-  // Server may return additional fields; this is the minimum the
-  // bot needs. Extending the response type is non-breaking.
+  timing_config?: WarRoomTimingConfig;
+  /** Set when the room reaches a terminal state (closed | expired). */
+  closed_at?: string;
+  /** Set ONLY by `ROOM_TERMINATE_SCRIPT`. The queen's happy-path
+   * close sets `decision` instead. */
+  closed_reason?: "expired" | "failed_synthesis" | "force_close" | "manual";
+  /** Set by claim, verified by close to detect drift. */
+  deciding_through_sequence?: number;
+  /** Set ONLY by happy-path close. */
+  decision?: RoomDecision;
 }
 
 /**
- * Room entry from `GET /api/rooms` and `GET /api/rooms/:id` —
- * matches the storage layer's `RoomCoreWithId` type added in
- * D.1.b-iii. Distinct from `RoomCoreResponse` (createRoom 201)
- * which omits `roomId`.
+ * Room entry from `GET /api/rooms` — matches the storage layer's
+ * `RoomCoreWithId` type added in D.1.b-iii. Distinct from
+ * `RoomCoreResponse` (the bare core shape returned by createRoom 201
+ * AND `GET /api/rooms/:id`) which omits `roomId`.
  */
 export interface RoomListEntry extends RoomCoreResponse {
   roomId: string;
-  closed_at?: string;
-  closed_reason?: "expired" | "failed_synthesis" | "force_close" | "manual";
-  deciding_through_sequence?: number;
-  decision?: RoomDecision;
 }
 
 /**
@@ -114,12 +136,15 @@ export interface RoomParticipant {
 }
 
 /**
- * Materialized contribution entry. Withdrawn contributions surface
- * as tombstones with `withdrawn: true`.
+ * Materialized contribution entry. Mirrors the storage layer's
+ * write at `war-room.ts:2855-2859` — submitContribution writes
+ * `{body, raw_md, contributed_at}` for present contributions and
+ * `{withdrawn: true, contributed_at}` for tombstones. The contributor
+ * agent_id/role are NOT part of this payload — callers correlate
+ * via the hash key (the role) which `getRoomContributions` returns
+ * as `Record<string, RoomContribution>`.
  */
 export interface RoomContribution {
-  agent_id?: string;
-  role?: string;
   body?: Record<string, unknown>;
   raw_md?: string;
   contributed_at?: string;
@@ -331,9 +356,17 @@ export class WarRoomClient {
 
   /**
    * GET /api/rooms/:roomId — fetch one room's core record.
-   * 404 → `RoomNotFoundError(code: room_not_found)`.
+   * Capability: `rooms.read_all` (queen preset).
+   *
+   * Returns `RoomCoreResponse` WITHOUT `roomId`: the server route
+   * intentionally serializes the bare `RoomCore` (war-room.ts:264-267
+   * — "the room hash key is the roomId, so it's redundant — the
+   * caller already knows it"). Callers correlate by the roomId they
+   * passed in.
+   *
+   * 404 → `WarRoomApiError(code: "room_not_found")`.
    */
-  async getRoomCore(roomId: string): Promise<RoomListEntry> {
+  async getRoomCore(roomId: string): Promise<RoomCoreResponse> {
     const response = await this.request(
       "GET",
       `/api/rooms/${encodeURIComponent(roomId)}`,
@@ -341,13 +374,13 @@ export class WarRoomClient {
     if (!response.ok) {
       throw await this._toApiError(response);
     }
-    return (await response.json()) as RoomListEntry;
+    return (await response.json()) as RoomCoreResponse;
   }
 
   /**
    * GET /api/rooms/:roomId/events — append-only event log slice.
-   * `since` is the last seq the caller observed; events with
-   * `seq > since` are returned (default 0 = all).
+   * Capability: `rooms.read_all`. `since` is the last seq the caller
+   * observed; events with `seq > since` are returned (default 0 = all).
    */
   async listRoomEvents(args: {
     roomId: string;
@@ -370,7 +403,8 @@ export class WarRoomClient {
 
   /**
    * GET /api/rooms/:roomId/contributions — materialized contribution
-   * hash. The queen's synthesis prompt uses this.
+   * hash. Capability: `rooms.read_all`. The queen's synthesis prompt
+   * uses this.
    */
   async getRoomContributions(
     roomId: string,
@@ -390,8 +424,8 @@ export class WarRoomClient {
 
   /**
    * GET /api/rooms/:roomId/participants — materialized RSVP hash.
-   * Queen reads this to confirm "all participants resolved" before
-   * claiming synthesis.
+   * Capability: `rooms.read_all`. The queen reads this to confirm
+   * "all participants resolved" before claiming synthesis.
    */
   async getRoomParticipants(
     roomId: string,
