@@ -242,7 +242,7 @@ describe("GET /api/internal/queen/tick (Vercel Cron entrypoint)", () => {
     mockedTick.mockReset();
   });
 
-  it("Vercel-style GET with Bearer header runs the tick (closes #524 builder B3)", async () => {
+  it("Vercel-style GET with Bearer header + ?installationId query runs the tick (closes #524 builder B3)", async () => {
     fakeRedis.set.mockResolvedValue("OK");
     fakeRedis.eval.mockResolvedValue(1);
     mockedTick.mockResolvedValue({
@@ -265,6 +265,68 @@ describe("GET /api/internal/queen/tick (Vercel Cron entrypoint)", () => {
     );
   });
 
+  it("GET reads HIVEMOOT_TICK_INSTALLATION_ID env when no query param (closes #524 R2 N1 — Vercel cron path is static)", async () => {
+    vi.stubEnv("HIVEMOOT_TICK_INSTALLATION_ID", "67890");
+    fakeRedis.set.mockResolvedValue("OK");
+    fakeRedis.eval.mockResolvedValue(1);
+    mockedTick.mockResolvedValue({
+      scannedDeciding: 0,
+      recovered: 0,
+      scannedOpen: 0,
+      expired: 0,
+      scannedAwaitingContributions: 0,
+      timedOutParticipants: 0,
+      errors: 0,
+      roomsUnscanned: 0,
+    });
+
+    // No query param — pure cron-shaped GET
+    const req = new NextRequest("https://www.hivemoot.dev/api/internal/queen/tick", {
+      method: "GET",
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    expect(mockedTick).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "67890" }),
+    );
+  });
+
+  it("GET query param wins over env (manual-test override)", async () => {
+    vi.stubEnv("HIVEMOOT_TICK_INSTALLATION_ID", "67890");
+    fakeRedis.set.mockResolvedValue("OK");
+    fakeRedis.eval.mockResolvedValue(1);
+    mockedTick.mockResolvedValue({
+      scannedDeciding: 0,
+      recovered: 0,
+      scannedOpen: 0,
+      expired: 0,
+      scannedAwaitingContributions: 0,
+      timedOutParticipants: 0,
+      errors: 0,
+      roomsUnscanned: 0,
+    });
+
+    const res = await GET(makeGetRequest({ installationIdQuery: "12345" }));
+    expect(res.status).toBe(200);
+    expect(mockedTick).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: "12345" }),
+    );
+  });
+
+  it("GET with no query AND no env → 500 no_installation_id (fail loud, ops-visible)", async () => {
+    vi.stubEnv("HIVEMOOT_TICK_INSTALLATION_ID", "");
+    const req = new NextRequest("https://www.hivemoot.dev/api/internal/queen/tick", {
+      method: "GET",
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    const res = await GET(req);
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("no_installation_id");
+    // Tick body NOT invoked
+    expect(mockedTick).not.toHaveBeenCalled();
+  });
+
   it("GET without bearer → 401 empty body", async () => {
     const req = new NextRequest(
       "https://www.hivemoot.dev/api/internal/queen/tick?installationId=12345",
@@ -285,10 +347,15 @@ describe("GET /api/internal/queen/tick (Vercel Cron entrypoint)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("GET with missing installationId query → 400", async () => {
+  it("GET with missing installationId query → 500 no_installation_id when env also unset", async () => {
+    vi.stubEnv("HIVEMOOT_TICK_INSTALLATION_ID", "");
     const res = await GET(makeGetRequest({}));
-    expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("invalid_installation_id");
+    // Behavior change in R3: with the env-var fallback, no query
+    // AND no env → 500 misconfig (fail-loud for ops); the prior 400
+    // code was unreachable because cron requests never include a
+    // query param.
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("no_installation_id");
   });
 
   it("GET with non-numeric installationId → 400 (regex enforced)", async () => {

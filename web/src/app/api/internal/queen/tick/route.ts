@@ -164,20 +164,54 @@ async function runTickWithLock(installationId: string): Promise<NextResponse> {
 }
 
 /**
- * GET — Vercel Cron's actual entry point. `installationId` from
- * query string lets the `vercel.json` `crons` entry fully specify
- * the target via path: `path: "/api/internal/queen/tick?installationId=12345"`.
+ * GET — Vercel Cron's actual entry point.
+ *
+ * Installation selection (closes #524 guard R2 N1):
+ *   1. `?installationId=X` query param wins if present (manual test
+ *      override OR explicit per-cron-entry routing if multi-installation
+ *      lands later).
+ *   2. Otherwise read `HIVEMOOT_TICK_INSTALLATION_ID` env var
+ *      (provisioned via Vercel dashboard).
+ *   3. Neither set → 500 misconfig (fail loud — ops sees it via Vercel
+ *      logs; the cron isn't user-visible so no probe-oracle concern
+ *      like the auth path).
+ *
+ * Vercel does NOT interpolate env vars in `vercel.json` cron paths,
+ * so the path stays static (`/api/internal/queen/tick`) and the route
+ * reads the env var at request time. Multi-installation is a clean
+ * follow-up: comma-separated list + server-side iteration, no path
+ * change needed.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const authReject = checkCronAuth(request);
   if (authReject) return authReject;
 
   const url = new URL(request.url);
-  const installationId = url.searchParams.get("installationId");
+  const queryInstallationId = url.searchParams.get("installationId");
+  const installationId =
+    queryInstallationId ?? process.env.HIVEMOOT_TICK_INSTALLATION_ID ?? null;
+
+  if (installationId === null || installationId.length === 0) {
+    // Misconfig — neither query nor env supplied an installation. The
+    // cron-bearer holder is already authenticated, so this is fail-loud
+    // not a probe surface (unlike the CRON_SECRET=null path).
+    console.error(
+      "[queen-tick] no installationId — neither ?installationId query nor HIVEMOOT_TICK_INSTALLATION_ID env var is set. Configure via Vercel dashboard → Settings → Environment Variables.",
+    );
+    return NextResponse.json(
+      {
+        code: "no_installation_id",
+        message:
+          "No installationId resolved — neither ?installationId query nor HIVEMOOT_TICK_INSTALLATION_ID env var is set.",
+      },
+      { status: 500 },
+    );
+  }
+
   const reject = rejectInvalidInstallationId(installationId);
   if (reject) return reject;
 
-  return await runTickWithLock(installationId as string);
+  return await runTickWithLock(installationId);
 }
 
 /**
