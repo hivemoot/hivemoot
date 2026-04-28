@@ -3,5 +3,12 @@
   "git": {
     "deploymentEnabled": false,
     "ignoreCommand": "exit 0"
-  }
+  },
+  "crons": [
+    {
+      "_comment": "War-room watchdog — 60s recovery/expire/timeout scan per WAR_ROOM_DESIGN.md L954-958. Vercel does NOT interpolate env vars in cron paths, so the path is static. Installation selection is read at request time from the HIVEMOOT_TICK_INSTALLATION_ID env var (provisioned via Vercel dashboard → Settings → Environment Variables). Multi-installation: future enhancement — comma-separated list with server-side iteration. Closes #524 guard R2 N1.",
+      "path": "/api/internal/queen/tick",
+      "schedule": "* * * * *"
+    }
+  ]
 }
