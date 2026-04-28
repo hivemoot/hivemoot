@@ -33,7 +33,7 @@ function makeAuthOk(overrides?: { installationId?: string }) {
     installationId: overrides?.installationId ?? "12345",
     name: "queen",
     agent_role: "queen",
-    capabilities: ["rooms.read"],
+    capabilities: ["rooms.read_all"],
     redis: {} as never,
     envelope: { fingerprint: "fp", expiresAt: null } as never,
   };
@@ -61,7 +61,7 @@ describe("GET /api/rooms", () => {
     await GET(makeRequest());
     expect(mockedAuth).toHaveBeenCalledWith(
       expect.anything(),
-      { requires: "rooms.read" },
+      { requires: "rooms.read_all" },
     );
   });
 
@@ -140,5 +140,49 @@ describe("POST /api/rooms", () => {
     expect(res.headers.get("Allow")).toBe("GET");
     const body = await res.json();
     expect(body.code).toBe("method_not_allowed");
+  });
+});
+
+describe("R2 worker-vs-queen capability enforcement (closes #517 builder R1)", () => {
+  beforeEach(() => {
+    mockedAuth.mockReset();
+    mockedListRooms.mockReset();
+  });
+
+  it("rejects with 403 when bearer's only rooms-cap is `rooms.read` (worker preset)", async () => {
+    // Simulate the middleware's behavior when a worker bearer
+    // (capabilities=[rooms.read, rooms.watch, rooms.contribute]) hits
+    // the list endpoint requiring rooms.read_all. Middleware returns
+    // 403 with a missing-capability error code.
+    mockedAuth.mockResolvedValue({
+      ok: false,
+      response: NextResponse.json(
+        {
+          code: "agent_auth_v1_missing_capability",
+          missing: "rooms.read_all",
+        },
+        { status: 403 },
+      ),
+    });
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockedListRooms).not.toHaveBeenCalled();
+  });
+
+  it("queen / monitoring bearer (with rooms.read_all) succeeds", async () => {
+    // Both queen and monitoring presets include rooms.read_all per
+    // PRESETS in agent-token-capabilities.ts.
+    mockedAuth.mockResolvedValue({
+      ok: true as const,
+      installationId: "12345",
+      name: "monitor",
+      agent_role: "monitoring",
+      capabilities: ["rooms.read", "rooms.read_all", "agent_health.read", "tasks.read"],
+      redis: {} as never,
+      envelope: { fingerprint: "fp", expiresAt: null } as never,
+    });
+    mockedListRooms.mockResolvedValue([]);
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
   });
 });

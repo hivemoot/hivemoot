@@ -360,10 +360,13 @@ describe("cross-invariants", () => {
     }
   });
 
-  it("KNOWN_CAPABILITIES count matches the design doc claim (19)", () => {
-    // R2.2 design recount: 19 capabilities. If this fails, the doc
-    // section "Total: 19 capabilities" needs to be updated alongside
-    // the addition.
-    expect(KNOWN_CAPABILITIES.length).toBe(19);
+  it("KNOWN_CAPABILITIES count matches the design doc claim (20)", () => {
+    // R2.2 baseline: 19 capabilities.
+    // R3 (D.1.b-i): added `rooms.read_all` to differentiate
+    // installation-wide listing (queen / monitoring) from worker
+    // self-rooms reads (`rooms.read`). +1 → 20.
+    // If this fails, the doc section "Total: N capabilities" needs
+    // to be updated alongside the addition.
+    expect(KNOWN_CAPABILITIES.length).toBe(20);
   });
 });

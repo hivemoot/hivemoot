@@ -128,10 +128,18 @@ describe("POST /api/agent-tokens/{name}/set-capabilities", () => {
 
   it("preset 'monitoring' → replaces caps with monitoring's bundle", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk());
+    // Monitoring preset includes rooms.read_all (added in #517 R2 for
+    // installation-wide room listing — workers stay on rooms.read).
+    const monitoringCaps = [
+      "agent_health.read",
+      "tasks.read",
+      "rooms.read",
+      "rooms.read_all",
+    ];
     mockedSet.mockResolvedValue({
       name: "worker",
       agent_role: "drone",
-      capabilities: ["agent_health.read", "tasks.read", "rooms.read"],
+      capabilities: monitoringCaps,
       fingerprint: "01234567",
       createdAt: "2026-04-27T10:00:00.000Z",
       createdBy: "admin",
@@ -143,16 +151,8 @@ describe("POST /api/agent-tokens/{name}/set-capabilities", () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.token.capabilities).toEqual([
-      "agent_health.read",
-      "tasks.read",
-      "rooms.read",
-    ]);
-    expect(mockedSet.mock.calls[0][0].capabilities).toEqual([
-      "agent_health.read",
-      "tasks.read",
-      "rooms.read",
-    ]);
+    expect(body.token.capabilities).toEqual(monitoringCaps);
+    expect(mockedSet.mock.calls[0][0].capabilities).toEqual(monitoringCaps);
   });
 
   it("explicit capabilities → 200 with same list back", async () => {

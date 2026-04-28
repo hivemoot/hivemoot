@@ -45,7 +45,7 @@ function makeAuthOk(installationId = "12345") {
     installationId,
     name: "worker",
     agent_role: "drone",
-    capabilities: ["rooms.read"],
+    capabilities: ["rooms.read_all"],
     redis: {} as never,
     envelope: { fingerprint: "fp", expiresAt: null } as never,
   };
@@ -74,7 +74,7 @@ describe("GET /api/rooms/:roomId", () => {
     await GET(makeRequest(), { params: Promise.resolve({ roomId: VALID_ROOM_ID }) });
     expect(mockedAuth).toHaveBeenCalledWith(
       expect.anything(),
-      { requires: "rooms.read" },
+      { requires: "rooms.read_all" },
     );
   });
 

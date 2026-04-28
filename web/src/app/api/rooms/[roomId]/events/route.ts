@@ -38,7 +38,7 @@ export async function GET(
   { params }: { params: Promise<{ roomId: string }> },
 ): Promise<NextResponse> {
   const auth = await authenticateAgentRequestV1(request, {
-    requires: "rooms.read",
+    requires: "rooms.read_all",
   });
   if (!auth.ok) return auth.response;
 

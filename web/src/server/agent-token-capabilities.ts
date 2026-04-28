@@ -137,6 +137,14 @@ export const KNOWN_CAPABILITIES = [
   "rooms.watch",
   "rooms.read",
   "rooms.contribute",
+  // War rooms — installation-wide read (queen / monitoring / operator).
+  // Distinct from `rooms.read` (worker self-rooms only) — see #517
+  // builder R1: workers should not be able to enumerate every room
+  // in the installation via the list endpoint or read sibling keys
+  // for rooms outside their role-bound visibility set. The
+  // worker-side visibility helper (`canReadRoomForBearer`) lands
+  // with `/api/rooms/watching` in a follow-up slice.
+  "rooms.read_all",
   // War rooms — bot (queen module).
   "rooms.create",
   "rooms.update",
@@ -271,6 +279,7 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "tasks.cancel",
     "rooms.create",
     "rooms.read",
+    "rooms.read_all",
     "rooms.update",
     "rooms.decide",
     "rooms.close",
@@ -283,6 +292,7 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "agent_health.read",
     "tasks.read",
     "rooms.read",
+    "rooms.read_all",
   ],
   admin: [
     "*",

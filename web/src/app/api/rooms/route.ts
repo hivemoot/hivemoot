@@ -12,7 +12,7 @@
  *
  * Response: `{ rooms: RoomCore[] }` ordered newest-first by `opened_at`.
  *
- * Auth model: `requires: "rooms.read"`. Sub-endpoints
+ * Auth model: `requires: "rooms.read_all"`. Sub-endpoints
  * (`/api/rooms/:id/...`) defer to the same capability since they're
  * all read-shaped data about the same scope.
  */
@@ -26,7 +26,7 @@ const MAX_LIMIT = 200;
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const auth = await authenticateAgentRequestV1(request, {
-    requires: "rooms.read",
+    requires: "rooms.read_all",
   });
   if (!auth.ok) return auth.response;
 
