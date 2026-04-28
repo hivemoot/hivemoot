@@ -95,3 +95,48 @@ def post_json(
         except json.JSONDecodeError:
             parsed = None
         return exc.code, parsed, raw
+
+
+def get_json(
+    url: str,
+    bearer: str,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> tuple[int, dict | None, bytes]:
+    """GET a URL with bearer auth, parse the response as JSON.
+
+    Mirrors `post_json` semantics — same redirect refusal, same
+    URL-scheme guard, same error → status-tuple shape. Used by
+    the war-room watcher plugin's `/api/rooms/watching` poll
+    (Phase F).
+    """
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(f"bad URL scheme: {url}")
+
+    req = urllib.request.Request(url, method="GET")
+    if bearer:
+        req.add_header("Authorization", f"Bearer {bearer}")
+    if extra_headers:
+        for key, value in extra_headers.items():
+            req.add_header(key, value)
+
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = resp.read()
+            try:
+                parsed = json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                parsed = None
+            return resp.status, parsed, raw
+    except urllib.error.HTTPError as exc:
+        raw = b""
+        try:
+            raw = exc.read()
+        except Exception:
+            pass
+        try:
+            parsed = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            parsed = None
+        return exc.code, parsed, raw
