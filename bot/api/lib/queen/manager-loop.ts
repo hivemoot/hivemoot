@@ -303,7 +303,22 @@ async function processOneRoom(args: {
     return;
   }
 
-  // 3. Post-claim withdraw validation.
+  // 3. Post-claim re-validate participants. Two distinct races we
+  //    have to catch:
+  //
+  //    a. Re-RSVP between pre-claim read and `claimSynthesis`. The
+  //       `presentParticipant` script (war-room.ts:2718, :2754)
+  //       rewrites the slot to `pending` and clears
+  //       `withdrew_at_sequence` — so the post-claim read shows
+  //       `pending`, NOT `withdrew`. `withdrawalsAreFinal` alone
+  //       wouldn't catch this. Closes #536 builder R2.
+  //    b. The withdraw is no longer final (events past
+  //       `withdrew_at_sequence`). The participant can re-RSVP per
+  //       the worker `/watching` contract; closing now races.
+  //       Closes #536 builder B1.
+  //
+  //    Both abandon the claim — return without `closeRoom`. The
+  //    watchdog's `recoverDeciding` reverts the claim after TTL.
   let postClaimParticipants;
   try {
     postClaimParticipants = await client.getRoomParticipants(room.roomId);
@@ -316,6 +331,15 @@ async function processOneRoom(args: {
       return;
     }
     throw err;
+  }
+  if (!isSynthesisEligible(postClaimParticipants.participants)) {
+    result.staleClaimsAbandoned += 1;
+    log.info("queen.manager_loop.claim_abandoned_post_claim_re_rsvp", {
+      roomId: room.roomId,
+      throughSequence,
+      ...participantStatusBreakdown(postClaimParticipants.participants),
+    });
+    return;
   }
   if (!withdrawalsAreFinal(postClaimParticipants.participants, throughSequence)) {
     result.staleClaimsAbandoned += 1;

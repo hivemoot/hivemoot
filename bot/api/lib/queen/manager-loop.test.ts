@@ -717,26 +717,18 @@ describe("runQueenManagerLoop — R1 #536 builder B1 (post-claim withdraw valida
     expect(calls.closeCalls).toEqual([]);
   });
 
-  it("abandons when re-RSVP between claim and re-read flips withdrew→pending", async () => {
-    // Pre-claim: drone shows withdrew @ seq 5 (finality OK).
-    // Post-claim re-read: drone shows pending (worker re-RSVPd
-    // between claim and re-read). Defense: the post-claim
-    // withdrawalsAreFinal check passes (only checks withdrew status),
-    // but a `pending` post-claim is NOT final synthesis state. We
-    // currently still close — guard NB4 covers this in the
-    // pre-claim check; verify here that the re-read sees the new
-    // state for synthesis input.
+  it("abandons when re-RSVP between pre-claim read and claim flips withdrew→pending", async () => {
+    // Pre-claim: drone shows withdrew @ seq 5 (eligibility passes:
+    // 1 resolved + 1 final-withdrew).
+    // Between read and claim: drone re-RSVPs. The `presentParticipant`
+    // script rewrites the slot to `pending` and clears
+    // `withdrew_at_sequence` (war-room.ts:2718, :2754).
+    // Post-claim re-read: drone shows `pending`. The claim's
+    // throughSequence already covers the re-RSVP event, so
+    // sequence_drift won't fire at close.
     //
-    // Note: this behavior is intentional for V1 — the queen claims
-    // based on the pre-claim eligibility view, and re-RSVPs
-    // post-claim are caught only when they manifest as withdraws
-    // becoming non-final. A re-RSVP that flips withdrew → pending
-    // post-claim races through. That's a known limitation; V1.1 may
-    // re-check the full eligibility against the post-claim view.
-    //
-    // For now, test that the loop's behavior is at least
-    // deterministic: close goes through with the claim's
-    // throughSequence; if a real event lands, sequence_drift fires.
+    // R2 #536 builder: re-run isSynthesisEligible on the post-claim
+    // view. `pending` blocks → abandon, no close.
     const { client, calls } = makeFakeClient({
       rooms: [makeRoom()],
       participants: {
@@ -756,6 +748,50 @@ describe("runQueenManagerLoop — R1 #536 builder B1 (post-claim withdraw valida
         },
       },
       contributions: { [ROOM_ID]: { guard: presentContribution() } },
+      claimThroughSequence: 6,
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      runnerId: RUNNER_ID,
+    });
+    expect(result.eligible).toBe(1);
+    expect(result.claimed).toBe(1);
+    expect(result.staleClaimsAbandoned).toBe(1);
+    expect(result.closed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(calls.closeCalls).toEqual([]);
+  });
+
+  it("abandons when post-claim view loses its only resolved participant", async () => {
+    // Edge case: pre-claim has 1 resolved + 1 withdrew (eligible).
+    // Between pre-claim and post-claim, the resolved participant
+    // somehow becomes timed_out (storage doesn't currently allow
+    // this transition, but defensive in case scripts change). The
+    // post-claim view has 0 resolved → eligibility fails → abandon.
+    const { client, calls } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: {
+        [ROOM_ID]: {
+          guard: resolvedParticipant("guard"),
+          drone: {
+            ...resolvedParticipant("drone"),
+            status: "withdrew",
+            withdrew_at_sequence: 5,
+          },
+        },
+      },
+      participantsPostClaim: {
+        [ROOM_ID]: {
+          guard: { ...resolvedParticipant("guard"), status: "timed_out" },
+          drone: {
+            ...resolvedParticipant("drone"),
+            status: "withdrew",
+            withdrew_at_sequence: 5,
+          },
+        },
+      },
+      contributions: { [ROOM_ID]: {} },
       claimThroughSequence: 5,
     });
     const result = await runQueenManagerLoop({
@@ -763,11 +799,9 @@ describe("runQueenManagerLoop — R1 #536 builder B1 (post-claim withdraw valida
       synthesizer: new StubSynthesizer(),
       runnerId: RUNNER_ID,
     });
-    // Withdraw-finality only checks withdrew status; drone is
-    // pending now, so the check passes (no withdrews to validate).
-    // V1 closes; V1.1 may tighten further.
-    expect(result.closed).toBe(1);
-    expect(calls.closeCalls).toHaveLength(1);
+    expect(result.staleClaimsAbandoned).toBe(1);
+    expect(result.closed).toBe(0);
+    expect(calls.closeCalls).toEqual([]);
   });
 
   it("staleClaimsAbandoned starts at zero and increments only on stale withdraws", async () => {
