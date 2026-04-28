@@ -925,6 +925,110 @@ describe("getRoomCore", () => {
       getRoomCore({ installationId: "12345", roomId: RID_A, redis }),
     ).rejects.toThrow(RoomNotFoundError);
   });
+
+  it("reads mutable transition fields from separate hash fields (D.1.a-iii.a split)", async () => {
+    // Per the RoomCoreData split: closed_at, closed_reason,
+    // deciding_through_sequence, decision are SEPARATE hash fields,
+    // NOT inside the `data` JSON blob. getRoomCore reconstructs by
+    // reading each field individually via HGETALL. This test
+    // simulates a closed room with all happy-path-close fields set.
+    const data: RoomCoreData = {
+      manager: "bot-queen",
+      subject_type: "pr_review",
+      subject_ref: "hivemoot/hivemoot#508",
+      opened_at: "2026-04-28T00:00:00.000Z",
+      timing_config: {
+        max_age_secs: 3600,
+        rsvp_deadline_secs: 600,
+        contribution_deadline_secs: 1200,
+      },
+    };
+    const decision = {
+      synthesized_at: "2026-04-28T01:00:00.000Z",
+      synthesis_runner: "bot-queen-runner-1",
+      content: "## Verdict: APPROVE",
+      sequence_closed: 42,
+    };
+    await redis.hset(roomKey("12345", RID_A), {
+      data: JSON.stringify(data),
+      status: "closed",
+      closed_at: "2026-04-28T01:00:00.000Z",
+      // closed_reason intentionally absent — happy-path queen close
+      // uses `decision` field instead (per design — operators
+      // distinguish CLOSE vs TERMINATE by which is populated).
+      deciding_through_sequence: 42,
+      decision: JSON.stringify(decision),
+    });
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.status).toBe("closed");
+    expect(core.closed_at).toBe("2026-04-28T01:00:00.000Z");
+    expect(core.closed_reason).toBeUndefined();
+    expect(core.deciding_through_sequence).toBe(42);
+    expect(core.decision).toEqual(decision);
+    // Immutable fields still from the `data` blob
+    expect(core.manager).toBe("bot-queen");
+    expect(core.subject_ref).toBe("hivemoot/hivemoot#508");
+  });
+
+  it("reads closed_reason without decision (terminate path)", async () => {
+    const data: RoomCoreData = {
+      manager: "bot-queen",
+      subject_type: "pr_review",
+      subject_ref: "hivemoot/hivemoot#508",
+      opened_at: "2026-04-28T00:00:00.000Z",
+      timing_config: {
+        max_age_secs: 3600,
+        rsvp_deadline_secs: 600,
+        contribution_deadline_secs: 1200,
+      },
+    };
+    await redis.hset(roomKey("12345", RID_A), {
+      data: JSON.stringify(data),
+      status: "expired",
+      closed_at: "2026-04-28T01:00:00.000Z",
+      closed_reason: "expired",
+    });
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.status).toBe("expired");
+    expect(core.closed_reason).toBe("expired");
+    expect(core.decision).toBeUndefined();
+  });
+
+  it("deciding_through_sequence is coerced from string to number (HSET stores numbers as strings)", async () => {
+    const data: RoomCoreData = {
+      manager: "bot-queen",
+      subject_type: "pr_review",
+      subject_ref: "hivemoot/hivemoot#508",
+      opened_at: "2026-04-28T00:00:00.000Z",
+      timing_config: {
+        max_age_secs: 3600,
+        rsvp_deadline_secs: 600,
+        contribution_deadline_secs: 1200,
+      },
+    };
+    // Simulate the Lua script's HSET which writes numbers as
+    // strings (Redis storage type is always string).
+    await redis.hset(roomKey("12345", RID_A), {
+      data: JSON.stringify(data),
+      status: "deciding",
+      deciding_through_sequence: "42",
+    });
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.deciding_through_sequence).toBe(42);
+    expect(typeof core.deciding_through_sequence).toBe("number");
+  });
 });
 
 // ---------------------------------------------------------------------------

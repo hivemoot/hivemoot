@@ -192,18 +192,24 @@ export interface TimingConfig {
 }
 
 /**
- * Stable bulk fields of a room core (everything EXCEPT `status`).
- * Stored as a JSON string in the room hash's `"data"` field per the
- * design's HSET shape (WAR_ROOM_DESIGN.md L303-304). `status` lives
- * in a separate hash field so transitions can `HSET status` without
- * marshaling/unmarshaling the whole record on the hot path.
+ * Immutable bulk fields of a room core. Stored as a JSON string in
+ * the room hash's `"data"` field per the design's HSET shape
+ * (WAR_ROOM_DESIGN.md L303-304). These fields are written ONCE at
+ * `createRoom` time and never mutated — making the JSON-blob shape
+ * safe (no per-field race against transition scripts).
+ *
+ * Mutable fields (`status`, `closed_at`, `closed_reason`,
+ * `deciding_through_sequence`, `decision`) live as SEPARATE hash
+ * fields so transition scripts (DECIDE_CLAIM, RECOVER, TERMINATE,
+ * CLOSE) can update them via single-field HSET without
+ * marshaling/unmarshaling the whole record on the hot path. Closes
+ * #509 guard R1 carry-forward (the original implementation merged
+ * mutable + immutable into one blob, requiring the close path to
+ * read-modify-write the entire JSON).
  *
  * Field naming uses snake_case to match the storage shape across
  * other modules (agent-token-v1 envelope, audit entries) —
  * wire-shape translation to camelCase happens at the API boundary.
- *
- * `closed_*` and `decision` fields are absent until the room
- * terminates; their presence is the close marker.
  */
 export interface RoomCoreData {
   /** Actor-id of whoever opened the room — typically the bot's
@@ -214,27 +220,42 @@ export interface RoomCoreData {
   subject_ref: string;
   opened_at: string; // ISO 8601
   timing_config: TimingConfig;
-
-  // Post-close fields (absent while open)
-  closed_at?: string;
-  closed_reason?: TerminalReason;
-  /** Sequence the queen synthesized through (set by claim script,
-   * verified at close to detect mid-synthesis drift). */
-  deciding_through_sequence?: number;
-  /** Decision payload — set by `ROOM_CLOSE_SCRIPT` on the
-   * happy path. JSON-serialized at storage time; decoded in
-   * `getRoomCore` for caller convenience. */
-  decision?: RoomDecision;
 }
 
 /**
- * Room core view returned by `getRoomCore` — `RoomCoreData` plus
- * the live `status`. Reconstructed from two hash fields at read
- * time; the underlying storage uses the split layout so status
- * transitions are single-field HSETs (per design L346, L382).
+ * Room core view returned by `getRoomCore` — the immutable
+ * `RoomCoreData` blob plus the mutable transition fields. Each
+ * mutable field maps to its own hash field on the room key:
+ *
+ *   `data`                       → JSON-encoded RoomCoreData (immutable)
+ *   `status`                     → string (RoomStatus enum)
+ *   `closed_at`                  → ISO 8601 string (set on terminate/close)
+ *   `closed_reason`              → TerminalReason (set on TERMINATE only)
+ *   `deciding_through_sequence`  → integer (set on DECIDE_CLAIM, cleared
+ *                                  on RECOVER + on CLOSE drift path)
+ *   `decision`                   → JSON-encoded RoomDecision (set on
+ *                                  CLOSE happy path only)
+ *
+ * Each transition script HSETs only the fields it changes — never a
+ * read-modify-write of `data`.
  */
 export interface RoomCore extends RoomCoreData {
   status: RoomStatus;
+  /** Set when the room reaches a terminal state (closed | expired). */
+  closed_at?: string;
+  /** Set ONLY by `ROOM_TERMINATE_SCRIPT` (expired/failed_synthesis/
+   * force_close/manual). The queen happy-path close via
+   * `ROOM_CLOSE_SCRIPT` sets `decision` instead and leaves this
+   * undefined — operators distinguish the two paths by which
+   * field is populated. */
+  closed_reason?: TerminalReason;
+  /** Sequence the queen synthesized through (set by claim script,
+   * verified at close to detect mid-synthesis drift). Cleared on
+   * recovery (claim TTL'd before close) and on CLOSE-drift revert. */
+  deciding_through_sequence?: number;
+  /** Decision payload — set ONLY by `ROOM_CLOSE_SCRIPT` on the
+   * queen happy path. */
+  decision?: RoomDecision;
 }
 
 /**
@@ -719,41 +740,80 @@ export async function createRoom(args: {
   return { ...data, status: "awaiting_rsvp" };
 }
 
+/** Internal: parse all room-hash fields into a typed RoomCore. Used
+ * by both `getRoomCore` and `listRooms` so the multi-field
+ * reconstruction logic lives in one place. */
+function parseRoomCoreFields(
+  fields: Record<string, unknown> | null,
+): RoomCore | null {
+  if (
+    fields === null ||
+    fields.data === undefined ||
+    fields.status === undefined
+  ) {
+    return null;
+  }
+  // Upstash auto-parses JSON when the stored value is a JSON string
+  // and the type generic is non-string. Defensive: accept both
+  // shapes (raw string from HSET, object after auto-parse).
+  const data =
+    typeof fields.data === "string"
+      ? (JSON.parse(fields.data) as RoomCoreData)
+      : (fields.data as RoomCoreData);
+  const core: RoomCore = {
+    ...data,
+    status: fields.status as RoomStatus,
+  };
+  // Mutable transition fields — each comes back as its own hash
+  // field (string for primitives, JSON-string for `decision`).
+  if (typeof fields.closed_at === "string") {
+    core.closed_at = fields.closed_at;
+  }
+  if (typeof fields.closed_reason === "string") {
+    core.closed_reason = fields.closed_reason as TerminalReason;
+  }
+  if (
+    fields.deciding_through_sequence !== undefined &&
+    fields.deciding_through_sequence !== null
+  ) {
+    // HSET stores numbers as strings; coerce on read.
+    const n = Number(fields.deciding_through_sequence);
+    if (Number.isFinite(n)) core.deciding_through_sequence = n;
+  }
+  if (fields.decision !== undefined && fields.decision !== null) {
+    core.decision =
+      typeof fields.decision === "string"
+        ? (JSON.parse(fields.decision) as RoomDecision)
+        : (fields.decision as RoomDecision);
+  }
+  return core;
+}
+
 /**
  * Read the room core. Throws `RoomNotFoundError` when the room hash
  * is absent (closed-and-TTL'd, never existed, or installation mismatch).
  *
- * Reconstructs `RoomCore` from the two hash fields the storage shape
- * uses: `data` (JSON blob with everything except status) + `status`
- * (separate field for transition hot-path). See ROOM_OPEN_SCRIPT
- * docstring + WAR_ROOM_DESIGN.md L303-304 for the rationale.
+ * Reconstructs `RoomCore` from the room hash's individual fields:
+ * the `data` field (immutable JSON blob) + `status` (mutable string)
+ * + optional `closed_at` / `closed_reason` /
+ * `deciding_through_sequence` / `decision` set by the transition
+ * scripts. See WAR_ROOM_DESIGN.md L303+L346+L457 for the rationale —
+ * each transition script HSETs only the fields it changes, never
+ * the whole record.
  */
 export async function getRoomCore(args: {
   installationId: string;
   roomId: string;
   redis: Redis;
 }): Promise<RoomCore> {
-  const fields = await args.redis.hgetall<{
-    data?: string | RoomCoreData;
-    status?: string;
-  }>(roomKey(args.installationId, args.roomId));
-  // Upstash returns null for missing-key OR an empty object hash;
-  // both cases are "room not found" from the caller's perspective.
-  if (
-    fields === null ||
-    fields.data === undefined ||
-    fields.status === undefined
-  ) {
+  const fields = await args.redis.hgetall<Record<string, unknown>>(
+    roomKey(args.installationId, args.roomId),
+  );
+  const core = parseRoomCoreFields(fields);
+  if (core === null) {
     throw new RoomNotFoundError(args.installationId, args.roomId);
   }
-  // Upstash auto-parses JSON when the stored value is a JSON string
-  // and the type generic is non-string. Defensive: accept both shapes
-  // (string from raw HSET, object after auto-parse).
-  const data =
-    typeof fields.data === "string"
-      ? (JSON.parse(fields.data) as RoomCoreData)
-      : fields.data;
-  return { ...data, status: fields.status as RoomStatus };
+  return core;
 }
 
 /**
@@ -785,7 +845,7 @@ export async function listRooms(args: {
 
   const fanout = await Promise.all(
     roomIds.map((id) =>
-      args.redis.hgetall<{ data?: string | RoomCoreData; status?: string }>(
+      args.redis.hgetall<Record<string, unknown>>(
         roomKey(args.installationId, id),
       ),
     ),
@@ -794,16 +854,12 @@ export async function listRooms(args: {
   const out: RoomCore[] = [];
   const orphans: string[] = [];
   for (let i = 0; i < fanout.length; i++) {
-    const f = fanout[i];
-    if (f === null || f.data === undefined || f.status === undefined) {
+    const core = parseRoomCoreFields(fanout[i]);
+    if (core === null) {
       orphans.push(roomIds[i]);
       continue;
     }
-    const data =
-      typeof f.data === "string"
-        ? (JSON.parse(f.data) as RoomCoreData)
-        : f.data;
-    out.push({ ...data, status: f.status as RoomStatus });
+    out.push(core);
   }
 
   // Best-effort cleanup of orphaned installation-index entries.
