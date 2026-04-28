@@ -128,6 +128,83 @@ function makeMockRedis() {
         getSet(repoK).add(roomId);
         return [1, roomId];
       }
+
+      // ROOM_APPEND_EVENT_SCRIPT — 7 keys, 9 args (D.1.a-ii)
+      if (
+        keys.length === 7 &&
+        argv.length === 9 &&
+        script.includes("__SEQ__")
+      ) {
+        const [
+          seqK,
+          eventsK,
+          idemK,
+          roomK,
+          materializedK,
+          statusFromK,
+          statusToK,
+        ] = keys;
+        const [
+          eventTemplate,
+          idempotencyKey,
+          _eventType,
+          materializedFieldName,
+          materializedFieldJson,
+          statusFrom,
+          statusTo,
+          roomId,
+          _idemTtlSecs,
+        ] = argv;
+
+        // 1. Idempotency check
+        if (idempotencyKey !== "") {
+          const existing = store.get(idemK);
+          if (existing !== undefined) {
+            return [-1, Number(existing)];
+          }
+        }
+
+        // 2. Status precondition
+        const roomHash = hashes.get(roomK);
+        const currStatus = roomHash?.get("status") as string | undefined;
+        if (statusFrom !== "" && currStatus !== statusFrom) {
+          return [-2, currStatus ?? "missing"];
+        }
+
+        // 3. INCR seq
+        const oldSeq = (store.get(seqK) as number | undefined) ?? 0;
+        const seq = oldSeq + 1;
+        store.set(seqK, seq);
+
+        // 4. ZADD event (gsub __SEQ__ to seq)
+        const eventJson = eventTemplate.replace(/__SEQ__/g, String(seq));
+        getSortedSet(eventsK).push({ member: eventJson, score: seq });
+
+        // 5. SET idempotency reverse index
+        if (idempotencyKey !== "") {
+          store.set(idemK, String(seq));
+        }
+
+        // 6. HSET materialized view
+        if (materializedFieldName !== "") {
+          getHash(materializedK).set(
+            materializedFieldName,
+            materializedFieldJson,
+          );
+        }
+
+        // 7. Status transition
+        if (statusTo !== "") {
+          getHash(roomK).set("status", statusTo);
+          if (statusFrom !== statusTo) {
+            getSet(statusFromK).delete(roomId);
+            getSet(statusToK).add(roomId);
+          }
+        }
+
+        return [seq];
+      }
+
       return null;
     },
   );
@@ -179,15 +256,28 @@ function makeMockRedis() {
     zrange: vi.fn(
       async (
         key: string,
-        start: number,
-        stop: number,
-        opts?: { rev?: boolean },
+        start: number | string,
+        stop: number | string,
+        opts?: { rev?: boolean; byScore?: boolean; offset?: number; count?: number },
       ): Promise<string[]> => {
         const set = sortedSets.get(key) ?? [];
         const sorted = [...set].sort((a, b) => a.score - b.score);
+        if (opts?.byScore) {
+          // BYSCORE mode: start/stop are scores; "+inf" / "-inf" supported.
+          const minScore = start === "-inf" ? -Infinity : Number(start);
+          const maxScore = stop === "+inf" ? Infinity : Number(stop);
+          const filtered = sorted.filter(
+            (e) => e.score >= minScore && e.score <= maxScore,
+          );
+          const offset = opts.offset ?? 0;
+          const end = opts.count !== undefined ? offset + opts.count : filtered.length;
+          return filtered.slice(offset, end).map((e) => e.member);
+        }
         const ordered = opts?.rev ? sorted.reverse() : sorted;
-        const end = stop === -1 ? ordered.length : stop + 1;
-        return ordered.slice(start, end).map((e) => e.member);
+        const startN = Number(start);
+        const stopN = Number(stop);
+        const end = stopN === -1 ? ordered.length : stopN + 1;
+        return ordered.slice(startN, end).map((e) => e.member);
       },
     ),
     zrem: vi.fn(async (key: string, ...members: string[]) => {
@@ -941,5 +1031,708 @@ describe("storage shape", () => {
     // The plain GET shape is empty (room is a HASH, not a STRING)
     const rawGet = await redis.get(roomKey("12345", RID_A));
     expect(rawGet).toBeNull();
+  });
+});
+
+// ===========================================================================
+// D.1.a-ii — event appending + RSVP / contribute primitives
+// ===========================================================================
+
+import {
+  ROOM_APPEND_EVENT_SCRIPT,
+  ROOM_EVENT_BODY_MAX_BYTES,
+  ROOM_CONTRIBUTION_RAW_MD_MAX_BYTES,
+  IDEM_TTL_MULTIPLIER,
+  deriveIdempotencyKey,
+  appendRoomEvent,
+  presentParticipant,
+  withdrawParticipant,
+  submitContribution,
+  withdrawContribution,
+  timeoutParticipant,
+  listRoomEvents,
+  getRoomParticipants,
+  getRoomContributions,
+  RoomEventStatusPreconditionError,
+  RoomEventIdempotencyReplayError,
+  RoomEventBodyTooLargeError,
+  RoomContributionTooLargeError,
+} from "./war-room";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+describe("D.1.a-ii constants", () => {
+  it("ROOM_EVENT_BODY_MAX_BYTES = 8 KiB (design cap)", () => {
+    expect(ROOM_EVENT_BODY_MAX_BYTES).toBe(8 * 1024);
+  });
+
+  it("ROOM_CONTRIBUTION_RAW_MD_MAX_BYTES = 32 KiB (design cap)", () => {
+    expect(ROOM_CONTRIBUTION_RAW_MD_MAX_BYTES).toBe(32 * 1024);
+  });
+
+  it("IDEM_TTL_MULTIPLIER = 2 (idem TTL = 2 × max_age_secs per design)", () => {
+    expect(IDEM_TTL_MULTIPLIER).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveIdempotencyKey
+// ---------------------------------------------------------------------------
+
+describe("deriveIdempotencyKey", () => {
+  it("produces a 64-char SHA-256 hex string", () => {
+    const k = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    expect(k).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("identical inputs → identical key (replay-safe)", () => {
+    const a = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    const b = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    expect(a).toBe(b);
+  });
+
+  it("different role → different key (cross-role isolation)", () => {
+    const a = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    const b = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "builder",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("different action lane → different key (present vs withdraw don't dedupe)", () => {
+    const a = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    const b = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "withdraw_participant",
+      sequenceObservedByClient: 5,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("different observed sequence → different key (caller's progress key)", () => {
+    const a = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    const b = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 6,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("different roomId → different key (room isolation)", () => {
+    const a = deriveIdempotencyKey({
+      roomId: RID_A,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    const b = deriveIdempotencyKey({
+      roomId: RID_B,
+      role: "drone",
+      action: "present",
+      sequenceObservedByClient: 5,
+    });
+    expect(a).not.toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendRoomEvent — low-level
+// ---------------------------------------------------------------------------
+
+describe("appendRoomEvent", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    // Establish a room for events to land into
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("returns the new sequence (room_opened was 1, next event is 2)", async () => {
+    const seq = await appendRoomEvent({
+      installationId: "12345",
+      roomId: RID_A,
+      event: {
+        timestamp: "2026-04-28T00:00:00.000Z",
+        event_type: "participant_presented",
+        actor_role: "drone",
+        actor_id: "worker-drone",
+        body: {},
+      },
+      idempotencyKey: "",
+      redis,
+    });
+    expect(seq).toBe(2);
+  });
+
+  it("sequence numbers are monotonic across appends", async () => {
+    const s1 = await appendRoomEvent({
+      installationId: "12345",
+      roomId: RID_A,
+      event: {
+        timestamp: "2026-04-28T00:00:00.000Z",
+        event_type: "participant_presented",
+        actor_role: "drone",
+        actor_id: "worker-drone",
+        body: {},
+      },
+      idempotencyKey: "",
+      redis,
+    });
+    const s2 = await appendRoomEvent({
+      installationId: "12345",
+      roomId: RID_A,
+      event: {
+        timestamp: "2026-04-28T00:00:01.000Z",
+        event_type: "participant_presented",
+        actor_role: "builder",
+        actor_id: "worker-builder",
+        body: {},
+      },
+      idempotencyKey: "",
+      redis,
+    });
+    expect(s2).toBeGreaterThan(s1);
+  });
+
+  it("encodes the event JSON with the actual sequence (not __SEQ__)", async () => {
+    await appendRoomEvent({
+      installationId: "12345",
+      roomId: RID_A,
+      event: {
+        timestamp: "2026-04-28T00:00:00.000Z",
+        event_type: "participant_presented",
+        actor_role: "drone",
+        actor_id: "worker-drone",
+        body: {},
+      },
+      idempotencyKey: "",
+      redis,
+    });
+    const events = redis._sortedSets.get(eventsKey(RID_A));
+    expect(events).toHaveLength(2); // room_opened + participant_presented
+    const presentedJson = events![1].member;
+    expect(presentedJson).not.toContain("__SEQ__"); // gsub'd by Lua
+    const parsed = JSON.parse(presentedJson);
+    expect(parsed.seq).toBe(2);
+    expect(parsed.event_type).toBe("participant_presented");
+  });
+
+  it("idempotency replay returns the prior sequence via RoomEventIdempotencyReplayError", async () => {
+    const idemKey = "abcd1234";
+    await appendRoomEvent({
+      installationId: "12345",
+      roomId: RID_A,
+      event: {
+        timestamp: "2026-04-28T00:00:00.000Z",
+        event_type: "participant_presented",
+        actor_role: "drone",
+        actor_id: "worker-drone",
+        body: {},
+      },
+      idempotencyKey: idemKey,
+      redis,
+    });
+    // Same idempotency key → replay
+    try {
+      await appendRoomEvent({
+        installationId: "12345",
+        roomId: RID_A,
+        event: {
+          timestamp: "2026-04-28T00:00:00.000Z",
+          event_type: "participant_presented",
+          actor_role: "drone",
+          actor_id: "worker-drone",
+          body: {},
+        },
+        idempotencyKey: idemKey,
+        redis,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomEventIdempotencyReplayError);
+      if (err instanceof RoomEventIdempotencyReplayError) {
+        expect(err.existingSequence).toBe(2);
+      }
+    }
+    // Verify the second call didn't add a new event
+    expect(redis._sortedSets.get(eventsKey(RID_A))).toHaveLength(2);
+  });
+
+  it("status precondition mismatch → RoomEventStatusPreconditionError", async () => {
+    // Room is in awaiting_rsvp; try to append with from=awaiting_contributions
+    try {
+      await appendRoomEvent({
+        installationId: "12345",
+        roomId: RID_A,
+        event: {
+          timestamp: "2026-04-28T00:00:00.000Z",
+          event_type: "participant_timed_out",
+          actor_role: "manager",
+          actor_id: "bot-queen",
+          body: {},
+        },
+        idempotencyKey: "",
+        statusTransition: {
+          from: "awaiting_contributions",
+          to: "awaiting_contributions",
+        },
+        redis,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomEventStatusPreconditionError);
+      if (err instanceof RoomEventStatusPreconditionError) {
+        expect(err.expectedFrom).toBe("awaiting_contributions");
+        expect(err.actualStatus).toBe("awaiting_rsvp");
+      }
+    }
+  });
+
+  it("body > 8 KiB → RoomEventBodyTooLargeError BEFORE storage call", async () => {
+    const huge = { payload: "x".repeat(10 * 1024) };
+    try {
+      await appendRoomEvent({
+        installationId: "12345",
+        roomId: RID_A,
+        event: {
+          timestamp: "2026-04-28T00:00:00.000Z",
+          event_type: "participant_presented",
+          actor_role: "drone",
+          actor_id: "worker-drone",
+          body: huge,
+        },
+        idempotencyKey: "",
+        redis,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomEventBodyTooLargeError);
+      if (err instanceof RoomEventBodyTooLargeError) {
+        expect(err.sizeBytes).toBeGreaterThan(ROOM_EVENT_BODY_MAX_BYTES);
+      }
+    }
+    // Verify no storage write happened
+    expect(redis._sortedSets.get(eventsKey(RID_A))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// presentParticipant
+// ---------------------------------------------------------------------------
+
+describe("presentParticipant", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("appends a participant_presented event + writes the participants hash", async () => {
+    const seq = await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    expect(seq).toBe(2);
+
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone).toBeDefined();
+    expect(participants.drone.role).toBe("drone");
+    expect(participants.drone.agent_id).toBe("drone-1");
+    expect(participants.drone.status).toBe("present");
+  });
+
+  it("idempotency: same observed sequence → replay error with prior seq", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomEventIdempotencyReplayError);
+  });
+
+  it("two roles can present concurrently — both get distinct sequences", async () => {
+    const [s1, s2] = await Promise.all([
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "builder",
+        agentId: "builder-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ]);
+    expect(s1).not.toBe(s2);
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone).toBeDefined();
+    expect(participants.builder).toBeDefined();
+  });
+
+  it("intentHint is included in the event body when provided", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      intentHint: "review for security regressions",
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    expect(events[0].body.intent_hint).toBe("review for security regressions");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withdrawParticipant
+// ---------------------------------------------------------------------------
+
+describe("withdrawParticipant", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+  });
+
+  it("updates participant status to 'withdrawn' with resolved_at timestamp", async () => {
+    await withdrawParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 2,
+      reason: "out of capacity",
+      redis,
+    });
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("withdrawn");
+    expect(participants.drone.resolved_at).toBeDefined();
+  });
+
+  it("emits participant_withdrawn event with the reason in body", async () => {
+    await withdrawParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 2,
+      reason: "out of capacity",
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 2, redis });
+    expect(events[0].event_type).toBe("participant_withdrawn");
+    expect(events[0].body.reason).toBe("out of capacity");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// submitContribution
+// ---------------------------------------------------------------------------
+
+describe("submitContribution", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("writes the contribution to the contributions hash + emits event", async () => {
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      body: { verdict: "approve", summary: "looks good" },
+      rawMd: "# Verdict\n\nApprove.",
+      redis,
+    });
+    const contributions = await getRoomContributions({ roomId: RID_A, redis });
+    expect(contributions.drone).toBeDefined();
+    expect(contributions.drone.body).toEqual({
+      verdict: "approve",
+      summary: "looks good",
+    });
+    expect(contributions.drone.raw_md).toBe("# Verdict\n\nApprove.");
+  });
+
+  it("re-submit overwrites prior contribution (latest-wins per role)", async () => {
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      body: { verdict: "approve" },
+      rawMd: "first",
+      redis,
+    });
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 2, // different observed seq → different idem key
+      body: { verdict: "request_changes" },
+      rawMd: "second",
+      redis,
+    });
+    const contributions = await getRoomContributions({ roomId: RID_A, redis });
+    expect(contributions.drone.body.verdict).toBe("request_changes");
+    expect(contributions.drone.raw_md).toBe("second");
+  });
+
+  it("rawMd > 32 KiB → RoomContributionTooLargeError BEFORE storage call", async () => {
+    const huge = "x".repeat(35 * 1024);
+    await expect(
+      submitContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        body: { verdict: "approve" },
+        rawMd: huge,
+        redis,
+      }),
+    ).rejects.toThrow(RoomContributionTooLargeError);
+    // No event landed
+    expect(await getRoomContributions({ roomId: RID_A, redis })).toEqual({});
+  });
+
+  it("rawMd is NOT in the event body (event body is bounded at 8 KiB; rawMd lives only in materialized hash)", async () => {
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      body: { verdict: "approve" },
+      rawMd: "x".repeat(20 * 1024), // 20 KiB — would blow event 8 KiB cap if included
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    expect(events[0].event_type).toBe("contribution_submitted");
+    expect(events[0].body.body).toEqual({ verdict: "approve" });
+    expect((events[0].body as Record<string, unknown>).raw_md).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// timeoutParticipant — watchdog path with status precondition
+// ---------------------------------------------------------------------------
+
+describe("timeoutParticipant", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // Manually transition to awaiting_contributions so the watchdog
+    // path is gated correctly. (Real lifecycle does this when all
+    // expected roles RSVP — here we shortcut for the test.)
+    redis._sets.delete(statusIndexKey("12345", "awaiting_rsvp"));
+    redis._sets.set(
+      statusIndexKey("12345", "awaiting_contributions"),
+      new Set([RID_A]),
+    );
+    // Bypass the public type guard and write the status directly to
+    // the hash for test setup (no public seek-status mutator yet).
+    const roomKey_ = roomKey("12345", RID_A);
+    await redis.hset(roomKey_, { status: "awaiting_contributions" });
+  });
+
+  it("times out a participant in awaiting_contributions → status 'timed_out'", async () => {
+    await timeoutParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      subjectRole: "drone",
+      watchdogRole: "manager",
+      watchdogAgentId: "bot-queen",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("timed_out");
+    expect(participants.drone.resolved_at).toBeDefined();
+  });
+
+  it("status precondition: room moved to deciding → RoomEventStatusPreconditionError (G7)", async () => {
+    // Simulate the queen claiming synthesis — status now 'deciding'
+    await redis.hset(roomKey("12345", RID_A), { status: "deciding" });
+    await expect(
+      timeoutParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        subjectRole: "drone",
+        watchdogRole: "manager",
+        watchdogAgentId: "bot-queen",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomEventStatusPreconditionError);
+  });
+
+  it("event actor is the watchdog, NOT the timed-out participant", async () => {
+    await timeoutParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      subjectRole: "drone",
+      watchdogRole: "manager",
+      watchdogAgentId: "bot-queen",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    expect(events[0].event_type).toBe("participant_timed_out");
+    expect(events[0].actor_role).toBe("manager");
+    expect(events[0].actor_id).toBe("bot-queen");
+    expect(events[0].body.subject_role).toBe("drone");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listRoomEvents — read with since cursor
+// ---------------------------------------------------------------------------
+
+describe("listRoomEvents", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("returns all events when since is omitted (or 0)", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, redis });
+    expect(events).toHaveLength(2); // room_opened + participant_presented
+    expect(events[0].event_type).toBe("room_opened");
+    expect(events[1].event_type).toBe("participant_presented");
+  });
+
+  it("since=1 excludes seq=1 (room_opened); returns events strictly after", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    expect(events).toHaveLength(1);
+    expect(events[0].event_type).toBe("participant_presented");
+    expect(events[0].seq).toBe(2);
   });
 });
