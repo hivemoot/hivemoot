@@ -259,7 +259,12 @@ function emptyManagerLoopResult(): Awaited<
  * lock by TTL-expiry before the next 2-minute fire would block. */
 const TICK_LOCK_TTL_SECS = 290;
 
-const TICK_LOCK_KEY_PREFIX = "queen:tick:lock:installation:";
+/** Canonical lock key per WAR_ROOM_DESIGN.md L999 +
+ * REDIS_KEY_CONVENTION.md (the `hive:v1:lock:*` namespace is reserved
+ * for distributed locks). */
+function tickLockKey(installationId: string): string {
+  return `hive:v1:lock:queen-tick:${installationId}`;
+}
 
 /** Compare-and-DEL Lua: only DEL the lock key if it's still owned by
  * this runner. Prevents a tick whose work outlasted the TTL from
@@ -268,19 +273,39 @@ const TICK_LOCK_RELEASE_SCRIPT =
   'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
 
 /** Returns "ok" if the lock was acquired (or skipped because no
- * Redis configured), "contention" if another runner holds it. */
+ * Redis configured), "contention" if another runner holds it.
+ *
+ * Both acquire and release use Upstash REST's command-body form
+ * (`POST {url}` with JSON `["CMD", args...]`) rather than the path-
+ * segment form. Closes #542 builder R2: prior path-segment form
+ * `/set/key/value?NX&EX=290` had ambiguous query-arg handling per
+ * Upstash docs and risked degenerating into a plain `SET` (always
+ * returning `{ result: "OK" }`, breaking the serialization gate).
+ * Body-form keeps NX/EX as positional command args so semantics
+ * are unambiguous + match the release path.
+ */
 async function tryAcquireTickLock(
   installationId: string,
   runnerId: string,
 ): Promise<"ok" | "contention"> {
   const redis = getUpstashRedisConfig();
   if (!redis) return "ok"; // No Redis → run unlocked.
-  const key = TICK_LOCK_KEY_PREFIX + installationId;
+  const key = tickLockKey(installationId);
   try {
-    const url = `${redis.url}/set/${encodeURIComponent(key)}/${encodeURIComponent(runnerId)}?NX&EX=${TICK_LOCK_TTL_SECS}`;
-    const response = await fetch(url, {
+    const response = await fetch(redis.url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${redis.token}` },
+      headers: {
+        Authorization: `Bearer ${redis.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([
+        "SET",
+        key,
+        runnerId,
+        "NX",
+        "EX",
+        String(TICK_LOCK_TTL_SECS),
+      ]),
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) {
@@ -307,7 +332,7 @@ async function releaseTickLock(
 ): Promise<void> {
   const redis = getUpstashRedisConfig();
   if (!redis) return;
-  const key = TICK_LOCK_KEY_PREFIX + installationId;
+  const key = tickLockKey(installationId);
   try {
     const response = await fetch(redis.url, {
       method: "POST",

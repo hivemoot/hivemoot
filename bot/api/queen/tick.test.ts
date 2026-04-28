@@ -433,26 +433,42 @@ describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () =
     expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
   });
 
-  it("acquires lock via SET NX EX when Redis configured", async () => {
+  it("acquires lock via SET NX EX with canonical key + body-form command", async () => {
+    // Closes #542 builder R2: previously used path-form
+    // /set/key/value?NX&EX=290 which has ambiguous query-arg handling
+    // per Upstash docs. Body-form keeps NX/EX as positional command
+    // args, semantics unambiguous + matches release path. Key namespace
+    // matches WAR_ROOM_DESIGN.md L999 + REDIS_KEY_CONVENTION.md
+    // (`hive:v1:lock:*` reserved for distributed locks).
     process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
     process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ result: "OK" }), { status: 200 }),
-      ) // acquire
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ result: 1 }), { status: 200 }),
-      ); // release
+      );
     const res = makeResponse();
     await handler(
       makeRequest({ authorization: "Bearer test-secret" }),
       res,
     );
     expect(res._statusCode).toBe(200);
-    expect(fetchSpy.mock.calls[0][0]).toMatch(
-      /\/set\/queen%3Atick%3Alock%3Ainstallation%3A67890\/.*\?NX&EX=290/,
+    // Acquire is the first fetch — verify URL + body-form command.
+    const acquireCall = fetchSpy.mock.calls[0];
+    expect(acquireCall[0]).toBe("https://fake-redis.upstash.io");
+    const acquireBody = JSON.parse(
+      (acquireCall[1] as RequestInit).body as string,
     );
+    expect(acquireBody[0]).toBe("SET");
+    expect(acquireBody[1]).toBe("hive:v1:lock:queen-tick:67890");
+    // acquireBody[2] is the runnerId — generated, not asserted to a literal.
+    expect(typeof acquireBody[2]).toBe("string");
+    expect(acquireBody[3]).toBe("NX");
+    expect(acquireBody[4]).toBe("EX");
+    expect(acquireBody[5]).toBe("290");
     expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
     fetchSpy.mockRestore();
   });
