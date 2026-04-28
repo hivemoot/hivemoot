@@ -286,13 +286,28 @@ export type RoomEventType =
   | "room_terminated";
 
 /** Materialized RSVP entry per role (latest-state-wins). Stored as
- * JSON in the `:participants` hash, keyed by role. */
+ * JSON in the `:participants` hash, keyed by role.
+ *
+ * Status lifecycle (per WAR_ROOM_DESIGN.md):
+ *   pending  → resolved   (worker submits a contribution)
+ *   pending  → withdrew   (worker explicitly withdraws)
+ *   pending  → timed_out  (watchdog times out)
+ *   withdrew → pending    (re-RSVP after subject_updated event;
+ *                          clears withdrew_at_sequence)
+ */
 export interface RoomParticipant {
   agent_id: string;
   role: string;
-  status: "present" | "withdrawn" | "timed_out";
+  status: "pending" | "resolved" | "withdrew" | "timed_out";
   rsvp_at: string;
+  /** Set when status moved to resolved / withdrew / timed_out. */
   resolved_at?: string;
+  /** Sequence of the participant_withdrawn event. Set ONLY when
+   * status === "withdrew"; cleared on re-RSVP. Used by the
+   * server-side watcher filter (`GET /api/rooms/watching`) to
+   * re-include the room for that role IFF the room has new events
+   * past `withdrew_at_sequence`. */
+  withdrew_at_sequence?: number;
 }
 
 /** Materialized contribution per role (latest-wins). Stored as JSON
@@ -839,6 +854,75 @@ export const ROOM_CONTRIBUTION_RAW_MD_MAX_BYTES = 32 * 1024;
  *   max_age_secs default 3600 → idem TTL default 7200 (2 h). */
 export const IDEM_TTL_MULTIPLIER = 2;
 
+/** Contribution body bounds per WAR_ROOM_DESIGN.md L1166-1188. */
+export const CONTRIBUTION_SUMMARY_MAX_CHARS = 500;
+export const CONTRIBUTION_FINDING_AREA_MAX_CHARS = 80;
+export const CONTRIBUTION_FINDING_DETAIL_MAX_CHARS = 2000;
+export const CONTRIBUTION_FINDINGS_MAX_COUNT = 20;
+
+// ---------------------------------------------------------------------------
+// ContributionBody schema (D.1.a-ii)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verdict enum for contribution bodies. UPPERCASE per
+ * WAR_ROOM_DESIGN.md §"silent downgrade trap" — the synthesis path
+ * applies a structural DOWNGRADE-only invariant and must reject
+ * malformed/typo'd verdicts at the boundary rather than silently
+ * defaulting to COMMENT.
+ */
+export type ContributionVerdict =
+  | "APPROVE"
+  | "COMMENT"
+  | "CONCERNS"
+  | "REQUEST_CHANGES";
+
+const CONTRIBUTION_VERDICTS: ReadonlySet<string> = new Set([
+  "APPROVE",
+  "COMMENT",
+  "CONCERNS",
+  "REQUEST_CHANGES",
+]);
+
+export type ContributionFindingSeverity = "blocker" | "warning" | "info";
+
+const FINDING_SEVERITIES: ReadonlySet<string> = new Set([
+  "blocker",
+  "warning",
+  "info",
+]);
+
+export interface ContributionFinding {
+  /** 1-80 chars. Open-ended free text; the synthesis prompt treats
+   * this as untrusted user-supplied content. */
+  area: string;
+  severity: ContributionFindingSeverity;
+  /** 1-2000 chars (subject to G2 raw_text cap). */
+  detail: string;
+  /** Optional file:line reference for IDE / dashboard navigation. */
+  code_ref?: string;
+}
+
+/**
+ * Structured contribution body. Bounded fields, enforced enums, and
+ * a hard `verdict` requirement so the queen synthesis can rely on
+ * the body being well-formed. Validated at submit time via
+ * `validateContributionBody` — violations throw
+ * `ContributionValidationError` BEFORE any storage write.
+ */
+export interface ContributionBody {
+  verdict: ContributionVerdict;
+  /** 1-500 chars. */
+  summary: string;
+  /** ≤20 items. */
+  findings?: ContributionFinding[];
+  severity_counts?: {
+    blocker?: number;
+    warning?: number;
+    info?: number;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Errors (D.1.a-ii)
 // ---------------------------------------------------------------------------
@@ -919,6 +1003,186 @@ export class RoomContributionTooLargeError extends Error {
 }
 
 /**
+ * Thrown when a write hits the per-(room, role) first-wins gate —
+ * a different agent has already claimed this role in the room and
+ * the slot is not in the `withdrew` state (which would allow re-RSVP).
+ *
+ * Closes #510 builder R1 #2: previous unconditional HSET let a
+ * second runner overwrite the first runner's RSVP. The script now
+ * cjson.decodes the existing slot and rejects with -4 when the
+ * agent_id mismatches AND the slot isn't withdrew.
+ *
+ * Per WAR_ROOM_DESIGN.md §`agent_id semantics`: subscriber-mode
+ * fleets where multiple runners share one token still get distinct
+ * agent_ids; the per-(room, role) gate ensures only one of them
+ * wins the RSVP — others get this error and skip dispatch.
+ */
+export class RoomParticipantOwnerConflictError extends Error {
+  public readonly roomId: string;
+  public readonly role: string;
+  public readonly existingAgentId: string;
+  public readonly attemptedAgentId: string;
+  constructor(
+    roomId: string,
+    role: string,
+    existingAgentId: string,
+    attemptedAgentId: string,
+  ) {
+    super(
+      `Per-(room=${roomId}, role=${role}) first-wins gate: role is already claimed by agent ${existingAgentId}; attempted by ${attemptedAgentId}. Skip and re-poll on the next watcher tick.`,
+    );
+    this.name = "RoomParticipantOwnerConflictError";
+    this.roomId = roomId;
+    this.role = role;
+    this.existingAgentId = existingAgentId;
+    this.attemptedAgentId = attemptedAgentId;
+  }
+}
+
+/**
+ * Thrown when a contribution body fails schema validation at the
+ * boundary. Carries the offending field name + reason so the route
+ * layer can surface a structured 400 with per-field error codes
+ * (`MISSING_VERDICT`, `INVALID_VERDICT`, `SUMMARY_TOO_LONG`, etc.
+ * per WAR_ROOM_DESIGN.md L1187).
+ */
+export class ContributionValidationError extends Error {
+  public readonly field: string;
+  public readonly value: unknown;
+  constructor(field: string, value: unknown, expected: string) {
+    super(
+      `Invalid contribution body field ${JSON.stringify(field)} = ${JSON.stringify(value)}: expected ${expected}.`,
+    );
+    this.name = "ContributionValidationError";
+    this.field = field;
+    this.value = value;
+  }
+}
+
+/**
+ * Validate a `ContributionBody` against the design's bounded-field
+ * schema. Throws `ContributionValidationError` on any violation.
+ * Pure function — no storage side effects.
+ *
+ * Closes #510 builder R1 #4: previously `submitContribution`
+ * accepted arbitrary `Record<string, unknown>` and tests landed
+ * lowercase verdicts like `"approve"`. Validating at the boundary
+ * means malformed bodies cannot land in Redis before queen
+ * synthesis ever sees them.
+ */
+export function validateContributionBody(body: ContributionBody): void {
+  if (typeof body.verdict !== "string") {
+    throw new ContributionValidationError(
+      "verdict",
+      body.verdict,
+      "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)",
+    );
+  }
+  if (!CONTRIBUTION_VERDICTS.has(body.verdict)) {
+    throw new ContributionValidationError(
+      "verdict",
+      body.verdict,
+      "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)",
+    );
+  }
+  if (typeof body.summary !== "string") {
+    throw new ContributionValidationError(
+      "summary",
+      body.summary,
+      "string (1-500 chars)",
+    );
+  }
+  if (body.summary.length < 1 || body.summary.length > CONTRIBUTION_SUMMARY_MAX_CHARS) {
+    throw new ContributionValidationError(
+      "summary",
+      body.summary,
+      `string of 1-${CONTRIBUTION_SUMMARY_MAX_CHARS} chars (got ${body.summary.length})`,
+    );
+  }
+  if (body.findings !== undefined) {
+    if (!Array.isArray(body.findings)) {
+      throw new ContributionValidationError(
+        "findings",
+        body.findings,
+        `array of ≤${CONTRIBUTION_FINDINGS_MAX_COUNT} ContributionFinding objects`,
+      );
+    }
+    if (body.findings.length > CONTRIBUTION_FINDINGS_MAX_COUNT) {
+      throw new ContributionValidationError(
+        "findings",
+        body.findings,
+        `array of ≤${CONTRIBUTION_FINDINGS_MAX_COUNT} items (got ${body.findings.length})`,
+      );
+    }
+    for (let i = 0; i < body.findings.length; i++) {
+      const f = body.findings[i];
+      if (typeof f !== "object" || f === null) {
+        throw new ContributionValidationError(
+          `findings[${i}]`,
+          f,
+          "ContributionFinding object",
+        );
+      }
+      if (
+        typeof f.area !== "string" ||
+        f.area.length < 1 ||
+        f.area.length > CONTRIBUTION_FINDING_AREA_MAX_CHARS
+      ) {
+        throw new ContributionValidationError(
+          `findings[${i}].area`,
+          f.area,
+          `string of 1-${CONTRIBUTION_FINDING_AREA_MAX_CHARS} chars`,
+        );
+      }
+      if (typeof f.severity !== "string" || !FINDING_SEVERITIES.has(f.severity)) {
+        throw new ContributionValidationError(
+          `findings[${i}].severity`,
+          f.severity,
+          "one of blocker | warning | info",
+        );
+      }
+      if (
+        typeof f.detail !== "string" ||
+        f.detail.length < 1 ||
+        f.detail.length > CONTRIBUTION_FINDING_DETAIL_MAX_CHARS
+      ) {
+        throw new ContributionValidationError(
+          `findings[${i}].detail`,
+          f.detail,
+          `string of 1-${CONTRIBUTION_FINDING_DETAIL_MAX_CHARS} chars`,
+        );
+      }
+      if (f.code_ref !== undefined && typeof f.code_ref !== "string") {
+        throw new ContributionValidationError(
+          `findings[${i}].code_ref`,
+          f.code_ref,
+          "optional string",
+        );
+      }
+    }
+  }
+  if (body.severity_counts !== undefined) {
+    if (typeof body.severity_counts !== "object" || body.severity_counts === null) {
+      throw new ContributionValidationError(
+        "severity_counts",
+        body.severity_counts,
+        "optional object with blocker/warning/info numeric fields",
+      );
+    }
+    for (const k of ["blocker", "warning", "info"] as const) {
+      const v = body.severity_counts[k];
+      if (v !== undefined && (typeof v !== "number" || v < 0 || !Number.isFinite(v))) {
+        throw new ContributionValidationError(
+          `severity_counts.${k}`,
+          v,
+          "non-negative finite number",
+        );
+      }
+    }
+  }
+}
+
+/**
  * Role string is server-derived from the bearer envelope's `agent_role`
  * field — never accepted from request body. This boundary regex
  * catches the very unlikely "envelope had a corrupted role" case
@@ -969,53 +1233,96 @@ export type RoomEventAction =
 // ---------------------------------------------------------------------------
 
 /**
- * Atomic event append with idempotency, status precondition, and
- * optional materialized-view update.
+ * Atomic event append. Single EVAL handles idempotency, room-
+ * existence + status preconditions, per-(role) owner check, the
+ * event log ZADD, two optional materialized-view writes, and an
+ * optional status transition.
  *
  * Design references:
- *   - WAR_ROOM_DESIGN.md L320-380 — script source
+ *   - WAR_ROOM_DESIGN.md L320-380 — original script (extended here
+ *     for the closures below)
  *   - WAR_ROOM_DESIGN.md L139-216 — RSVP-driven lifecycle
  *
+ * Closures (R2 fixes for #510 R1 review):
+ *   - **Builder B1 / Guard N1**: `room must exist` is now an
+ *     unconditional check. HGET status returns nil for a missing
+ *     room hash → `{-3, "room_not_found"}`. Soft events (RSVPs,
+ *     contributions) can no longer create orphan `:seq`/`:events`
+ *     keys against a typo'd roomId.
+ *   - **Builder B2**: `per-(room, role) first-wins gate` via
+ *     cjson.decode of the participants slot. If existing.agent_id
+ *     differs from ARGV[5] AND existing.status != "withdrew", the
+ *     script returns `{-4, "owner_conflict", existingAgentId}`.
+ *     Re-RSVP from `withdrew` is allowed (status flips back to
+ *     pending; new agent_id may differ from prior).
+ *   - **Builder B3**: dual-materialized writes via KEYS[8]/9 +
+ *     ARGV[12]/13 so `submitContribution` can update BOTH the
+ *     contribution slot AND the participant's status to "resolved"
+ *     atomically (prevents race where queen sees contribution
+ *     before participant resolution).
+ *   - **Guard B1**: `__SEQ__` gsub is capped at FIRST match so
+ *     user-controlled body content containing the literal sentinel
+ *     is preserved. The TS template has exactly one unquoted
+ *     `__SEQ__` (the seq field); user content is JSON-stringified
+ *     and surrounded by quotes — first-match gets the seq slot
+ *     deterministically. Materialized JSON gsub also capped.
+ *
  * Order of operations (single EVAL):
- *   1. Idempotency check: if `idempotencyKey` is set and `:idem:{key}`
- *      exists, return `{-1, existingSequence}` (replay-safe).
- *   2. Status precondition: if `status_from` is set, compare against
- *      the room's current `status` field. Mismatch → `{-2, currStatus}`.
- *   3. INCR `:seq` for the new event's sequence number.
- *   4. ZADD the event JSON to `:events` with score=seq. The TS caller
- *      writes `__SEQ__` in the JSON template; the script `gsub`s it
- *      to the actual sequence number before ZADD.
- *   5. SET the idempotency reverse index (if key non-empty) with
- *      caller-supplied TTL (parameterized — closes Queen R3 #5).
- *   6. HSET the materialized view (participants / contributions) if
- *      `materializedFieldName` is non-empty.
- *   7. Status transition (if `status_to` is set): HSET status, SREM
- *      from-set, SADD to-set.
+ *   1. Idempotency check: if `idempotencyKey` is set and
+ *      `:idem:{key}` exists → `{-1, existingSequence}`.
+ *   2. Room existence: HGET roomKey "status"; nil → `{-3,
+ *      "room_not_found"}`. Always runs (even for "soft" events).
+ *   3. Allowed-status gate: if `allowedStatuses` is non-empty,
+ *      currStatus must be in that comma-separated list →
+ *      `{-2, currStatus}` on mismatch.
+ *   4. Owner check (per-role first-wins): if `ownerCheckRole` is
+ *      set, HGET ownerCheckKey ownerCheckRole; if existing has a
+ *      different agent_id AND status != "withdrew", returns
+ *      `{-4, "owner_conflict", existingAgentId}`.
+ *   5. INCR `:seq`.
+ *   6. ZADD event JSON (gsub `__SEQ__` → seq, FIRST MATCH only).
+ *   7. SET idem reverse-index with parameterized TTL.
+ *   8. HSET materialized 1 (with `__SEQ__` substitution, first-match).
+ *   9. HSET materialized 2 (same, for dual-update on submit).
+ *   10. Status transition: HSET status, SREM/SADD set membership.
  *
  * KEYS:
- *   [1] seqKey                — sequence counter
- *   [2] eventsKey             — event log sorted set
- *   [3] idemKey               — idempotency reverse index for this key
- *   [4] roomKey               — room hash (for status read/write)
- *   [5] materializedKey       — participants OR contributions hash
- *   [6] statusFromSetKey      — status:awaiting_X set (for transition SREM)
- *   [7] statusToSetKey        — status:awaiting_Y set (for transition SADD)
+ *   [1] seqKey
+ *   [2] eventsKey
+ *   [3] idemKey
+ *   [4] roomKey
+ *   [5] ownerCheckKey         — typically participantsKey for
+ *                               first-wins enforcement; "__unused__"
+ *                               disables (paired with empty ARGV[4])
+ *   [6] materializedKey1
+ *   [7] statusFromSetKey
+ *   [8] statusToSetKey
+ *   [9] materializedKey2      — for dual-update on submitContribution;
+ *                               "__unused__" disables (paired with
+ *                               empty ARGV[12])
  *
  * ARGV:
- *   [1] eventJsonTemplate     — JSON with `__SEQ__` placeholder (Lua substitutes)
- *   [2] idempotencyKey        — empty string disables idem check
- *   [3] eventType             — diagnostic only (logged in audit)
- *   [4] materializedFieldName — empty disables materialized update
- *   [5] materializedFieldJson — value to HSET when fieldName set
- *   [6] roomStatusFrom        — empty disables status precondition
- *   [7] roomStatusTo          — empty disables status transition
- *   [8] roomId                — for index updates
- *   [9] idemTtlSecs           — TTL for the idempotency reverse index
+ *   [1]  eventJsonTemplate      — JSON with `"__SEQ__"` placeholder
+ *   [2]  idempotencyKey         — empty disables idem check
+ *   [3]  eventType              — diagnostic
+ *   [4]  ownerCheckRole         — hash field name to read on KEYS[5]
+ *                                  (typically the role); empty disables
+ *   [5]  ownerExpected          — agent_id that must own the slot
+ *   [6]  materializedFieldName1 — empty disables materialized 1
+ *   [7]  materializedFieldJson1 — value (with optional `__SEQ__`)
+ *   [8]  allowedStatuses        — comma-separated; empty = any
+ *   [9]  statusTo               — empty disables status transition
+ *   [10] roomId                 — for set membership updates
+ *   [11] idemTtlSecs            — TTL for idem reverse-index
+ *   [12] materializedFieldName2 — empty disables materialized 2
+ *   [13] materializedFieldJson2 — value (with optional `__SEQ__`)
  *
  * Returns:
- *   {seq}                     success
- *   {-1, existingSequence}    idempotency replay (caller treats as success)
- *   {-2, currentRoomStatus}   status precondition mismatch
+ *   {seq}                                   success
+ *   {-1, existingSequence}                  idempotency replay
+ *   {-2, currentRoomStatus}                 allowed-status mismatch
+ *   {-3, "room_not_found"}                  roomKey hash missing
+ *   {-4, "owner_conflict", existingAgentId} per-role first-wins gate
  */
 export const ROOM_APPEND_EVENT_SCRIPT = `
 if ARGV[2] ~= "" then
@@ -1023,22 +1330,52 @@ if ARGV[2] ~= "" then
   if existing then return {-1, tonumber(existing)} end
 end
 local currStatus = redis.call("hget", KEYS[4], "status")
-if ARGV[6] ~= "" and currStatus ~= ARGV[6] then
-  return {-2, currStatus}
-end
-local seq = redis.call("incr", KEYS[1])
-local eventJson = string.gsub(ARGV[1], "__SEQ__", tostring(seq))
-redis.call("zadd", KEYS[2], seq, eventJson)
-if ARGV[2] ~= "" then
-  redis.call("set", KEYS[3], tostring(seq), "EX", tonumber(ARGV[9]))
+if not currStatus then return {-3, "room_not_found"} end
+if ARGV[8] ~= "" then
+  local found = false
+  for s in string.gmatch(ARGV[8], "[^,]+") do
+    if s == currStatus then found = true; break end
+  end
+  if not found then return {-2, currStatus} end
 end
 if ARGV[4] ~= "" then
-  redis.call("hset", KEYS[5], ARGV[4], ARGV[5])
+  local existingMat = redis.call("hget", KEYS[5], ARGV[4])
+  if existingMat then
+    local parsed = cjson.decode(existingMat)
+    if parsed.agent_id ~= ARGV[5] and parsed.status ~= "withdrew" then
+      return {-4, "owner_conflict", parsed.agent_id}
+    end
+  end
 end
-if ARGV[7] ~= "" then
-  redis.call("hset", KEYS[4], "status", ARGV[7])
-  redis.call("srem", KEYS[6], ARGV[8])
-  redis.call("sadd", KEYS[7], ARGV[8])
+local seq = redis.call("incr", KEYS[1])
+local eventJson = string.gsub(ARGV[1], "__SEQ__", tostring(seq), 1)
+redis.call("zadd", KEYS[2], seq, eventJson)
+if ARGV[2] ~= "" then
+  redis.call("set", KEYS[3], tostring(seq), "EX", tonumber(ARGV[11]))
+end
+if ARGV[6] ~= "" then
+  local mat1 = ARGV[7]
+  -- Opt-in seq substitution. Off-by-default so user-controlled
+  -- materialized content (e.g. contribution bodies whose summary
+  -- contains the literal "__SEQ__") cannot be silently rewritten.
+  -- Caller sets ARGV[14]="1" for the withdraw-participant path
+  -- where withdrew_at_sequence MUST be the actual sequence number.
+  if ARGV[14] == "1" then
+    mat1 = string.gsub(mat1, "__SEQ__", tostring(seq), 1)
+  end
+  redis.call("hset", KEYS[6], ARGV[6], mat1)
+end
+if ARGV[12] ~= "" then
+  local mat2 = ARGV[13]
+  if ARGV[15] == "1" then
+    mat2 = string.gsub(mat2, "__SEQ__", tostring(seq), 1)
+  end
+  redis.call("hset", KEYS[9], ARGV[12], mat2)
+end
+if ARGV[9] ~= "" then
+  redis.call("hset", KEYS[4], "status", ARGV[9])
+  redis.call("srem", KEYS[7], ARGV[10])
+  redis.call("sadd", KEYS[8], ARGV[10])
 end
 return {seq}
 `;
@@ -1088,8 +1425,10 @@ function idemTtlSecs(roomMaxAgeSecs: number): number {
 interface AppendRoomEventArgs {
   installationId: string;
   roomId: string;
-  /** Event metadata. The serialized JSON gets `__SEQ__` substituted to the
-   * actual sequence inside the Lua script before the ZADD. */
+  /** Event metadata. The serialized JSON gets `__SEQ__` substituted
+   * to the actual sequence inside the Lua script (FIRST MATCH only —
+   * user-controlled body content containing the literal sentinel is
+   * preserved). */
   event: {
     timestamp: string;
     event_type: RoomEventType;
@@ -1099,16 +1438,42 @@ interface AppendRoomEventArgs {
   };
   /** Empty disables idem check. Typically derived via `deriveIdempotencyKey`. */
   idempotencyKey: string;
-  /** When set, append HSETs `materializedFieldName → materializedFieldJson` on
-   * `materializedKey` after the event lands. Use for participants /
-   * contributions materialized views. */
-  materialized?: {
+  /** Per-(room, role) first-wins gate. When set, the script HGETs the
+   * participants slot at `field`, cjson-decodes, and rejects if the
+   * existing `agent_id` differs from `expectedAgentId` AND status is
+   * not "withdrew" (re-RSVP from withdrew is allowed). */
+  ownerCheck?: {
+    field: string; // typically the role
+    expectedAgentId: string;
+  };
+  /** First materialized write (HSET). Set `substituteSeq: true` to
+   * have the script gsub `__SEQ__` (first match) with the actual
+   * sequence — used by withdrawParticipant for `withdrew_at_sequence`.
+   * Default is OFF so user-controlled materialized content (e.g.
+   * contribution body summaries) cannot be silently rewritten. */
+  materialized1?: {
     key: string;
     field: string;
     json: string;
+    substituteSeq?: boolean;
   };
+  /** Second materialized write — used by `submitContribution` to
+   * update BOTH the contribution slot AND the participant's status
+   * to "resolved" atomically (closes #510 builder R1 #3 dual-update
+   * concern). Same opt-in `substituteSeq` semantics as materialized1. */
+  materialized2?: {
+    key: string;
+    field: string;
+    json: string;
+    substituteSeq?: boolean;
+  };
+  /** Allowed-status gate. Comma-separated list of valid current
+   * statuses for this action. Empty = any non-empty status accepted
+   * (room must still exist; that's a separate -3 path). */
+  allowedStatuses?: RoomStatus[];
   /** Optional status transition. When provided, both fields required:
-   * the script enforces `from` precondition + transitions status sets. */
+   * caller asserts the from-set is correct (must match currStatus
+   * after the allowed-statuses gate). */
   statusTransition?: {
     from: RoomStatus;
     to: RoomStatus;
@@ -1132,7 +1497,10 @@ interface AppendRoomEventArgs {
  *
  * Throws:
  *   - `RoomEventIdempotencyReplayError` (replay — caller treats as success)
- *   - `RoomEventStatusPreconditionError` (room moved out of `from` state)
+ *   - `RoomNotFoundError` (room hash missing — typo'd roomId or
+ *      closed-and-TTL'd room)
+ *   - `RoomEventStatusPreconditionError` (currStatus not in `allowedStatuses`)
+ *   - `RoomParticipantOwnerConflictError` (per-role first-wins gate)
  *   - `RoomEventBodyTooLargeError` (body > 8 KiB serialized)
  */
 export async function appendRoomEvent(
@@ -1154,10 +1522,16 @@ export async function appendRoomEvent(
   // The script gsub looks for the LITERAL string `"__SEQ__"` in the
   // template (with quotes — JSON.stringify wrapped __SEQ__ as a
   // string). Lua replaces with the unquoted number, producing valid
-  // JSON like `"seq":42`.
+  // JSON like `"seq":42`. Cap at first match — preserves any user-
+  // supplied content that happens to contain the literal `__SEQ__`
+  // (closes #510 guard R1 B1).
   const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
 
   const ttl = args.idemTtlSecs ?? idemTtlSecs(DEFAULT_MAX_AGE_SECS);
+  const allowedCsv =
+    args.allowedStatuses && args.allowedStatuses.length > 0
+      ? args.allowedStatuses.join(",")
+      : "";
 
   const result = dispatchScriptResult(
     await args.redis.eval(
@@ -1167,24 +1541,35 @@ export async function appendRoomEvent(
         eventsKey(args.roomId),
         idemKey(args.roomId, args.idempotencyKey),
         roomKey(args.installationId, args.roomId),
-        args.materialized?.key ?? "__unused__",
+        // Owner check key is the participants hash by convention;
+        // safe to compute even when ownerCheck is unset since the
+        // Lua script gates the read on ARGV[4] non-empty.
+        participantsKey(args.roomId),
+        args.materialized1?.key ?? "__unused__",
         args.statusTransition
           ? statusIndexKey(args.installationId, args.statusTransition.from)
           : "__unused__",
         args.statusTransition
           ? statusIndexKey(args.installationId, args.statusTransition.to)
           : "__unused__",
+        args.materialized2?.key ?? "__unused__",
       ],
       [
         luaTemplate,
         args.idempotencyKey,
         args.event.event_type,
-        args.materialized?.field ?? "",
-        args.materialized?.json ?? "",
-        args.statusTransition?.from ?? "",
+        args.ownerCheck?.field ?? "",
+        args.ownerCheck?.expectedAgentId ?? "",
+        args.materialized1?.field ?? "",
+        args.materialized1?.json ?? "",
+        allowedCsv,
         args.statusTransition?.to ?? "",
         args.roomId,
         String(ttl),
+        args.materialized2?.field ?? "",
+        args.materialized2?.json ?? "",
+        args.materialized1?.substituteSeq ? "1" : "",
+        args.materialized2?.substituteSeq ? "1" : "",
       ],
     ),
   );
@@ -1195,8 +1580,19 @@ export async function appendRoomEvent(
   if (result.ok === -2 && typeof result.tag1 === "string") {
     throw new RoomEventStatusPreconditionError(
       args.roomId,
-      args.statusTransition?.from ?? "",
+      allowedCsv,
       result.tag1,
+    );
+  }
+  if (result.ok === -3) {
+    throw new RoomNotFoundError(args.installationId, args.roomId);
+  }
+  if (result.ok === -4 && typeof result.tag2 === "string") {
+    throw new RoomParticipantOwnerConflictError(
+      args.roomId,
+      args.ownerCheck?.field ?? "",
+      result.tag2,
+      args.ownerCheck?.expectedAgentId ?? "",
     );
   }
   // The script's success shape is `{seq}` — ScriptResult parses
@@ -1242,18 +1638,30 @@ interface RSVPCommonArgs {
  * `awaiting_contributions` happens via a separate script when all
  * expected roles are present).
  *
- * Idempotent: a retry with the same `sequenceObservedByClient` returns
- * (via `RoomEventIdempotencyReplayError`) the original sequence.
+ * Allowed statuses: `awaiting_rsvp` (canonical) + `awaiting_contributions`
+ * (late RSVP after some other role has presented and the room moved
+ * forward via a separate transition path).
+ *
+ * Per-(room, role) first-wins gate: if a different agent already
+ * holds this role's slot AND the slot status isn't "withdrew", the
+ * second runner gets `RoomParticipantOwnerConflictError` and skips
+ * dispatch (per WAR_ROOM_DESIGN.md §subscriber-mode fleets).
+ *
+ * Re-RSVP from withdrew: status flips back to "pending"; agent_id
+ * may differ from the prior holder (a restarted runner gets a new
+ * agent_id and may legitimately re-claim).
  */
 export async function presentParticipant(args: RSVPCommonArgs & {
   intentHint?: string;
 }): Promise<number> {
   assertRoleFormat(args.role);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
+  // Fresh participant record — status: "pending", no
+  // withdrew_at_sequence (cleared on re-RSVP per design).
   const participant: RoomParticipant = {
     agent_id: args.agentId,
     role: args.role,
-    status: "present",
+    status: "pending",
     rsvp_at: nowIso,
   };
 
@@ -1275,7 +1683,9 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       action: "present",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    materialized: {
+    allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
+    materialized1: {
       key: participantsKey(args.roomId),
       field: args.role,
       json: JSON.stringify(participant),
@@ -1287,21 +1697,40 @@ export async function presentParticipant(args: RSVPCommonArgs & {
 
 /**
  * Worker withdraws their RSVP. Updates the participant record's
- * `status` to `"withdrawn"` so leader election skips them. Soft —
- * doesn't transition room status.
+ * `status` to `"withdrew"` (per design — past tense; not "withdrawn")
+ * with `withdrew_at_sequence` set to the withdrawal event's sequence.
+ *
+ * Allowed statuses: room must be in awaiting_rsvp or
+ * awaiting_contributions (you can't withdraw from a closed/decided
+ * room). Soft — doesn't transition room status.
+ *
+ * Owner check: only the agent that holds this role's slot may
+ * withdraw (other agents get `RoomParticipantOwnerConflictError`).
  */
 export async function withdrawParticipant(
   args: RSVPCommonArgs & { reason?: string },
 ): Promise<number> {
   assertRoleFormat(args.role);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
-  const participant: RoomParticipant = {
+  // The participant record uses `__SEQ__` as a placeholder for the
+  // withdrew_at_sequence field; the Lua script substitutes it
+  // (first-match) so the record carries the actual sequence the
+  // withdrawal event landed at — used by the watcher's re-RSVP
+  // re-eligibility filter (`?since=N` past withdrew_at_sequence).
+  const participantTemplate = {
     agent_id: args.agentId,
     role: args.role,
-    status: "withdrawn",
+    status: "withdrew" as const,
     rsvp_at: nowIso,
     resolved_at: nowIso,
+    withdrew_at_sequence: "__SEQ__",
   };
+  // Strip the quotes around __SEQ__ so the script substitutes a
+  // bare number (matches the same pattern as the event template).
+  const participantJson = JSON.stringify(participantTemplate).replace(
+    '"__SEQ__"',
+    "__SEQ__",
+  );
 
   return await appendRoomEvent({
     installationId: args.installationId,
@@ -1321,10 +1750,16 @@ export async function withdrawParticipant(
       action: "withdraw_participant",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    materialized: {
+    allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
+    materialized1: {
       key: participantsKey(args.roomId),
       field: args.role,
-      json: JSON.stringify(participant),
+      json: participantJson,
+      // Withdraw is the one path that NEEDS Lua to substitute __SEQ__
+      // in materialized JSON — withdrew_at_sequence must be the
+      // actual sequence the withdrawal event landed at.
+      substituteSeq: true,
     },
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
@@ -1334,21 +1769,56 @@ export async function withdrawParticipant(
 /**
  * Worker submits a contribution (analysis / verdict). Latest-wins per
  * role: re-submitting overwrites the prior contribution in the
- * materialized hash. Soft — doesn't transition room status.
+ * materialized hash.
+ *
+ * **Schema validation** (closes #510 builder R1 #4): the `body`
+ * MUST conform to `ContributionBody` (UPPERCASE verdict enum,
+ * 1-500 char summary, ≤20 findings with bounded sub-fields).
+ * Validated at the boundary via `validateContributionBody` —
+ * malformed bodies throw `ContributionValidationError` BEFORE
+ * any storage write.
+ *
+ * **Allowed status**: `awaiting_contributions` only. The room must
+ * have already advanced past RSVP collection.
+ *
+ * **Owner check**: only the agent that holds the role's RSVP slot
+ * may contribute (other agents get `RoomParticipantOwnerConflictError`).
+ *
+ * **Dual materialized write** (closes #510 builder R1 #3): the
+ * script atomically updates BOTH the contribution slot AND the
+ * participant's `status` to `"resolved"` so the queen synthesis
+ * watchdog observing "all participants resolved" sees consistent
+ * state without a race window.
  *
  * Throws `RoomContributionTooLargeError` if `rawMd` exceeds 32 KiB.
  */
 export async function submitContribution(args: RSVPCommonArgs & {
-  body: Record<string, unknown>;
+  body: ContributionBody;
   rawMd: string;
 }): Promise<number> {
   assertRoleFormat(args.role);
+  validateContributionBody(args.body);
   assertContributionMdSize(args.rawMd);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
   const contribution: RoomContribution = {
-    body: args.body,
+    // RoomContribution.body is Record<string, unknown> for forward
+    // compat with future contribution types; ContributionBody is the
+    // V1-canonical schema and validates as a subtype.
+    body: args.body as unknown as Record<string, unknown>,
     raw_md: args.rawMd,
     contributed_at: nowIso,
+  };
+  // Updated participant: status flips to "resolved", resolved_at set.
+  // agent_id stays the same as the prior RSVP (verified by owner check).
+  const resolvedParticipant: RoomParticipant = {
+    agent_id: args.agentId,
+    role: args.role,
+    status: "resolved",
+    rsvp_at: nowIso, // best effort — original rsvp_at could be read
+                     // from existing slot; for V1 the resolved_at is
+                     // the more salient timestamp and the event log
+                     // preserves the original RSVP timestamp.
+    resolved_at: nowIso,
   };
 
   return await appendRoomEvent({
@@ -1360,7 +1830,10 @@ export async function submitContribution(args: RSVPCommonArgs & {
       actor_role: args.role,
       actor_id: args.agentId,
       body: {
-        body: args.body,
+        // Spread into a generic Record so the index-signature type
+        // check (event body must be Record<string, unknown>) is
+        // satisfied — args.body is the typed ContributionBody.
+        body: args.body as unknown as Record<string, unknown>,
         // Don't include raw_md in the event body (it's bounded
         // separately at 32 KiB; the event body's 8 KiB cap would be
         // blown by typical-sized contributions). The materialized
@@ -1373,7 +1846,16 @@ export async function submitContribution(args: RSVPCommonArgs & {
       action: "contribute",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    materialized: {
+    allowedStatuses: ["awaiting_contributions"],
+    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
+    // Materialized 1: update participants[role] → resolved
+    materialized1: {
+      key: participantsKey(args.roomId),
+      field: args.role,
+      json: JSON.stringify(resolvedParticipant),
+    },
+    // Materialized 2: write contribution
+    materialized2: {
       key: contributionsKey(args.roomId),
       field: args.role,
       json: JSON.stringify(contribution),
@@ -1385,18 +1867,21 @@ export async function submitContribution(args: RSVPCommonArgs & {
 
 /**
  * Worker withdraws a previously-submitted contribution. Soft event —
- * the contribution remains in the materialized hash with
- * `withdrawn: true` flag. Queen synthesis skips withdrawn contributions.
+ * the contribution slot in the materialized hash gets a tombstone
+ * (`withdrawn: true`); queen synthesis skips withdrawn contributions.
+ *
+ * **Allowed status**: `awaiting_contributions` only. **Owner check**:
+ * agent must hold the role's RSVP slot. Doesn't write to participants
+ * (only the contribution slot is tombstoned); the participant remains
+ * "resolved" or whatever status they were prior to the withdrawal —
+ * the contribution-level withdrawal is a separate signal from the
+ * participant-level withdrawal.
  */
 export async function withdrawContribution(
   args: RSVPCommonArgs & { reason?: string },
 ): Promise<number> {
   assertRoleFormat(args.role);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
-  // Mark the existing contribution as withdrawn. Caller is expected
-  // to have an existing contribution; if not, the event lands but
-  // the materialized hash has no prior entry to update — that's a
-  // diagnosable misuse, not a failure mode here.
   const tombstone: Partial<RoomContribution> & { withdrawn: true } = {
     withdrawn: true,
     contributed_at: nowIso,
@@ -1420,7 +1905,14 @@ export async function withdrawContribution(
       action: "withdraw_contribution",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    materialized: {
+    allowedStatuses: ["awaiting_contributions"],
+    ownerCheck: { field: args.role, expectedAgentId: args.agentId },
+    // Single materialized: tombstone the contribution slot.
+    // Participant record is left alone (still "resolved" if a
+    // contribution was submitted before this withdrawal, otherwise
+    // "pending" — either way, withdrawal of the contribution
+    // doesn't change the participant's status).
+    materialized1: {
       key: contributionsKey(args.roomId),
       field: args.role,
       json: JSON.stringify(tombstone),
@@ -1460,18 +1952,27 @@ export async function timeoutParticipant(args: {
   assertRoleFormat(args.subjectRole);
   assertRoleFormat(args.watchdogRole);
   const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
-  // Tombstone the participant. agent_id stays unchanged from the
-  // prior present (the timeout doesn't claim a new agent); since
-  // we're updating the existing record, we keep what was there
-  // semantically — but the watchdog doesn't have it on hand, so
-  // we record the agent_id as the watchdog's for traceability.
-  // Operators reading the participants hash see the timeout marker;
-  // forensic detail (who originally RSVP'd) lives in the event log.
+  // Read the existing participant first so we can preserve the
+  // original agent_id + rsvp_at on the timeout tombstone (closes
+  // #510 guard R1 N2: previously the watchdog overwrote agent_id
+  // with its own, making operators reading the participants hash
+  // think bot-queen was the participant).
+  //
+  // Best-effort: if the existing slot is missing, the timeout still
+  // proceeds with the watchdog's identity as a placeholder — this
+  // case shouldn't happen in normal flow (you can only time out
+  // someone who RSVP'd) but we don't want to fail the watchdog.
+  const existingParticipants = await getRoomParticipants({
+    roomId: args.roomId,
+    redis: args.redis,
+  });
+  const existing = existingParticipants[args.subjectRole];
+
   const participant: RoomParticipant = {
-    agent_id: args.watchdogAgentId,
+    agent_id: existing?.agent_id ?? args.watchdogAgentId,
     role: args.subjectRole,
     status: "timed_out",
-    rsvp_at: nowIso,
+    rsvp_at: existing?.rsvp_at ?? nowIso,
     resolved_at: nowIso,
   };
 
@@ -1491,13 +1992,18 @@ export async function timeoutParticipant(args: {
       action: "timeout",
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
-    materialized: {
+    // Watchdog can timeout any participant — no owner check.
+    allowedStatuses: ["awaiting_contributions"],
+    materialized1: {
       key: participantsKey(args.roomId),
       field: args.subjectRole,
       json: JSON.stringify(participant),
     },
-    // Status precondition: only time out while still awaiting contributions
-    // — closes the watchdog vs `/decide` race per design G7.
+    // Status transition is a self-loop (awaiting_contributions →
+    // awaiting_contributions) so the SREM/SADD index updates fire
+    // but currStatus is preserved. Closes the watchdog vs `/decide`
+    // race per design G7 — script returns -2 if status drifted to
+    // deciding between the watchdog scan and the script run.
     statusTransition: {
       from: "awaiting_contributions",
       to: "awaiting_contributions",
