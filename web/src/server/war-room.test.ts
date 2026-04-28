@@ -442,16 +442,18 @@ function makeMockRedis() {
         return [1, seq];
       }
 
-      // ROOM_TERMINATE_SCRIPT — 10 keys, 5 args (D.1.a-iii.c)
+      // ROOM_TERMINATE_SCRIPT — 12 keys, 5 args (D.1.a-iii.c R2)
       if (
-        keys.length === 10 &&
+        keys.length === 12 &&
         argv.length === 5 &&
         script.includes("closed_reason")
       ) {
         const [
           roomK,
           subjectIdxK,
-          statusCurrK,
+          statusAwaitingRsvpK,
+          statusAwaitingContribK,
+          statusDecidingK,
           installK,
           repoK,
           seqK,
@@ -481,7 +483,12 @@ function makeMockRedis() {
         getHash(roomK).set("closed_at", closedAt);
         getHash(roomK).set("closed_reason", closedReason);
         store.delete(subjectIdxK);
-        getSet(statusCurrK).delete(roomId);
+        // SREM all three non-terminal status sets idempotently
+        // (closes #515 builder R1 — defensive against stale
+        // caller-observed status).
+        getSet(statusAwaitingRsvpK).delete(roomId);
+        getSet(statusAwaitingContribK).delete(roomId);
+        getSet(statusDecidingK).delete(roomId);
         // installation index is a sorted set — emulate ZREM
         const installSet = sortedSets.get(installK);
         if (installSet) {
@@ -3621,14 +3628,18 @@ describe("D.1.a-iii.c ROOM_TERMINATE_SCRIPT source", () => {
   it("references closed_reason ARGV + claim DEL + index cleanup + sibling EXPIRE", () => {
     expect(ROOM_TERMINATE_SCRIPT).toContain("closed_reason");
     expect(ROOM_TERMINATE_SCRIPT).toContain('"closed"');
-    // Claim DEL covers deciding-state cleanup (closes design R3 N8)
-    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[10])');
+    // Claim DEL covers deciding-state cleanup (closes design R3 N8 +
+    // #515 builder R1 — KEYS[12] after the 3-status-set expansion)
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[12])');
     // Subject lock release
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[2])');
+    // Idempotent SREM from ALL non-terminal status sets (#515 R1):
+    // KEYS[3]=awaiting_rsvp, KEYS[4]=awaiting_contributions, KEYS[5]=deciding
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[3], ARGV[1])');
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[4], ARGV[1])');
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[5], ARGV[1])');
     // ZREM from installation index (closes Queen R2 #2)
     expect(ROOM_TERMINATE_SCRIPT).toContain("zrem");
-    // SREM from per-repo index (closes M3)
-    expect(ROOM_TERMINATE_SCRIPT).toContain("srem");
     // Sibling TTL (closes Queen R2 #1)
     expect(ROOM_TERMINATE_SCRIPT).toContain("expire");
     // First-match gsub (closes #510 guard B1)
@@ -3795,7 +3806,6 @@ describe("terminateRoom", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       actorRole: "system",
       actorId: "operator-1",
-      currentStatus: "awaiting_rsvp",
       redis,
     });
     expect(seq).toBe(2);
@@ -3847,7 +3857,6 @@ describe("terminateRoom", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       actorRole: "system",
       actorId: "operator-1",
-      currentStatus: "deciding",
       redis,
     });
     // Claim DELed — the queen's mid-flight close will see claim_lost.
@@ -3862,7 +3871,6 @@ describe("terminateRoom", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       actorRole: "system",
       actorId: "watchdog",
-      currentStatus: "awaiting_rsvp",
       redis,
     });
     await expect(
@@ -3873,7 +3881,6 @@ describe("terminateRoom", () => {
         subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
         actorRole: "system",
         actorId: "operator-2",
-        currentStatus: "closed",
         redis,
       }),
     ).rejects.toThrow(RoomAlreadyClosedError);
@@ -3888,7 +3895,6 @@ describe("terminateRoom", () => {
         subject: { type: "pr_review", ref: "no-slash-no-hash" },
         actorRole: "system",
         actorId: "operator-1",
-        currentStatus: "awaiting_rsvp",
         redis,
       }),
     ).rejects.toThrow(RoomSubjectRefError);
@@ -3903,7 +3909,6 @@ describe("terminateRoom", () => {
         subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
         actorRole: "system",
         actorId: "operator-1",
-        currentStatus: "awaiting_rsvp",
         redis,
       }),
     ).rejects.toThrow(RoomNotFoundError);
@@ -3917,13 +3922,73 @@ describe("terminateRoom", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       actorRole: "system",
       actorId: "vercel-cron",
-      currentStatus: "awaiting_rsvp",
       redis,
     });
     const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
     const term = events.find((e) => e.event_type === "room_terminated");
     expect(term?.actor_role).toBe("system");
     expect(term?.actor_id).toBe("vercel-cron");
+  });
+
+  it("stale-currentStatus race: room moves awaiting_contributions → deciding via concurrent claim, terminate STILL cleans all open status sets (closes #515 builder R1)", async () => {
+    // Promote and put room into the contention window: caller's
+    // observation says "awaiting_contributions" but a concurrent
+    // claimSynthesis flips status to "deciding" + adds it to the
+    // deciding status set.
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    // Replicate the claim's status-set membership migration that
+    // happens during normal claim flow — the room is now in the
+    // deciding status set. (createRoom put it in awaiting_rsvp; we
+    // simulate the awaiting_rsvp → awaiting_contributions and then
+    // → deciding moves explicitly here.)
+    const awaitingRsvpSetKey = statusIndexKey("12345", "awaiting_rsvp");
+    const decidingSetKey = statusIndexKey("12345", "deciding");
+    // Ensure the room id is in the deciding set (concurrent claim's
+    // post-state) and NOT in the awaiting_contributions set.
+    redis._sets.get(awaitingRsvpSetKey)?.delete(RID_A);
+    let decidingSet = redis._sets.get(decidingSetKey);
+    if (!decidingSet) {
+      decidingSet = new Set<string>();
+      redis._sets.set(decidingSetKey, decidingSet);
+    }
+    decidingSet.add(RID_A);
+    // Force the room hash status to deciding to mirror the claim's
+    // atomic flip (without going through claimSynthesis to keep the
+    // test focused on the index-cleanup property).
+    await redis.hset(roomKey("12345", RID_A), { status: "deciding" });
+
+    // Operator force-closes — but had OBSERVED awaiting_contributions
+    // on a stale read. (The new contract drops `currentStatus` —
+    // whatever the caller observed, the script handles all sets.)
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "force_close",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+
+    // CRITICAL — the room id is gone from EVERY non-terminal status set,
+    // not just the one the caller might have observed.
+    expect(redis._sets.get(awaitingRsvpSetKey)?.has(RID_A) ?? false).toBe(false);
+    expect(
+      redis._sets
+        .get(statusIndexKey("12345", "awaiting_contributions"))
+        ?.has(RID_A) ?? false,
+    ).toBe(false);
+    expect(redis._sets.get(decidingSetKey)?.has(RID_A) ?? false).toBe(false);
+
+    // Sanity: room hash is at status closed.
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("closed");
   });
 });
 
@@ -4014,7 +4079,6 @@ describe("closeRoomWithDecision", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       actorRole: "system",
       actorId: "operator-1",
-      currentStatus: "deciding",
       redis,
     });
     await expect(
@@ -4150,6 +4214,27 @@ describe("closeRoomWithDecision", () => {
         roomId: RID_A,
         expectedThroughSequence: claimResult.throughSequence,
         decision: makeDecision({ content: huge }),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(/exceeds 64 KiB/);
+  });
+
+  it("64 KiB cap counts BYTES not UTF-16 code units (multi-byte regression — closes #515 builder R1)", async () => {
+    // 22000 emoji × 4 bytes/emoji = 88000 bytes (> 64 KiB) but only
+    // 44000 UTF-16 code units (< 64 KiB cap if we used .length).
+    // The byte-aware check rejects; the code-unit check would have
+    // let it through, exceeding the storage budget.
+    const emoji = "🐝"; // 4 bytes UTF-8, 2 UTF-16 code units
+    const multiByteContent = emoji.repeat(22000);
+    expect(multiByteContent.length).toBeLessThan(64 * 1024); // .length check would pass
+    expect(Buffer.byteLength(multiByteContent, "utf8")).toBeGreaterThan(64 * 1024); // bytes exceed
+    await expect(
+      closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        decision: makeDecision({ content: multiByteContent }),
         subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
         redis,
       }),

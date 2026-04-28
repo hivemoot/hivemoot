@@ -2049,22 +2049,27 @@ return {1, seq}
  *      capped at first match per #510 guard B1)
  *   4. HSET status="closed" + closed_at + closed_reason
  *   5. DEL subject index (release the per-installation subject lock)
- *   6. SREM/ZREM/SREM from status, installation, repo indexes (closes
- *      Queen R2 #2 — index leaks; M3 — per-repo set leaks)
+ *   6. SREM from ALL non-terminal status sets idempotently (closes
+ *      #515 builder R1: a stale caller-supplied `currentStatus` could
+ *      race a concurrent `claimSynthesis` and SREM the wrong set,
+ *      leaving phantom membership in the live status set). ZREM/SREM
+ *      from installation + per-repo indexes (closes Queen R2 #2 / M3).
  *   7. EXPIRE all sibling keys at retentionSecs (closes Queen R2 #1
  *      — TTL leak)
  *
  * KEYS:
  *   [1] roomKey
  *   [2] subjectIndexKey
- *   [3] statusSetCurrentKey   — current status's set (caller resolves)
- *   [4] installationIndexKey  — all-rooms-for-installation sorted set
- *   [5] repoIndexKey          — per-repo set
- *   [6] seqKey
- *   [7] eventsKey
- *   [8] participantsKey       — for TTL only (read-once at terminate)
- *   [9] contributionsKey      — for TTL only
- *   [10] claimKey             — DELed if held (deciding-state cleanup)
+ *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
+ *   [4] statusSetAwaitingContribKey    — SREM idempotent
+ *   [5] statusSetDecidingKey           — SREM idempotent
+ *   [6] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [7] repoIndexKey                   — per-repo set
+ *   [8] seqKey
+ *   [9] eventsKey
+ *   [10] participantsKey               — for TTL only
+ *   [11] contributionsKey              — for TTL only
+ *   [12] claimKey                      — DELed if held (deciding-state cleanup)
  *
  * ARGV:
  *   [1] roomId
@@ -2083,23 +2088,25 @@ if not currStatus then return {-1, "room_not_found"} end
 if currStatus == "closed" then
   return {-1, currStatus}
 end
-redis.call("del", KEYS[10])
-local seq = redis.call("incr", KEYS[6])
+redis.call("del", KEYS[12])
+local seq = redis.call("incr", KEYS[8])
 local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq), 1)
-redis.call("zadd", KEYS[7], seq, eventJson)
+redis.call("zadd", KEYS[9], seq, eventJson)
 redis.call("hset", KEYS[1], "status", "closed",
                           "closed_at", ARGV[3],
                           "closed_reason", ARGV[5])
 redis.call("del", KEYS[2])
 redis.call("srem", KEYS[3], ARGV[1])
-redis.call("zrem", KEYS[4], ARGV[1])
+redis.call("srem", KEYS[4], ARGV[1])
 redis.call("srem", KEYS[5], ARGV[1])
+redis.call("zrem", KEYS[6], ARGV[1])
+redis.call("srem", KEYS[7], ARGV[1])
 local retention = tonumber(ARGV[4])
 redis.call("expire", KEYS[1], retention)
-redis.call("expire", KEYS[6], retention)
-redis.call("expire", KEYS[7], retention)
 redis.call("expire", KEYS[8], retention)
 redis.call("expire", KEYS[9], retention)
+redis.call("expire", KEYS[10], retention)
+redis.call("expire", KEYS[11], retention)
 return {1, seq}
 `;
 
@@ -3193,10 +3200,6 @@ export async function terminateRoom(args: {
    * the bearer envelope's role+id. */
   actorRole: string;
   actorId: string;
-  /** Optional: surface the watchdog's observed-current-status so
-   * status-set membership migration uses the right "from" set. If
-   * omitted, caller must HGETALL first. */
-  currentStatus: RoomStatus;
   retentionSecs?: number;
   redis: Redis;
   nowMs?: number;
@@ -3229,7 +3232,13 @@ export async function terminateRoom(args: {
           args.subject.type,
           args.subject.ref,
         ),
-        statusIndexKey(args.installationId, args.currentStatus),
+        // All three non-terminal status sets — script SREMs each
+        // idempotently. Closes #515 builder R1: a stale
+        // caller-supplied currentStatus could SREM the wrong set
+        // and leave phantom membership in the live one.
+        statusIndexKey(args.installationId, "awaiting_rsvp"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        statusIndexKey(args.installationId, "deciding"),
         installationIndexKey(args.installationId),
         repoIndexKey(args.installationId, repo),
         seqKey(args.roomId),
@@ -3310,9 +3319,16 @@ export async function closeRoomWithDecision(args: {
 }): Promise<number> {
   validateSubjectRef(args.subject);
   validateRunnerFormat(args.decision.synthesis_runner);
-  if (args.decision.content.length > 64 * 1024) {
+  // BYTE length, not UTF-16 code-unit `.length`. A multi-byte
+  // synthesis (emoji, non-ASCII narrative) can have `.length` < byte
+  // budget while the actual storage payload exceeds 64 KiB. Closes
+  // #515 builder R1 — file uses Buffer.byteLength elsewhere for
+  // consistency (see ROOM_EVENT_BODY_MAX_BYTES enforcement at
+  // assertEventBodySize).
+  const decisionContentBytes = Buffer.byteLength(args.decision.content, "utf8");
+  if (decisionContentBytes > 64 * 1024) {
     throw new Error(
-      `RoomDecision.content exceeds 64 KiB (${args.decision.content.length} bytes); reduce body before close.`,
+      `RoomDecision.content exceeds 64 KiB (${decisionContentBytes} bytes); reduce body before close.`,
     );
   }
 
