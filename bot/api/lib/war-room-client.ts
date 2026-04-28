@@ -265,19 +265,9 @@ export class WarRoomClient {
     }
 
     // Structured error → WarRoomApiError so callers can branch on
-    // `code`. The 409 `subject_already_open` path is idempotent.
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = (await response.json()) as Record<string, unknown>;
-    } catch {
-      // Non-JSON error body — fall through with empty parsed.
-    }
-    const code = typeof parsed.code === "string" ? parsed.code : "unknown";
-    const message =
-      typeof parsed.message === "string"
-        ? parsed.message
-        : `War-room API ${response.status} (${code})`;
-    throw new WarRoomApiError(response.status, code, message, parsed);
+    // `code`. The 409 `subject_already_open` path is idempotent —
+    // caller extracts `error.response.existingRoomId`.
+    throw await this._toApiError(response);
   }
 
   /**
@@ -317,18 +307,7 @@ export class WarRoomClient {
       return (await response.json()) as { sequence: number; replay?: boolean };
     }
 
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = (await response.json()) as Record<string, unknown>;
-    } catch {
-      // Non-JSON error body — fall through.
-    }
-    const code = typeof parsed.code === "string" ? parsed.code : "unknown";
-    const message =
-      typeof parsed.message === "string"
-        ? parsed.message
-        : `War-room API ${response.status} (${code})`;
-    throw new WarRoomApiError(response.status, code, message, parsed);
+    throw await this._toApiError(response);
   }
 
   // ─── Queen-side reads (G'.1) ─────────────────────────────────────────
