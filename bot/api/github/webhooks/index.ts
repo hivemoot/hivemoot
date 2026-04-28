@@ -31,6 +31,7 @@ import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible }
 import { getLLMReadiness } from "../../lib/llm/provider.js";
 import { registerHandlerDispatcher } from "../../handlers/dispatcher.js";
 import { handlerEventMap } from "../../handlers/registry.js";
+import { maybeCreatePrReviewRoom } from "../../lib/war-room-routing.js";
 
 /**
  * Hivemoot Bot - Governance Automation
@@ -229,6 +230,20 @@ export function app(probotApp: Probot): void {
           graphql: context.octokit,
         });
       }
+
+      // Phase E.1 — war-room routing. Non-fatal: a failure here
+      // never breaks the existing intake / governance flow; the
+      // routing helper logs + returns gracefully on errors. Gated
+      // on `HIVEMOOT_BOT_AGENT_TOKEN` env var so the integration
+      // is opt-in until Phase H fleet migration. Idempotent on
+      // webhook re-delivery (server returns 409 subject_already_open
+      // → routing helper reuses existingRoomId).
+      await maybeCreatePrReviewRoom({
+        owner,
+        repo,
+        prNumber: number,
+        log: context.log,
+      });
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process PR");
       throw error;
