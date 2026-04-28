@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { maybeCreatePrReviewRoom } from "./war-room-routing.js";
+import {
+  maybeCreatePrReviewRoom,
+  maybeEmitSubjectUpdated,
+  derivePrRoomId,
+} from "./war-room-routing.js";
 import { WarRoomApiError } from "./war-room-client.js";
 
 vi.mock("./war-room-client.js", async () => {
@@ -85,15 +89,23 @@ describe("maybeCreatePrReviewRoom", () => {
     });
 
     // Round-trip equality: the roomId returned by the helper must
-    // be the same UUIDv4 it passed into createRoom. If a future
-    // refactor breaks this thread-through, this test catches it.
+    // be the same UUIDv4-shaped value it passed into createRoom.
+    // E.2 changed the source from randomUUID() to the deterministic
+    // derivePrRoomId helper — same PR identity always maps to the
+    // same roomId across opened/synchronize/closed events.
     expect(typeof result.roomId).toBe("string");
     expect(result.roomId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
+    const expectedRoomId = derivePrRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+    });
+    expect(result.roomId).toBe(expectedRoomId);
     expect(createRoom).toHaveBeenCalledWith({
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#42" },
-      roomId: result.roomId,
+      roomId: expectedRoomId,
     });
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ roomId: result.roomId }),
@@ -210,5 +222,189 @@ describe("maybeCreatePrReviewRoom", () => {
         log,
       }),
     ).resolves.toEqual({ roomId: null, skipped: "api_error" });
+  });
+});
+
+describe("derivePrRoomId (E.2 deterministic helper)", () => {
+  it("same PR identity → same roomId across calls", () => {
+    const a = derivePrRoomId({ owner: "hivemoot", repo: "hivemoot", prNumber: 42 });
+    const b = derivePrRoomId({ owner: "hivemoot", repo: "hivemoot", prNumber: 42 });
+    expect(a).toBe(b);
+  });
+
+  it("different PRs → different roomIds", () => {
+    const a = derivePrRoomId({ owner: "hivemoot", repo: "hivemoot", prNumber: 42 });
+    const b = derivePrRoomId({ owner: "hivemoot", repo: "hivemoot", prNumber: 43 });
+    const c = derivePrRoomId({ owner: "hivemoot", repo: "colony", prNumber: 42 });
+    const d = derivePrRoomId({ owner: "other", repo: "hivemoot", prNumber: 42 });
+    expect(new Set([a, b, c, d]).size).toBe(4);
+  });
+
+  it("output matches storage layer's UUIDv4 regex (so rooms.create accepts it)", () => {
+    const id = derivePrRoomId({ owner: "x", repo: "y", prNumber: 1 });
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+});
+
+describe("maybeEmitSubjectUpdated", () => {
+  beforeEach(() => {
+    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
+    log.info.mockReset();
+    log.warn.mockReset();
+    log.error.mockReset();
+    mockedClientCtor.mockReset();
+  });
+
+  it("skips with `no_token` when env var unset", async () => {
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+      changeKind: "synchronize",
+      log,
+    });
+    expect(result).toEqual({ sequence: null, skipped: "no_token" });
+    expect(mockedClientCtor).not.toHaveBeenCalled();
+  });
+
+  it("happy path: sends subject_updated with deterministic roomId + idempotencyKey", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => ({ sequence: 5, replay: false }));
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+      changeKind: "synchronize",
+      headSha: "abc123def",
+      log,
+    });
+    expect(result.sequence).toBe(5);
+
+    const expectedRoomId = derivePrRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+    });
+    expect(appendEvent).toHaveBeenCalledWith({
+      roomId: expectedRoomId,
+      eventType: "subject_updated",
+      body: { change_kind: "synchronize", head_sha: "abc123def" },
+      idempotencyKey: `bot.subject_updated.${expectedRoomId}.synchronize.abc123def`,
+    });
+  });
+
+  it("idempotency key derives from headSha — same sha twice = same key (re-delivery dedupe)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => ({ sequence: 5 }));
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "synchronize", headSha: "sha-A", log,
+    });
+    await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "synchronize", headSha: "sha-A", log,
+    });
+    await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "synchronize", headSha: "sha-B", log,
+    });
+
+    const calls = appendEvent.mock.calls;
+    expect(calls[0][0].idempotencyKey).toBe(calls[1][0].idempotencyKey);
+    expect(calls[0][0].idempotencyKey).not.toBe(calls[2][0].idempotencyKey);
+  });
+
+  it("room_not_found 404 → returns skipped:'no_room' (PR opened pre-war-room)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => {
+      throw new WarRoomApiError(404, "room_not_found", "missing", {});
+    });
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "synchronize", log,
+    });
+    expect(result).toEqual({ sequence: null, skipped: "no_room" });
+  });
+
+  it("status_precondition_failed (queen claimed) → skipped:'api_error', logged warn", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => {
+      throw new WarRoomApiError(
+        409,
+        "status_precondition_failed",
+        "deciding",
+        { actualStatus: "deciding" },
+      );
+    });
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "synchronize", log,
+    });
+    expect(result).toEqual({ sequence: null, skipped: "api_error" });
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("changeKind 'closed' (no headSha) is supported", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => ({ sequence: 7 }));
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+      changeKind: "closed", log,
+    });
+    expect(result.sequence).toBe(7);
+    const callArgs = appendEvent.mock.calls[0][0];
+    expect(callArgs.body).toEqual({ change_kind: "closed" });
+    expect(callArgs.idempotencyKey).toContain("no-sha");
+  });
+
+  it("never throws — webhook handler relies on this for non-fatal contract", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
+    const appendEvent = vi.fn(async () => {
+      throw new TypeError("totally unexpected");
+    });
+    mockedClientCtor.mockImplementation(
+      function (this: { appendEvent: typeof appendEvent }) {
+        this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+
+    await expect(
+      maybeEmitSubjectUpdated({
+        owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+        changeKind: "synchronize", log,
+      }),
+    ).resolves.toEqual({ sequence: null, skipped: "api_error" });
   });
 });

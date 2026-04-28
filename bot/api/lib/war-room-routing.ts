@@ -27,7 +27,47 @@
 
 import { WarRoomClient, WarRoomApiError, prSubjectRef } from "./war-room-client.js";
 import type { Logger } from "pino";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+
+/**
+ * Derive a deterministic UUIDv4-shaped roomId from a PR's identity.
+ * Both `pull_request.opened` (E.1) and `pull_request.synchronize`
+ * (E.2) call this with the same arguments and get the same roomId
+ * — so the bot can act on the room across webhook events without
+ * first looking it up.
+ *
+ * Why deterministic: webhooks for the same PR fire from different
+ * bot processes / deliveries. Without a deterministic derivation,
+ * each fire would mint a fresh UUID, hitting the storage layer's
+ * `subject_already_open` 409 every time and forcing an extra
+ * round-trip to recover the existing roomId.
+ *
+ * SHA-256(`${owner}/${repo}#${prNumber}`) → first 32 hex chars,
+ * formatted as UUIDv4 (set version + variant bits per RFC 4122).
+ * The storage layer's regex
+ * `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
+ * enforces UUIDv4 format; this helper produces a string that
+ * matches that regex while remaining stable per PR.
+ */
+export function derivePrRoomId(args: {
+  owner: string;
+  repo: string;
+  prNumber: number;
+}): string {
+  const subject = `${args.owner}/${args.repo}#${args.prNumber}`;
+  const hash = createHash("sha256").update(subject).digest("hex");
+  // Format hex chars as UUID: 8-4-4-4-12.
+  // Then patch the version nibble (13th hex char → "4") and the
+  // variant nibble (17th hex char → 8/9/a/b) to satisfy UUIDv4.
+  const chars = hash.slice(0, 32).split("");
+  chars[12] = "4"; // version 4
+  // Variant bits: top two bits of byte 8 must be 10. Mask the high
+  // nibble: 0b10xx → "8" | "9" | "a" | "b".
+  const variantNibble = (parseInt(chars[16], 16) & 0x3) | 0x8;
+  chars[16] = variantNibble.toString(16);
+  const joined = chars.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20, 32)}`;
+}
 
 interface MaybeCreatePrReviewRoomArgs {
   owner: string;
@@ -96,18 +136,16 @@ export async function maybeCreatePrReviewRoom(
     prNumber: args.prNumber,
   });
 
-  // Bot-side mint of the roomId (closes #526 guard B1). The server
-  // accepts a caller-supplied roomId via POST /api/rooms body and
-  // falls back to its own crypto.randomUUID() if omitted. The
-  // 201 response serializes RoomCore (NOT RoomCoreWithId) — no
-  // roomId in the body — so threading the minted value through
-  // makes the contract self-consistent: caller knows the roomId
-  // before the round-trip, no response-shape dependency.
-  //
-  // Future E.x slices (subject_updated, terminate, post-PR-comment
-  // referencing the room) get the roomId for free via this return
-  // value.
-  const roomId = randomUUID();
+  // Deterministic roomId derived from the PR identity (E.2).
+  // Same `owner/repo#N` always maps to the same UUIDv4-shaped id,
+  // so synchronize / closed events can hit the same room without
+  // a server-side lookup. Closes #526 guard B1 (no dependency on
+  // the POST 201 response shape — bot owns the id end-to-end).
+  const roomId = derivePrRoomId({
+    owner: args.owner,
+    repo: args.repo,
+    prNumber: args.prNumber,
+  });
 
   try {
     await client.createRoom({ subject, roomId });
@@ -167,6 +205,159 @@ export async function maybeCreatePrReviewRoom(
       "[war-room] createRoom transient error — skipping (will retry on next webhook delivery)",
     );
     return { roomId: null, skipped: "api_error" };
+  }
+}
+
+interface MaybeEmitSubjectUpdatedArgs {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  /** What changed — included in the event body for forensic /
+   * worker-triage signal. */
+  changeKind: "synchronize" | "closed" | "reopened";
+  /** Optional: head SHA after the change (for synchronize events).
+   * Lets workers' triage logic detect "did the diff actually
+   * change" vs "noise event". */
+  headSha?: string;
+  log: Pick<Logger, "info" | "warn" | "error">;
+}
+
+interface MaybeEmitSubjectUpdatedResult {
+  /** Sequence the event landed at, OR null when skipped. */
+  sequence: number | null;
+  skipped?: "no_token" | "api_error" | "no_room";
+}
+
+/**
+ * Emit a `subject_updated` event on the war-room corresponding to
+ * a PR (synchronize / closed / reopened). Returns null + skipped
+ * code when:
+ *   - `HIVEMOOT_BOT_AGENT_TOKEN` env unset (war-room disabled)
+ *   - The room doesn't exist (PR never had a war-room — likely a
+ *     PR opened before war-room integration was enabled, or
+ *     transient API failure on E.1's create call)
+ *   - Status precondition fail (room is `closed` or `deciding` —
+ *     queen has the claim or it's already terminal)
+ *   - Network / 5xx (transient; webhook re-delivery doesn't fire
+ *     because the helper still returns 200 to GitHub)
+ *
+ * Idempotency: caller-supplied key derives from a stable
+ * `(roomId, action, headSha)` tuple — webhook re-deliveries with
+ * the same head SHA don't duplicate events.
+ *
+ * Status precondition (`awaiting_rsvp` / `awaiting_contributions`
+ * only): if the queen has claimed the room (status `deciding`),
+ * the bot's webhook event is buffered until queen releases — that
+ * deferral mechanism is Phase G' (queen module). For E.2, a
+ * `status_precondition_failed` 409 is logged + skipped; no
+ * automatic retry.
+ */
+export async function maybeEmitSubjectUpdated(
+  args: MaybeEmitSubjectUpdatedArgs,
+): Promise<MaybeEmitSubjectUpdatedResult> {
+  const token = process.env.HIVEMOOT_BOT_AGENT_TOKEN;
+  if (!token) {
+    args.log.info(
+      { owner: args.owner, repo: args.repo, pr: args.prNumber },
+      "[war-room] HIVEMOOT_BOT_AGENT_TOKEN unset — skipping subject_updated",
+    );
+    return { sequence: null, skipped: "no_token" };
+  }
+
+  let client: WarRoomClient;
+  try {
+    client = new WarRoomClient({ log: args.log });
+  } catch (err) {
+    args.log.error(
+      { err, owner: args.owner, repo: args.repo, pr: args.prNumber },
+      "[war-room] failed to construct WarRoomClient — skipping subject_updated",
+    );
+    return { sequence: null, skipped: "api_error" };
+  }
+
+  const roomId = derivePrRoomId({
+    owner: args.owner,
+    repo: args.repo,
+    prNumber: args.prNumber,
+  });
+
+  // Idempotency key derived from (roomId, action, headSha). Same
+  // PR + same head SHA = same key, so re-delivery of the same
+  // synchronize event doesn't duplicate the audit entry.
+  const idempotencyKey = `bot.subject_updated.${roomId}.${args.changeKind}.${args.headSha ?? "no-sha"}`;
+
+  const body: Record<string, unknown> = {
+    change_kind: args.changeKind,
+  };
+  if (args.headSha !== undefined) body.head_sha = args.headSha;
+
+  try {
+    const result = await client.appendEvent({
+      roomId,
+      eventType: "subject_updated",
+      body,
+      idempotencyKey,
+    });
+    args.log.info(
+      {
+        owner: args.owner,
+        repo: args.repo,
+        pr: args.prNumber,
+        roomId,
+        sequence: result.sequence,
+        replay: result.replay ?? false,
+        changeKind: args.changeKind,
+      },
+      "[war-room] emitted subject_updated event",
+    );
+    return { sequence: result.sequence };
+  } catch (err) {
+    if (err instanceof WarRoomApiError) {
+      if (err.code === "room_not_found") {
+        // Room doesn't exist for this PR — likely the PR was
+        // opened before war-room integration was enabled, or
+        // E.1's create call failed transiently. Log + skip.
+        args.log.info(
+          {
+            owner: args.owner,
+            repo: args.repo,
+            pr: args.prNumber,
+            roomId,
+            changeKind: args.changeKind,
+          },
+          "[war-room] room not found for PR — likely opened pre-war-room or E.1 failed; skipping subject_updated",
+        );
+        return { sequence: null, skipped: "no_room" };
+      }
+      // Status precondition (`closed` / `deciding`), validation,
+      // etc. — log + skip.
+      args.log.warn(
+        {
+          err,
+          status: err.status,
+          code: err.code,
+          owner: args.owner,
+          repo: args.repo,
+          pr: args.prNumber,
+          roomId,
+          changeKind: args.changeKind,
+        },
+        "[war-room] API rejected subject_updated — skipping (queen-claimed or terminal room)",
+      );
+      return { sequence: null, skipped: "api_error" };
+    }
+    args.log.warn(
+      {
+        err,
+        owner: args.owner,
+        repo: args.repo,
+        pr: args.prNumber,
+        roomId,
+        changeKind: args.changeKind,
+      },
+      "[war-room] subject_updated transient error — skipping (no auto-retry; see file docstring)",
+    );
+    return { sequence: null, skipped: "api_error" };
   }
 }
 
