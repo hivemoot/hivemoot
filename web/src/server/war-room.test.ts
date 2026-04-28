@@ -346,6 +346,90 @@ function makeMockRedis() {
         return [seq];
       }
 
+      // ROOM_DECIDE_CLAIM_SCRIPT — 5 keys, 3 args (D.1.a-iii.b)
+      if (
+        keys.length === 5 &&
+        argv.length === 3 &&
+        script.includes("already_claimed")
+      ) {
+        const [roomK, claimK, statusFromK, statusToK, seqK] = keys;
+        const [roomId, queenRunner, claimTtlSecs] = argv;
+
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus !== "awaiting_contributions") {
+          return [-1, currStatus];
+        }
+        const existingClaim = store.get(claimK);
+        if (existingClaim !== undefined) {
+          const parsed =
+            typeof existingClaim === "string"
+              ? (JSON.parse(existingClaim) as {
+                  runner: string;
+                  throughSequence: number;
+                })
+              : (existingClaim as {
+                  runner: string;
+                  throughSequence: number;
+                });
+          return [
+            0,
+            "already_claimed",
+            parsed.runner,
+            parsed.throughSequence,
+          ];
+        }
+        const seq = store.get(seqK) as number | undefined;
+        if (seq === undefined) return [-1, "no_seq"];
+        const claimJson = JSON.stringify({
+          runner: queenRunner,
+          throughSequence: seq,
+        });
+        // TTL ignored in mock (no time travel simulated); the
+        // caller-set `_opts.ex` would normally apply.
+        store.set(claimK, claimJson);
+        // claimTtlSecs intentionally ignored — mock doesn't simulate
+        // TTL. Tests cover the script semantics, not Redis TTL.
+        void claimTtlSecs;
+        getHash(roomK).set("status", "deciding");
+        getHash(roomK).set("deciding_through_sequence", String(seq));
+        getSet(statusFromK).delete(roomId);
+        getSet(statusToK).add(roomId);
+        return [1, seq];
+      }
+
+      // ROOM_RECOVER_DECIDING_SCRIPT — 6 keys, 2 args (D.1.a-iii.b)
+      if (
+        keys.length === 6 &&
+        argv.length === 2 &&
+        script.includes("claim_active")
+      ) {
+        const [roomK, claimK, statusFromK, statusToK, seqK, eventsK] = keys;
+        const [roomId, eventTemplate] = argv;
+
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus !== "deciding") return [-1, currStatus];
+        if (store.has(claimK)) return [0, "claim_active"];
+
+        const oldSeq = (store.get(seqK) as number | undefined) ?? 0;
+        const seq = oldSeq + 1;
+        store.set(seqK, seq);
+        const eventJson = eventTemplate.replace("__SEQ__", String(seq));
+        getSortedSet(eventsK).push({ member: eventJson, score: seq });
+        getHash(roomK).set("status", "awaiting_contributions");
+        // Empty-string sentinel per design L415 / L523 — must NOT
+        // be coerced via `Number("")===0` (closes #511 builder R1).
+        getHash(roomK).set("deciding_through_sequence", "");
+        getSet(statusFromK).delete(roomId);
+        getSet(statusToK).add(roomId);
+        return [1, seq];
+      }
+
       return null;
     },
   );
@@ -2953,5 +3037,408 @@ describe("D.1.a-ii R4 — participant-state precondition (manager-loop race prot
         redis,
       }),
     ).resolves.toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D.1.a-iii.b — claimSynthesis + recoverDeciding
+// ---------------------------------------------------------------------------
+
+import {
+  SYNTHESIS_CLAIM_TTL_SECS,
+  ROOM_DECIDE_CLAIM_SCRIPT,
+  ROOM_RECOVER_DECIDING_SCRIPT,
+  claimSynthesis,
+  recoverDeciding,
+  RoomClaimAlreadyHeldError,
+  RoomTransitionInvalidStatusError,
+} from "./war-room";
+
+describe("D.1.a-iii.b constants", () => {
+  it("SYNTHESIS_CLAIM_TTL_SECS is 360 (6 min — 1 min above Vercel maxDuration)", () => {
+    expect(SYNTHESIS_CLAIM_TTL_SECS).toBe(360);
+  });
+});
+
+describe("D.1.a-iii.b ROOM_DECIDE_CLAIM_SCRIPT source", () => {
+  it("references status precondition + atomic claim+status flip", () => {
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("awaiting_contributions");
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("deciding");
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("already_claimed");
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("deciding_through_sequence");
+    // Status-set membership migration
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("srem");
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain("sadd");
+    // TTL applied to claim key
+    expect(ROOM_DECIDE_CLAIM_SCRIPT).toContain('"EX"');
+  });
+});
+
+describe("D.1.a-iii.b ROOM_RECOVER_DECIDING_SCRIPT source", () => {
+  it("references claim-active guard + status revert + recovery event", () => {
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain("deciding");
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain("awaiting_contributions");
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain("claim_active");
+    // Empty-string sentinel for cleared deciding_through_sequence
+    // (closes #511 builder R1 — Number("") === 0 misread)
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain('"deciding_through_sequence", ""');
+    // Capped gsub (1 substitution) per #510 guard B1
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain("gsub");
+    expect(ROOM_RECOVER_DECIDING_SCRIPT).toContain(", 1)");
+  });
+});
+
+describe("claimSynthesis", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // Claim requires `awaiting_contributions` — bump for the suite.
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+  });
+
+  it("acquires the claim and returns throughSequence + claimTtlSecs", async () => {
+    const result = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-host-1.pid42.tick0",
+      redis,
+    });
+    expect(result.throughSequence).toBe(1);
+    expect(result.claimTtlSecs).toBe(SYNTHESIS_CLAIM_TTL_SECS);
+
+    // Side effects: status flipped, deciding_through_sequence set,
+    // claim key written, status-set membership migrated.
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("deciding");
+    expect(room?.deciding_through_sequence).toBe(1);
+    const storedClaim = await redis.get<string>(claimKey(RID_A));
+    expect(storedClaim).toBeTruthy();
+    if (!storedClaim) throw new Error("claim missing after acquisition");
+    const claim =
+      typeof storedClaim === "string"
+        ? (JSON.parse(storedClaim) as {
+            runner: string;
+            throughSequence: number;
+          })
+        : (storedClaim as unknown as {
+            runner: string;
+            throughSequence: number;
+          });
+    expect(claim.runner).toBe("queen-host-1.pid42.tick0");
+    expect(claim.throughSequence).toBe(1);
+  });
+
+  it("respects an explicit claimTtlSecs override", async () => {
+    const result = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A",
+      claimTtlSecs: 120,
+      redis,
+    });
+    expect(result.claimTtlSecs).toBe(120);
+  });
+
+  it("second concurrent claim hits status precondition (first claim atomically flipped status → deciding)", async () => {
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A",
+      redis,
+    });
+    // Second claim — status is now `deciding`, so status precondition
+    // fires BEFORE the claim-existence check. This is by design:
+    // status is the canonical state, claim is a secondary signal.
+    // The `already_claimed` branch only fires in desync edge cases
+    // (status=awaiting_contributions but claim already present).
+    try {
+      await claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-B",
+        redis,
+      });
+      throw new Error("expected RoomTransitionInvalidStatusError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomTransitionInvalidStatusError);
+      const tErr = err as RoomTransitionInvalidStatusError;
+      expect(tErr.actualStatus).toBe("deciding");
+      expect(tErr.action).toBe("claim_synthesis");
+    }
+  });
+
+  it("desync edge case: status=awaiting_contributions + claim already present → RoomClaimAlreadyHeldError with holder + throughSeq", async () => {
+    // Manually rig the desync state — this should never happen in
+    // normal flow (claim+status flip is atomic), but the script's
+    // `already_claimed` branch is a defensive safety net for
+    // partial-write recovery bugs or manual ops intervention.
+    await redis.set(
+      claimKey(RID_A),
+      JSON.stringify({ runner: "queen-A", throughSequence: 1 }),
+    );
+    // Status is already awaiting_contributions from beforeEach.
+    try {
+      await claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-B",
+        redis,
+      });
+      throw new Error("expected RoomClaimAlreadyHeldError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomClaimAlreadyHeldError);
+      const claimErr = err as RoomClaimAlreadyHeldError;
+      expect(claimErr.heldByRunner).toBe("queen-A");
+      expect(claimErr.throughSequence).toBe(1);
+      expect(claimErr.roomId).toBe(RID_A);
+    }
+  });
+
+  it("status precondition: rejects awaiting_rsvp with RoomTransitionInvalidStatusError", async () => {
+    // Reset status back to awaiting_rsvp
+    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_rsvp" });
+    try {
+      await claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-A",
+        redis,
+      });
+      throw new Error("expected RoomTransitionInvalidStatusError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomTransitionInvalidStatusError);
+      const tErr = err as RoomTransitionInvalidStatusError;
+      expect(tErr.action).toBe("claim_synthesis");
+      expect(tErr.expectedStatuses).toEqual(["awaiting_contributions"]);
+      expect(tErr.actualStatus).toBe("awaiting_rsvp");
+    }
+  });
+
+  it("status precondition: rejects deciding (idempotent claim attempt) with RoomTransitionInvalidStatusError", async () => {
+    // First claim succeeds and flips status to deciding
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A",
+      redis,
+    });
+    // Manually clear the claim key to simulate the holder having
+    // released without status revert (shouldn't happen but the
+    // script must be defensive).
+    await redis.del(claimKey(RID_A));
+    try {
+      await claimSynthesis({
+        installationId: "12345",
+        roomId: RID_A,
+        queenRunner: "queen-B",
+        redis,
+      });
+      throw new Error("expected RoomTransitionInvalidStatusError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomTransitionInvalidStatusError);
+      const tErr = err as RoomTransitionInvalidStatusError;
+      expect(tErr.actualStatus).toBe("deciding");
+    }
+  });
+
+  it("missing room → RoomNotFoundError", async () => {
+    await expect(
+      claimSynthesis({
+        installationId: "12345",
+        roomId: RID_C, // never created
+        queenRunner: "queen-A",
+        redis,
+      }),
+    ).rejects.toThrow(RoomNotFoundError);
+  });
+});
+
+describe("recoverDeciding", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+  });
+
+  it("reverts deciding → awaiting_contributions when claim TTL has expired (claim missing)", async () => {
+    // Drive the room into `deciding` via claimSynthesis…
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-crashed",
+      redis,
+    });
+    // …then expire the claim key (simulating Redis TTL expiry).
+    await redis.del(claimKey(RID_A));
+
+    const result = await recoverDeciding({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(result.recovered).toBe(true);
+    if (result.recovered) {
+      expect(result.sequence).toBeGreaterThan(1);
+    }
+
+    // Side effects: status reverted, deciding_through_sequence
+    // cleared (empty string sentinel — NOT 0), recovery event emitted.
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("awaiting_contributions");
+    expect(room?.deciding_through_sequence).toBeUndefined();
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    const recoveryEvt = events.find((e) => e.event_type === "room_recovered");
+    expect(recoveryEvt).toBeDefined();
+    expect(recoveryEvt?.actor_role).toBe("manager");
+    expect((recoveryEvt?.body as { reason: string }).reason).toBe(
+      "claim_ttl_expired",
+    );
+  });
+
+  it("skips recovery when claim is still active — returns { recovered: false, reason: 'claim_active' }", async () => {
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-still-running",
+      redis,
+    });
+    // Claim KEY is still set — recovery must skip.
+    const result = await recoverDeciding({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(result.recovered).toBe(false);
+    if (!result.recovered) {
+      expect(result.reason).toBe("claim_active");
+    }
+
+    // Status MUST still be deciding (recovery did not fire).
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("deciding");
+    expect(room?.deciding_through_sequence).toBe(1);
+  });
+
+  it("rejects recovery when room is not in deciding (e.g. already awaiting_contributions)", async () => {
+    // Room is in awaiting_contributions from beforeEach setup.
+    try {
+      await recoverDeciding({
+        installationId: "12345",
+        roomId: RID_A,
+        redis,
+      });
+      throw new Error("expected RoomTransitionInvalidStatusError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomTransitionInvalidStatusError);
+      const tErr = err as RoomTransitionInvalidStatusError;
+      expect(tErr.action).toBe("recover_deciding");
+      expect(tErr.expectedStatuses).toEqual(["deciding"]);
+      expect(tErr.actualStatus).toBe("awaiting_contributions");
+    }
+  });
+
+  it("missing room → RoomNotFoundError", async () => {
+    await expect(
+      recoverDeciding({
+        installationId: "12345",
+        roomId: RID_C,
+        redis,
+      }),
+    ).rejects.toThrow(RoomNotFoundError);
+  });
+
+  it("end-to-end: claim → expire → recover → re-claim cycle works", async () => {
+    // Cycle 1: claim
+    const c1 = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A",
+      redis,
+    });
+    expect(c1.throughSequence).toBe(1);
+
+    // Crash: claim key TTL'd out
+    await redis.del(claimKey(RID_A));
+
+    // Recovery
+    const r = await recoverDeciding({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(r.recovered).toBe(true);
+
+    // Cycle 2: another runner picks it back up
+    const c2 = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-B",
+      redis,
+    });
+    // The recovery event bumped the sequence, so cycle 2's
+    // throughSequence is strictly > cycle 1's. The new claim's
+    // through-sequence reflects the post-recovery state.
+    expect(c2.throughSequence).toBeGreaterThan(c1.throughSequence);
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room?.status).toBe("deciding");
+    expect(room?.deciding_through_sequence).toBe(c2.throughSequence);
+  });
+
+  it("recovery event sequence is captured atomically (drift detection foundation for D.1.a-iii.c)", async () => {
+    await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A",
+      redis,
+    });
+    await redis.del(claimKey(RID_A));
+    const result = await recoverDeciding({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    if (!result.recovered) throw new Error("expected recovery");
+    // The returned sequence is the NEW current sequence (post-recovery).
+    // ROOM_CLOSE in D.1.a-iii.c will compare deciding_through_sequence
+    // against current seq to detect events arrived during synthesis;
+    // the recovery primitive's job is to leave the room in a state
+    // where that comparison is meaningful for the NEXT claim cycle.
+    const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
+    const recovery = events.find((e) => e.event_type === "room_recovered");
+    expect(recovery?.seq).toBe(result.sequence);
   });
 });
