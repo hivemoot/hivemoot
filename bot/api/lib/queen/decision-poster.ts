@@ -133,18 +133,43 @@ export class DecisionPostError extends Error {
 
 /**
  * Parse a `pr_review` subject_ref of the form `{owner}/{repo}#{prNumber}`.
- * Mirrors the format documented at WAR_ROOM_DESIGN.md L165-167.
+ * Mirrors the format documented at WAR_ROOM_DESIGN.md L165-167 and
+ * the storage layer's regex at room-create time.
+ *
+ * Strict regex (closes #540 builder R1):
+ *   - owner / repo: `[A-Za-z0-9._-]+` (GitHub's allowed charset for
+ *     org / repo names; rejects spaces, slashes-other-than-the-
+ *     separator, and unicode)
+ *   - PR number: `[1-9][0-9]*` (no leading zeros; positive integer)
+ *   - Anchored at start AND end of input (no trailing whitespace,
+ *     no extra path segments)
+ *
+ * Storage validates this same shape at room-create time, so a
+ * failure here is a defense-in-depth signal: log + throw with
+ * `DecisionPostError` so the manager loop counts as `postsFailed`
+ * rather than reaching Octokit with a malformed ref and getting
+ * a confusing GitHub 404.
  */
+const PR_SUBJECT_REF_REGEX = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)#([1-9][0-9]*)$/;
+
 function parsePrSubjectRef(
   ref: string,
 ):
   | { ok: true; owner: string; repo: string; prNumber: number }
   | { ok: false; reason: string } {
-  const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(ref);
+  // Defense-in-depth: explicit length cap to keep regex backtracking
+  // bounded even though the regex is linear-time.
+  if (ref.length === 0 || ref.length > 256) {
+    return { ok: false, reason: "shape_mismatch" };
+  }
+  const match = PR_SUBJECT_REF_REGEX.exec(ref);
   if (!match) return { ok: false, reason: "shape_mismatch" };
   const [, owner, repo, prNumberStr] = match;
   const prNumber = Number(prNumberStr);
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    // Unreachable given the regex (which already enforces positive
+    // non-zero-leading integers), but defensive against Number()
+    // edge cases on extreme inputs.
     return { ok: false, reason: "invalid_pr_number" };
   }
   return { ok: true, owner, repo, prNumber };

@@ -167,6 +167,79 @@ describe("GitHubDecisionPoster.postDecision — malformed subject_ref", () => {
   });
 });
 
+describe("GitHubDecisionPoster.postDecision — strict subject_ref regex (R1 #540)", () => {
+  // Closes #540 builder R1: prior regex `^([^/]+)/([^#]+)#(\d+)$`
+  // was too permissive. Tightened to GitHub's actual charset.
+
+  it.each([
+    ["owner/repo/extra#1", "extra path segment"],
+    ["owner with spaces/repo#42", "spaces in owner"],
+    ["owner/repo with spaces#42", "spaces in repo"],
+    ["owner//repo#42", "double slash"],
+    ["owner/repo#0", "PR number zero"],
+    ["owner/repo#01", "leading-zero PR number"],
+    ["owner/repo#042", "leading-zero PR number multi-digit"],
+    ["/repo#42", "missing owner"],
+    ["owner/#42", "missing repo"],
+    ["owner/repo#", "missing PR number"],
+    ["owner/repo#42 ", "trailing space"],
+    ["owner/repo#42\n", "trailing newline"],
+    [" owner/repo#42", "leading space"],
+    ["owner/repo#-1", "negative PR number"],
+    ["owner/repo#1.5", "non-integer PR number"],
+    ["owner/répo#42", "non-ASCII char in repo"],
+    ["owner/re*po#42", "asterisk in repo"],
+  ])("rejects %j (%s)", async (badRef) => {
+    const { octokit, createCommentFn } = makeOctokit({});
+    const poster = new GitHubDecisionPoster({ octokit });
+    await expect(
+      poster.postDecision({ ...PR_ARGS, subjectRef: badRef }),
+    ).rejects.toBeInstanceOf(DecisionPostError);
+    expect(createCommentFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["org/repo#1", { owner: "org", repo: "repo", prNumber: 1 }],
+    ["a/b#42", { owner: "a", repo: "b", prNumber: 42 }],
+    [
+      "my-org/my-repo#100",
+      { owner: "my-org", repo: "my-repo", prNumber: 100 },
+    ],
+    [
+      "my.org/my.repo#7",
+      { owner: "my.org", repo: "my.repo", prNumber: 7 },
+    ],
+    [
+      "my_org/my_repo#9999",
+      { owner: "my_org", repo: "my_repo", prNumber: 9999 },
+    ],
+    ["1org/2repo#1", { owner: "1org", repo: "2repo", prNumber: 1 }],
+  ])("accepts %j", async (goodRef, expected) => {
+    const { octokit, createCommentFn } = makeOctokit({
+      htmlUrl: "https://github.com/example/example/pull/1",
+    });
+    const poster = new GitHubDecisionPoster({ octokit });
+    await poster.postDecision({ ...PR_ARGS, subjectRef: goodRef });
+    expect(createCommentFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: expected.owner,
+        repo: expected.repo,
+        issue_number: expected.prNumber,
+      }),
+    );
+  });
+
+  it("rejects oversized subject_ref (DOS guard)", async () => {
+    const { octokit, createCommentFn } = makeOctokit({});
+    const poster = new GitHubDecisionPoster({ octokit });
+    const huge = "a".repeat(300);
+    await expect(
+      poster.postDecision({ ...PR_ARGS, subjectRef: `${huge}/repo#1` }),
+    ).rejects.toBeInstanceOf(DecisionPostError);
+    expect(createCommentFn).not.toHaveBeenCalled();
+  });
+});
+
 describe("RecordingDecisionPoster", () => {
   it("records calls and returns a fake URL for pr_review", async () => {
     const poster = new RecordingDecisionPoster();
