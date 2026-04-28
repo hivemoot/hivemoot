@@ -27,15 +27,21 @@ import { createModelFromEnv, type ModelResolutionOptions } from "../llm/provider
 
 import {
   QUEEN_SYNTHESIS_SYSTEM_PROMPT,
+  aggregateWorkerVerdicts,
   buildSynthesisPrompt,
+  type WorkerVerdict,
 } from "./prompts.js";
 import { StubSynthesizer } from "./synthesizer.js";
 import type { SynthesisInput, SynthesisOutput, Synthesizer } from "./synthesizer.js";
 
-/** Target byte cap; well below storage's 64 KiB to leave envelope headroom. */
+/** Target byte cap for the FULL assembled output (header + verdict +
+ * LLM prose + footer). The LLM prose budget is the cap minus the
+ * fixed bot-controlled sections — see assembleOutput. Storage caps
+ * decision payload at 64 KiB; we stay well under to leave envelope
+ * headroom. */
 export const QUEEN_SYNTHESIS_TARGET_BYTES = 16 * 1024;
 
-/** Truncation marker when the LLM exceeds the target. */
+/** Truncation marker when the LLM exceeds its prose budget. */
 const TRUNCATION_MARKER = "\n\n_[truncated to fit storage cap]_";
 
 export interface AiSdkSynthesizerConfig {
@@ -64,10 +70,15 @@ export class AiSdkSynthesizer implements Synthesizer {
   }
 
   async synthesize(input: SynthesisInput): Promise<SynthesisOutput> {
+    // Compute the structural verdict floor BEFORE the LLM call —
+    // closes #538 builder R1 (synthesis safety model). The LLM is
+    // told the verdict is fixed; the final output is assembled
+    // deterministically with the verdict in a bot-controlled header.
+    const structuralVerdict = aggregateWorkerVerdicts(input.contributions);
     const userPrompt = buildSynthesisPrompt(input);
 
     this.logger.info(
-      `[queen.synth] start roomId=${input.roomId} throughSequence=${input.throughSequence} participants=${Object.keys(input.participants).length} contributions=${Object.keys(input.contributions).length}`,
+      `[queen.synth] start roomId=${input.roomId} throughSequence=${input.throughSequence} participants=${Object.keys(input.participants).length} contributions=${Object.keys(input.contributions).length} verdict=${structuralVerdict}`,
     );
 
     const result = await withLLMRetry(
@@ -85,14 +96,95 @@ export class AiSdkSynthesizer implements Synthesizer {
       this.logger,
     );
 
-    const trimmed = enforceByteCap(result.text);
-    const truncated = trimmed.length < result.text.length;
+    const assembled = assembleOutput({
+      subjectRef: input.room.subject_ref,
+      structuralVerdict,
+      llmProse: result.text,
+      contributionCount: countNonWithdrawn(input.contributions),
+      withdrewCount: countWithdrawn(input.contributions),
+    });
+    const truncated = byteLength(assembled) < byteLength(buildOutputForLogging(result.text, structuralVerdict, input.room.subject_ref));
+
     this.logger.info(
-      `[queen.synth] done roomId=${input.roomId} bytesProduced=${byteLength(result.text)} bytesEmitted=${byteLength(trimmed)} truncated=${truncated}`,
+      `[queen.synth] done roomId=${input.roomId} bytesProduced=${byteLength(result.text)} bytesEmitted=${byteLength(assembled)} truncated=${truncated} verdict=${structuralVerdict}`,
     );
 
-    return { content: trimmed };
+    return { content: assembled };
   }
+}
+
+/**
+ * Assemble the final synthesis output. Bot-controlled header (with
+ * verdict from code, never the LLM) + LLM prose + bot-controlled
+ * footer attribution. Truncates the LLM prose section to fit within
+ * `QUEEN_SYNTHESIS_TARGET_BYTES` after accounting for the fixed
+ * sections.
+ *
+ * The structural verdict is part of the deterministic header — it
+ * survives any prompt-injection in the LLM prose because the LLM
+ * never gets a chance to write it.
+ */
+function assembleOutput(args: {
+  subjectRef: string;
+  structuralVerdict: WorkerVerdict;
+  llmProse: string;
+  contributionCount: number;
+  withdrewCount: number;
+}): string {
+  const header =
+    `## Synthesis — ${args.subjectRef}\n\n` +
+    `**Verdict:** \`${args.structuralVerdict}\` ` +
+    `_(aggregated from ${args.contributionCount} contribution${args.contributionCount === 1 ? "" : "s"}` +
+    (args.withdrewCount > 0 ? `, ${args.withdrewCount} withdrawn` : "") +
+    `, downgrade-only floor per WAR_ROOM_DESIGN.md §S2)_\n\n` +
+    `---\n\n`;
+  const footer =
+    `\n\n---\n\n` +
+    `_Synthesized by the Hivemoot queen. Verdict computed structurally from validated worker `+
+    `\`body.verdict\` fields; LLM prose summarizes contributions but does not determine the verdict._`;
+
+  // Budget LLM prose to fit within the byte cap after fixed sections.
+  const fixedBytes = byteLength(header) + byteLength(footer);
+  const proseCap = QUEEN_SYNTHESIS_TARGET_BYTES - fixedBytes - byteLength(TRUNCATION_MARKER);
+  const trimmedProse = trimToBytes(args.llmProse, proseCap);
+  const truncated = trimmedProse.length < args.llmProse.length;
+  const proseBlock = trimmedProse + (truncated ? TRUNCATION_MARKER : "");
+
+  return header + proseBlock + footer;
+}
+
+/** Trim a string to at most `maxBytes` UTF-8 bytes, ending on a
+ * newline boundary so fenced code blocks don't split mid-line. */
+function trimToBytes(text: string, maxBytes: number): string {
+  if (byteLength(text) <= maxBytes) return text;
+  const encoded = new TextEncoder().encode(text);
+  const sliced = encoded.slice(0, maxBytes);
+  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(sliced);
+  const lastNewline = decoded.lastIndexOf("\n");
+  return lastNewline > 0 ? decoded.slice(0, lastNewline) : decoded;
+}
+
+function countNonWithdrawn(
+  contributions: Record<string, { withdrawn?: boolean }>,
+): number {
+  return Object.values(contributions).filter((c) => !c.withdrawn).length;
+}
+
+function countWithdrawn(
+  contributions: Record<string, { withdrawn?: boolean }>,
+): number {
+  return Object.values(contributions).filter((c) => c.withdrawn).length;
+}
+
+/** Just for logging: predict what assembleOutput would have emitted
+ * if no truncation occurred. Used to compute the `truncated` flag
+ * for log lines. */
+function buildOutputForLogging(
+  llmProse: string,
+  verdict: WorkerVerdict,
+  subjectRef: string,
+): string {
+  return `## Synthesis — ${subjectRef}\n\n**Verdict:** \`${verdict}\`\n\n---\n\n${llmProse}\n\n---\n\nfooter`;
 }
 
 /**
@@ -132,26 +224,6 @@ export async function createSynthesizer(
     maxOutputTokens: modelResult.config.maxTokens,
     logger: log,
   });
-}
-
-/** Trim text to QUEEN_SYNTHESIS_TARGET_BYTES UTF-8 bytes. Markdown-
- * safe truncation cuts at the last newline before the cap so we
- * don't split a fenced code block in half. Appends the truncation
- * marker. */
-function enforceByteCap(text: string): string {
-  const cap = QUEEN_SYNTHESIS_TARGET_BYTES - byteLength(TRUNCATION_MARKER);
-  if (byteLength(text) <= QUEEN_SYNTHESIS_TARGET_BYTES) {
-    return text;
-  }
-  // Encode and trim by bytes. Find last newline in the trimmed slice
-  // (UTF-8 boundary safe — newline is single-byte).
-  const encoded = new TextEncoder().encode(text);
-  const sliced = encoded.slice(0, cap);
-  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(sliced);
-  // Trim back to last newline so we don't split mid-code-fence.
-  const lastNewline = decoded.lastIndexOf("\n");
-  const cleanCut = lastNewline > 0 ? decoded.slice(0, lastNewline) : decoded;
-  return cleanCut + TRUNCATION_MARKER;
 }
 
 function byteLength(text: string): number {
