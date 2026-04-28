@@ -1003,6 +1003,47 @@ export class RoomContributionTooLargeError extends Error {
 }
 
 /**
+ * Thrown when a participant transition's source state is illegal.
+ *
+ * Closes #510 builder R3: the manager loop's contract (per
+ * WAR_ROOM_DESIGN.md L1055) is that timeouts only fire on
+ * `pending` participants, and synthesis runs once no participants
+ * are pending. Without a state gate, a stale watchdog scan that
+ * read `pending` could race a worker's resolve and overwrite a
+ * `resolved` slot to `timed_out`, corrupting the synthesis trigger.
+ *
+ * Each transition wrapper passes its allowed source states:
+ *   - submitContribution:  pending | resolved   (re-submit allowed)
+ *   - withdrawParticipant: pending | resolved   (withdraw a stale RSVP)
+ *   - withdrawContribution: resolved             (only resolved has a contribution to withdraw)
+ *   - timeoutParticipant:  pending               (per design L1055)
+ *
+ * The script checks `existingP.status` BEFORE the INCR + ZADD and
+ * returns -6 → this error if the source state isn't allowed.
+ */
+export class RoomParticipantStatePreconditionError extends Error {
+  public readonly roomId: string;
+  public readonly role: string;
+  public readonly allowedStates: string[];
+  public readonly actualState: string;
+  constructor(
+    roomId: string,
+    role: string,
+    allowedStates: string[],
+    actualState: string,
+  ) {
+    super(
+      `Participant ${JSON.stringify(role)} in room ${roomId} is in state ${JSON.stringify(actualState)}; this transition requires one of [${allowedStates.map((s) => JSON.stringify(s)).join(", ")}]. Re-read state and retry if appropriate.`,
+    );
+    this.name = "RoomParticipantStatePreconditionError";
+    this.roomId = roomId;
+    this.role = role;
+    this.allowedStates = allowedStates;
+    this.actualState = actualState;
+  }
+}
+
+/**
  * Thrown when withdraw / contribute / withdraw_contribution / timeout
  * is called but the participant slot doesn't exist. Per
  * WAR_ROOM_DESIGN.md L746, `/present` is required before
@@ -1462,6 +1503,10 @@ return {seq}
  *   [10] participantTransform — "resolve" | "withdraw" | "timeout" | "noop"
  *   [11] nowIso               — for resolved_at field
  *   [12] contributionFieldJson — empty = don't write contribution slot
+ *   [13] allowedParticipantStatuses — comma-separated list of allowed
+ *                                     source states for the participant
+ *                                     slot; empty = any. Closes #510
+ *                                     builder R3.
  *
  * Returns:
  *   {seq}                                   success
@@ -1470,6 +1515,8 @@ return {seq}
  *   {-3, "room_not_found"}                  room hash missing
  *   {-4, "owner_conflict", existingAgentId} per-role owner mismatch
  *   {-5, "no_participant"}                  participant slot missing
+ *   {-6, "participant_state_precondition", currentParticipantStatus}
+ *                                           participant status not in allowed list
  */
 export const ROOM_PARTICIPANT_TRANSITION_SCRIPT = `
 if ARGV[2] ~= "" then
@@ -1490,6 +1537,20 @@ if not existingP then return {-5, "no_participant"} end
 local p = cjson.decode(existingP)
 if ARGV[5] == "1" and p.agent_id ~= ARGV[6] then
   return {-4, "owner_conflict", p.agent_id}
+end
+-- Participant-state precondition (closes #510 builder R3): each
+-- transition is gated on the participant's current status so a
+-- stale watchdog scan can't run timeout against an already-resolved
+-- slot, and submitContribution can't reach into withdrew/timed_out
+-- slots without a fresh /present.
+if ARGV[13] ~= "" then
+  local found = false
+  for s in string.gmatch(ARGV[13], "[^,]+") do
+    if s == p.status then found = true; break end
+  end
+  if not found then
+    return {-6, "participant_state_precondition", p.status}
+  end
 end
 local seq = redis.call("incr", KEYS[1])
 local eventJson = string.gsub(ARGV[1], "__SEQ__", tostring(seq), 1)
@@ -1772,6 +1833,16 @@ interface TransitionRoomParticipantArgs {
   /** Atomic in-place transformation applied to the participant slot.
    * `noop` leaves the slot unchanged (used by withdrawContribution). */
   transform: "resolve" | "withdraw" | "timeout" | "noop";
+  /** Allowed source states for the participant slot — gates the
+   * transformation atomically inside the script. Closes #510
+   * builder R3 (manager-loop race). E.g.:
+   *   - submitContribution → ["pending", "resolved"] (re-submit allowed)
+   *   - withdrawParticipant → ["pending", "resolved"]
+   *   - withdrawContribution → ["resolved"]
+   *   - timeoutParticipant → ["pending"] (per design L1055)
+   * Empty = any source state allowed (defensive default; callers
+   * should typically pass an explicit list). */
+  allowedParticipantStatuses?: RoomParticipant["status"][];
   /** Optional contribution-slot HSET. The contribution JSON is passed
    * verbatim (no `__SEQ__` substitution — contributions don't carry
    * sequence-derived fields). */
@@ -1845,6 +1916,7 @@ export async function transitionRoomParticipant(
         args.transform,
         nowIso,
         args.contributionJson ?? "",
+        args.allowedParticipantStatuses?.join(",") ?? "",
       ],
     ),
   );
@@ -1872,6 +1944,14 @@ export async function transitionRoomParticipant(
   }
   if (result.ok === -5) {
     throw new RoomParticipantNotFoundError(args.roomId, args.role);
+  }
+  if (result.ok === -6 && typeof result.tag2 === "string") {
+    throw new RoomParticipantStatePreconditionError(
+      args.roomId,
+      args.role,
+      args.allowedParticipantStatuses ?? [],
+      result.tag2,
+    );
   }
   if (result.ok > 0) return result.ok;
 
@@ -2011,6 +2091,10 @@ export async function withdrawParticipant(
     ownerExpected: args.agentId,
     allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
     transform: "withdraw",
+    // Withdraw a pending RSVP or a resolved (already-contributed)
+    // RSVP. Already-withdrew or timed_out are terminal — caller
+    // gets RoomParticipantStatePreconditionError.
+    allowedParticipantStatuses: ["pending", "resolved"],
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });
@@ -2085,6 +2169,10 @@ export async function submitContribution(args: RSVPCommonArgs & {
     ownerExpected: args.agentId,
     allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
     transform: "resolve",
+    // First contribution from "pending"; re-submit overwrites from
+    // "resolved". A worker who withdrew or got timed_out must
+    // /present again first (re-RSVP flips the slot back to pending).
+    allowedParticipantStatuses: ["pending", "resolved"],
     contributionJson: JSON.stringify(contribution),
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
@@ -2139,6 +2227,9 @@ export async function withdrawContribution(
     ownerExpected: args.agentId,
     allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
     transform: "noop", // participant status unchanged
+    // Only resolved participants have a contribution to withdraw.
+    // Pending hasn't contributed; withdrew/timed_out are terminal.
+    allowedParticipantStatuses: ["resolved"],
     contributionJson: JSON.stringify(tombstone),
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
@@ -2202,6 +2293,14 @@ export async function timeoutParticipant(args: {
     ownerRequired: false,
     allowedRoomStatuses: ["awaiting_contributions"],
     transform: "timeout",
+    // Per design L1055, the manager loop only times out PENDING
+    // participants — once a worker has resolved (contributed),
+    // they're synthesis-ready and the timeout is the wrong signal.
+    // Closes #510 builder R3: a stale watchdog scan that read
+    // "pending" can no longer overwrite a now-resolved slot to
+    // timed_out. Stale calls return RoomParticipantStatePreconditionError
+    // and the watchdog re-scans on the next tick.
+    allowedParticipantStatuses: ["pending"],
     idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
     redis: args.redis,
   });

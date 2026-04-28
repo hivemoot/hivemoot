@@ -129,10 +129,10 @@ function makeMockRedis() {
         return [1, roomId];
       }
 
-      // ROOM_PARTICIPANT_TRANSITION_SCRIPT — 6 keys, 12 args (D.1.a-ii R3)
+      // ROOM_PARTICIPANT_TRANSITION_SCRIPT — 6 keys, 13 args (D.1.a-ii R4)
       if (
         keys.length === 6 &&
-        argv.length === 12 &&
+        argv.length === 13 &&
         script.includes("no_participant")
       ) {
         const [seqK, eventsK, idemK, roomK, participantsK, contributionsK] = keys;
@@ -149,6 +149,7 @@ function makeMockRedis() {
           transform,
           nowIso,
           contributionFieldJson,
+          allowedParticipantStatuses,
         ] = argv;
 
         // 1. Idempotency
@@ -178,6 +179,13 @@ function makeMockRedis() {
         // 4. Owner check (when required)
         if (ownerRequired === "1" && p.agent_id !== ownerExpected) {
           return [-4, "owner_conflict", p.agent_id];
+        }
+        // 4b. Participant-state precondition (R4 closes builder R3)
+        if (allowedParticipantStatuses !== "") {
+          const allowed = allowedParticipantStatuses.split(",");
+          if (!allowed.includes(p.status)) {
+            return [-6, "participant_state_precondition", p.status];
+          }
         }
         // 5. INCR + ZADD + idem
         const oldSeq = (store.get(seqK) as number | undefined) ?? 0;
@@ -1195,6 +1203,7 @@ import {
   RoomContributionTooLargeError,
   RoomParticipantOwnerConflictError,
   RoomParticipantNotFoundError,
+  RoomParticipantStatePreconditionError,
   ContributionValidationError,
 } from "./war-room";
 
@@ -2486,13 +2495,15 @@ describe("withdrawContribution (R2 N4)", () => {
       redis,
     });
     await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
-    // Set up a participant slot so the owner check passes
+    // withdrawContribution requires participant.status === "resolved"
+    // (per R4 — only resolved participants have a contribution to withdraw).
     await redis.hset(participantsKey(RID_A), {
       drone: JSON.stringify({
         agent_id: "drone-1",
         role: "drone",
-        status: "pending",
+        status: "resolved",
         rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
       }),
     });
   });
@@ -2614,5 +2625,178 @@ describe("ROOM_APPEND_EVENT_SCRIPT source (R2 N5)", () => {
     expect(ROOM_APPEND_EVENT_SCRIPT).toMatch(
       /redis\.call\("hset", KEYS\[9\]/,
     );
+  });
+});
+
+// ===========================================================================
+// D.1.a-ii R4 — participant-state precondition (closes builder R3)
+// ===========================================================================
+
+describe("D.1.a-ii R4 — participant-state precondition (manager-loop race protection)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+  });
+
+  it("watchdog timeout loses race against worker resolve (resolved → timeout rejected)", async () => {
+    // Setup: worker presented + contributed → status = "resolved"
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "resolved",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
+      }),
+    });
+    // Stale watchdog scan tries to time out the now-resolved slot
+    try {
+      await timeoutParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        subjectRole: "drone",
+        watchdogRole: "manager",
+        watchdogAgentId: "bot-queen",
+        sequenceObservedByClient: 1,
+        redis,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomParticipantStatePreconditionError);
+      if (err instanceof RoomParticipantStatePreconditionError) {
+        expect(err.actualState).toBe("resolved");
+        expect(err.allowedStates).toEqual(["pending"]);
+      }
+    }
+    // Verify the resolved slot wasn't overwritten
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("resolved");
+  });
+
+  it("submitContribution rejected on withdrew slot (must /present again first)", async () => {
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "withdrew",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
+        withdrew_at_sequence: 5,
+      }),
+    });
+    await expect(
+      submitContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        body: { verdict: "APPROVE", summary: "ok" },
+        rawMd: "ok",
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+    expect(await getRoomContributions({ roomId: RID_A, redis })).toEqual({});
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("withdrew");
+  });
+
+  it("submitContribution rejected on timed_out slot", async () => {
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "timed_out",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
+      }),
+    });
+    await expect(
+      submitContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        body: { verdict: "APPROVE", summary: "ok" },
+        rawMd: "ok",
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+  });
+
+  it("withdrawParticipant rejected on already-withdrew slot", async () => {
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "withdrew",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
+      }),
+    });
+    await expect(
+      withdrawParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+  });
+
+  it("withdrawContribution rejected on pending slot (no contribution to withdraw)", async () => {
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "pending",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+      }),
+    });
+    await expect(
+      withdrawContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+  });
+
+  it("submitContribution from resolved (re-submit) IS allowed", async () => {
+    await redis.hset(participantsKey(RID_A), {
+      drone: JSON.stringify({
+        agent_id: "drone-1",
+        role: "drone",
+        status: "resolved",
+        rsvp_at: "2026-04-28T00:00:00.000Z",
+        resolved_at: "2026-04-28T00:01:00.000Z",
+      }),
+    });
+    await expect(
+      submitContribution({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-1",
+        sequenceObservedByClient: 1,
+        body: { verdict: "REQUEST_CHANGES", summary: "found a regression" },
+        rawMd: "updated",
+        redis,
+      }),
+    ).resolves.toBeGreaterThan(0);
   });
 });
