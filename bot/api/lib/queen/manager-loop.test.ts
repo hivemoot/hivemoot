@@ -10,6 +10,10 @@ import { describe, expect, it } from "vitest";
 import { runQueenManagerLoop } from "./manager-loop.js";
 import { StubSynthesizer, type Synthesizer } from "./synthesizer.js";
 import {
+  RecordingDecisionPoster,
+  type DecisionPoster,
+} from "./decision-poster.js";
+import {
   WarRoomApiError,
   type RoomContribution,
   type RoomListEntry,
@@ -920,5 +924,173 @@ describe("runQueenManagerLoop — R1 #536 guard NB2 (room GC mid-tick)", () => {
     expect(result.claimed).toBe(1);
     expect(result.errors).toBe(1);
     expect(result.closed).toBe(0);
+  });
+});
+
+describe("runQueenManagerLoop — G'.4 decisionPoster integration", () => {
+  it("calls poster.postDecision after successful close (postsSucceeded++)", async () => {
+    const { client } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: { [ROOM_ID]: { guard: resolvedParticipant("guard") } },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    const poster = new RecordingDecisionPoster();
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      decisionPoster: poster,
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(1);
+    expect(result.postsSucceeded).toBe(1);
+    expect(result.postsFailed).toBe(0);
+    expect(poster.calls).toHaveLength(1);
+    expect(poster.calls[0].roomId).toBe(ROOM_ID);
+    expect(poster.calls[0].subjectType).toBe("pr_review");
+    expect(poster.calls[0].subjectRef).toBe("owner/repo#42");
+    // Content matches what closeRoom received (the assembled markdown).
+    expect(poster.calls[0].content).toContain("01234567-89ab-4cde-9012-3456789abcde");
+  });
+
+  it("does NOT post when decisionPoster is omitted (counters stay 0)", async () => {
+    const { client } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: { [ROOM_ID]: { guard: resolvedParticipant("guard") } },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(1);
+    expect(result.postsSucceeded).toBe(0);
+    expect(result.postsFailed).toBe(0);
+    expect(result.postsSkipped).toBe(0);
+  });
+
+  it("post failure → postsFailed++ but room stays closed", async () => {
+    // The decision is durably stored at closeRoom time; a post
+    // failure is observable via the counter, but we don't rewind
+    // the close. Operators can manually re-post or wait for V1.1
+    // retry.
+    const failingPoster: DecisionPoster = {
+      async postDecision() {
+        throw new Error("GitHub 502 upstream");
+      },
+    };
+    const { client } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: { [ROOM_ID]: { guard: resolvedParticipant("guard") } },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      decisionPoster: failingPoster,
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(1);
+    expect(result.postsSucceeded).toBe(0);
+    expect(result.postsFailed).toBe(1);
+  });
+
+  it("postsSkipped++ when poster reports attempted=false (non-pr_review)", async () => {
+    // Subject_type is mention_response (a hypothetical V1.1 case).
+    // Poster returns attempted=false; loop counts as skipped, NOT
+    // failed.
+    const skippingPoster: DecisionPoster = {
+      async postDecision() {
+        return { attempted: false, commentUrl: null };
+      },
+    };
+    const { client } = makeFakeClient({
+      rooms: [
+        makeRoom({
+          subject_type: "mention_response",
+          subject_ref: "owner/repo#42",
+        }),
+      ],
+      participants: { [ROOM_ID]: { guard: resolvedParticipant("guard") } },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      decisionPoster: skippingPoster,
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(1);
+    expect(result.postsSucceeded).toBe(0);
+    expect(result.postsFailed).toBe(0);
+    expect(result.postsSkipped).toBe(1);
+  });
+
+  it("does NOT call poster when close fails (no decision to post)", async () => {
+    const { client } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: { [ROOM_ID]: { guard: resolvedParticipant("guard") } },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+      closeThrowsByRoomId: {
+        [ROOM_ID]: new WarRoomApiError(409, "sequence_drift", "drift", {}),
+      },
+    });
+    const poster = new RecordingDecisionPoster();
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      decisionPoster: poster,
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(0);
+    expect(result.conflicts).toBe(1);
+    expect(poster.calls).toEqual([]);
+  });
+
+  it("counts each room's post outcome independently across one tick", async () => {
+    const happyId = "happy-room";
+    const failPostId = "fail-post-room";
+    const skipId = "skip-room";
+
+    const conditionalPoster: DecisionPoster = {
+      async postDecision(args) {
+        if (args.roomId === failPostId) throw new Error("API down");
+        if (args.roomId === skipId) {
+          return { attempted: false, commentUrl: null };
+        }
+        return {
+          attempted: true,
+          commentUrl: `https://github.com/x/${args.roomId}`,
+        };
+      },
+    };
+
+    const { client } = makeFakeClient({
+      rooms: [
+        makeRoom({ roomId: happyId }),
+        makeRoom({ roomId: failPostId }),
+        makeRoom({ roomId: skipId }),
+      ],
+      participants: {
+        [happyId]: { guard: resolvedParticipant("guard") },
+        [failPostId]: { guard: resolvedParticipant("guard") },
+        [skipId]: { guard: resolvedParticipant("guard") },
+      },
+      contributions: {
+        [happyId]: { guard: presentContribution() },
+        [failPostId]: { guard: presentContribution() },
+        [skipId]: { guard: presentContribution() },
+      },
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      decisionPoster: conditionalPoster,
+      runnerId: RUNNER_ID,
+    });
+    expect(result.closed).toBe(3);
+    expect(result.postsSucceeded).toBe(1);
+    expect(result.postsFailed).toBe(1);
+    expect(result.postsSkipped).toBe(1);
   });
 });
