@@ -31,7 +31,7 @@ import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible }
 import { getLLMReadiness } from "../../lib/llm/provider.js";
 import { registerHandlerDispatcher } from "../../handlers/dispatcher.js";
 import { handlerEventMap } from "../../handlers/registry.js";
-import { maybeCreatePrReviewRoom } from "../../lib/war-room-routing.js";
+import { maybeCreatePrReviewRoom, maybeEmitSubjectUpdated } from "../../lib/war-room-routing.js";
 
 /**
  * Hivemoot Bot - Governance Automation
@@ -342,6 +342,20 @@ export function app(probotApp: Probot): void {
           graphql: context.octokit,
         });
       }
+
+      // Phase E.2 — emit subject_updated event for war-room workers.
+      // Same non-fatal contract as E.1: failures log + return; never
+      // break the existing intake flow. The deterministic roomId
+      // derivation (derivePrRoomId) means we hit the same room as
+      // the E.1 create call without any lookup.
+      await maybeEmitSubjectUpdated({
+        owner,
+        repo,
+        prNumber: number,
+        changeKind: "synchronize",
+        headSha: context.payload.pull_request.head?.sha,
+        log: context.log,
+      });
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process PR update");
       throw error;
@@ -643,6 +657,20 @@ export function app(probotApp: Probot): void {
         const prRef = { owner, repo, prNumber: number };
         await prs.removeGovernanceLabels(prRef);
         await recalculateLeaderboardForPR(context.octokit, context.log, owner, repo, number);
+
+        // Phase E.2 — emit subject_updated event signaling the PR
+        // closed without merge. Workers' triage logic can short-
+        // circuit on this; the watchdog will eventually expire the
+        // room via max_age. Explicit terminate-on-close lands in a
+        // future slice (capability scoping needed — bot doesn't
+        // have rooms.force_close in the queen preset).
+        await maybeEmitSubjectUpdated({
+          owner,
+          repo,
+          prNumber: number,
+          changeKind: "closed",
+          log: context.log,
+        });
       } catch (error) {
         context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process closed PR");
         throw error;
@@ -685,6 +713,17 @@ export function app(probotApp: Probot): void {
           }
         }
       }
+
+      // Phase E.2 — subject_updated for merged PRs. Same rationale
+      // as the closed-without-merge path: workers see the event
+      // and short-circuit. Watchdog handles eventual room expiry.
+      await maybeEmitSubjectUpdated({
+        owner,
+        repo,
+        prNumber: number,
+        changeKind: "closed",
+        log: context.log,
+      });
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process merged PR");
       throw error;

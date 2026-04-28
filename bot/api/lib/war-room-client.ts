@@ -187,6 +187,57 @@ export class WarRoomClient {
     throw new WarRoomApiError(response.status, code, message, parsed);
   }
 
+  /**
+   * Append a meta-event to a room's event log. Used by the bot's
+   * webhook routing for `subject_updated` (PR rebased / new
+   * commits) and `queen_question` events. The route's whitelist
+   * enforces these are the only event types accepted via this
+   * generic surface (lifecycle events go through their dedicated
+   * endpoints).
+   *
+   * Idempotency: the route accepts either a caller-supplied
+   * `idempotencyKey` OR a `sequenceObservedByClient` for server-side
+   * derivation. The bot doesn't track sequence numbers, so it
+   * passes a stable hash-derived key per (roomId, action, payload-fingerprint).
+   *
+   * Returns the event's sequence on success. On replay (server
+   * already processed this idempotency key), the route returns
+   * `{ sequence, replay: true }` — both shapes deserialize cleanly.
+   */
+  async appendEvent(args: {
+    roomId: string;
+    eventType: "subject_updated" | "queen_question";
+    body: Record<string, unknown>;
+    idempotencyKey: string;
+  }): Promise<{ sequence: number; replay?: boolean }> {
+    const response = await this.request(
+      "POST",
+      `/api/rooms/${encodeURIComponent(args.roomId)}/event`,
+      {
+        event_type: args.eventType,
+        body: args.body,
+        idempotencyKey: args.idempotencyKey,
+      },
+    );
+
+    if (response.ok) {
+      return (await response.json()) as { sequence: number; replay?: boolean };
+    }
+
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = (await response.json()) as Record<string, unknown>;
+    } catch {
+      // Non-JSON error body — fall through.
+    }
+    const code = typeof parsed.code === "string" ? parsed.code : "unknown";
+    const message =
+      typeof parsed.message === "string"
+        ? parsed.message
+        : `War-room API ${response.status} (${code})`;
+    throw new WarRoomApiError(response.status, code, message, parsed);
+  }
+
   /** Internal: shared request shape. */
   private async request(
     method: "GET" | "POST" | "DELETE",

@@ -201,3 +201,89 @@ describe("prSubjectRef helper", () => {
       .toEqual({ type: "pr_review", ref: "hivemoot/hivemoot#42" });
   });
 });
+
+describe("WarRoomClient.appendEvent (E.2)", () => {
+  const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";
+
+  it("happy path → 200 returns sequence", async () => {
+    const fetchSpy = makeFetch({ status: 200, body: { sequence: 5 } });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.appendEvent({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: { change_kind: "synchronize" },
+      idempotencyKey: "stable-key",
+    });
+    expect(result.sequence).toBe(5);
+  });
+
+  it("hits the correct path with roomId URI-encoded", async () => {
+    const fetchSpy = makeFetch({ status: 200, body: { sequence: 1 } });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.appendEvent({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: {},
+      idempotencyKey: "k",
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `https://www.hivemoot.dev/api/rooms/${ROOM_ID}/event`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("body includes event_type, body, idempotencyKey", async () => {
+    const fetchSpy = makeFetch({ status: 200, body: { sequence: 1 } });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    await client.appendEvent({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: { change_kind: "synchronize", head_sha: "abc" },
+      idempotencyKey: "key-1",
+    });
+    const callArgs = (fetchSpy as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body).toEqual({
+      event_type: "subject_updated",
+      body: { change_kind: "synchronize", head_sha: "abc" },
+      idempotencyKey: "key-1",
+    });
+  });
+
+  it("replay (200 with replay flag) deserializes correctly", async () => {
+    const fetchSpy = makeFetch({
+      status: 200,
+      body: { sequence: 3, replay: true },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    const result = await client.appendEvent({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: {},
+      idempotencyKey: "k",
+    });
+    expect(result.sequence).toBe(3);
+    expect(result.replay).toBe(true);
+  });
+
+  it("404 room_not_found → WarRoomApiError(code='room_not_found')", async () => {
+    const fetchSpy = makeFetch({
+      status: 404,
+      body: { code: "room_not_found", message: "missing" },
+    });
+    const client = new WarRoomClient({ agentToken: TOKEN, fetch: fetchSpy });
+    try {
+      await client.appendEvent({
+        roomId: ROOM_ID,
+        eventType: "subject_updated",
+        body: {},
+        idempotencyKey: "k",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(WarRoomApiError);
+      expect((err as WarRoomApiError).code).toBe("room_not_found");
+      expect((err as WarRoomApiError).status).toBe(404);
+    }
+  });
+});
