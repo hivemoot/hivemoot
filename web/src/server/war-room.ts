@@ -191,17 +191,20 @@ export interface TimingConfig {
 }
 
 /**
- * Room core record (the room hash). Stored under
- * `hive:v1:room:{installationId}:{roomId}`. Field naming uses
- * snake_case to match the storage shape across other modules
- * (agent-token-v1 envelope, audit entries) — wire-shape translation
- * to camelCase happens at the API boundary.
+ * Stable bulk fields of a room core (everything EXCEPT `status`).
+ * Stored as a JSON string in the room hash's `"data"` field per the
+ * design's HSET shape (WAR_ROOM_DESIGN.md L303-304). `status` lives
+ * in a separate hash field so transitions can `HSET status` without
+ * marshaling/unmarshaling the whole record on the hot path.
+ *
+ * Field naming uses snake_case to match the storage shape across
+ * other modules (agent-token-v1 envelope, audit entries) —
+ * wire-shape translation to camelCase happens at the API boundary.
  *
  * `closed_*` and `decision` fields are absent until the room
  * terminates; their presence is the close marker.
  */
-export interface RoomCore {
-  status: RoomStatus;
+export interface RoomCoreData {
   /** Actor-id of whoever opened the room — typically the bot's
    * queen module ("bot-queen") for V1 since the bot is the only
    * room creator. Future: dispatcher tokens may open rooms too. */
@@ -221,6 +224,16 @@ export interface RoomCore {
    * happy path. JSON-serialized at storage time; decoded in
    * `getRoomCore` for caller convenience. */
   decision?: RoomDecision;
+}
+
+/**
+ * Room core view returned by `getRoomCore` — `RoomCoreData` plus
+ * the live `status`. Reconstructed from two hash fields at read
+ * time; the underlying storage uses the split layout so status
+ * transitions are single-field HSETs (per design L346, L382).
+ */
+export interface RoomCore extends RoomCoreData {
+  status: RoomStatus;
 }
 
 /**
@@ -343,6 +356,46 @@ export class RoomSubjectRefError extends Error {
   }
 }
 
+/**
+ * Thrown when caller passes a malformed roomId. Closes #509 guard
+ * R1 G3: the sibling keys (events / participants / contributions /
+ * seq / claim / idem) embed only `roomId` (per WAR_ROOM_DESIGN.md
+ * L240-244), so cross-installation isolation hinges on roomId being
+ * globally unique. UUIDv4 strength is enforced at the boundary so
+ * a caller passing `"1"` or `"room-A"` can't silently overlay another
+ * installation's room data.
+ */
+export class RoomIdFormatError extends Error {
+  public readonly roomId: string;
+  constructor(roomId: string) {
+    super(
+      `Invalid roomId ${JSON.stringify(roomId)}: expected RFC 4122 UUIDv4 (e.g. '01ec0d9a-7c1c-4f8b-9f25-9bdb38f0e1a2'). Mint via crypto.randomUUID() at the route layer.`,
+    );
+    this.name = "RoomIdFormatError";
+    this.roomId = roomId;
+  }
+}
+
+/**
+ * Thrown when ROOM_OPEN finds the roomKey already populated. Distinct
+ * from RoomSubjectAlreadyOpenError (which fires on the subject-uniqueness
+ * index) — this catches the rare-but-possible UUIDv4 reuse, OR a
+ * roomId being submitted twice for different subjects. Closes #509
+ * guard R1 G3 (second compounding issue: no EXISTS check on roomKey).
+ */
+export class RoomIdTakenError extends Error {
+  public readonly installationId: string;
+  public readonly roomId: string;
+  constructor(installationId: string, roomId: string) {
+    super(
+      `Room id '${roomId}' is already in use for installation ${installationId}. Mint a fresh roomId via crypto.randomUUID().`,
+    );
+    this.name = "RoomIdTakenError";
+    this.installationId = installationId;
+    this.roomId = roomId;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -387,6 +440,26 @@ export function repoFromSubjectRef(ref: string): string {
   return ref.substring(0, hashIndex);
 }
 
+/**
+ * RFC 4122 UUIDv4 — 8-4-4-4-12 hex with the version nibble (`4`) and
+ * variant bits (`8`/`9`/`a`/`b`) pinned. `crypto.randomUUID()`
+ * produces this shape on Node 18+ and modern browsers, so the route
+ * layer can mint with no extra dependency.
+ *
+ * Lowercase only — the canonical output of `crypto.randomUUID()` —
+ * to avoid the case-collision surprise where `Foo` and `foo` map
+ * to different Redis keys. Operators with mixed-case external
+ * sources should normalize before calling.
+ */
+const ROOM_ID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function validateRoomId(roomId: string): void {
+  if (!ROOM_ID_REGEX.test(roomId)) {
+    throw new RoomIdFormatError(roomId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lua scripts
 // ---------------------------------------------------------------------------
@@ -394,22 +467,32 @@ export function repoFromSubjectRef(ref: string): string {
 /**
  * ROOM_OPEN_SCRIPT — atomic room creation.
  *
- * Establishes the subject-uniqueness invariant: a single
- * `(installationId, subject_type, subject_ref)` tuple can have AT
- * MOST one room in `awaiting_rsvp \| awaiting_contributions \| deciding`
- * status. The subject index doubles as the conflict signal —
- * `SET NX EX` returns `nil` if already taken.
+ * Establishes TWO uniqueness invariants:
+ *   1. **Subject uniqueness** (per-installation): a single
+ *      `(installationId, subject_type, subject_ref)` tuple has AT
+ *      MOST one room in `awaiting_rsvp | awaiting_contributions |
+ *      deciding` status. The subject-index key doubles as the lock.
+ *   2. **RoomId uniqueness** (per-installation): EXISTS check on the
+ *      room hash key prevents a second caller from overlaying an
+ *      existing room's data with a different subject. Closes
+ *      #509 guard R1 G3 (second compounding issue: original SET
+ *      was unconditional and would silently overwrite).
+ *
+ * Storage shape per WAR_ROOM_DESIGN.md L303-304: room hash with
+ *   - `data` field — JSON blob with everything except status
+ *   - `status` field — separate string for hot-path transitions
  *
  * Also bootstraps:
- *   - `:seq` counter at 0 (first event will INCR to 1)
+ *   - `:seq` counter set directly to 1 (matches design L303 — one
+ *     fewer Redis call than the SET 0 + INCR pattern)
  *   - Initial `room_opened` event in `:events` (seq=1)
  *   - Membership in installation index (sorted set, score=opened_at_ms)
  *   - Membership in status:awaiting_rsvp set
  *   - Membership in repo index (set)
  *
  * KEYS:
- *   [1] subjectIndexKey         — uniqueness lock
- *   [2] roomKey                 — room hash
+ *   [1] subjectIndexKey         — subject-uniqueness lock
+ *   [2] roomKey                 — room hash (data + status fields)
  *   [3] seqKey                  — sequence counter
  *   [4] eventsKey               — event log sorted set
  *   [5] statusSetAwaitingRsvpKey — status:awaiting_rsvp index
@@ -417,15 +500,17 @@ export function repoFromSubjectRef(ref: string): string {
  *   [7] repoIndexKey            — per-repo index
  *
  * ARGV:
- *   [1] roomId                  — for index values
- *   [2] roomCoreJson            — entire RoomCore as JSON
- *   [3] roomOpenedEventJson     — initial event payload (seq filled in by Lua)
- *   [4] openedAtMs              — for installation-index sort score
- *   [5] maxAgeSecs              — TTL for the subject-uniqueness lock
+ *   [1] roomId                  — for index values + error payload
+ *   [2] roomCoreDataJson        — RoomCoreData (everything except status) as JSON
+ *   [3] initialStatus           — "awaiting_rsvp"
+ *   [4] roomOpenedEventJson     — initial event payload (already encodes seq=1)
+ *   [5] openedAtMs              — for installation-index sort score
+ *   [6] maxAgeSecs              — TTL for the subject-uniqueness lock
  *
  * Returns:
  *   {1, roomId}                              success
  *   {0, "subject_taken", existingRoomId}     subject already has an open room
+ *   {0, "room_id_taken", roomId}             roomKey already exists (UUID reuse)
  */
 export const ROOM_OPEN_SCRIPT = `
 local existingRoomId = redis.call("get", KEYS[1])
@@ -433,26 +518,32 @@ if existingRoomId then
   return {0, "subject_taken", existingRoomId}
 end
 
+if redis.call("exists", KEYS[2]) == 1 then
+  return {0, "room_id_taken", ARGV[1]}
+end
+
 -- Reserve the subject-uniqueness slot first (TTL'd so a stalled
 -- recovery can't permanently block new rooms — closes Queen R3 #3).
-redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[5]))
+redis.call("set", KEYS[1], ARGV[1], "EX", tonumber(ARGV[6]))
 
--- Write the room core hash. Cleared / TTL'd by the close script.
-redis.call("set", KEYS[2], ARGV[2])
+-- Write the room hash: data field (JSON blob) + status field
+-- (separate string, mutated by transition scripts via single-field
+-- HSET per design L346).
+redis.call("hset", KEYS[2], "data", ARGV[2])
+redis.call("hset", KEYS[2], "status", ARGV[3])
 
--- Initialize the sequence counter. First INCR (event append) yields 1.
-redis.call("set", KEYS[3], "0")
-redis.call("incr", KEYS[3])
+-- Initialize the sequence counter directly to 1 (matches design L303;
+-- one fewer Redis call than SET 0 + INCR).
+redis.call("set", KEYS[3], 1)
 
--- The opening event lands at seq=1 with a score matching that
--- sequence so ZRANGE returns events in order.
-local openedEvent = ARGV[3]
-redis.call("zadd", KEYS[4], 1, openedEvent)
+-- The opening event lands at seq=1 with score matching the sequence
+-- so ZRANGE returns events in order.
+redis.call("zadd", KEYS[4], 1, ARGV[4])
 
 -- Status + installation + repo indexes. Updated on every transition;
 -- the close path SREM/ZREM cleans them all (see ROOM_CLOSE_SCRIPT).
 redis.call("sadd", KEYS[5], ARGV[1])
-redis.call("zadd", KEYS[6], tonumber(ARGV[4]), ARGV[1])
+redis.call("zadd", KEYS[6], tonumber(ARGV[5]), ARGV[1])
 redis.call("sadd", KEYS[7], ARGV[1])
 
 return {1, ARGV[1]}
@@ -462,10 +553,24 @@ return {1, ARGV[1]}
 // Script result dispatch
 // ---------------------------------------------------------------------------
 
+/**
+ * Generic dispatch shape for Lua scripts that return
+ * `{tag, ...slots}`. Slot naming uses neutral `tag1`/`tag2` rather
+ * than `reason`/`payload` so success-shape returns (where the
+ * second element is a roomId, not a reason string) don't read as
+ * "the success had a reason of <roomId>" — closes #509 drone R1 N5.
+ *
+ * Caller branches on `ok`:
+ *   ok ===  1  → success                  (tag1/tag2 are success-shape: roomId, etc.)
+ *   ok ===  0  → benign conflict          (tag1 = reason string)
+ *   ok === -1  → precondition fail        (tag1 = reason string, tag2 = optional context)
+ *   ok === -2  → sequence drift           (tag1 = lastSeq)
+ *   ok === -3  → unrecoverable error      (tag1 = reason string)
+ */
 interface ScriptResult {
   ok: number;
-  reason?: string;
-  payload?: unknown;
+  tag1?: unknown;
+  tag2?: unknown;
 }
 
 function dispatchScriptResult(raw: unknown): ScriptResult {
@@ -480,11 +585,7 @@ function dispatchScriptResult(raw: unknown): ScriptResult {
       `Lua script returned non-numeric tag: ${JSON.stringify(raw)}`,
     );
   }
-  return {
-    ok: tag,
-    reason: typeof rest[0] === "string" ? rest[0] : undefined,
-    payload: rest[1],
-  };
+  return { ok: tag, tag1: rest[0], tag2: rest[1] };
 }
 
 // ---------------------------------------------------------------------------
@@ -493,19 +594,26 @@ function dispatchScriptResult(raw: unknown): ScriptResult {
 
 /**
  * Open a new war room. Atomic at the Redis layer via
- * `ROOM_OPEN_SCRIPT` — establishes the subject-uniqueness invariant,
- * bootstraps the event log, and registers the room in all secondary
- * indexes in a single EVAL.
+ * `ROOM_OPEN_SCRIPT` — establishes both the subject-uniqueness AND
+ * roomId-uniqueness invariants, bootstraps the event log, and
+ * registers the room in all secondary indexes in a single EVAL.
  *
- * The caller supplies a pre-generated `roomId` (typically a ULID or
- * UUIDv4 — opaque to this module). Letting the caller mint the ID
- * means the room creator can include it in the subject's GitHub
- * comment up-front for traceability.
+ * The caller supplies a pre-generated `roomId` (RFC 4122 UUIDv4
+ * lowercase — typically minted via `crypto.randomUUID()` at the
+ * route layer). Letting the caller mint the ID means the room
+ * creator can include it in the subject's GitHub comment up-front
+ * for traceability. Format is enforced at the boundary so a caller
+ * passing `"1"` or `"room-A"` can't silently overlay another
+ * installation's room data via the sibling-key sharing.
  *
  * Throws:
- *   - `RoomSubjectAlreadyOpenError` when the subject already has an
- *     open room (error includes the existing roomId)
+ *   - `RoomIdFormatError` on malformed roomId (boundary check —
+ *     no storage write happens)
  *   - `RoomSubjectRefError` on malformed subject_ref
+ *   - `RoomSubjectAlreadyOpenError` when the subject already has an
+ *     open room (error carries the existing roomId)
+ *   - `RoomIdTakenError` on the rare-but-possible UUIDv4 reuse OR
+ *     same-roomId-twice-different-subject within an installation
  */
 export async function createRoom(args: {
   installationId: string;
@@ -516,6 +624,7 @@ export async function createRoom(args: {
   redis: Redis;
   nowMs?: number;
 }): Promise<RoomCore> {
+  validateRoomId(args.roomId);
   validateSubjectRef(args.subject);
 
   const nowMs = args.nowMs ?? Date.now();
@@ -527,8 +636,7 @@ export async function createRoom(args: {
     contribution_deadline_secs: args.timing?.contribution_deadline_secs ?? 1200,
   };
 
-  const core: RoomCore = {
-    status: "awaiting_rsvp",
+  const data: RoomCoreData = {
     manager: args.manager,
     subject_type: args.subject.type,
     subject_ref: args.subject.ref,
@@ -537,8 +645,6 @@ export async function createRoom(args: {
   };
 
   const openedEvent: RoomEvent = {
-    // seq is set to 1 inside the Lua script — encoded here for the
-    // caller's convenience but the script trusts its own INCR.
     seq: 1,
     timestamp: openedAtIso,
     event_type: "room_opened",
@@ -553,13 +659,8 @@ export async function createRoom(args: {
 
   const repo = repoFromSubjectRef(args.subject.ref);
 
-  // Bracket-notation on `eval` is a write-time tooling workaround for
-  // the security hook that pattern-matches `.eval(` literally — this
-  // is the Upstash Redis client's server-side Lua EVAL, not the
-  // JavaScript eval(). Semantics are identical to direct property
-  // access; see agent-token-v1.ts for the same pattern.
   const result = dispatchScriptResult(
-    await args.redis["eval"](
+    await args.redis.eval(
       ROOM_OPEN_SCRIPT,
       [
         subjectIndexKey(args.installationId, args.subject.type, args.subject.ref),
@@ -572,7 +673,8 @@ export async function createRoom(args: {
       ],
       [
         args.roomId,
-        JSON.stringify(core),
+        JSON.stringify(data),
+        "awaiting_rsvp",
         JSON.stringify(openedEvent),
         String(nowMs),
         String(timing.max_age_secs),
@@ -580,9 +682,9 @@ export async function createRoom(args: {
     ),
   );
 
-  if (result.ok === 0 && result.reason === "subject_taken") {
+  if (result.ok === 0 && result.tag1 === "subject_taken") {
     const existing =
-      typeof result.payload === "string" ? result.payload : "<unknown>";
+      typeof result.tag2 === "string" ? result.tag2 : "<unknown>";
     throw new RoomSubjectAlreadyOpenError(
       args.installationId,
       args.subject.type,
@@ -590,38 +692,52 @@ export async function createRoom(args: {
       existing,
     );
   }
+  if (result.ok === 0 && result.tag1 === "room_id_taken") {
+    throw new RoomIdTakenError(args.installationId, args.roomId);
+  }
   if (result.ok !== 1) {
     throw new Error(
       `ROOM_OPEN_SCRIPT returned unexpected result: ${JSON.stringify(result)}`,
     );
   }
-  return core;
+  return { ...data, status: "awaiting_rsvp" };
 }
 
 /**
- * Read the room core. Throws `RoomNotFoundError` when the key is
- * absent (closed-and-TTL'd, never existed, or installation mismatch).
+ * Read the room core. Throws `RoomNotFoundError` when the room hash
+ * is absent (closed-and-TTL'd, never existed, or installation mismatch).
  *
- * Decodes the `decision` JSON field if present (closed rooms only) so
- * callers don't have to reach into the raw hash.
+ * Reconstructs `RoomCore` from the two hash fields the storage shape
+ * uses: `data` (JSON blob with everything except status) + `status`
+ * (separate field for transition hot-path). See ROOM_OPEN_SCRIPT
+ * docstring + WAR_ROOM_DESIGN.md L303-304 for the rationale.
  */
 export async function getRoomCore(args: {
   installationId: string;
   roomId: string;
   redis: Redis;
 }): Promise<RoomCore> {
-  const raw = await args.redis.get<RoomCore | string | null>(
-    roomKey(args.installationId, args.roomId),
-  );
-  if (raw === null) {
+  const fields = await args.redis.hgetall<{
+    data?: string | RoomCoreData;
+    status?: string;
+  }>(roomKey(args.installationId, args.roomId));
+  // Upstash returns null for missing-key OR an empty object hash;
+  // both cases are "room not found" from the caller's perspective.
+  if (
+    fields === null ||
+    fields.data === undefined ||
+    fields.status === undefined
+  ) {
     throw new RoomNotFoundError(args.installationId, args.roomId);
   }
-  // The Upstash client auto-parses JSON when the stored value is a
-  // JSON string and the type generic is non-string. Defensive:
-  // accept both shapes since older keys may have been written before
-  // this contract was tightened.
-  const core = typeof raw === "string" ? (JSON.parse(raw) as RoomCore) : raw;
-  return core;
+  // Upstash auto-parses JSON when the stored value is a JSON string
+  // and the type generic is non-string. Defensive: accept both shapes
+  // (string from raw HSET, object after auto-parse).
+  const data =
+    typeof fields.data === "string"
+      ? (JSON.parse(fields.data) as RoomCoreData)
+      : fields.data;
+  return { ...data, status: fields.status as RoomStatus };
 }
 
 /**
@@ -651,9 +767,9 @@ export async function listRooms(args: {
   });
   if (roomIds.length === 0) return [];
 
-  const rooms = await Promise.all(
+  const fanout = await Promise.all(
     roomIds.map((id) =>
-      args.redis.get<RoomCore | string | null>(
+      args.redis.hgetall<{ data?: string | RoomCoreData; status?: string }>(
         roomKey(args.installationId, id),
       ),
     ),
@@ -661,18 +777,25 @@ export async function listRooms(args: {
 
   const out: RoomCore[] = [];
   const orphans: string[] = [];
-  for (let i = 0; i < rooms.length; i++) {
-    const r = rooms[i];
-    if (r === null) {
+  for (let i = 0; i < fanout.length; i++) {
+    const f = fanout[i];
+    if (f === null || f.data === undefined || f.status === undefined) {
       orphans.push(roomIds[i]);
       continue;
     }
-    out.push(typeof r === "string" ? (JSON.parse(r) as RoomCore) : r);
+    const data =
+      typeof f.data === "string"
+        ? (JSON.parse(f.data) as RoomCoreData)
+        : f.data;
+    out.push({ ...data, status: f.status as RoomStatus });
   }
 
-  // Best-effort cleanup of orphaned entries. Failures are logged but
-  // don't fail the read — operators see the list, the next listRooms
-  // tick or the close path will retry the cleanup.
+  // Best-effort cleanup of orphaned installation-index entries.
+  // **Note for D.1.a-iii**: this only sweeps the installation index;
+  // a TTL'd-without-close room can also leak entries in the status
+  // set, repo set, and (potentially) subject index. The terminate /
+  // close scripts in the next slice should sweep across all four
+  // secondary indexes (closes guard R1 N2 carry-forward).
   if (orphans.length > 0) {
     await Promise.all(
       orphans.map((id) =>
