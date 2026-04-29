@@ -3594,6 +3594,41 @@ export async function listRoomEvents(args: {
   return raw.map((s) => JSON.parse(s) as RoomEvent);
 }
 
+/**
+ * Read the N most-recent events for a room, returned in chronological
+ * order (oldest-first within the returned slice).
+ *
+ * For dashboards / detail views that want to surface recent activity
+ * (close, recovery, subject_updated, latest contributions). Distinct
+ * from `listRoomEvents` which reads forward from `since` and would
+ * return the OLDEST events for a room with more than `limit` events.
+ *
+ * Uses ZRANGE BYSCORE with `rev: true` to fetch the highest-scored
+ * `limit` entries (newest seq), then reverses client-side to deliver
+ * chronological order so callers can render top-down naturally.
+ */
+export async function listRecentRoomEvents(args: {
+  roomId: string;
+  limit?: number;
+  redis: Redis;
+}): Promise<RoomEvent[]> {
+  const limit = args.limit ?? 200;
+  const raw = await args.redis.zrange<string[]>(
+    eventsKey(args.roomId),
+    "+inf",
+    0,
+    {
+      byScore: true,
+      rev: true,
+      offset: 0,
+      count: limit,
+    },
+  );
+  // ZREVRANGE returns newest-first; reverse for chronological
+  // delivery so callers don't need to know about the rev: detail.
+  return raw.map((s) => JSON.parse(s) as RoomEvent).reverse();
+}
+
 /** Read all participants for a room, keyed by role. Returns `{}`
  * for rooms with no participants yet (or rooms that don't exist —
  * caller should `getRoomCore` separately if existence is meaningful). */
