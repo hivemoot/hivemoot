@@ -2115,6 +2115,47 @@ describe("Per-runner agent_id (G5 subscriber-mode)", () => {
     ).rejects.toThrow(/first-wins|already claimed/);
   });
 
+  it("subscriber-mode regression — concurrent poll: same observedSequence + distinct agentId → 409 (NOT 200 replay)", async () => {
+    // Closes #522 builder R2: the actual concurrent-poll case the
+    // first regression test missed. Two runners sharing a bearer
+    // observe the same /watching response sequence (race window
+    // between watching tick and present call), then both call
+    // /present with seq=1.
+    //
+    // Without per-runner idem-lane separation:
+    //   - Runner A writes (room, drone, present, seq=1) idem key
+    //   - Runner B's idem check matches → RoomEventIdempotencyReplayError
+    //   - Route maps to 200 { replay: true } — runner B believes
+    //     its RSVP succeeded but it's actually runner A's slot
+    //
+    // With per-runner idem (this test):
+    //   - Runner A writes (room, drone, present, runner-A, seq=1)
+    //   - Runner B's idem key is DIFFERENT (runner-B in the tuple)
+    //   - Idem check passes (no collision)
+    //   - Owner check fires → RoomParticipantOwnerConflictError
+    //   - Route maps to 409 owner_conflict — correct rejection
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-A",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1, // SAME observed sequence
+      redis,
+    });
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-runner-B",
+        actorId: "shared-token-name",
+        sequenceObservedByClient: 1, // SAME observed sequence as above
+        redis,
+      }),
+    ).rejects.toThrow(/first-wins|already claimed/);
+  });
+
   it("back-compat: actorId omitted defaults to agentId (existing call sites)", async () => {
     // Pre-#522 callers passed only agentId. The default actorId →
     // agentId behavior preserves their semantics so they don't

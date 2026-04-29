@@ -1628,25 +1628,46 @@ const ROLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
 
 /**
  * Server-canonical idempotency key derivation. Input is a stable
- * tuple of (roomId, role, action, sequenceObservedByClient); SHA-256
- * keeps the key opaque + bounded-length while making collisions
- * cryptographically negligible.
+ * tuple of (roomId, role, action, agentId, sequenceObservedByClient);
+ * SHA-256 keeps the key opaque + bounded-length while making
+ * collisions cryptographically negligible.
  *
  * `sequenceObservedByClient` is the `If-Room-Sequence-At-Or-After`
  * header value the client read when constructing the request. Two
- * retries from the same client see the same observed sequence and
- * thus derive the same key — that's the desired behavior for the
- * replay-detection path.
+ * retries from the same client see the same observed sequence + same
+ * agentId and thus derive the same key — that's the desired behavior
+ * for the replay-detection path.
+ *
+ * **Per-runner idempotency** (#522 / G5 — closes builder R2):
+ * `agentId` is included so two runners sharing a bearer (subscriber-
+ * mode) AND observing the same sequence DON'T collide on the idem
+ * key. Without this, runner A wins the idem write, then runner B
+ * gets RoomEventIdempotencyReplayError (which the route maps to 200
+ * `replay: true`) — runner B believes its RSVP succeeded but it's
+ * actually runner A's slot. The owner check that should reject B
+ * runs AFTER the idem check in the script, so it never fires. Adding
+ * agentId to the key forces B's request to go through the script's
+ * owner check, where it correctly gets 409 owner_conflict.
+ *
+ * `agentId` is optional in the function signature for back-compat
+ * with non-RSVP actions (decide, close, subject_updated, etc.) that
+ * don't have a per-runner identity. RSVP actions (present, withdraw,
+ * contribute) MUST pass it.
  */
 export function deriveIdempotencyKey(args: {
   roomId: string;
   role: string;
   action: RoomEventAction;
   sequenceObservedByClient: number;
+  /** Per-runner identity for subscriber-mode idem-lane separation
+   * (#522). Omit for non-RSVP actions where there's no per-runner
+   * concept. */
+  agentId?: string;
 }): string {
+  const agentSegment = args.agentId !== undefined ? `:${args.agentId}` : "";
   return createHash("sha256")
     .update(
-      `v1:${args.roomId}:${args.role}:${args.action}:${args.sequenceObservedByClient}`,
+      `v1:${args.roomId}:${args.role}:${args.action}${agentSegment}:${args.sequenceObservedByClient}`,
     )
     .digest("hex");
 }
@@ -2775,6 +2796,11 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       roomId: args.roomId,
       role: args.role,
       action: "present",
+      // #522 builder R2: per-runner idem-lane separation. Without
+      // this, two runners sharing a bearer + observing same seq
+      // collide on the idem key and runner B gets a spurious
+      // 200 replay instead of 409 owner_conflict.
+      agentId: args.agentId,
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
@@ -2828,6 +2854,7 @@ export async function withdrawParticipant(
       roomId: args.roomId,
       role: args.role,
       action: "withdraw_participant",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,
@@ -2908,6 +2935,7 @@ export async function submitContribution(args: RSVPCommonArgs & {
       roomId: args.roomId,
       role: args.role,
       action: "contribute",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,
@@ -2967,6 +2995,7 @@ export async function withdrawContribution(
       roomId: args.roomId,
       role: args.role,
       action: "withdraw_contribution",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,
