@@ -63,6 +63,48 @@ export interface HivemootGetArgs extends HivemootClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Shared response-handling for both GET and POST. Parses 2xx JSON or
+ * extracts the server's structured `{ code, message }` error envelope
+ * and throws a `CliError` with the same exit-code mapping (401 → 2,
+ * everything else → 3).
+ */
+async function handleResponse<T>(response: Response, urlPath: string): Promise<T> {
+  if (response.ok) {
+    try {
+      return (await response.json()) as T;
+    } catch (err) {
+      throw new CliError(
+        `Invalid JSON response from ${urlPath}: ${err instanceof Error ? err.message : String(err)}`,
+        "PARSE_ERROR",
+        3,
+      );
+    }
+  }
+
+  // Try to extract the server's structured error envelope
+  // (`{ code, message }`) — both 4xx and 5xx routes use it.
+  let serverCode: string | undefined;
+  let serverMessage: string | undefined;
+  try {
+    const body = (await response.json()) as { code?: unknown; message?: unknown };
+    if (typeof body.code === "string") serverCode = body.code;
+    if (typeof body.message === "string") serverMessage = body.message;
+  } catch {
+    // Non-JSON body (e.g., plain "Unauthorized" or empty 401) — fall
+    // through to the generic message below.
+  }
+
+  const summary = serverMessage ?? response.statusText ?? "request failed";
+  // 401 is "fix your token" → exit 2; everything else is exit 3.
+  const exitCode = response.status === 401 ? 2 : 3;
+  throw new CliError(
+    `${response.status} ${summary} (${urlPath})`,
+    serverCode ?? `HTTP_${response.status}`,
+    exitCode,
+  );
+}
+
 export async function hivemootGet<T>(args: HivemootGetArgs): Promise<T> {
   const baseUrl = resolveApiUrl(args);
   const token = resolveToken(args);
@@ -94,37 +136,45 @@ export async function hivemootGet<T>(args: HivemootGetArgs): Promise<T> {
     );
   }
 
-  if (response.ok) {
-    try {
-      return (await response.json()) as T;
-    } catch (err) {
-      throw new CliError(
-        `Invalid JSON response from ${url.pathname}: ${err instanceof Error ? err.message : String(err)}`,
-        "PARSE_ERROR",
-        3,
-      );
-    }
-  }
+  return handleResponse<T>(response, url.pathname);
+}
 
-  // Try to extract the server's structured error envelope
-  // (`{ code, message }`) — both 4xx and 5xx routes use it.
-  let serverCode: string | undefined;
-  let serverMessage: string | undefined;
+export interface HivemootPostArgs<TBody> extends HivemootClientOptions {
+  /** Path relative to base URL — must start with `/`. */
+  path: string;
+  /** Request body. Will be JSON-serialized. */
+  body: TBody;
+  /** Optional fetch override (testing). Defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+export async function hivemootPost<TBody, TResponse>(
+  args: HivemootPostArgs<TBody>,
+): Promise<TResponse> {
+  const baseUrl = resolveApiUrl(args);
+  const token = resolveToken(args);
+  const fetchFn = args.fetchImpl ?? fetch;
+
+  const url = new URL(args.path, baseUrl);
+
+  let response: Response;
   try {
-    const body = (await response.json()) as { code?: unknown; message?: unknown };
-    if (typeof body.code === "string") serverCode = body.code;
-    if (typeof body.message === "string") serverMessage = body.message;
-  } catch {
-    // Non-JSON body (e.g., plain "Unauthorized" or empty 401) — fall
-    // through to the generic message below.
+    response = await fetchFn(url.toString(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(args.body),
+    });
+  } catch (err) {
+    throw new CliError(
+      `Network error reaching ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      "NETWORK_ERROR",
+      3,
+    );
   }
 
-  const summary = serverMessage ?? response.statusText ?? "request failed";
-  // 401 is "fix your token" → exit 2; everything else is exit 3.
-  const exitCode = response.status === 401 ? 2 : 3;
-  throw new CliError(
-    `${response.status} ${summary} (${url.pathname})`,
-    serverCode ?? `HTTP_${response.status}`,
-    exitCode,
-  );
+  return handleResponse<TResponse>(response, url.pathname);
 }

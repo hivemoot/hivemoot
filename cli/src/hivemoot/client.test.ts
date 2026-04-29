@@ -3,6 +3,7 @@ import { CliError } from "../config/types.js";
 import {
   DEFAULT_API_URL,
   hivemootGet,
+  hivemootPost,
   resolveApiUrl,
   resolveToken,
 } from "./client.js";
@@ -242,5 +243,115 @@ describe("hivemootGet", () => {
     } catch (err) {
       expect((err as CliError).message).toContain("too many requests");
     }
+  });
+});
+
+describe("hivemootPost", () => {
+  it("sends Bearer auth + JSON content-type and serializes the body", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { sequence: 7 }));
+    await hivemootPost({
+      apiUrl: "https://api.example",
+      token: "tok-123",
+      path: "/api/rooms/abc/contributions",
+      body: { sequenceObservedByClient: 5, body: { verdict: "APPROVE" } },
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [calledUrl, init] = fetchImpl.mock.calls[0];
+    expect(calledUrl).toBe("https://api.example/api/rooms/abc/contributions");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe("Bearer tok-123");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({
+      sequenceObservedByClient: 5,
+      body: { verdict: "APPROVE" },
+    });
+  });
+
+  it("returns parsed JSON on 2xx", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { sequence: 42 }));
+    const out = await hivemootPost<unknown, { sequence: number }>({
+      apiUrl: "https://x",
+      token: "t",
+      path: "/api/rooms/abc/contributions",
+      body: {},
+      fetchImpl,
+    });
+    expect(out).toEqual({ sequence: 42 });
+  });
+
+  it("maps 401 to exit 2", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(401, { code: "unauthorized", message: "bad bearer" }),
+    );
+    try {
+      await hivemootPost({
+        apiUrl: "https://x",
+        token: "t",
+        path: "/api/rooms/abc/contributions",
+        body: {},
+        fetchImpl,
+      });
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CliError).exitCode).toBe(2);
+      expect((err as CliError).code).toBe("unauthorized");
+    }
+  });
+
+  it("maps server-supplied 4xx code (e.g., status_precondition_failed)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(409, {
+        code: "status_precondition_failed",
+        message: "Room moved to deciding",
+      }),
+    );
+    try {
+      await hivemootPost({
+        apiUrl: "https://x",
+        token: "t",
+        path: "/api/rooms/abc/contributions",
+        body: {},
+        fetchImpl,
+      });
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CliError).exitCode).toBe(3);
+      expect((err as CliError).code).toBe("status_precondition_failed");
+    }
+  });
+
+  it("maps network errors to NETWORK_ERROR / exit 3", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    try {
+      await hivemootPost({
+        apiUrl: "https://x",
+        token: "t",
+        path: "/api/rooms/abc/contributions",
+        body: {},
+        fetchImpl,
+      });
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CliError).code).toBe("NETWORK_ERROR");
+      expect((err as CliError).exitCode).toBe(3);
+    }
+  });
+
+  it("throws AUTH_ERROR exit 2 when no token configured", async () => {
+    const fetchImpl = vi.fn();
+    try {
+      await hivemootPost({
+        apiUrl: "https://x",
+        path: "/api/rooms/abc/contributions",
+        body: {},
+        fetchImpl,
+      });
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CliError).code).toBe("AUTH_ERROR");
+      expect((err as CliError).exitCode).toBe(2);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

@@ -122,3 +122,74 @@ export interface RoomEventsResponse {
  * every CLI command that takes a `<roomId>` argument.
  */
 export const ROOM_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Verdict enum for contribution bodies. UPPERCASE per server's
+ * `ContributionVerdict` (`web/src/server/war-room.ts:1023-1027`).
+ * The downgrade-only synthesis invariant means typos here would
+ * silently default to COMMENT — so the CLI rejects malformed values
+ * at the boundary BEFORE the round-trip.
+ */
+export type ContributionVerdict =
+  | "APPROVE"
+  | "COMMENT"
+  | "CONCERNS"
+  | "REQUEST_CHANGES";
+
+export const CONTRIBUTION_VERDICTS: ReadonlyArray<ContributionVerdict> = [
+  "APPROVE",
+  "COMMENT",
+  "CONCERNS",
+  "REQUEST_CHANGES",
+];
+
+export type ContributionFindingSeverity = "blocker" | "warning" | "info";
+
+export interface ContributionFinding {
+  area: string;
+  severity: ContributionFindingSeverity;
+  detail: string;
+  code_ref?: string;
+}
+
+/**
+ * Structured contribution body. Mirrors `ContributionBody` in
+ * `web/src/server/war-room.ts:1062-1073` exactly. Server validates
+ * via `validateContributionBody` at submit time — the CLI does a
+ * minimal pre-flight check (verdict enum, summary length) so the
+ * obvious malformed-body cases fail locally without a round-trip.
+ */
+export interface ContributionBody {
+  verdict: ContributionVerdict;
+  summary: string;
+  findings?: ContributionFinding[];
+  severity_counts?: {
+    blocker?: number;
+    warning?: number;
+    info?: number;
+  };
+}
+
+/** Wire request body for `POST /api/rooms/{roomId}/contributions`. */
+export interface SubmitContributionRequest {
+  sequenceObservedByClient: number;
+  body: ContributionBody;
+  rawMd: string;
+  agentId?: string;
+}
+
+/** Wire response from `POST /api/rooms/{roomId}/contributions`. */
+export interface SubmitContributionResponse {
+  sequence: number;
+}
+
+/** Inclusive cap matching server's `RoomContributionTooLargeError`
+ * threshold — 32 KiB UTF-8 bytes. CLI surface checks the byte length
+ * before the round-trip so the operator sees an actionable error
+ * locally rather than a server-side 400 race against transient
+ * network glitches. */
+export const RAW_MD_MAX_BYTES = 32 * 1024;
+
+/** Max summary length per server's `validateContributionBody`
+ * (war-room.ts ContributionBody.summary "1-500 chars"). */
+export const SUMMARY_MAX_CHARS = 500;
