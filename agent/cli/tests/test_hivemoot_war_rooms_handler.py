@@ -13,8 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
     JOB_KIND_TRIAGE,
+    RAW_MD_CLIENT_CAP_BYTES,
     handle_war_room_job_finished,
     is_war_room_job,
+    truncate_raw_md,
 )
 from hivemoot_agent.plugins.interfaces import AgentResult, Job
 
@@ -508,6 +510,82 @@ class PostFailureCallbackTests(unittest.TestCase):
             )
         # Still completes cleanly; decision is what was parsed.
         self.assertEqual(decision.kind, "present")
+
+
+class RawMdClientCapTests(unittest.TestCase):
+    """Closes #544 builder R2: oversized raw_md from the agent
+    must be capped client-side before /contributions, otherwise
+    the server returns 400 raw_md_too_large and the next-tick
+    re-dispatch loops indefinitely (presentParticipant rewrites
+    rsvp_at on each /present, pushing out the watchdog timeout)."""
+
+    def test_under_cap_passes_through_unchanged(self) -> None:
+        body = "## Review\n\n" + "small content"
+        self.assertEqual(truncate_raw_md(body), body)
+
+    def test_over_cap_truncates_to_under_storage_limit(self) -> None:
+        # Storage cap is 32 KiB; client cap is 31 KiB (1 KiB
+        # headroom for envelope overhead).
+        body = "x" * (RAW_MD_CLIENT_CAP_BYTES + 5_000) + "\nend"
+        result = truncate_raw_md(body)
+        self.assertLessEqual(len(result.encode("utf-8")), RAW_MD_CLIENT_CAP_BYTES)
+        self.assertIn("[truncated by worker", result)
+
+    def test_truncation_cuts_on_newline_boundary(self) -> None:
+        # Builds an oversized body where the cut point falls inside
+        # a long line; verify the truncation respects the last
+        # newline before the cap to avoid splitting fenced code or
+        # list items mid-line.
+        head = "x" * (RAW_MD_CLIENT_CAP_BYTES - 200)
+        body = head + "\n" + "y" * 500
+        result = truncate_raw_md(body)
+        # Last line should be the truncation marker, not chopped y's.
+        last_line = result.rsplit("\n", 1)[-1]
+        self.assertTrue(last_line.startswith("_[truncated"))
+
+    def test_handler_truncates_oversized_raw_md_before_contribute(self) -> None:
+        # End-to-end: agent produces an oversized review; handler
+        # caps it before submit_contribution. Storage 400 path is
+        # never triggered.
+        oversized_body = "x" * (RAW_MD_CLIENT_CAP_BYTES + 10_000)
+        oversized_response = (
+            "## Triage decision\n\n"
+            "DECISION: PRESENT\n"
+            "VERDICT: APPROVE\n"
+            "SUMMARY: ok\n\n"
+            "## Review\n\n" + oversized_body
+        )
+        record: list[_CallRecord] = []
+        with _patched_apis(record):
+            handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=oversized_response,
+            )
+        contribute = next(r for r in record if r.op == "contribute")
+        sent_raw_md = contribute.kwargs["raw_md"]
+        self.assertLessEqual(
+            len(sent_raw_md.encode("utf-8")),
+            RAW_MD_CLIENT_CAP_BYTES,
+        )
+        self.assertIn("[truncated by worker", sent_raw_md)
+
+    def test_handler_passes_through_under_cap_raw_md(self) -> None:
+        record: list[_CallRecord] = []
+        with _patched_apis(record):
+            handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=_present_response(),
+            )
+        contribute = next(r for r in record if r.op == "contribute")
+        # Sample _present_response is small; should not be truncated.
+        self.assertNotIn("[truncated by worker", contribute.kwargs["raw_md"])
+        self.assertIn("/login handler", contribute.kwargs["raw_md"])
 
 
 if __name__ == "__main__":

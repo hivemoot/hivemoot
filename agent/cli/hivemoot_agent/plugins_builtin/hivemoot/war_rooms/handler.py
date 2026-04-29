@@ -62,9 +62,54 @@ from .triage import TriageDecision, parse_triage_response
 __all__ = (
     "JOB_KIND_TRIAGE",
     "PostFailureCallback",
+    "RAW_MD_CLIENT_CAP_BYTES",
     "is_war_room_job",
     "handle_war_room_job_finished",
+    "truncate_raw_md",
 )
+
+
+# Client-side cap on contribution `raw_md` payload size. Storage
+# layer enforces 32 KiB server-side; we trim under that to leave
+# headroom for the truncation marker + envelope overhead. Closes
+# #544 builder R2: an oversized raw_md from the agent would 400
+# server-side without firing the post-failure callback (since
+# /present succeeded), and each next-tick re-dispatch would call
+# /present again — `presentParticipant` rewrites `rsvp_at` on every
+# call (war-room.ts:2727), pushing out the watchdog timeout
+# indefinitely. Result: stuck-pending participant that never
+# resolves and never times out.
+RAW_MD_CLIENT_CAP_BYTES = 31 * 1024  # 31 KiB; storage cap is 32 KiB
+
+
+_TRUNCATION_MARKER = (
+    "\n\n_[truncated by worker — agent produced an oversized review]_"
+)
+
+
+def truncate_raw_md(text: str) -> str:
+    """Trim `text` to at most `RAW_MD_CLIENT_CAP_BYTES` UTF-8 bytes.
+
+    Cuts on the last newline before the cap so a fenced code block
+    or list item doesn't get split mid-line. Appends a clearly-
+    flagged marker so the queen's synthesizer (and human readers)
+    see the contribution was capped on the worker side.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= RAW_MD_CLIENT_CAP_BYTES:
+        return text
+    marker_bytes = _TRUNCATION_MARKER.encode("utf-8")
+    budget = RAW_MD_CLIENT_CAP_BYTES - len(marker_bytes)
+    if budget <= 0:
+        # Pathological — should never trigger since the marker is
+        # ~70 bytes and the cap is 31 KiB, but defensive against a
+        # config tweak that lowers the cap absurdly.
+        return _TRUNCATION_MARKER.lstrip()
+    sliced = encoded[:budget]
+    decoded = sliced.decode("utf-8", errors="ignore")
+    last_newline = decoded.rfind("\n")
+    clean_cut = decoded[:last_newline] if last_newline > 0 else decoded
+    return clean_cut + _TRUNCATION_MARKER
 
 
 # Signature the trigger (F.5) will pass in to surface total-failure
@@ -194,7 +239,8 @@ def _do_present_and_contribute(
         "verdict": decision.verdict,
         "summary": decision.summary,
     }
-    raw_md = decision.body or ""
+    raw_md = truncate_raw_md(decision.body or "")
+    truncated = len(raw_md) < len(decision.body or "")
 
     try:
         seq = wr_api.submit_contribution(
@@ -208,7 +254,7 @@ def _do_present_and_contribute(
         _log(
             f"contributed room={room_id} subject={subject_ref} "
             f"verdict={decision.verdict} body_bytes={len(raw_md.encode('utf-8'))} "
-            f"landed_seq={seq} agent_exit={result.exit_code}",
+            f"truncated={truncated} landed_seq={seq} agent_exit={result.exit_code}",
             level="info",
         )
     except Exception as exc:  # noqa: BLE001
