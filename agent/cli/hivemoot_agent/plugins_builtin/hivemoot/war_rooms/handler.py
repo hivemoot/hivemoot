@@ -9,23 +9,35 @@ After the engine finishes a triage Job, this handler:
   2. Parses the structured triage block via `parse_triage_response`.
   3. Calls the war-room API:
      - PRESENT: `present_to_room` → `submit_contribution`
-     - WITHDRAW: `withdraw_participant` (with `reason` if given)
+     - WITHDRAW: `present_to_room` → `withdraw_participant`
+       (RSVP first because storage requires an existing
+       participant slot before withdrawal — closes #544 builder R1.1.
+       Two API calls is correct vs the alternative of relaxing the
+       storage contract to allow first-class opt-out.)
 
 # Failure isolation
 
 The handler swallows all exceptions and logs to stderr. The agent's
 exit code is NOT promoted to failure on a post error — the engine
 already finished successfully; a stuck post is a transient issue
-the next watching tick can re-attempt (the storage layer is
-idempotent on (room, role, sequence)).
+the next watching tick can re-attempt.
+
+# Recovery from total post failure
+
+Optional `on_post_failure` callback (closes #544 builder R1.2):
+when supplied (F.5 will wire it to the trigger's seen-cache),
+called with `(room_id, sequence, op_kind, exc)` on any API failure
+during the post sequence. Enables the trigger to evict the seen-key
+so the next watching tick re-dispatches — without this, a transient
+network failure during all post operations would silently drop the
+worker's participation.
 
 # Idempotency
 
-The trigger keys its dedupe cache by `{roomId}@{sequence}` so a
-re-tick with the same sequence won't re-dispatch. If the agent
-re-runs anyway (operator-forced re-dispatch, etc.), the API
-returns 409 `duplicate_present` / `duplicate_contribution` and the
-handler swallows + logs as a benign race.
+The trigger keys its dedupe cache by `{roomId}@{sequence}`. If the
+agent re-runs anyway (operator-forced re-dispatch, etc.), the API
+returns 409 / `duplicate_*` codes and the handler swallows + logs
+as benign races.
 
 # Wire-cost guard
 
@@ -39,7 +51,7 @@ the worker logs and find the LLM that's producing garbage.
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, Callable, Optional
 
 from hivemoot_agent.plugins.interfaces import AgentResult, Job
 
@@ -49,9 +61,21 @@ from .triage import TriageDecision, parse_triage_response
 
 __all__ = (
     "JOB_KIND_TRIAGE",
+    "PostFailureCallback",
     "is_war_room_job",
     "handle_war_room_job_finished",
 )
+
+
+# Signature the trigger (F.5) will pass in to surface total-failure
+# back to the watcher's seen-cache. Args:
+#   room_id: the room whose post sequence failed
+#   sequence: the sequence the worker was acting on (for re-dispatch
+#             keying — same key the trigger originally marked)
+#   op_kind: "present" | "contribute" | "withdraw" — which API call
+#            raised
+#   exc: the underlying exception
+PostFailureCallback = Callable[[str, int, str, Exception], None]
 
 
 # Marker the trigger writes into job.metadata so on_job_finished
@@ -80,6 +104,7 @@ def handle_war_room_job_finished(
     base_url: str,
     bearer: str,
     extracted_markdown: str,
+    on_post_failure: Optional[PostFailureCallback] = None,
 ) -> TriageDecision:
     """Parse the agent's response and act on it.
 
@@ -87,6 +112,13 @@ def handle_war_room_job_finished(
     introspect what was decided. Side-effects: HTTP calls to the
     war-room API. All API failures swallowed-and-logged; this
     function never raises.
+
+    `on_post_failure`, when supplied, is invoked exactly once per
+    call when the post sequence terminates without successfully
+    transitioning participant state — i.e. RSVP failed (and
+    therefore the follow-on contribute/withdraw was skipped).
+    F.5's plugin wiring threads this in to evict the trigger's
+    seen-cache so the next watching tick re-dispatches.
     """
     room_id = str(job.metadata.get("room_id") or "")
     current_sequence = int(job.metadata.get("current_sequence") or 0)
@@ -103,15 +135,17 @@ def handle_war_room_job_finished(
             subject_ref=subject_ref,
             decision=decision,
             result=result,
+            on_post_failure=on_post_failure,
         )
     else:
-        _do_withdraw(
+        _do_present_then_withdraw(
             base_url=base_url,
             bearer=bearer,
             room_id=room_id,
             current_sequence=current_sequence,
             subject_ref=subject_ref,
             decision=decision,
+            on_post_failure=on_post_failure,
         )
 
     return decision
@@ -126,15 +160,19 @@ def _do_present_and_contribute(
     subject_ref: str,
     decision: TriageDecision,
     result: AgentResult,
+    on_post_failure: Optional[PostFailureCallback],
 ) -> None:
-    """RSVP via /present, then submit the contribution. If the
-    /present call benignly fails (already presented, room moved on,
-    etc.), still attempt the contribution — the storage layer
-    enforces ordering server-side."""
+    """RSVP via /present, then submit the contribution.
 
-    # 1. Present (RSVP). Best-effort: a benign 409 (already
-    #    presented at this sequence) is not fatal; we still want
-    #    to submit the contribution body.
+    If /present raises, /contribute is still attempted (a benign
+    409 from /present — already presented at this seq — shouldn't
+    block contribute; the storage layer enforces ordering server-
+    side). Only when BOTH fail do we fire `on_post_failure` — at
+    that point no participant-state change has landed and the
+    worker dropped this room silently without re-dispatch.
+    """
+
+    present_failed_exc: Optional[Exception] = None
     try:
         wr_api.present_to_room(
             base_url=base_url,
@@ -144,6 +182,7 @@ def _do_present_and_contribute(
             intent_hint=decision.summary,
         )
     except Exception as exc:  # noqa: BLE001 — log + continue
+        present_failed_exc = exc
         _log(
             f"present failed (continuing to contribute) "
             f"room={room_id} subject={subject_ref} seq={current_sequence}: "
@@ -151,8 +190,6 @@ def _do_present_and_contribute(
             level="warn",
         )
 
-    # 2. Submit contribution. The structured body matches
-    #    WAR_ROOM_DESIGN.md §"Worker contribution body schema".
     body: dict[str, Any] = {
         "verdict": decision.verdict,
         "summary": decision.summary,
@@ -181,9 +218,15 @@ def _do_present_and_contribute(
             f"{type(exc).__name__}: {exc}",
             level="error",
         )
+        # Both legs failed → no state change landed. Surface to
+        # the trigger so the next tick re-dispatches.
+        if present_failed_exc is not None:
+            _safe_callback(
+                on_post_failure, room_id, current_sequence, "contribute", exc,
+            )
 
 
-def _do_withdraw(
+def _do_present_then_withdraw(
     *,
     base_url: str,
     bearer: str,
@@ -191,7 +234,41 @@ def _do_withdraw(
     current_sequence: int,
     subject_ref: str,
     decision: TriageDecision,
+    on_post_failure: Optional[PostFailureCallback],
 ) -> None:
+    """RSVP via /present, then withdraw via /withdraw.
+
+    Closes #544 builder R1.1: storage requires an existing
+    participant slot before withdrawal (war-room.ts:2776). A
+    first-pass opt-out from /watching that calls /withdraw
+    directly returns 409 `participant_not_found` and the withdraw
+    event never lands — the worker is silently re-listed by the
+    next /watching tick.
+
+    Two API calls vs one is the correct trade vs relaxing the
+    storage contract. The /present call here mirrors the
+    PRESENT-path's RSVP step exactly; the only difference is
+    leg 2 (/withdraw vs /contribute).
+    """
+
+    present_failed = False
+    try:
+        wr_api.present_to_room(
+            base_url=base_url,
+            room_id=room_id,
+            sequence_observed_by_client=current_sequence,
+            bearer=bearer,
+            intent_hint=decision.reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        present_failed = True
+        _log(
+            f"present (for withdraw) failed (continuing to withdraw) "
+            f"room={room_id} subject={subject_ref} seq={current_sequence}: "
+            f"{type(exc).__name__}: {exc}",
+            level="warn",
+        )
+
     try:
         seq = wr_api.withdraw_participant(
             base_url=base_url,
@@ -211,6 +288,33 @@ def _do_withdraw(
         _log(
             f"withdraw failed room={room_id} subject={subject_ref} "
             f"seq={current_sequence}: {type(exc).__name__}: {exc}",
+            level="error",
+        )
+        if present_failed:
+            _safe_callback(
+                on_post_failure, room_id, current_sequence, "withdraw", exc,
+            )
+
+
+def _safe_callback(
+    callback: Optional[PostFailureCallback],
+    room_id: str,
+    sequence: int,
+    op_kind: str,
+    exc: Exception,
+) -> None:
+    """Invoke the post-failure callback, swallowing any exception
+    it raises so a buggy trigger can't propagate into the engine's
+    job lifecycle."""
+    if callback is None:
+        return
+    try:
+        callback(room_id, sequence, op_kind, exc)
+    except Exception as cb_exc:  # noqa: BLE001
+        _log(
+            f"on_post_failure callback raised "
+            f"room={room_id} seq={sequence} op={op_kind}: "
+            f"{type(cb_exc).__name__}: {cb_exc}",
             level="error",
         )
 

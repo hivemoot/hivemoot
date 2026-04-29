@@ -25,6 +25,7 @@ from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.api import (
 )
 from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler import (
     JOB_KIND_TRIAGE,
+    PostFailureCallback,
     handle_war_room_job_finished,
     is_war_room_job,
 )
@@ -57,4 +58,5 @@ __all__ = (
     "JOB_KIND_TRIAGE",
     "handle_war_room_job_finished",
     "is_war_room_job",
+    "PostFailureCallback",
 )
