@@ -28,11 +28,20 @@ const DEFAULT_INTERVAL_SECS = 30;
  * set so a `subject_updated` re-eligibility produces a fresh emit
  * on the next return.
  *
+ * `seen` is keyed by roomId and stores the LAST OBSERVED
+ * `WatchingRoom` so removal events carry the room's real prior
+ * state (status, subject, participants at the moment it left
+ * /watching) instead of fabricated zeros. A room can leave the
+ * watching set for several reasons — this role resolved /
+ * withdrew, OR the room closed entirely, OR a visibility predicate
+ * flipped — and downstream JSON consumers need the actual
+ * pre-removal state to log / branch correctly.
+ *
  * Extracted for testability — the long-running loop in
  * `roomsWatchCommand` is just `while (!stopped) { pollWatchingOnce; sleep }`.
  */
 export async function pollWatchingOnce(args: {
-  seen: Set<string>;
+  seen: Map<string, WatchingRoom>;
   emit: (room: WatchingRoom, kind: "new" | "removed") => void;
   fetcher?: () => Promise<WatchingRoomsResponse>;
   options: RoomsWatchOptions;
@@ -51,34 +60,13 @@ export async function pollWatchingOnce(args: {
 
   // Emit removals first (so the operator sees "X left" before "Y arrived"
   // when both happen on the same tick — feels more natural in a stream).
-  // Removed-rooms aren't in `currentIds`, so we materialize a placeholder
-  // pulled from an in-memory cache of last-seen entries, but for V1 we
-  // only emit the roomId since we don't need the full record back.
-  for (const id of args.seen) {
+  // The emitted room is the LAST OBSERVED state from `seen`, not a
+  // fabricated stub — closes #565 builder R1 (downstream JSON
+  // consumers were getting status="closed" / zeros for any
+  // removal regardless of the actual cause).
+  for (const [id, lastSeen] of args.seen) {
     if (!currentIds.has(id)) {
-      // The full WatchingRoom is gone; pass a minimal stub so callers
-      // can render the removal line. Only `core.roomId` is meaningful
-      // for a removal event.
-      args.emit(
-        {
-          core: {
-            roomId: id,
-            manager: "",
-            subject_type: "pr_review",
-            subject_ref: "",
-            opened_at: "",
-            timing_config: {
-              max_age_secs: 0,
-              rsvp_deadline_secs: 0,
-              contribution_deadline_secs: 0,
-            },
-            status: "closed",
-          },
-          participants: {},
-          currentSequence: 0,
-        },
-        "removed",
-      );
+      args.emit(lastSeen, "removed");
       args.seen.delete(id);
     }
   }
@@ -87,8 +75,11 @@ export async function pollWatchingOnce(args: {
     const id = room.core.roomId;
     if (!args.seen.has(id)) {
       args.emit(room, "new");
-      args.seen.add(id);
     }
+    // Always update the last-seen snapshot so participants /
+    // currentSequence on the eventual removal reflect the latest
+    // observed state, not whatever was first seen on the new emit.
+    args.seen.set(id, room);
   }
 }
 
@@ -121,7 +112,7 @@ export async function roomsWatchCommand(
   options: RoomsWatchOptions,
 ): Promise<void> {
   const intervalMs = (options.interval ?? DEFAULT_INTERVAL_SECS) * 1000;
-  const seen = new Set<string>();
+  const seen = new Map<string, WatchingRoom>();
 
   const emit = (room: WatchingRoom, kind: "new" | "removed"): void => {
     if (options.json) {
