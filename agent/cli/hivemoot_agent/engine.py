@@ -1393,6 +1393,7 @@ class Engine:
 
             exit_code, stdout = self._run_subprocess(
                 cmd, config, on_event=on_event, provider=provider,
+                prompt=effective_prompt,
             )
 
             # Retry once with a fresh session if resume failed.
@@ -1410,6 +1411,7 @@ class Engine:
                 )
                 exit_code, stdout = self._run_subprocess(
                     cmd, config, on_event=on_event, provider=provider,
+                    prompt=job.prompt,
                 )
 
             # Clean up MCP config and skill staging.  Wrapped because
@@ -1527,6 +1529,7 @@ class Engine:
         config: PluginConfig,
         on_event: Callable[[AgentEvent], None] | None = None,
         provider: Any = None,
+        prompt: str = "",
     ) -> tuple[int, str]:
         """Run an agent subprocess with streaming, returning (exit_code, stdout).
 
@@ -1534,12 +1537,24 @@ class Engine:
         passed to provider.parse_event(); if that returns an AgentEvent
         and on_event is set, the callback is invoked.  Stderr is
         collected in a separate thread to prevent pipe buffer deadlock.
+
+        Stdin routing: when ``provider.prompt_via_stdin`` is True the
+        engine pipes ``prompt`` over the subprocess's stdin in a
+        dedicated writer thread (mirroring the stdout/stderr reader
+        pattern below — necessary because PIPE_BUF on Linux is 4 KiB
+        and a synchronous write would deadlock for a prompt larger than
+        the kernel-side pipe buffer once the agent has filled stdout).
+        Providers that don't set the flag keep argv-only behavior.
         """
         timeout = int(config.get("AGENT_TIMEOUT_SECONDS", "1800"))
+        pipe_stdin = bool(prompt) and bool(
+            getattr(provider, "prompt_via_stdin", False),
+        )
 
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE if pipe_stdin else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1601,6 +1616,37 @@ class Engine:
         t_out.start()
         t_err.start()
 
+        # Feed prompt over stdin in a dedicated thread when the provider
+        # opts in (see Popen above + provider.prompt_via_stdin). The
+        # writer must run concurrently with the stdout reader because
+        # PIPE_BUF on Linux is 4 KiB; a synchronous write of a large
+        # prompt would deadlock once the agent's stdout buffer fills.
+        # BrokenPipeError is swallowed: it means the agent exited
+        # before reading the full prompt (e.g., it produced a result
+        # from a partial prefix), which is not a writer-side failure.
+        t_stdin: threading.Thread | None = None
+        if pipe_stdin and proc.stdin is not None:
+            stdin_pipe = proc.stdin
+
+            def _feed_stdin() -> None:
+                try:
+                    stdin_pipe.write(prompt)
+                except BrokenPipeError:
+                    pass
+                except Exception as exc:
+                    print(
+                        f"[engine] stdin write error: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                finally:
+                    try:
+                        stdin_pipe.close()
+                    except Exception:
+                        pass
+
+            t_stdin = threading.Thread(target=_feed_stdin, daemon=True)
+            t_stdin.start()
+
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -1609,6 +1655,8 @@ class Engine:
             proc.wait()
             t_out.join()
             t_err.join()
+            if t_stdin is not None:
+                t_stdin.join(timeout=5)
             if event_queue is not None:
                 event_queue.put(event_sentinel)
             if event_thread is not None:
@@ -1617,6 +1665,8 @@ class Engine:
 
         t_out.join()
         t_err.join()
+        if t_stdin is not None:
+            t_stdin.join(timeout=5)
         if event_queue is not None:
             event_queue.put(event_sentinel)
         if event_thread is not None:
