@@ -4,9 +4,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  commentHasHivemootMention,
+  deriveMentionRoomId,
+  derivePrRoomId,
+  maybeCreateMentionRoom,
   maybeCreatePrReviewRoom,
   maybeEmitSubjectUpdated,
-  derivePrRoomId,
 } from "./war-room-routing.js";
 import { WarRoomApiError } from "./war-room-client.js";
 
@@ -406,5 +409,373 @@ describe("maybeEmitSubjectUpdated", () => {
         changeKind: "synchronize", log,
       }),
     ).resolves.toEqual({ sequence: null, skipped: "api_error" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E.3 — mention_response rooms
+// ---------------------------------------------------------------------------
+
+describe("commentHasHivemootMention", () => {
+  it.each([
+    ["@hivemoot can you take a look?", true],
+    ["Hi @hivemoot, please review.", true],
+    ["@hivemoot,", true], // comma is non-word/dash
+    ["@hivemoot.", true], // period
+    ["@hivemoot!", true], // bang
+    ["@hivemoot\nnewline after", true],
+    ["@HiveMoot mixed case", true], // case-insensitive
+    ["@hivemoot at end of comment @hivemoot", true],
+    ["text @hivemoot more text", true],
+  ])("matches %j → %s", (body, expected) => {
+    expect(commentHasHivemootMention(body)).toBe(expected);
+  });
+
+  it.each([
+    ["", false],
+    ["plain text with no mention", false],
+    ["@hivemoot-builder is a different identity", false],
+    ["@hivemoot-bot also distinct", false],
+    ["@hivemoot_test underscored", false],
+    ["@hivemoot42 alphanumeric continuation", false],
+    ["/gather followed by @hivemoot in body", false], // /command guard
+    [" /timeout some text with @hivemoot", false], // leading whitespace + /command
+  ])("non-match %j → %s", (body, expected) => {
+    expect(commentHasHivemootMention(body)).toBe(expected);
+  });
+
+  it("matches even when comment starts with @hivemoot at position 0", () => {
+    expect(commentHasHivemootMention("@hivemoot please")).toBe(true);
+  });
+
+  it("does NOT match when whole comment is a /command", () => {
+    expect(commentHasHivemootMention("/gather @hivemoot please")).toBe(false);
+  });
+
+  it("matches when /-prefix appears mid-comment but body doesn't start with /", () => {
+    // Defense check: only the /-prefix at start of comment skips,
+    // mid-comment / is allowed.
+    expect(
+      commentHasHivemootMention("hello @hivemoot use /timeout if needed"),
+    ).toBe(true);
+  });
+});
+
+describe("deriveMentionRoomId", () => {
+  it("same identity (incl. commentId) → same roomId across calls (idempotent webhook redelivery)", () => {
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    expect(a).toBe(b);
+  });
+
+  it("different commentId on same issue → different roomIds (post-close safety, #549 builder R1 #2)", () => {
+    // Storage retains room hashes for ~30 days after close. Without
+    // commentId in the derivation, a mention 31+ days after the
+    // previous mention's room closed would hit room_id_taken. Each
+    // mention now derives a fresh roomId.
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1002,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("different issue/PR → different roomIds", () => {
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 43,
+      commentId: 1001,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("distinct namespace from derivePrRoomId", () => {
+    // Critical invariant: a PR can have BOTH a pr_review room AND
+    // a mention_response room simultaneously. The deterministic
+    // derivations MUST produce different ids.
+    const prId = derivePrRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+    });
+    const mentionId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    expect(prId).not.toBe(mentionId);
+  });
+
+  it("output matches storage's UUIDv4 regex", () => {
+    const id = deriveMentionRoomId({
+      owner: "x",
+      repo: "y",
+      issueOrPrNumber: 1,
+      commentId: 99,
+    });
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+});
+
+describe("maybeCreateMentionRoom", () => {
+  beforeEach(() => {
+    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
+    log.info.mockReset();
+    log.warn.mockReset();
+    log.error.mockReset();
+    mockedClientCtor.mockReset();
+  });
+
+  it("skips with `no_token` reason when env var is unset", async () => {
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "no_token" });
+    expect(mockedClientCtor).not.toHaveBeenCalled();
+  });
+
+  function setupCreateRoomMock(
+    createRoom: ReturnType<typeof vi.fn>,
+    appendEvent?: ReturnType<typeof vi.fn>,
+  ): void {
+    mockedClientCtor.mockImplementation(
+      function (this: {
+        createRoom: typeof createRoom;
+        appendEvent?: typeof appendEvent;
+      }) {
+        this.createRoom = createRoom;
+        if (appendEvent) this.appendEvent = appendEvent;
+      } as unknown as typeof WarRoomClient,
+    );
+  }
+
+  it("happy path — calls createRoom with mention_response subject + comment-stable roomId", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockResolvedValue({});
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result.roomId).toMatch(/^[0-9a-f-]+$/);
+    expect(result.reusedExistingRoom).toBe(false);
+    const expectedRoomId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    expect(result.roomId).toBe(expectedRoomId);
+    expect(createRoom).toHaveBeenCalledWith({
+      subject: { type: "mention_response", ref: "hivemoot/hivemoot#42" },
+      roomId: expectedRoomId,
+    });
+  });
+
+  it("subject_already_open 409 → emits subject_updated on existing room (re-mention safety, #549 builder R1 #2)", async () => {
+    // A prior @hivemoot's room is still open for this issue. The
+    // create attempt fails with subject_already_open (subject_ref
+    // is per-issue). The handler then emits subject_updated on the
+    // existing room so workers re-engage (per /watching contract,
+    // a new sequence past withdrew_at_sequence makes withdrawn
+    // workers re-eligible).
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ROOM_ID,
+      }),
+    );
+    const appendEvent = vi.fn().mockResolvedValue({ sequence: 5 });
+    setupCreateRoomMock(createRoom, appendEvent);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({
+      roomId: ROOM_ID,
+      reusedExistingRoom: true,
+    });
+    expect(appendEvent).toHaveBeenCalledWith({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: {
+        change_kind: "mention",
+        comment_id: 1001,
+        comment_author: "alice",
+      },
+      // Idempotency key includes commentId so re-deliveries
+      // resolve to the same event (no double-emit on retry).
+      idempotencyKey: `bot.subject_updated.${ROOM_ID}.mention.1001`,
+    });
+  });
+
+  it("same-comment webhook redelivery (existingRoomId === derived) → idempotent replay, NO subject_updated emit (#549 builder R2)", async () => {
+    // Same-comment webhook delivery hits subject_already_open
+    // because OUR previous delivery created the room. Without this
+    // guard, the redelivery would emit a spurious subject_updated
+    // and re-dispatch workers for a non-event.
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const ourDerivedRoomId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ourDerivedRoomId, // SAME as derived → replay
+      }),
+    );
+    const appendEvent = vi.fn(); // SHOULD NOT be called
+    setupCreateRoomMock(createRoom, appendEvent);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({
+      roomId: ourDerivedRoomId,
+      reusedExistingRoom: false,
+    });
+    expect(appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("subject_already_open 409 → subject_updated emit fails → returns existing roomId with api_error (no throw)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ROOM_ID,
+      }),
+    );
+    const appendEvent = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "status_precondition_failed", "room closing", {}),
+    );
+    setupCreateRoomMock(createRoom, appendEvent);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    // Returns existing roomId (caller may want to log it) + api_error
+    // marker. Webhook handler shouldn't crash either way.
+    expect(result.roomId).toBe(ROOM_ID);
+    expect(result.skipped).toBe("api_error");
+  });
+
+  it("non-409 4xx → logs error + returns api_error", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(403, "forbidden", "missing rooms.create", {}),
+    );
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
+    expect(log.error).toHaveBeenCalled();
+  });
+
+  it("transient 5xx / network error → logs warn + returns api_error (no throw)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("WarRoomClient construction throws → returns api_error without crashing", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    mockedClientCtor.mockImplementation(() => {
+      throw new Error("invalid baseUrl");
+    });
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
+  });
+
+  it("never throws — pin the non-throwing contract for webhook safety (drone #549 N1)", async () => {
+    // Webhook handler relies on this: a war-room failure must NOT
+    // bubble out and disrupt the existing intake / governance flow.
+    // Mirror maybeCreatePrReviewRoom's existing contract test.
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new Error("totally unexpected"),
+    );
+    setupCreateRoomMock(createRoom);
+    await expect(
+      maybeCreateMentionRoom({
+        owner: "hivemoot",
+        repo: "hivemoot",
+        issueOrPrNumber: 42,
+        commentAuthor: "alice",
+        log,
+      }),
+    ).resolves.toEqual({ roomId: null, skipped: "api_error" });
   });
 });

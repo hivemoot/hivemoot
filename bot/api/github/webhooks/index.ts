@@ -31,7 +31,12 @@ import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible }
 import { getLLMReadiness } from "../../lib/llm/provider.js";
 import { registerHandlerDispatcher } from "../../handlers/dispatcher.js";
 import { handlerEventMap } from "../../handlers/registry.js";
-import { maybeCreatePrReviewRoom, maybeEmitSubjectUpdated } from "../../lib/war-room-routing.js";
+import {
+  commentHasHivemootMention,
+  maybeCreateMentionRoom,
+  maybeCreatePrReviewRoom,
+  maybeEmitSubjectUpdated,
+} from "../../lib/war-room-routing.js";
 
 /**
  * Hivemoot Bot - Governance Automation
@@ -576,6 +581,39 @@ export function app(probotApp: Probot): void {
           log: context.log,
         });
         return;
+      }
+
+      // E.3: @hivemoot mention without /command → create a
+      // mention_response war room. Multiple mentions on the same
+      // issue/PR reuse the same roomId via the storage layer's
+      // subject-uniqueness gate. Non-fatal on error so this can't
+      // break the existing intake/governance flow.
+      //
+      // Repo-config gate: mirror E.1/E.2's opt-in posture — only
+      // repos with `.hivemoot.yml` get war rooms. Without this,
+      // the handler would fire room creation API calls on every
+      // repo in every installation regardless of opt-in. Closes
+      // #549 drone B1.
+      if (commentHasHivemootMention(comment.body ?? "")) {
+        const mentionRepoConfig = await loadRepositoryConfig(
+          context.octokit, owner, repo,
+        );
+        if (mentionRepoConfig) {
+          await maybeCreateMentionRoom({
+            owner,
+            repo,
+            issueOrPrNumber: issue.number,
+            commentId: comment.id,
+            commentAuthor: comment.user.login,
+            log: context.log,
+          });
+        } else {
+          context.log.debug(
+            `No config in ${fullName}; skipping mention war-room creation`,
+          );
+        }
+        // Don't return — let the existing PR intake / governance
+        // logic continue to run alongside the mention room.
       }
 
       // Non-command comments on issues: check auto-gather eligibility (discussion issues only)
