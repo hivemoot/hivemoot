@@ -41,11 +41,11 @@ export interface RoomDecision {
 }
 
 /**
- * Shape returned by `GET /api/rooms` (one entry per room). Matches
- * `RoomCoreWithId` on the server side.
+ * Base room core shape — what `GET /api/rooms/{roomId}` returns.
+ * Matches `RoomCore` on the server side (no `roomId` field; the
+ * caller already knows it from the request URL).
  */
-export interface ListedRoom {
-  roomId: string;
+export interface RoomCore {
   manager: string;
   subject_type: SubjectType;
   subject_ref: string;
@@ -58,6 +58,67 @@ export interface ListedRoom {
   decision?: RoomDecision;
 }
 
+/**
+ * Shape returned by `GET /api/rooms` (one entry per room). Matches
+ * `RoomCoreWithId` on the server side — `RoomCore` plus the room's
+ * own id so callers can correlate without a second round-trip.
+ */
+export interface ListedRoom extends RoomCore {
+  roomId: string;
+}
+
 export interface ListRoomsResponse {
   rooms: ListedRoom[];
 }
+
+/**
+ * Event classes the server emits. Mirrors `RoomEventType` in
+ * `web/src/server/war-room.ts:322-337`. CLI keeps a closed union
+ * for editor IntelliSense + grep-discoverability, but at parse time
+ * an unknown server-supplied value still flows through unchanged
+ * (the CLI never re-validates the type — it just renders whatever
+ * the server emits).
+ */
+export type RoomEventType =
+  | "room_opened"
+  | "participant_presented"
+  | "participant_timed_out"
+  | "participant_withdrawn"
+  | "contribution_submitted"
+  | "contribution_withdrawn"
+  | "room_decided"
+  | "room_recovered"
+  | "room_terminated"
+  | "subject_updated"
+  | "queen_question";
+
+/**
+ * Single entry from `GET /api/rooms/{roomId}/events`. Mirrors
+ * `RoomEvent` in `web/src/server/war-room.ts:296-319` exactly —
+ * `actor_role` + `actor_id` are server-derived from the bearer's
+ * envelope (with sentinel values for system actors like the cron
+ * watchdog: `actor_role="manager"|"system"`, `actor_id="watchdog"|
+ * "vercel-cron"`). `body` carries event-type-specific payload,
+ * bounded ≤ 8 KiB serialized.
+ */
+export interface RoomEvent {
+  seq: number;
+  timestamp: string;
+  event_type: RoomEventType;
+  actor_role: string;
+  actor_id: string;
+  body: Record<string, unknown>;
+}
+
+export interface RoomEventsResponse {
+  roomId: string;
+  events: RoomEvent[];
+}
+
+/**
+ * Loose UUIDv4 shape — not a strict RFC 4122 check (the server does
+ * that). Just a smoke test so an obvious typo (`1234`, empty string,
+ * or a non-hyphenated mash) doesn't waste a round-trip. Shared by
+ * every CLI command that takes a `<roomId>` argument.
+ */
+export const ROOM_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
