@@ -10,6 +10,15 @@ name = "claude"
 supports_system_prompt_flag = True
 native_skill_backend = "claude_plugin_dir"
 
+# Claude Code's headless mode (`-p`) reads the user prompt from stdin
+# when no positional `<prompt>` is supplied. Routing the prompt through
+# stdin instead of argv avoids `[Errno 7] Argument list too long` on
+# real PR-review jobs where the prompt carries a full diff. Empirically
+# any agent run on a non-trivial PR can blow past the kernel's
+# `MAX_ARG_PAGES` ceiling (~128 KiB on most Linux configs); the engine
+# reads this flag and pipes the prompt over stdin.
+prompt_via_stdin = True
+
 # Deny rules block naive single-command exfiltration from prompt injection.
 # Enforced even with --dangerously-skip-permissions.  Container isolation
 # is the primary defense; these are defense-in-depth.  See issue #94.
@@ -42,6 +51,19 @@ def build_cmd(
     *,
     plugin_dir: str = "",
 ) -> list[str]:
+    """Build claude argv WITHOUT the user prompt.
+
+    The `prompt` parameter is intentionally NOT placed in argv — the
+    engine pipes it over stdin when `prompt_via_stdin = True` (see the
+    module-level note above). This keeps the kernel's argv-size ceiling
+    out of the failure surface for large PR-review prompts.
+
+    `prompt` is still in the signature because the Provider Protocol
+    requires the same shape across providers (codex / gemini / kilo /
+    opencode all consume it via argv). For claude it's accepted and
+    discarded here.
+    """
+    del prompt  # routed via stdin by the engine — see prompt_via_stdin
     if session_id:
         cmd = [
             "claude", "--resume", session_id, "-p",
@@ -66,7 +88,6 @@ def build_cmd(
         cmd += ["--plugin-dir", plugin_dir]
     if model:
         cmd += ["--model", model]
-    cmd += ["--", prompt]
     return cmd
 
 

@@ -592,6 +592,142 @@ def test_response_extracted_for_claude():
     assert response == "Final Claude answer"
 
 
+# ── prompt-via-stdin tests (E2BIG fix) ─────────────────────────────
+
+
+def test_run_subprocess_pipes_prompt_via_stdin_for_claude():
+    """Claude provider opts into prompt_via_stdin — engine writes prompt to subprocess stdin."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    mock_proc = _make_mock_popen(['{"type":"result","result":"ok"}\n'])
+    big_prompt = "Review this PR\n" + ("X" * 200_000)  # > kernel argv ceiling
+
+    with patch("subprocess.Popen", return_value=mock_proc) as popen_mock:
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        engine._run_subprocess(
+            ["claude", "-p"], config,
+            provider=claude_provider,
+            prompt=big_prompt,
+        )
+
+    # Popen received stdin=PIPE (not DEVNULL) because claude opted in
+    popen_kwargs = popen_mock.call_args.kwargs
+    assert popen_kwargs["stdin"] == subprocess.PIPE
+    # The prompt was written to stdin and stdin was closed
+    assert mock_proc.stdin.write.called
+    written_prompt = mock_proc.stdin.write.call_args.args[0]
+    assert written_prompt == big_prompt
+    assert mock_proc.stdin.close.called
+
+
+def test_run_subprocess_no_stdin_when_no_prompt():
+    """Empty prompt → engine uses DEVNULL even with claude provider (no point piping nothing)."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    mock_proc = _make_mock_popen(['{"type":"result","result":"ok"}\n'])
+
+    with patch("subprocess.Popen", return_value=mock_proc) as popen_mock:
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        engine._run_subprocess(
+            ["claude", "-p"], config,
+            provider=claude_provider,
+            prompt="",
+        )
+
+    popen_kwargs = popen_mock.call_args.kwargs
+    assert popen_kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_run_subprocess_no_stdin_for_provider_without_flag():
+    """Codex doesn't set prompt_via_stdin — engine uses DEVNULL even with non-empty prompt."""
+    import hivemoot_agent.providers.codex as codex_provider
+
+    mock_proc = _make_mock_popen([])
+
+    with patch("subprocess.Popen", return_value=mock_proc) as popen_mock:
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        engine._run_subprocess(
+            ["codex", "exec"], config,
+            provider=codex_provider,
+            prompt="some prompt that's already in argv via codex.build_cmd",
+        )
+
+    popen_kwargs = popen_mock.call_args.kwargs
+    assert popen_kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_run_subprocess_swallows_broken_pipe_on_stdin():
+    """If claude exits before reading the full prompt, BrokenPipeError must not crash the writer."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    mock_proc = _make_mock_popen(['{"type":"result","result":"ok"}\n'])
+    mock_proc.stdin.write.side_effect = BrokenPipeError("agent closed stdin early")
+
+    with patch("subprocess.Popen", return_value=mock_proc):
+        engine = Engine()
+        config = PluginConfig(name="test", settings={"AGENT_TIMEOUT_SECONDS": "60"})
+        # Should not raise — BrokenPipeError is swallowed in the writer thread
+        exit_code, stdout = engine._run_subprocess(
+            ["claude", "-p"], config,
+            provider=claude_provider,
+            prompt="anything",
+        )
+
+    # The write was attempted but failed; the read path still works
+    assert exit_code == 0
+    assert mock_proc.stdin.close.called  # finally-block always closes
+
+
+def test_claude_build_cmd_omits_user_prompt_from_argv():
+    """Regression for [Errno 7] Argument list too long: the user prompt
+    must NOT appear in argv (it's piped via stdin instead). The
+    --append-system-prompt is still inline because system_prompt is
+    typically much smaller than the user prompt for PR-review jobs."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    huge_prompt = "X" * 500_000
+    cmd = claude_provider.build_cmd(
+        prompt=huge_prompt,
+        system_prompt="you are a reviewer",
+        model="",
+        mcp_config="",
+        session_id="",
+    )
+
+    # Iron-clad: NO argv element contains the huge prompt
+    for arg in cmd:
+        assert huge_prompt not in arg, (
+            f"prompt leaked into argv element of length {len(arg)}: "
+            f"{arg[:80]!r}..."
+        )
+    # The system_prompt is still inline (--append-system-prompt expects a string)
+    assert "you are a reviewer" in cmd
+    # And the engine reads this flag to decide stdin routing
+    assert claude_provider.prompt_via_stdin is True
+
+
+def test_claude_build_cmd_omits_user_prompt_with_resume():
+    """Same regression covering the --resume code path."""
+    import hivemoot_agent.providers.claude as claude_provider
+
+    huge_prompt = "Y" * 500_000
+    cmd = claude_provider.build_cmd(
+        prompt=huge_prompt,
+        system_prompt="ctx",
+        model="",
+        mcp_config="",
+        session_id="abc-123",
+    )
+
+    for arg in cmd:
+        assert huge_prompt not in arg
+    assert "--resume" in cmd
+    assert "abc-123" in cmd
+
+
 if __name__ == "__main__":
     import inspect
     import tempfile

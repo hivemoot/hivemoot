@@ -33,6 +33,18 @@ class Provider(Protocol):
     # must be concatenated with the user prompt.
     supports_system_prompt_flag: bool
 
+    # OPTIONAL — defaults to False if a provider module doesn't define it.
+    # When True, the provider's `build_cmd` returns argv WITHOUT the user
+    # prompt (it gets piped over stdin by the engine instead). Used to
+    # avoid `[Errno 7] Argument list too long` for large prompts (full PR
+    # diffs, multi-file context, etc.) — the kernel's argv ceiling is
+    # ~128 KiB on most Linux configs.
+    #
+    # The engine reads this attribute via `getattr(provider,
+    # "prompt_via_stdin", False)`, so a provider that doesn't define it
+    # silently keeps the legacy argv-only behavior.
+    prompt_via_stdin: bool
+
     def build_cmd(
         self,
         prompt: str,
