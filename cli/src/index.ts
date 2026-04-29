@@ -14,6 +14,8 @@ import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
 import { issueSnapshotCommand } from "./commands/issue-snapshot.js";
 import { notificationsPullCommand } from "./commands/notifications-pull.js";
 import { roomsListCommand } from "./commands/rooms-list.js";
+import { roomsGetCommand } from "./commands/rooms-get.js";
+import { roomsEventsCommand } from "./commands/rooms-events.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -24,6 +26,14 @@ function parseLimit(value: string): number {
   const n = parseInt(value, 10);
   if (isNaN(n) || n <= 0) {
     throw new InvalidArgumentError("Must be a positive integer.");
+  }
+  return n;
+}
+
+function parseNonNegativeInt(value: string): number {
+  const n = parseInt(value, 10);
+  if (isNaN(n) || n < 0) {
+    throw new InvalidArgumentError("Must be a non-negative integer.");
   }
   return n;
 }
@@ -316,7 +326,7 @@ Examples:
 
 const roomsProgram = program
   .command("rooms")
-  .description("War-room workflow helpers (V1 minimum: list)");
+  .description("War-room workflow helpers (V1 minimum: list, get, events)");
 
 roomsProgram
   .command("list")
@@ -346,6 +356,56 @@ Examples:
     Hit a local \`next dev\` server`,
   )
   .action(roomsListCommand);
+
+roomsProgram
+  .command("get")
+  .description("Fetch a single room's core record by id")
+  .argument("<roomId>", "Room id (UUIDv4 lowercase)")
+  .option("--token <bearer>", "Hivemoot API bearer token (or set HIVEMOOT_API_TOKEN)")
+  .option("--api-url <url>", "Hivemoot API base URL (default: https://www.hivemoot.dev or HIVEMOOT_API_URL)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  $ hivemoot rooms get 8d2bbb86-1f33-4d6a-9b3a-3ed1c0fbcdef
+    Print one room's status, subject, manager, decision (if any)
+
+  $ hivemoot rooms get <id> --json
+    Output the room as JSON for scripting`,
+  )
+  .action(roomsGetCommand);
+
+roomsProgram
+  .command("events")
+  .description("Fetch the event log for a room (chronological by seq)")
+  .argument("<roomId>", "Room id (UUIDv4 lowercase)")
+  .option("--since <seq>", "Return events with seq > this cursor (default: 0 — from beginning)", parseNonNegativeInt)
+  .option("--limit <n>", "Maximum events to return (1-500, default 200)", parseLimit)
+  .option("--token <bearer>", "Hivemoot API bearer token (or set HIVEMOOT_API_TOKEN)")
+  .option("--api-url <url>", "Hivemoot API base URL (default: https://www.hivemoot.dev or HIVEMOOT_API_URL)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Cursor-based pagination:
+  Use the last event's \`seq\` from the previous page as \`--since\`
+  for the next page. Events strictly greater than \`--since\` are
+  returned, so passing the last seen seq advances the cursor cleanly.
+
+Examples:
+  $ hivemoot rooms events <id>
+    Show up to 200 events from the beginning of the log
+
+  $ hivemoot rooms events <id> --since 50 --limit 50
+    Get the next page after seq=50
+
+  $ hivemoot rooms events <id> --json
+    Stream-friendly JSON for scripts`,
+  )
+  .action(roomsEventsCommand);
 
 program
   .command("ack")

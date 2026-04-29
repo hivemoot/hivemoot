@@ -41,11 +41,11 @@ export interface RoomDecision {
 }
 
 /**
- * Shape returned by `GET /api/rooms` (one entry per room). Matches
- * `RoomCoreWithId` on the server side.
+ * Base room core shape — what `GET /api/rooms/{roomId}` returns.
+ * Matches `RoomCore` on the server side (no `roomId` field; the
+ * caller already knows it from the request URL).
  */
-export interface ListedRoom {
-  roomId: string;
+export interface RoomCore {
   manager: string;
   subject_type: SubjectType;
   subject_ref: string;
@@ -58,6 +58,39 @@ export interface ListedRoom {
   decision?: RoomDecision;
 }
 
+/**
+ * Shape returned by `GET /api/rooms` (one entry per room). Matches
+ * `RoomCoreWithId` on the server side — `RoomCore` plus the room's
+ * own id so callers can correlate without a second round-trip.
+ */
+export interface ListedRoom extends RoomCore {
+  roomId: string;
+}
+
 export interface ListRoomsResponse {
   rooms: ListedRoom[];
+}
+
+/**
+ * Single entry from `GET /api/rooms/{roomId}/events`. Mirrors
+ * `RoomEvent` on the server side; the optional fields cover the
+ * event-type-specific payload (e.g., `subject_updated` carries
+ * `subject_ref`, `participant_*` events carry `agent_role`, etc.).
+ *
+ * Untyped here as `Record<string, unknown>` because the union of all
+ * event-type-specific fields is large and event-type-discriminated;
+ * V1 CLI displays them as opaque JSON. Future slices can narrow.
+ */
+export interface RoomEvent {
+  seq: number;
+  timestamp: string;
+  event_type: string;
+  agent_role?: string;
+  agent_id?: string;
+  [extra: string]: unknown;
+}
+
+export interface RoomEventsResponse {
+  roomId: string;
+  events: RoomEvent[];
 }
