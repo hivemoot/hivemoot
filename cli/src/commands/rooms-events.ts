@@ -1,5 +1,6 @@
 import { CliError } from "../config/types.js";
 import { hivemootGet } from "../hivemoot/client.js";
+import { ROOM_ID_REGEX } from "../hivemoot/types.js";
 import type { RoomEvent, RoomEventsResponse } from "../hivemoot/types.js";
 
 export interface RoomsEventsOptions {
@@ -9,8 +10,6 @@ export interface RoomsEventsOptions {
   apiUrl?: string;
   json?: boolean;
 }
-
-const ROOM_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function formatEvents(roomId: string, events: readonly RoomEvent[]): string {
   const lines: string[] = [];

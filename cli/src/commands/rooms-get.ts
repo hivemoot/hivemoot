@@ -1,5 +1,6 @@
 import { CliError } from "../config/types.js";
 import { hivemootGet } from "../hivemoot/client.js";
+import { ROOM_ID_REGEX } from "../hivemoot/types.js";
 import type { RoomCore, SubjectType } from "../hivemoot/types.js";
 
 export interface RoomsGetOptions {
@@ -13,11 +14,6 @@ const SUBJECT_LABEL: Record<SubjectType, string> = {
   mention_response: "mention",
   issue_triage: "issue",
 };
-
-/** Loose UUIDv4 shape — not a strict RFC 4122 check (the server does
- * that). Just a smoke test so an obvious typo (`1234`, empty string)
- * doesn't waste a round-trip. */
-const ROOM_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function formatRoom(roomId: string, room: RoomCore): string {
   const lines: string[] = [];

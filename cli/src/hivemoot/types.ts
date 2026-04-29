@@ -114,3 +114,11 @@ export interface RoomEventsResponse {
   roomId: string;
   events: RoomEvent[];
 }
+
+/**
+ * Loose UUIDv4 shape — not a strict RFC 4122 check (the server does
+ * that). Just a smoke test so an obvious typo (`1234`, empty string,
+ * or a non-hyphenated mash) doesn't waste a round-trip. Shared by
+ * every CLI command that takes a `<roomId>` argument.
+ */
+export const ROOM_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
