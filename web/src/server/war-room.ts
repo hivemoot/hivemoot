@@ -1664,10 +1664,16 @@ export function deriveIdempotencyKey(args: {
    * concept. */
   agentId?: string;
 }): string {
+  // Bump to v2 when agentId is supplied so the per-runner idem
+  // namespace is explicitly distinct from any v1 keys still in flight
+  // during a deploy. v1 keys expire via TTL within the room's
+  // max_age_secs, so no migration needed; the bump just makes the
+  // change visible in keyspace if an operator inspects Redis.
+  const prefix = args.agentId !== undefined ? "v2" : "v1";
   const agentSegment = args.agentId !== undefined ? `:${args.agentId}` : "";
   return createHash("sha256")
     .update(
-      `v1:${args.roomId}:${args.role}:${args.action}${agentSegment}:${args.sequenceObservedByClient}`,
+      `${prefix}:${args.roomId}:${args.role}:${args.action}${agentSegment}:${args.sequenceObservedByClient}`,
     )
     .digest("hex");
 }
