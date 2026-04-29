@@ -29,21 +29,19 @@ import {
   RoomEventStatusPreconditionError,
   RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
+  RoomRunnerFormatError,
+  validateRunnerFormat,
 } from "@/server/war-room";
 
 interface PresentRequestBody {
   sequenceObservedByClient?: number;
   intentHint?: string;
+  /** Per-runner identity for the first-wins gate (G5, #522). When
+   * omitted, falls back to the bearer's `name` (single-runner-per-
+   * token deployments — current Hive fleet model). Subscriber-mode
+   * fleets sharing one token MUST send a distinct value per runner. */
+  agentId?: string;
 }
-
-// Carry-forward (#521 builder R1 #1, will be tracked in follow-up
-// issue): G5 (design L861-877) calls for per-runner `agent_id`.
-// Currently `agentId = auth.name` (bearer token name), so subscriber-
-// mode fleets sharing one token collapse to a single owner for the
-// first-wins gate. Drone's review noted that fixing this requires a
-// storage-layer split between agent_id (first-wins) and actor_id
-// (audit) — too invasive for this slice. Will be addressed before
-// Phase H fleet migration.
 
 export async function POST(
   request: NextRequest,
@@ -89,12 +87,40 @@ export async function POST(
     );
   }
 
+  // Body-supplied agentId for subscriber-mode first-wins gate (#522).
+  // Optional: when omitted, fall back to bearer name so single-runner-
+  // per-token deployments (drone pilot) work unchanged.
+  let agentId: string;
+  if (body.agentId !== undefined) {
+    if (typeof body.agentId !== "string") {
+      return NextResponse.json(
+        { code: "invalid_agent_id", message: "agentId must be a string." },
+        { status: 400 },
+      );
+    }
+    try {
+      validateRunnerFormat(body.agentId);
+    } catch (err) {
+      if (err instanceof RoomRunnerFormatError) {
+        return NextResponse.json(
+          { code: "invalid_agent_id", message: err.message },
+          { status: 400 },
+        );
+      }
+      throw err;
+    }
+    agentId = body.agentId;
+  } else {
+    agentId = auth.name;
+  }
+
   try {
     const sequence = await presentParticipant({
       installationId: auth.installationId,
       roomId,
       role: auth.agent_role,
-      agentId: auth.name,
+      agentId,
+      actorId: auth.name,
       sequenceObservedByClient: body.sequenceObservedByClient,
       intentHint: body.intentHint,
       redis: auth.redis,

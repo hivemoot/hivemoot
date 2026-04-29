@@ -82,7 +82,7 @@ describe("POST /api/rooms/:roomId/present", () => {
     );
   });
 
-  it("happy path → returns sequence; role + agentId server-derived", async () => {
+  it("happy path → returns sequence; role server-derived; agentId defaults to auth.name", async () => {
     mockedAuth.mockResolvedValue(makeWorkerAuth());
     mockedPresent.mockResolvedValue(3);
     const res = await POST(
@@ -96,11 +96,59 @@ describe("POST /api/rooms/:roomId/present", () => {
         installationId: "12345",
         roomId: VALID_ROOM_ID,
         role: "drone", // server-derived from envelope, not body
-        agentId: "drone-1", // server-derived from envelope
+        agentId: "drone-1", // back-compat: defaults to auth.name when body omits
+        actorId: "drone-1", // always bearer-derived for audit trail
         sequenceObservedByClient: 1,
         intentHint: "review",
       }),
     );
+  });
+
+  it("body-supplied agentId flows through to storage; actorId stays bearer-derived (#522)", async () => {
+    // Subscriber-mode: a runner sharing a bearer with siblings sends
+    // its own per-runner identity as agentId. The first-wins gate
+    // distinguishes runners by agentId; the audit trail uses the
+    // bearer name as actorId.
+    mockedAuth.mockResolvedValue(makeWorkerAuth());
+    mockedPresent.mockResolvedValue(3);
+    await POST(
+      makeRequest({
+        sequenceObservedByClient: 1,
+        agentId: "drone-runner-host42",
+      }),
+      { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+    );
+    expect(mockedPresent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "drone-runner-host42", // body-supplied
+        actorId: "drone-1",              // auth.name
+      }),
+    );
+  });
+
+  it("rejects non-string body agentId → 400 invalid_agent_id", async () => {
+    mockedAuth.mockResolvedValue(makeWorkerAuth());
+    const res = await POST(
+      makeRequest({ sequenceObservedByClient: 1, agentId: 12345 }),
+      { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_agent_id");
+    expect(mockedPresent).not.toHaveBeenCalled();
+  });
+
+  it("rejects body agentId that fails validateRunnerFormat → 400", async () => {
+    mockedAuth.mockResolvedValue(makeWorkerAuth());
+    const res = await POST(
+      makeRequest({
+        sequenceObservedByClient: 1,
+        agentId: "drone runner with spaces",  // RUNNER_FORMAT_REGEX rejects
+      }),
+      { params: Promise.resolve({ roomId: VALID_ROOM_ID }) },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("invalid_agent_id");
+    expect(mockedPresent).not.toHaveBeenCalled();
   });
 
   it("rejects missing sequenceObservedByClient → 400", async () => {

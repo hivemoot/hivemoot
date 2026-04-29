@@ -1628,25 +1628,52 @@ const ROLE_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
 
 /**
  * Server-canonical idempotency key derivation. Input is a stable
- * tuple of (roomId, role, action, sequenceObservedByClient); SHA-256
- * keeps the key opaque + bounded-length while making collisions
- * cryptographically negligible.
+ * tuple of (roomId, role, action, agentId, sequenceObservedByClient);
+ * SHA-256 keeps the key opaque + bounded-length while making
+ * collisions cryptographically negligible.
  *
  * `sequenceObservedByClient` is the `If-Room-Sequence-At-Or-After`
  * header value the client read when constructing the request. Two
- * retries from the same client see the same observed sequence and
- * thus derive the same key — that's the desired behavior for the
- * replay-detection path.
+ * retries from the same client see the same observed sequence + same
+ * agentId and thus derive the same key — that's the desired behavior
+ * for the replay-detection path.
+ *
+ * **Per-runner idempotency** (#522 / G5 — closes builder R2):
+ * `agentId` is included so two runners sharing a bearer (subscriber-
+ * mode) AND observing the same sequence DON'T collide on the idem
+ * key. Without this, runner A wins the idem write, then runner B
+ * gets RoomEventIdempotencyReplayError (which the route maps to 200
+ * `replay: true`) — runner B believes its RSVP succeeded but it's
+ * actually runner A's slot. The owner check that should reject B
+ * runs AFTER the idem check in the script, so it never fires. Adding
+ * agentId to the key forces B's request to go through the script's
+ * owner check, where it correctly gets 409 owner_conflict.
+ *
+ * `agentId` is optional in the function signature for back-compat
+ * with non-RSVP actions (decide, close, subject_updated, etc.) that
+ * don't have a per-runner identity. RSVP actions (present, withdraw,
+ * contribute) MUST pass it.
  */
 export function deriveIdempotencyKey(args: {
   roomId: string;
   role: string;
   action: RoomEventAction;
   sequenceObservedByClient: number;
+  /** Per-runner identity for subscriber-mode idem-lane separation
+   * (#522). Omit for non-RSVP actions where there's no per-runner
+   * concept. */
+  agentId?: string;
 }): string {
+  // Bump to v2 when agentId is supplied so the per-runner idem
+  // namespace is explicitly distinct from any v1 keys still in flight
+  // during a deploy. v1 keys expire via TTL within the room's
+  // max_age_secs, so no migration needed; the bump just makes the
+  // change visible in keyspace if an operator inspects Redis.
+  const prefix = args.agentId !== undefined ? "v2" : "v1";
+  const agentSegment = args.agentId !== undefined ? `:${args.agentId}` : "";
   return createHash("sha256")
     .update(
-      `v1:${args.roomId}:${args.role}:${args.action}:${args.sequenceObservedByClient}`,
+      `${prefix}:${args.roomId}:${args.role}:${args.action}${agentSegment}:${args.sequenceObservedByClient}`,
     )
     .digest("hex");
 }
@@ -2686,9 +2713,32 @@ interface RSVPCommonArgs {
    * so client-supplied role would let one bearer overwrite another's
    * RSVP. */
   role: string;
-  /** Server-derived from token envelope's `name`. Used as the actor_id
-   * on the event log + materialized participant record. */
+  /** Per-runner identity used for the per-(room, role) **first-wins
+   * gate** (G5 — subscriber-mode). Body-supplied at the route layer
+   * (validated via `validateRunnerFormat`). Two runners that share a
+   * bearer but have distinct `agentId` race correctly — the second
+   * gets `RoomParticipantOwnerConflictError`. Stored on the
+   * materialized participant record as `participant.agent_id`.
+   *
+   * #522 / WAR_ROOM_DESIGN.md L861-877: prior code used the
+   * bearer-derived name here, collapsing subscriber-mode runners.
+   * The split between `agentId` (gate) and `actorId` (audit) is the
+   * fix — together they let us prevent impersonation (audit can't
+   * be forged) AND distinguish concurrent runners (gate uses each
+   * runner's own id). */
   agentId: string;
+  /** Bearer-derived audit identity used for the event log's
+   * `actor_id`. Anti-impersonation: a request body cannot forge
+   * who-took-this-action in the audit trail. Routes wire this from
+   * `auth.name`. May equal `agentId` in single-runner-per-token
+   * deployments (drone pilot, etc.).
+   *
+   * Optional in the type for back-compat with existing call sites
+   * (storage tests pre-#522). When omitted, defaults to `agentId`
+   * — same behavior as before #522. PRODUCTION ROUTES MUST pass
+   * `actorId` explicitly so the audit trail records the bearer,
+   * not a body-supplied value. */
+  actorId?: string;
   /** Required header value (`If-Room-Sequence-At-Or-After`). Used to
    * derive the idempotency key — two retries with the same observed
    * sequence resolve to the same key, replay-safe. */
@@ -2740,7 +2790,10 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       timestamp: nowIso,
       event_type: "participant_presented",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit trail uses bearer-derived actorId for impersonation
+      // safety. Per-runner agentId (used by ownerCheck below) lives
+      // on the materialized participant record only. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.intentHint !== undefined ? { intent_hint: args.intentHint } : {}),
       },
@@ -2749,9 +2802,16 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       roomId: args.roomId,
       role: args.role,
       action: "present",
+      // #522 builder R2: per-runner idem-lane separation. Without
+      // this, two runners sharing a bearer + observing same seq
+      // collide on the idem key and runner B gets a spurious
+      // 200 replay instead of 409 owner_conflict.
+      agentId: args.agentId,
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    // First-wins gate: per-runner agentId distinguishes subscriber-
+    // mode runners that share a bearer.
     ownerCheck: { field: args.role, expectedAgentId: args.agentId },
     materialized1: {
       key: participantsKey(args.roomId),
@@ -2790,7 +2850,8 @@ export async function withdrawParticipant(
       timestamp: nowIso,
       event_type: "participant_withdrawn",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },
@@ -2799,6 +2860,7 @@ export async function withdrawParticipant(
       roomId: args.roomId,
       role: args.role,
       action: "withdraw_participant",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,
@@ -2866,7 +2928,9 @@ export async function submitContribution(args: RSVPCommonArgs & {
       timestamp: nowIso,
       event_type: "contribution_submitted",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. Owner check below uses per-runner
+      // agentId for subscriber-mode safety. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         body: args.body as unknown as Record<string, unknown>,
         // raw_md NOT in event body — bounded separately at 32 KiB
@@ -2877,6 +2941,7 @@ export async function submitContribution(args: RSVPCommonArgs & {
       roomId: args.roomId,
       role: args.role,
       action: "contribute",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,
@@ -2926,7 +2991,8 @@ export async function withdrawContribution(
       timestamp: nowIso,
       event_type: "contribution_withdrawn",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },
@@ -2935,6 +3001,7 @@ export async function withdrawContribution(
       roomId: args.roomId,
       role: args.role,
       action: "withdraw_contribution",
+      agentId: args.agentId, // #522 builder R2 — per-runner idem lane
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     ownerRequired: true,

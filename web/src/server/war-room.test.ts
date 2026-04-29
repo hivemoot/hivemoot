@@ -2033,6 +2033,210 @@ describe("presentParticipant", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Per-runner agent_id (#522 / G5 — subscriber-mode first-wins gate)
+// ---------------------------------------------------------------------------
+
+describe("Per-runner agent_id (G5 subscriber-mode)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("event.actor_id uses bearer-derived actorId, not body-supplied agentId", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",  // body-supplied per-runner identity
+      actorId: "shared-token-name",     // bearer-derived (auth.name)
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 0, redis });
+    const presented = events.find(
+      (e) => e.event_type === "participant_presented",
+    );
+    expect(presented).toBeDefined();
+    // Audit trail attributes the action to the bearer (anti-impersonation),
+    // NOT to the body-supplied agentId.
+    expect(presented?.actor_id).toBe("shared-token-name");
+  });
+
+  it("participant.agent_id uses body-supplied agentId for first-wins distinction", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    // Materialized record stores the per-runner identity so the
+    // first-wins gate can distinguish concurrent runners.
+    expect(participants.drone.agent_id).toBe("drone-runner-host42");
+  });
+
+  it("subscriber-mode regression: two distinct agentIds with same actorId → second gets owner_conflict", async () => {
+    // Closes #522: prior code used auth.name for both agentId AND
+    // actorId, so two runners sharing a token (subscriber-mode)
+    // would collapse to a single owner — the second's RSVP would
+    // be treated as idempotent (or worse, a re-RSVP from withdrew).
+    // With the split, the bearer (actorId) audits both attempts,
+    // but the gate sees them as DISTINCT runners and rejects the
+    // second.
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-A",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-runner-B",  // DIFFERENT runner, same bearer
+        actorId: "shared-token-name",
+        sequenceObservedByClient: 2,
+        redis,
+      }),
+    ).rejects.toThrow(/first-wins|already claimed/);
+  });
+
+  it("subscriber-mode regression — concurrent poll: same observedSequence + distinct agentId → 409 (NOT 200 replay)", async () => {
+    // Closes #522 builder R2: the actual concurrent-poll case the
+    // first regression test missed. Two runners sharing a bearer
+    // observe the same /watching response sequence (race window
+    // between watching tick and present call), then both call
+    // /present with seq=1.
+    //
+    // Without per-runner idem-lane separation:
+    //   - Runner A writes (room, drone, present, seq=1) idem key
+    //   - Runner B's idem check matches → RoomEventIdempotencyReplayError
+    //   - Route maps to 200 { replay: true } — runner B believes
+    //     its RSVP succeeded but it's actually runner A's slot
+    //
+    // With per-runner idem (this test):
+    //   - Runner A writes (room, drone, present, runner-A, seq=1)
+    //   - Runner B's idem key is DIFFERENT (runner-B in the tuple)
+    //   - Idem check passes (no collision)
+    //   - Owner check fires → RoomParticipantOwnerConflictError
+    //   - Route maps to 409 owner_conflict — correct rejection
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-A",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1, // SAME observed sequence
+      redis,
+    });
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-runner-B",
+        actorId: "shared-token-name",
+        sequenceObservedByClient: 1, // SAME observed sequence as above
+        redis,
+      }),
+    ).rejects.toThrow(/first-wins|already claimed/);
+  });
+
+  it("back-compat: actorId omitted defaults to agentId (existing call sites)", async () => {
+    // Pre-#522 callers passed only agentId. The default actorId →
+    // agentId behavior preserves their semantics so they don't
+    // break; production routes (post-#522) MUST pass both.
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",  // no actorId — defaults to agentId
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 0, redis });
+    const presented = events.find(
+      (e) => e.event_type === "participant_presented",
+    );
+    expect(presented?.actor_id).toBe("drone-1");
+  });
+
+  it("split applies to withdrawParticipant: actorId is audit, agentId is owner check", async () => {
+    // RSVP first.
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    // Withdraw with same agentId (owner check passes), distinct actorId.
+    await withdrawParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 2,
+      reason: "out of capacity",
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 0, redis });
+    const withdrawn = events.find(
+      (e) => e.event_type === "participant_withdrawn",
+    );
+    expect(withdrawn?.actor_id).toBe("shared-token-name");
+  });
+
+  it("split applies to submitContribution + withdrawContribution similarly", async () => {
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-host42",
+      actorId: "shared-token-name",
+      sequenceObservedByClient: 2,
+      body: { verdict: "APPROVE", summary: "lgtm" },
+      rawMd: "approved.",
+      redis,
+    });
+    const events = await listRoomEvents({ roomId: RID_A, since: 0, redis });
+    const contributed = events.find(
+      (e) => e.event_type === "contribution_submitted",
+    );
+    expect(contributed?.actor_id).toBe("shared-token-name");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // withdrawParticipant
 // ---------------------------------------------------------------------------
 
