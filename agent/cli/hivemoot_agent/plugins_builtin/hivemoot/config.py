@@ -279,6 +279,56 @@ class HivemootApiaristConfig(StrictPluginConfig):
     )
 
 
+class HivemootWarRoomsConfig(StrictPluginConfig):
+    """War-room watcher — polls /api/rooms/watching and dispatches
+    one Job per visible room (F.2 trigger). Job handler (F.3) parses
+    the agent's structured response and calls /present + /contribute
+    or /present + /withdraw against the war-room API.
+
+    Off by default so the plugin ships idempotently; fleet YAML
+    must opt in. End-to-end PR review flow (queen ↔ workers)
+    requires this enabled on every reviewer agent.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the war-room watcher trigger + on_job_finished "
+            "handler. Off by default; fleet YAML opts each reviewer "
+            "role in."
+        ),
+    )
+    base_url: str = Field(
+        default="https://www.hivemoot.dev",
+        description=(
+            "Base URL for the war-room API. Polls go to "
+            "``{base_url}/api/rooms/watching``; lifecycle posts to "
+            "``{base_url}/api/rooms/{id}/{present,contributions,withdraw}``. "
+            "Override for staging environments."
+        ),
+    )
+    poll_interval_secs: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            "Seconds between /watching polls. Default 60s matches the "
+            "watchdog's tick cadence — rooms surfaced this poll get "
+            "dispatched within one queen-tick window. Floor of 5s "
+            "prevents tight-looping; raise to 120-300s on high-room-"
+            "count fleets to reduce backend load."
+        ),
+    )
+    seen_cache_max: int = Field(
+        default=1000,
+        ge=10,
+        description=(
+            "Max (roomId, sequence) entries the trigger remembers to "
+            "deduplicate within a session. LRU-evicted past this cap. "
+            "1000 covers ~weeks of room activity at typical Hive scale."
+        ),
+    )
+
+
 class HivemootConfig(StrictPluginConfig):
     """Top-level typed config for the consolidated hivemoot plugin."""
 
@@ -307,4 +357,8 @@ class HivemootConfig(StrictPluginConfig):
     apiarist: HivemootApiaristConfig = Field(
         default_factory=HivemootApiaristConfig,
         description="GitHub installation-token brokering via apiarist.",
+    )
+    war_rooms: HivemootWarRoomsConfig = Field(
+        default_factory=HivemootWarRoomsConfig,
+        description="War-room watcher + per-room triage/contribution handler.",
     )

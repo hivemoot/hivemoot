@@ -129,6 +129,23 @@ class WarRoomWatcherTrigger:
     def stop(self) -> None:
         self._stop_event.set()
 
+    def evict_seen_key(self, room_id: str, sequence: int) -> None:
+        """Remove a (room, sequence) entry from the seen cache so
+        the next tick re-dispatches it.
+
+        Wired in F.5 as the handler's `on_post_failure` callback:
+        when the post sequence (present + contribute / withdraw)
+        totally fails, no participant-state change has landed and
+        /watching will keep listing this room. Without this
+        eviction, the next tick would skip (seen-cache hit) and the
+        worker would silently drop participation.
+
+        Idempotent — eviction of a non-existent key is a no-op.
+        """
+        key = f"{room_id}@{sequence}"
+        if key in self._seen._cache:
+            del self._seen._cache[key]
+
     def validate(self, config: Any) -> list[str]:
         """Return config errors (empty = valid).
 
