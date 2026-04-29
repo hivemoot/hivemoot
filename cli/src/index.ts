@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import { Command, InvalidArgumentError } from "commander";
+import { Command } from "commander";
+import { parseLimit, parseNonNegativeInt } from "./parsers.js";
 import { buzzCommand } from "./commands/buzz.js";
 import { rolesCommand } from "./commands/roles.js";
 import { roleCommand } from "./commands/role.js";
@@ -22,22 +23,6 @@ import { setGhToken } from "./github/client.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json") as { version: string };
-
-function parseLimit(value: string): number {
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n <= 0) {
-    throw new InvalidArgumentError("Must be a positive integer.");
-  }
-  return n;
-}
-
-function parseNonNegativeInt(value: string): number {
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n < 0) {
-    throw new InvalidArgumentError("Must be a non-negative integer.");
-  }
-  return n;
-}
 
 const program = new Command();
 
