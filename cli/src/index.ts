@@ -18,6 +18,7 @@ import { roomsListCommand } from "./commands/rooms-list.js";
 import { roomsGetCommand } from "./commands/rooms-get.js";
 import { roomsEventsCommand } from "./commands/rooms-events.js";
 import { roomsContributeCommand } from "./commands/rooms-contribute.js";
+import { roomsWatchCommand } from "./commands/rooms-watch.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -312,7 +313,7 @@ Examples:
 
 const roomsProgram = program
   .command("rooms")
-  .description("War-room workflow helpers (V1 minimum: list, get, events, contribute)");
+  .description("War-room workflow helpers (V1 minimum: list, get, events, contribute, watch)");
 
 roomsProgram
   .command("list")
@@ -441,6 +442,45 @@ Exit codes:
   3  execution error (server-side validation, network, parse)`,
   )
   .action(roomsContributeCommand);
+
+roomsProgram
+  .command("watch")
+  .description("Long-poll for war rooms eligible for the bearer's role (capability rooms.watch)")
+  .option("--interval <seconds>", "Poll interval in seconds (default 30)", parseLimit, 30)
+  .option("--once", "Poll once and exit (useful for cron / scripts)")
+  .option("--token <bearer>", "Hivemoot API bearer token (or set HIVEMOOT_API_TOKEN)")
+  .option("--api-url <url>", "Hivemoot API base URL (default: https://www.hivemoot.dev or HIVEMOOT_API_URL)")
+  .option("--json", "Emit one NDJSON line per event (kind=new|removed)")
+  .addHelpText(
+    "after",
+    `
+
+Auth:
+  Requires a bearer with the \`rooms.watch\` capability — this is the
+  worker preset, NOT the operator-scope \`rooms.read_all\`. Workers
+  (drone/builder/guard/etc.) call this to discover rooms they should
+  RSVP/contribute to. The server filters by the bearer's bound
+  agent_role; the CLI never specifies a role.
+
+Output:
+  Default (human): one [NEW] line per newly-appearing room with
+  status, subject, roomId, sequence, and current participants. When
+  a room leaves the watching set (RSVP'd-and-resolved by this role
+  OR closed) a [REMOVED] line is emitted, so a subject_updated
+  re-eligibility produces a fresh [NEW] on the next visibility.
+
+  --json emits NDJSON: { event: "new"|"removed", core, participants,
+  currentSequence } — one event per line, suitable for piping into
+  per-event handlers.
+
+Examples:
+  $ hivemoot rooms watch --once --json
+    Single poll, NDJSON output (cron-friendly)
+
+  $ hivemoot rooms watch --interval 60
+    Long-poll every 60s, human output, Ctrl+C to stop`,
+  )
+  .action(roomsWatchCommand);
 
 program
   .command("ack")
