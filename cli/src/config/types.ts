@@ -265,7 +265,16 @@ export type ErrorCode =
   | "INVALID_CONFIG"
   | "RATE_LIMITED"
   | "GH_APP_TOKEN_UNSUPPORTED"
-  | "GH_ERROR";
+  | "GH_ERROR"
+  | "AUTH_ERROR"
+  | "INVALID_OPTION"
+  | "NETWORK_ERROR"
+  | "PARSE_ERROR"
+  // Hivemoot API server-supplied codes (e.g., `unauthorized`,
+  // `missing_capability`, `HTTP_500`, etc.) pass through verbatim.
+  // The `string & {}` trick keeps IntelliSense on the literal members
+  // above while still permitting any string at the throw site.
+  | (string & {});
 
 export class CliError extends Error {
   constructor(

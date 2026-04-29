@@ -13,6 +13,7 @@ import { issueVoteCommand } from "./commands/issue-vote.js";
 import { issuePostCommentCommand } from "./commands/issue-post-comment.js";
 import { issueSnapshotCommand } from "./commands/issue-snapshot.js";
 import { notificationsPullCommand } from "./commands/notifications-pull.js";
+import { roomsListCommand } from "./commands/rooms-list.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
@@ -312,6 +313,39 @@ Examples:
     Skip notifications already processed by hivemoot watch/ack`,
   )
   .action(notificationsPullCommand);
+
+const roomsProgram = program
+  .command("rooms")
+  .description("War-room workflow helpers (V1 minimum: list)");
+
+roomsProgram
+  .command("list")
+  .description("List war rooms in this installation (newest-first)")
+  .option("--limit <n>", "Maximum rooms to return (1-200, default 50)", parseLimit)
+  .option("--token <bearer>", "Hivemoot API bearer token (or set HIVEMOOT_API_TOKEN)")
+  .option("--api-url <url>", "Hivemoot API base URL (default: https://www.hivemoot.dev or HIVEMOOT_API_URL)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Auth:
+  The bearer must carry the \`rooms.read_all\` capability — operator-scope
+  for this installation. Workers (drone/builder/guard/etc.) have narrower
+  capabilities and cannot list rooms; they should use the agent-runtime
+  watcher instead.
+
+Examples:
+  $ hivemoot rooms list
+    List up to 50 rooms (token from HIVEMOOT_API_TOKEN env var)
+
+  $ hivemoot rooms list --limit 200 --json
+    Fetch the maximum page and emit JSON for scripting
+
+  $ HIVEMOOT_API_URL=http://localhost:3000 hivemoot rooms list
+    Hit a local \`next dev\` server`,
+  )
+  .action(roomsListCommand);
 
 program
   .command("ack")
