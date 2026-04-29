@@ -14,12 +14,13 @@ export type RoomStatus =
   | "awaiting_contributions"
   | "deciding"
   | "closed"
-  | "expired"
-  | "force_closed"
-  | "failed_synthesis";
+  | "expired";
 
 export type SubjectType = "pr_review" | "mention_response" | "issue_triage";
 
+/** Reason a room reached a terminal state via the
+ * `ROOM_TERMINATE_SCRIPT` path (vs the queen's happy-path close).
+ * Mirrors `TerminalReason` in `web/src/server/war-room.ts`. */
 export type TerminalReason =
   | "expired"
   | "failed_synthesis"
@@ -27,11 +28,9 @@ export type TerminalReason =
   | "manual";
 
 export interface TimingConfig {
-  rsvp_quiet_period_secs: number;
+  max_age_secs: number;
   rsvp_deadline_secs: number;
   contribution_deadline_secs: number;
-  rsvp_contribution_timeout_secs: number;
-  max_age_secs: number;
 }
 
 export interface RoomDecision {

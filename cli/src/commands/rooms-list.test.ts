@@ -19,11 +19,9 @@ function makeRoom(overrides: Partial<ListedRoom> = {}): ListedRoom {
     subject_ref: "hivemoot/hivemoot#42",
     opened_at: "2026-04-29T18:00:00.000Z",
     timing_config: {
-      rsvp_quiet_period_secs: 60,
+      max_age_secs: 7200,
       rsvp_deadline_secs: 600,
       contribution_deadline_secs: 1800,
-      rsvp_contribution_timeout_secs: 1800,
-      max_age_secs: 7200,
     },
     status: "awaiting_contributions",
     ...overrides,
