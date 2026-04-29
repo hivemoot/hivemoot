@@ -637,4 +637,24 @@ describe("maybeCreateMentionRoom", () => {
     });
     expect(result).toEqual({ roomId: null, skipped: "api_error" });
   });
+
+  it("never throws — pin the non-throwing contract for webhook safety (drone #549 N1)", async () => {
+    // Webhook handler relies on this: a war-room failure must NOT
+    // bubble out and disrupt the existing intake / governance flow.
+    // Mirror maybeCreatePrReviewRoom's existing contract test.
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new Error("totally unexpected"),
+    );
+    setupCreateRoomMock(createRoom);
+    await expect(
+      maybeCreateMentionRoom({
+        owner: "hivemoot",
+        repo: "hivemoot",
+        issueOrPrNumber: 42,
+        commentAuthor: "alice",
+        log,
+      }),
+    ).resolves.toEqual({ roomId: null, skipped: "api_error" });
+  });
 });
