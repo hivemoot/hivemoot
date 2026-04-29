@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
+  isRoomStuck,
   relativeTime,
+  sortRoomsByStuckness,
   statusLabel,
   statusPillClass,
   subjectLabel,
@@ -97,8 +99,12 @@ export default function RoomsList() {
       )}
 
       {state.status === "ready" && state.rooms.length > 0 && (
+        // Sort by stuck-ness DESC (most-stuck active rooms at top)
+        // then terminal rooms by opened_at DESC. Per
+        // WAR_ROOM_DESIGN.md L1247 — operators see rooms that
+        // need attention without filtering. Closes #553 builder R1.
         <ul className="divide-y divide-white/5 overflow-hidden rounded-lg border border-white/5 bg-zinc-900/50">
-          {state.rooms.map((room) => (
+          {sortRoomsByStuckness(state.rooms).map((room) => (
             <RoomRow key={room.roomId} room={room} />
           ))}
         </ul>
@@ -108,8 +114,15 @@ export default function RoomsList() {
 }
 
 function RoomRow({ room }: { room: RoomCoreWithId }) {
+  // Red highlight when past 80% of the relevant deadline
+  // (rsvp_deadline_secs for awaiting_rsvp, contribution_deadline_secs
+  // for awaiting_contributions/deciding). Per WAR_ROOM_DESIGN.md L1248.
+  const stuck = isRoomStuck(room.opened_at, room.status, room.timing_config);
+  const stuckHighlight = stuck
+    ? "border-l-2 border-red-500/60 bg-red-500/5"
+    : "";
   return (
-    <li>
+    <li className={stuckHighlight}>
       <Link
         href={`/dashboard/rooms/${room.roomId}`}
         className="block px-4 py-3 transition-colors hover:bg-white/5"
@@ -121,6 +134,11 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
             >
               {statusLabel(room.status)}
             </span>
+            {stuck && (
+              <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-300 ring-1 ring-red-500/30">
+                near deadline
+              </span>
+            )}
             <span className="text-xs uppercase tracking-wide text-zinc-500">
               {subjectLabel(room.subject_type)}
             </span>

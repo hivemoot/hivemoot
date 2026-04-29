@@ -74,6 +74,120 @@ export function participantStatusCounts(
   return { ...counts, total: Object.keys(participants).length };
 }
 
+// ---------------------------------------------------------------------------
+// Stuckness — closes #553 builder R1 (WAR_ROOM_DESIGN.md L1247)
+// ---------------------------------------------------------------------------
+
+/** Active rooms — workers / queen are still expected to act. The
+ * dashboard prioritizes these above terminal rooms because they're
+ * the ones that may need operator attention. */
+export const ACTIVE_STATUSES: ReadonlySet<RoomStatus> = new Set([
+  "awaiting_rsvp",
+  "awaiting_contributions",
+  "deciding",
+]);
+
+export function isActiveStatus(status: RoomStatus): boolean {
+  return ACTIVE_STATUSES.has(status);
+}
+
+/**
+ * Pick the relevant deadline for a room based on its current status.
+ * - awaiting_rsvp → rsvp_deadline_secs
+ * - awaiting_contributions / deciding → contribution_deadline_secs
+ * - terminal statuses → null (no deadline applies)
+ *
+ * Falls back to undefined when the room has no timing_config (older
+ * rooms or test fixtures).
+ */
+export function relevantDeadlineSecs(
+  status: RoomStatus,
+  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+): number | null {
+  if (!isActiveStatus(status)) return null;
+  if (!timingConfig) return null;
+  if (status === "awaiting_rsvp") {
+    return timingConfig.rsvp_deadline_secs ?? null;
+  }
+  return timingConfig.contribution_deadline_secs ?? null;
+}
+
+/**
+ * `(now - opened_at) / deadline` ratio in [0, ∞). Used for sorting
+ * (highest first = most stuck) AND highlighting (>= 0.8 → red row
+ * per WAR_ROOM_DESIGN.md L1248).
+ *
+ * Returns 0 for terminal rooms or rooms with no relevant deadline
+ * — terminal rooms aren't "stuck" and unconfigured rooms can't be
+ * scored.
+ */
+export function stucknessRatio(
+  openedAtIso: string,
+  status: RoomStatus,
+  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+  nowMs: number = Date.now(),
+): number {
+  const deadline = relevantDeadlineSecs(status, timingConfig);
+  if (deadline === null || deadline <= 0) return 0;
+  const openedMs = Date.parse(openedAtIso);
+  if (!Number.isFinite(openedMs)) return 0;
+  const ageSecs = Math.max(0, (nowMs - openedMs) / 1000);
+  return ageSecs / deadline;
+}
+
+/** Per WAR_ROOM_DESIGN.md L1248: red highlight when past 80% of
+ * the relevant deadline. */
+export const STUCK_THRESHOLD = 0.8;
+
+export function isRoomStuck(
+  openedAtIso: string,
+  status: RoomStatus,
+  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+  nowMs: number = Date.now(),
+): boolean {
+  return (
+    stucknessRatio(openedAtIso, status, timingConfig, nowMs) >= STUCK_THRESHOLD
+  );
+}
+
+/**
+ * Sort rooms for the default dashboard view per WAR_ROOM_DESIGN.md
+ * L1247 — active rooms by stuck-ness DESC (most-stuck first), then
+ * terminal rooms by opened_at DESC (most-recent first). Operators
+ * see the rooms that need attention without filtering.
+ *
+ * Pure function on `(rooms, nowMs)` — no Date.now coupling so the
+ * sort can be tested deterministically.
+ */
+export function sortRoomsByStuckness<
+  T extends {
+    status: RoomStatus;
+    opened_at: string;
+    timing_config?: {
+      rsvp_deadline_secs?: number;
+      contribution_deadline_secs?: number;
+    };
+  },
+>(rooms: T[], nowMs: number = Date.now()): T[] {
+  return [...rooms].sort((a, b) => {
+    const aActive = isActiveStatus(a.status);
+    const bActive = isActiveStatus(b.status);
+    // Active rooms always come before terminal.
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+    if (aActive && bActive) {
+      // Within active: most-stuck (highest ratio) first. Falls back
+      // to opened_at ASC (oldest first) when ratios tie at 0.
+      const aRatio = stucknessRatio(a.opened_at, a.status, a.timing_config, nowMs);
+      const bRatio = stucknessRatio(b.opened_at, b.status, b.timing_config, nowMs);
+      if (aRatio !== bRatio) return bRatio - aRatio;
+      return Date.parse(a.opened_at) - Date.parse(b.opened_at);
+    }
+    // Within terminal: most-recent opened_at first.
+    return Date.parse(b.opened_at) - Date.parse(a.opened_at);
+  });
+}
+
 /**
  * Format an ISO 8601 timestamp as a human-readable relative time
  * ("3m ago", "2h ago"). Returns absolute date for >7d ago.
