@@ -54,19 +54,79 @@ export function derivePrRoomId(args: {
   repo: string;
   prNumber: number;
 }): string {
-  const subject = `${args.owner}/${args.repo}#${args.prNumber}`;
-  const hash = createHash("sha256").update(subject).digest("hex");
-  // Format hex chars as UUID: 8-4-4-4-12.
-  // Then patch the version nibble (13th hex char → "4") and the
-  // variant nibble (17th hex char → 8/9/a/b) to satisfy UUIDv4.
+  return derivedUuidV4(`${args.owner}/${args.repo}#${args.prNumber}`);
+}
+
+/**
+ * Derive a deterministic UUIDv4-shaped roomId from an issue/PR's
+ * mention-response identity. The same `(owner, repo, number)` always
+ * maps to the same id, so multiple @hivemoot mentions on the same
+ * issue/PR reuse the existing room (idempotent on `subject_already_open`).
+ *
+ * Distinct namespace from `derivePrRoomId` via the `mention:` prefix
+ * — the same `owner/repo#N` produces a DIFFERENT roomId than its
+ * pr_review counterpart, so a PR can simultaneously have one
+ * pr_review room (review verdicts) AND one mention_response room
+ * (free-form @hivemoot Q&A).
+ */
+export function deriveMentionRoomId(args: {
+  owner: string;
+  repo: string;
+  issueOrPrNumber: number;
+}): string {
+  return derivedUuidV4(
+    `mention:${args.owner}/${args.repo}#${args.issueOrPrNumber}`,
+  );
+}
+
+/**
+ * Internal: hash the input string into a UUIDv4-formatted id (32 hex
+ * chars + version + variant nibble fixups, 8-4-4-4-12 layout).
+ * Storage's regex
+ * `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
+ * enforces UUIDv4 format; this helper produces a string that
+ * matches while remaining stable per input.
+ */
+function derivedUuidV4(input: string): string {
+  const hash = createHash("sha256").update(input).digest("hex");
   const chars = hash.slice(0, 32).split("");
   chars[12] = "4"; // version 4
-  // Variant bits: top two bits of byte 8 must be 10. Mask the high
-  // nibble: 0b10xx → "8" | "9" | "a" | "b".
   const variantNibble = (parseInt(chars[16], 16) & 0x3) | 0x8;
   chars[16] = variantNibble.toString(16);
   const joined = chars.join("");
   return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20, 32)}`;
+}
+
+/**
+ * Match the literal `@hivemoot` mention NOT followed by a word
+ * character or hyphen. Excludes `@hivemoot-builder`, `@hivemoot_test`,
+ * etc., which are distinct GitHub identities. Anchors:
+ *   - Start of string OR non-word boundary before `@hivemoot`
+ *   - End of string OR non-`[\w-]` char after the `t`
+ *
+ * Case-insensitive (`hello @Hivemoot` works).
+ */
+const HIVEMOOT_MENTION_REGEX = /(?:^|\W)@hivemoot(?![\w-])/i;
+
+/**
+ * Detect a `@hivemoot` mention in a comment body. Skips zero-length
+ * bodies and bodies starting with `/` (which are command comments
+ * routed elsewhere).
+ *
+ * The intent is conservative: a comment that's primarily a /command
+ * shouldn't ALSO trigger mention-room creation — operators clicking
+ * `/gather` etc. don't expect a war room to spawn. Mid-comment
+ * mentions inside a /command body are a real edge case but rare;
+ * they fall through to the command path only.
+ */
+export function commentHasHivemootMention(commentBody: string): boolean {
+  if (typeof commentBody !== "string" || commentBody.length === 0) {
+    return false;
+  }
+  if (commentBody.trimStart().startsWith("/")) {
+    return false; // command comment — don't double-route
+  }
+  return HIVEMOOT_MENTION_REGEX.test(commentBody);
 }
 
 interface MaybeCreatePrReviewRoomArgs {
@@ -361,3 +421,148 @@ export async function maybeEmitSubjectUpdated(
   }
 }
 
+// ---------------------------------------------------------------------------
+// E.3 — mention_response rooms on @hivemoot comments
+// ---------------------------------------------------------------------------
+
+interface MaybeCreateMentionRoomArgs {
+  owner: string;
+  repo: string;
+  /** The issue OR PR number — same field on the GitHub `issue` payload
+   * for both. The mention_response subject_ref shape doesn't
+   * distinguish; the room's downstream consumers can read
+   * `pull_request` on the original webhook payload if they need to. */
+  issueOrPrNumber: number;
+  /** GitHub login of the comment author. Logged for ops triage —
+   * NOT used for any access decision (the bot's own bearer is
+   * what authorizes the room creation). */
+  commentAuthor: string;
+  log: Pick<Logger, "info" | "warn" | "error">;
+}
+
+interface MaybeCreateMentionRoomResult {
+  /** The war-room roomId (newly created OR reused via the
+   * idempotent 409 path). `null` when the bot has no agent token
+   * configured OR when the API call hit a 5xx / network error. */
+  roomId: string | null;
+  /** Why the room wasn't created when `roomId === null`. */
+  skipped?: "no_token" | "api_error";
+}
+
+/**
+ * Create a `mention_response` war room for an @hivemoot comment on
+ * an issue or PR. Multiple mentions on the same issue/PR get the
+ * SAME roomId (deterministic per `(owner, repo, issueOrPrNumber)`)
+ * — so subsequent mentions reuse the existing room via the
+ * `subject_already_open` 409 path. Once that room closes, a new
+ * mention will create a fresh room (storage frees the subject).
+ *
+ * Same auth-gated, non-fatal-on-error policy as `maybeCreatePrReviewRoom`:
+ *   - `HIVEMOOT_BOT_AGENT_TOKEN` unset → log + return null
+ *   - 5xx / network → log + return null
+ *   - 409 `subject_already_open` → reuse existing roomId
+ *   - other 4xx → log + return null
+ *
+ * The webhook handler invokes this helper AFTER the /command parser
+ * has rejected the comment (a comment that's primarily a /command
+ * should NOT also spawn a mention room — see
+ * `commentHasHivemootMention`'s `/`-prefix guard).
+ */
+export async function maybeCreateMentionRoom(
+  args: MaybeCreateMentionRoomArgs,
+): Promise<MaybeCreateMentionRoomResult> {
+  const token = process.env.HIVEMOOT_BOT_AGENT_TOKEN;
+  if (!token) {
+    args.log.info(
+      {
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+        commentAuthor: args.commentAuthor,
+      },
+      "[war-room] HIVEMOOT_BOT_AGENT_TOKEN unset — skipping mention room creation. Set the env var to enable mention war-rooms.",
+    );
+    return { roomId: null, skipped: "no_token" };
+  }
+
+  let client: WarRoomClient;
+  try {
+    client = new WarRoomClient({ log: args.log });
+  } catch (err) {
+    args.log.error(
+      {
+        err,
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+      },
+      "[war-room] failed to construct WarRoomClient — skipping mention room creation.",
+    );
+    return { roomId: null, skipped: "api_error" };
+  }
+
+  const subject = {
+    type: "mention_response" as const,
+    ref: `${args.owner}/${args.repo}#${args.issueOrPrNumber}`,
+  };
+  const roomId = deriveMentionRoomId({
+    owner: args.owner,
+    repo: args.repo,
+    issueOrPrNumber: args.issueOrPrNumber,
+  });
+
+  try {
+    await client.createRoom({ subject, roomId });
+    args.log.info(
+      {
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+        commentAuthor: args.commentAuthor,
+        roomId,
+      },
+      "[war-room] created mention_response room",
+    );
+    return { roomId };
+  } catch (err) {
+    if (err instanceof WarRoomApiError) {
+      if (err.code === "subject_already_open") {
+        const existingRoomId = err.response.existingRoomId;
+        if (typeof existingRoomId === "string") {
+          args.log.info(
+            {
+              owner: args.owner,
+              repo: args.repo,
+              issueOrPrNumber: args.issueOrPrNumber,
+              existingRoomId,
+            },
+            "[war-room] subject_already_open — reusing existing mention room",
+          );
+          return { roomId: existingRoomId };
+        }
+      }
+      args.log.error(
+        {
+          err,
+          status: err.status,
+          code: err.code,
+          owner: args.owner,
+          repo: args.repo,
+          issueOrPrNumber: args.issueOrPrNumber,
+        },
+        "[war-room] API rejected mention_response create — skipping (config / programmer error; see code).",
+      );
+      return { roomId: null, skipped: "api_error" };
+    }
+    args.log.warn(
+      {
+        err,
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+      },
+      "[war-room] mention_response create transient error — skipping (no auto-retry; see file docstring)",
+    );
+    return { roomId: null, skipped: "api_error" };
+  }
+}

@@ -31,7 +31,12 @@ import { parseCommand, executeCommand, retryQueuedSquash, autoGatherIfEligible }
 import { getLLMReadiness } from "../../lib/llm/provider.js";
 import { registerHandlerDispatcher } from "../../handlers/dispatcher.js";
 import { handlerEventMap } from "../../handlers/registry.js";
-import { maybeCreatePrReviewRoom, maybeEmitSubjectUpdated } from "../../lib/war-room-routing.js";
+import {
+  commentHasHivemootMention,
+  maybeCreateMentionRoom,
+  maybeCreatePrReviewRoom,
+  maybeEmitSubjectUpdated,
+} from "../../lib/war-room-routing.js";
 
 /**
  * Hivemoot Bot - Governance Automation
@@ -576,6 +581,23 @@ export function app(probotApp: Probot): void {
           log: context.log,
         });
         return;
+      }
+
+      // E.3: @hivemoot mention without /command → create a
+      // mention_response war room. Multiple mentions on the same
+      // issue/PR reuse the same roomId via the storage layer's
+      // subject-uniqueness gate. Non-fatal on error so this can't
+      // break the existing intake/governance flow.
+      if (commentHasHivemootMention(comment.body ?? "")) {
+        await maybeCreateMentionRoom({
+          owner,
+          repo,
+          issueOrPrNumber: issue.number,
+          commentAuthor: comment.user.login,
+          log: context.log,
+        });
+        // Don't return — let the existing PR intake / governance
+        // logic continue to run alongside the mention room.
       }
 
       // Non-command comments on issues: check auto-gather eligibility (discussion issues only)

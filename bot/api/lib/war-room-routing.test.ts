@@ -4,9 +4,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  commentHasHivemootMention,
+  deriveMentionRoomId,
+  derivePrRoomId,
+  maybeCreateMentionRoom,
   maybeCreatePrReviewRoom,
   maybeEmitSubjectUpdated,
-  derivePrRoomId,
 } from "./war-room-routing.js";
 import { WarRoomApiError } from "./war-room-client.js";
 
@@ -406,5 +409,232 @@ describe("maybeEmitSubjectUpdated", () => {
         changeKind: "synchronize", log,
       }),
     ).resolves.toEqual({ sequence: null, skipped: "api_error" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E.3 — mention_response rooms
+// ---------------------------------------------------------------------------
+
+describe("commentHasHivemootMention", () => {
+  it.each([
+    ["@hivemoot can you take a look?", true],
+    ["Hi @hivemoot, please review.", true],
+    ["@hivemoot,", true], // comma is non-word/dash
+    ["@hivemoot.", true], // period
+    ["@hivemoot!", true], // bang
+    ["@hivemoot\nnewline after", true],
+    ["@HiveMoot mixed case", true], // case-insensitive
+    ["@hivemoot at end of comment @hivemoot", true],
+    ["text @hivemoot more text", true],
+  ])("matches %j → %s", (body, expected) => {
+    expect(commentHasHivemootMention(body)).toBe(expected);
+  });
+
+  it.each([
+    ["", false],
+    ["plain text with no mention", false],
+    ["@hivemoot-builder is a different identity", false],
+    ["@hivemoot-bot also distinct", false],
+    ["@hivemoot_test underscored", false],
+    ["@hivemoot42 alphanumeric continuation", false],
+    ["/gather followed by @hivemoot in body", false], // /command guard
+    [" /timeout some text with @hivemoot", false], // leading whitespace + /command
+  ])("non-match %j → %s", (body, expected) => {
+    expect(commentHasHivemootMention(body)).toBe(expected);
+  });
+
+  it("matches even when comment starts with @hivemoot at position 0", () => {
+    expect(commentHasHivemootMention("@hivemoot please")).toBe(true);
+  });
+
+  it("does NOT match when whole comment is a /command", () => {
+    expect(commentHasHivemootMention("/gather @hivemoot please")).toBe(false);
+  });
+
+  it("matches when /-prefix appears mid-comment but body doesn't start with /", () => {
+    // Defense check: only the /-prefix at start of comment skips,
+    // mid-comment / is allowed.
+    expect(
+      commentHasHivemootMention("hello @hivemoot use /timeout if needed"),
+    ).toBe(true);
+  });
+});
+
+describe("deriveMentionRoomId", () => {
+  it("same identity → same roomId across calls (idempotent)", () => {
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+    });
+    expect(a).toBe(b);
+  });
+
+  it("different issue/PR → different roomIds", () => {
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 43,
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("distinct namespace from derivePrRoomId (same owner/repo/num → different ids)", () => {
+    // Critical invariant: a PR can have BOTH a pr_review room AND
+    // a mention_response room simultaneously. The deterministic
+    // derivations MUST produce different ids for the same identity
+    // tuple, otherwise creating one would 409 on the other.
+    const prId = derivePrRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      prNumber: 42,
+    });
+    const mentionId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+    });
+    expect(prId).not.toBe(mentionId);
+  });
+
+  it("output matches storage's UUIDv4 regex", () => {
+    const id = deriveMentionRoomId({
+      owner: "x",
+      repo: "y",
+      issueOrPrNumber: 1,
+    });
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+});
+
+describe("maybeCreateMentionRoom", () => {
+  beforeEach(() => {
+    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
+    log.info.mockReset();
+    log.warn.mockReset();
+    log.error.mockReset();
+    mockedClientCtor.mockReset();
+  });
+
+  it("skips with `no_token` reason when env var is unset", async () => {
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "no_token" });
+    expect(mockedClientCtor).not.toHaveBeenCalled();
+  });
+
+  function setupCreateRoomMock(createRoom: ReturnType<typeof vi.fn>): void {
+    mockedClientCtor.mockImplementation(
+      function (this: { createRoom: typeof createRoom }) {
+        this.createRoom = createRoom;
+      } as unknown as typeof WarRoomClient,
+    );
+  }
+
+  it("happy path — calls createRoom with mention_response subject + deterministic roomId", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockResolvedValue({});
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result.roomId).toMatch(/^[0-9a-f-]+$/);
+    const expectedRoomId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+    });
+    expect(result.roomId).toBe(expectedRoomId);
+    expect(createRoom).toHaveBeenCalledWith({
+      subject: { type: "mention_response", ref: "hivemoot/hivemoot#42" },
+      roomId: expectedRoomId,
+    });
+  });
+
+  it("subject_already_open 409 → reuses existingRoomId (idempotent re-mention)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ROOM_ID,
+      }),
+    );
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: ROOM_ID });
+  });
+
+  it("non-409 4xx → logs error + returns api_error", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(403, "forbidden", "missing rooms.create", {}),
+    );
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
+    expect(log.error).toHaveBeenCalled();
+  });
+
+  it("transient 5xx / network error → logs warn + returns api_error (no throw)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    setupCreateRoomMock(createRoom);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("WarRoomClient construction throws → returns api_error without crashing", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    mockedClientCtor.mockImplementation(() => {
+      throw new Error("invalid baseUrl");
+    });
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({ roomId: null, skipped: "api_error" });
   });
 });
