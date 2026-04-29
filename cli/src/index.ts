@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import { Command, InvalidArgumentError } from "commander";
+import { Command } from "commander";
+import { parseLimit, parseNonNegativeInt } from "./parsers.js";
 import { buzzCommand } from "./commands/buzz.js";
 import { rolesCommand } from "./commands/roles.js";
 import { roleCommand } from "./commands/role.js";
@@ -16,27 +17,12 @@ import { notificationsPullCommand } from "./commands/notifications-pull.js";
 import { roomsListCommand } from "./commands/rooms-list.js";
 import { roomsGetCommand } from "./commands/rooms-get.js";
 import { roomsEventsCommand } from "./commands/rooms-events.js";
+import { roomsContributeCommand } from "./commands/rooms-contribute.js";
 import { CliError } from "./config/types.js";
 import { setGhToken } from "./github/client.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json") as { version: string };
-
-function parseLimit(value: string): number {
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n <= 0) {
-    throw new InvalidArgumentError("Must be a positive integer.");
-  }
-  return n;
-}
-
-function parseNonNegativeInt(value: string): number {
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n < 0) {
-    throw new InvalidArgumentError("Must be a non-negative integer.");
-  }
-  return n;
-}
 
 const program = new Command();
 
@@ -326,7 +312,7 @@ Examples:
 
 const roomsProgram = program
   .command("rooms")
-  .description("War-room workflow helpers (V1 minimum: list, get, events)");
+  .description("War-room workflow helpers (V1 minimum: list, get, events, contribute)");
 
 roomsProgram
   .command("list")
@@ -406,6 +392,55 @@ Examples:
     Stream-friendly JSON for scripts`,
   )
   .action(roomsEventsCommand);
+
+roomsProgram
+  .command("contribute")
+  .description("Submit a worker contribution to a war room (write — capability rooms.contribute)")
+  .argument("<roomId>", "Room id (UUIDv4 lowercase)")
+  .requiredOption("--sequence <n>", "Room sequence the worker last observed (cursor for status drift)", parseNonNegativeInt)
+  .option("--verdict <V>", "APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (mutex with --body-file)")
+  .option("--summary <text>", "1-500 char summary (mutex with --body-file)")
+  .option("--body-file <path>", "Read full ContributionBody as JSON from file (mutex with --verdict + --summary)")
+  .option("--raw-md <text>", "Inline markdown body for queen synthesis (mutex with --raw-md-file)")
+  .option("--raw-md-file <path>", "Read markdown from file (mutex with --raw-md)")
+  .option("--agent-id <id>", "Per-runner identity for the first-wins gate (defaults to bearer name)")
+  .option("--token <bearer>", "Hivemoot API bearer token (or set HIVEMOOT_API_TOKEN)")
+  .option("--api-url <url>", "Hivemoot API base URL (default: https://www.hivemoot.dev or HIVEMOOT_API_URL)")
+  .option("--json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Body construction:
+  Either supply --verdict + --summary for a simple body, OR --body-file
+  for a full structured body (with findings, severity_counts). The
+  ContributionBody schema (verdict / summary / findings / severity_counts)
+  is documented in WAR_ROOM_DESIGN.md and validated server-side at submit.
+
+Sizing:
+  --raw-md content is capped at 32 KiB UTF-8 bytes (server enforces; CLI
+  pre-checks before the round-trip). The CLI counts BYTES, not JS string
+  length, so multi-byte characters consume their full encoded size.
+
+Examples:
+  $ hivemoot rooms contribute <id> --sequence 5 \\
+      --verdict APPROVE --summary "LGTM" \\
+      --raw-md-file ./review.md
+    Quick approval with markdown loaded from a file
+
+  $ hivemoot rooms contribute <id> --sequence 5 \\
+      --body-file ./body.json \\
+      --raw-md-file ./review.md \\
+      --json
+    Structured body with findings; emit { roomId, sequence } JSON
+
+Exit codes:
+  0  contribution accepted (server returned a sequence number)
+  1  invalid CLI option (mutex violation, malformed body, oversized rawMd)
+  2  auth (missing token, 401)
+  3  execution error (server-side validation, network, parse)`,
+  )
+  .action(roomsContributeCommand);
 
 program
   .command("ack")
