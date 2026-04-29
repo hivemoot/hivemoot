@@ -215,6 +215,68 @@ class EvictSeenKeyTests(unittest.TestCase):
         )
         trigger.evict_seen_key("never-dispatched", 0)
 
+    def test_evict_seen_key_signature_matches_PostFailureCallback(self) -> None:
+        # Closes #546 drone B1: prior 2-arg signature would TypeError
+        # when invoked from the handler's _safe_callback with the
+        # full 4-arg PostFailureCallback shape, and the handler's
+        # swallow-and-log would silently break the recovery loop.
+        # This test exercises the EXACT call shape the handler uses
+        # so any future signature drift fails loudly here, not in
+        # silent prod corruption.
+        trigger = WarRoomWatcherTrigger(
+            base_url="https://x", token_resolver=lambda: "tk"
+        )
+        trigger._seen.add("room-1@5")
+        # Invoke with the same 4 args _safe_callback passes:
+        # (room_id, sequence, op_kind, exc).
+        trigger.evict_seen_key("room-1", 5, "contribute", RuntimeError("503"))
+        self.assertNotIn("room-1@5", trigger._seen._cache)
+
+    def test_evict_seen_key_usable_as_PostFailureCallback_via_handler(
+        self,
+    ) -> None:
+        # End-to-end: feed the trigger's bound method through the
+        # actual handler's callback path. If the signatures drift,
+        # this test fails with a clear assertion error instead of a
+        # silent log-and-continue.
+        from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
+            handle_war_room_job_finished,
+        )
+
+        trigger = WarRoomWatcherTrigger(
+            base_url="https://x", token_resolver=lambda: "tk"
+        )
+        trigger._seen.add("01234567-89ab-4cde-9012-3456789abcde@5")
+
+        # Force both legs of the post sequence to fail so the
+        # handler's on_post_failure callback fires.
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.present_to_room",
+            side_effect=RuntimeError("present 503"),
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.submit_contribution",
+            side_effect=RuntimeError("contribute 503"),
+        ):
+            handle_war_room_job_finished(
+                _war_room_job(),
+                AgentResult(0, ""),
+                base_url="https://x",
+                bearer="tk",
+                extracted_markdown=(
+                    "## Triage decision\n\n"
+                    "DECISION: PRESENT\nVERDICT: APPROVE\nSUMMARY: ok\n\n"
+                    "## Review\n\nlgtm.\n"
+                ),
+                on_post_failure=trigger.evict_seen_key,
+            )
+        # The seen-cache entry must have been evicted by the
+        # callback. If the signature mismatched, _safe_callback would
+        # have caught the TypeError and left the entry in place.
+        self.assertNotIn(
+            "01234567-89ab-4cde-9012-3456789abcde@5",
+            trigger._seen._cache,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

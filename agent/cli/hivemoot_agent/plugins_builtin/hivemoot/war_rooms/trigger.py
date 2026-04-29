@@ -34,7 +34,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections import OrderedDict
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import api as wr_api
 
@@ -129,19 +129,33 @@ class WarRoomWatcherTrigger:
     def stop(self) -> None:
         self._stop_event.set()
 
-    def evict_seen_key(self, room_id: str, sequence: int) -> None:
+    def evict_seen_key(
+        self,
+        room_id: str,
+        sequence: int,
+        op_kind: str = "",
+        exc: Optional[BaseException] = None,
+    ) -> None:
         """Remove a (room, sequence) entry from the seen cache so
         the next tick re-dispatches it.
 
-        Wired in F.5 as the handler's `on_post_failure` callback:
-        when the post sequence (present + contribute / withdraw)
-        totally fails, no participant-state change has landed and
-        /watching will keep listing this room. Without this
-        eviction, the next tick would skip (seen-cache hit) and the
-        worker would silently drop participation.
+        Wired in F.5 as the handler's `on_post_failure` callback —
+        signature matches `handler.PostFailureCallback`
+        (`Callable[[str, int, str, Exception], None]`) so the
+        bridge can pass this method directly without an adapter
+        lambda. Closes #546 drone B1: prior 2-arg signature would
+        TypeError when invoked from `_safe_callback` with the full
+        4-arg shape, and the handler's swallow-and-log would
+        silently break the recovery loop.
+
+        `op_kind` and `exc` are accepted but not used — they're
+        already logged by the handler's `[hivemoot-war-rooms] ERROR`
+        line at the failure site, so the trigger doesn't need to
+        re-log. Future enhancement: surface them in a metric.
 
         Idempotent — eviction of a non-existent key is a no-op.
         """
+        del op_kind, exc  # silence "unused" — matched for callback shape
         key = f"{room_id}@{sequence}"
         if key in self._seen._cache:
             del self._seen._cache[key]

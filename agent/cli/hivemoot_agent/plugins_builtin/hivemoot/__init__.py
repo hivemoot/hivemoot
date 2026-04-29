@@ -1,6 +1,6 @@
 """Consolidated Hivemoot ecosystem plugin.
 
-One plugin, three independently-toggleable features:
+One plugin, five independently-toggleable features:
 
   * ``health`` — periodic heartbeats + per-run reports to
     ``POST {base_url}/api/agent-health`` (dashboard Agent Health tab).
@@ -9,6 +9,11 @@ One plugin, three independently-toggleable features:
   * ``github_workflows`` — autonomous contribution operating mode,
     buzz role loading, skill bundle.  Co-loads with the ``github``
     plugin (reads its typed config for the target repo).
+  * ``apiarist`` — broker GitHub installation tokens via the
+    apiarist Unix-socket service (host-side daemon).
+  * ``war_rooms`` — poll ``/api/rooms/watching``, dispatch a triage
+    Job per visible room, parse the agent's structured response,
+    and call ``/present + /contribute`` or ``/present + /withdraw``.
 
 YAML shape (``hivemoot.yaml``):
 
@@ -23,6 +28,8 @@ YAML shape (``hivemoot.yaml``):
           claim_url: https://www.hivemoot.dev/api/tasks/claim
           execute_base_url: https://www.hivemoot.dev/api/tasks
         github_workflows:
+          enabled: true
+        war_rooms:
           enabled: true
 
 Host behaviour is plugin-agnostic per ADR-002; this plugin owns its
