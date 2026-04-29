@@ -555,10 +555,34 @@ export async function maybeCreateMentionRoom(
       if (err.code === "subject_already_open") {
         const existingRoomId = err.response.existingRoomId;
         if (typeof existingRoomId === "string") {
-          // A prior mention's room is still open for this issue.
-          // Emit a subject_updated event so workers re-engage if they
-          // already withdrew/resolved on the prior mention. Closes
-          // #549 builder R1 #2.
+          // Two cases collapse into subject_already_open and we MUST
+          // distinguish them — closes #549 builder R2:
+          //
+          //   (a) Same-comment webhook redelivery: the room WE
+          //       created on the first delivery still exists, so
+          //       existingRoomId === our derived roomId. This is an
+          //       idempotent replay; emitting subject_updated would
+          //       falsely advance the sequence and re-dispatch
+          //       workers for a non-event.
+          //
+          //   (b) Different-comment re-mention: a prior comment's
+          //       room is still open and a NEW @hivemoot landed.
+          //       existingRoomId !== our derived roomId (different
+          //       commentId in the derivation). Emit subject_updated
+          //       so workers re-engage.
+          if (existingRoomId === roomId) {
+            args.log.info(
+              {
+                owner: args.owner,
+                repo: args.repo,
+                issueOrPrNumber: args.issueOrPrNumber,
+                commentId: args.commentId,
+                roomId,
+              },
+              "[war-room] same-comment webhook redelivery — idempotent replay, no subject_updated emit",
+            );
+            return { roomId, reusedExistingRoom: false };
+          }
           return await emitMentionSubjectUpdated({
             client,
             owner: args.owner,

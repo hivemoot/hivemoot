@@ -650,6 +650,40 @@ describe("maybeCreateMentionRoom", () => {
     });
   });
 
+  it("same-comment webhook redelivery (existingRoomId === derived) → idempotent replay, NO subject_updated emit (#549 builder R2)", async () => {
+    // Same-comment webhook delivery hits subject_already_open
+    // because OUR previous delivery created the room. Without this
+    // guard, the redelivery would emit a spurious subject_updated
+    // and re-dispatch workers for a non-event.
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const ourDerivedRoomId = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ourDerivedRoomId, // SAME as derived → replay
+      }),
+    );
+    const appendEvent = vi.fn(); // SHOULD NOT be called
+    setupCreateRoomMock(createRoom, appendEvent);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    expect(result).toEqual({
+      roomId: ourDerivedRoomId,
+      reusedExistingRoom: false,
+    });
+    expect(appendEvent).not.toHaveBeenCalled();
+  });
+
   it("subject_already_open 409 → subject_updated emit fails → returns existing roomId with api_error (no throw)", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
