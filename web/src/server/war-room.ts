@@ -2686,9 +2686,32 @@ interface RSVPCommonArgs {
    * so client-supplied role would let one bearer overwrite another's
    * RSVP. */
   role: string;
-  /** Server-derived from token envelope's `name`. Used as the actor_id
-   * on the event log + materialized participant record. */
+  /** Per-runner identity used for the per-(room, role) **first-wins
+   * gate** (G5 — subscriber-mode). Body-supplied at the route layer
+   * (validated via `validateRunnerFormat`). Two runners that share a
+   * bearer but have distinct `agentId` race correctly — the second
+   * gets `RoomParticipantOwnerConflictError`. Stored on the
+   * materialized participant record as `participant.agent_id`.
+   *
+   * #522 / WAR_ROOM_DESIGN.md L861-877: prior code used the
+   * bearer-derived name here, collapsing subscriber-mode runners.
+   * The split between `agentId` (gate) and `actorId` (audit) is the
+   * fix — together they let us prevent impersonation (audit can't
+   * be forged) AND distinguish concurrent runners (gate uses each
+   * runner's own id). */
   agentId: string;
+  /** Bearer-derived audit identity used for the event log's
+   * `actor_id`. Anti-impersonation: a request body cannot forge
+   * who-took-this-action in the audit trail. Routes wire this from
+   * `auth.name`. May equal `agentId` in single-runner-per-token
+   * deployments (drone pilot, etc.).
+   *
+   * Optional in the type for back-compat with existing call sites
+   * (storage tests pre-#522). When omitted, defaults to `agentId`
+   * — same behavior as before #522. PRODUCTION ROUTES MUST pass
+   * `actorId` explicitly so the audit trail records the bearer,
+   * not a body-supplied value. */
+  actorId?: string;
   /** Required header value (`If-Room-Sequence-At-Or-After`). Used to
    * derive the idempotency key — two retries with the same observed
    * sequence resolve to the same key, replay-safe. */
@@ -2740,7 +2763,10 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       timestamp: nowIso,
       event_type: "participant_presented",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit trail uses bearer-derived actorId for impersonation
+      // safety. Per-runner agentId (used by ownerCheck below) lives
+      // on the materialized participant record only. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.intentHint !== undefined ? { intent_hint: args.intentHint } : {}),
       },
@@ -2752,6 +2778,8 @@ export async function presentParticipant(args: RSVPCommonArgs & {
       sequenceObservedByClient: args.sequenceObservedByClient,
     }),
     allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+    // First-wins gate: per-runner agentId distinguishes subscriber-
+    // mode runners that share a bearer.
     ownerCheck: { field: args.role, expectedAgentId: args.agentId },
     materialized1: {
       key: participantsKey(args.roomId),
@@ -2790,7 +2818,8 @@ export async function withdrawParticipant(
       timestamp: nowIso,
       event_type: "participant_withdrawn",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },
@@ -2866,7 +2895,9 @@ export async function submitContribution(args: RSVPCommonArgs & {
       timestamp: nowIso,
       event_type: "contribution_submitted",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. Owner check below uses per-runner
+      // agentId for subscriber-mode safety. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         body: args.body as unknown as Record<string, unknown>,
         // raw_md NOT in event body — bounded separately at 32 KiB
@@ -2926,7 +2957,8 @@ export async function withdrawContribution(
       timestamp: nowIso,
       event_type: "contribution_withdrawn",
       actor_role: args.role,
-      actor_id: args.agentId,
+      // Audit: bearer-derived. #522.
+      actor_id: args.actorId ?? args.agentId,
       body: {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },

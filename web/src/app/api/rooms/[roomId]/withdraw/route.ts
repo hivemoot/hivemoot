@@ -28,11 +28,15 @@ import {
   RoomParticipantOwnerConflictError,
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
+  RoomRunnerFormatError,
+  validateRunnerFormat,
 } from "@/server/war-room";
 
 interface WithdrawRequestBody {
   sequenceObservedByClient?: number;
   reason?: string;
+  /** Per-runner identity for the first-wins gate (G5, #522). */
+  agentId?: string;
 }
 
 export async function POST(
@@ -72,12 +76,38 @@ export async function POST(
     );
   }
 
+  // Body-supplied agentId for subscriber-mode first-wins gate (#522).
+  let agentId: string;
+  if (body.agentId !== undefined) {
+    if (typeof body.agentId !== "string") {
+      return NextResponse.json(
+        { code: "invalid_agent_id", message: "agentId must be a string." },
+        { status: 400 },
+      );
+    }
+    try {
+      validateRunnerFormat(body.agentId);
+    } catch (err) {
+      if (err instanceof RoomRunnerFormatError) {
+        return NextResponse.json(
+          { code: "invalid_agent_id", message: err.message },
+          { status: 400 },
+        );
+      }
+      throw err;
+    }
+    agentId = body.agentId;
+  } else {
+    agentId = auth.name;
+  }
+
   try {
     const sequence = await withdrawParticipant({
       installationId: auth.installationId,
       roomId,
       role: auth.agent_role,
-      agentId: auth.name,
+      agentId,
+      actorId: auth.name,
       sequenceObservedByClient: body.sequenceObservedByClient,
       reason: body.reason,
       redis: auth.redis,

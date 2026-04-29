@@ -44,8 +44,52 @@ import {
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
   RoomContributionTooLargeError,
+  RoomRunnerFormatError,
   ContributionValidationError,
+  validateRunnerFormat,
 } from "@/server/war-room";
+
+/**
+ * Resolve the per-runner agentId for the war-room first-wins gate.
+ * Body-supplied (G5, #522): when present, validated via
+ * `validateRunnerFormat`. When absent, fall back to the bearer's
+ * `name` so single-runner-per-token deployments work unchanged.
+ *
+ * Returns either the resolved string or a `NextResponse` to short-
+ * circuit on validation failure.
+ */
+function resolveAgentId(
+  bodyAgentId: unknown,
+  bearerName: string,
+): { ok: true; agentId: string } | { ok: false; response: NextResponse } {
+  if (bodyAgentId === undefined) {
+    return { ok: true, agentId: bearerName };
+  }
+  if (typeof bodyAgentId !== "string") {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { code: "invalid_agent_id", message: "agentId must be a string." },
+        { status: 400 },
+      ),
+    };
+  }
+  try {
+    validateRunnerFormat(bodyAgentId);
+  } catch (err) {
+    if (err instanceof RoomRunnerFormatError) {
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { code: "invalid_agent_id", message: err.message },
+          { status: 400 },
+        ),
+      };
+    }
+    throw err;
+  }
+  return { ok: true, agentId: bodyAgentId };
+}
 
 // ---------------------------------------------------------------------------
 // GET — read contributions hash (D.1.b-i, scoped to rooms.read_all)
@@ -93,6 +137,8 @@ interface SubmitRequestBody {
   sequenceObservedByClient?: number;
   body?: ContributionBody;
   rawMd?: string;
+  /** Per-runner identity for the first-wins gate (G5, #522). */
+  agentId?: string;
 }
 
 export async function POST(
@@ -138,12 +184,16 @@ export async function POST(
     );
   }
 
+  const agentIdResult = resolveAgentId(reqBody.agentId, auth.name);
+  if (!agentIdResult.ok) return agentIdResult.response;
+
   try {
     const sequence = await submitContribution({
       installationId: auth.installationId,
       roomId,
       role: auth.agent_role,
-      agentId: auth.name,
+      agentId: agentIdResult.agentId,
+      actorId: auth.name,
       sequenceObservedByClient: reqBody.sequenceObservedByClient,
       body: reqBody.body,
       rawMd: reqBody.rawMd,
@@ -162,6 +212,8 @@ export async function POST(
 interface WithdrawContributionBody {
   sequenceObservedByClient?: number;
   reason?: string;
+  /** Per-runner identity for the first-wins gate (G5, #522). */
+  agentId?: string;
 }
 
 export async function DELETE(
@@ -201,12 +253,16 @@ export async function DELETE(
     );
   }
 
+  const agentIdResult = resolveAgentId(reqBody.agentId, auth.name);
+  if (!agentIdResult.ok) return agentIdResult.response;
+
   try {
     const sequence = await withdrawContribution({
       installationId: auth.installationId,
       roomId,
       role: auth.agent_role,
-      agentId: auth.name,
+      agentId: agentIdResult.agentId,
+      actorId: auth.name,
       sequenceObservedByClient: reqBody.sequenceObservedByClient,
       reason: reqBody.reason,
       redis: auth.redis,
