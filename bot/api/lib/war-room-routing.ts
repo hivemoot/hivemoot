@@ -58,24 +58,35 @@ export function derivePrRoomId(args: {
 }
 
 /**
- * Derive a deterministic UUIDv4-shaped roomId from an issue/PR's
- * mention-response identity. The same `(owner, repo, number)` always
- * maps to the same id, so multiple @hivemoot mentions on the same
- * issue/PR reuse the existing room (idempotent on `subject_already_open`).
+ * Derive a deterministic UUIDv4-shaped roomId for a mention-response.
  *
- * Distinct namespace from `derivePrRoomId` via the `mention:` prefix
- * — the same `owner/repo#N` produces a DIFFERENT roomId than its
- * pr_review counterpart, so a PR can simultaneously have one
- * pr_review room (review verdicts) AND one mention_response room
- * (free-form @hivemoot Q&A).
+ * Includes `commentId` in the derivation so:
+ *
+ *   1. **Post-close mention safety**: storage retains room hashes
+ *      for ~30 days after close. Without `commentId` in the
+ *      derivation, a mention 31+ days after the previous mention's
+ *      room closed would re-derive the SAME roomId and collide on
+ *      `room_id_taken`. With it, each mention gets a fresh
+ *      derivation. Closes #549 builder R1 #2 (post-close).
+ *
+ *   2. **Same-issue re-mention safety**: if a prior mention's room
+ *      is still open and a new mention arrives, the create attempt
+ *      uses a DIFFERENT roomId, so the create fails on
+ *      `subject_already_open` (subject_ref is per-issue, regardless
+ *      of comment). The caller then resolves the existing roomId
+ *      from the 409 response and emits a `subject_updated` event so
+ *      workers re-engage. Closes #549 builder R1 #2 (re-mention).
+ *
+ * Distinct namespace from `derivePrRoomId` via the `mention:` prefix.
  */
 export function deriveMentionRoomId(args: {
   owner: string;
   repo: string;
   issueOrPrNumber: number;
+  commentId: number;
 }): string {
   return derivedUuidV4(
-    `mention:${args.owner}/${args.repo}#${args.issueOrPrNumber}`,
+    `mention:${args.owner}/${args.repo}#${args.issueOrPrNumber}:${args.commentId}`,
   );
 }
 
@@ -433,6 +444,12 @@ interface MaybeCreateMentionRoomArgs {
    * distinguish; the room's downstream consumers can read
    * `pull_request` on the original webhook payload if they need to. */
   issueOrPrNumber: number;
+  /** GitHub comment.id of the @hivemoot mention. Folded into the
+   * deterministic roomId so each mention gets a fresh room (post-
+   * close safety) AND used as the `subject_updated` event's
+   * idempotency key when the issue already has an open mention room
+   * (re-mention safety). */
+  commentId: number;
   /** GitHub login of the comment author. Logged for ops triage —
    * NOT used for any access decision (the bot's own bearer is
    * what authorizes the room creation). */
@@ -441,10 +458,17 @@ interface MaybeCreateMentionRoomArgs {
 }
 
 interface MaybeCreateMentionRoomResult {
-  /** The war-room roomId (newly created OR reused via the
-   * idempotent 409 path). `null` when the bot has no agent token
-   * configured OR when the API call hit a 5xx / network error. */
+  /** The war-room roomId. May be:
+   *   - The newly-created room (this comment opened a fresh mention room)
+   *   - The pre-existing open room for this issue (re-mention path —
+   *     a `subject_updated` event was emitted to advance its seq)
+   *   - `null` when no token configured / API error / etc.
+   */
   roomId: string | null;
+  /** Whether the room already existed and we emitted subject_updated
+   * instead of creating fresh. False when newly created. False
+   * when roomId is null. */
+  reusedExistingRoom?: boolean;
   /** Why the room wasn't created when `roomId === null`. */
   skipped?: "no_token" | "api_error";
 }
@@ -509,6 +533,7 @@ export async function maybeCreateMentionRoom(
     owner: args.owner,
     repo: args.repo,
     issueOrPrNumber: args.issueOrPrNumber,
+    commentId: args.commentId,
   });
 
   try {
@@ -518,27 +543,32 @@ export async function maybeCreateMentionRoom(
         owner: args.owner,
         repo: args.repo,
         issueOrPrNumber: args.issueOrPrNumber,
+        commentId: args.commentId,
         commentAuthor: args.commentAuthor,
         roomId,
       },
       "[war-room] created mention_response room",
     );
-    return { roomId };
+    return { roomId, reusedExistingRoom: false };
   } catch (err) {
     if (err instanceof WarRoomApiError) {
       if (err.code === "subject_already_open") {
         const existingRoomId = err.response.existingRoomId;
         if (typeof existingRoomId === "string") {
-          args.log.info(
-            {
-              owner: args.owner,
-              repo: args.repo,
-              issueOrPrNumber: args.issueOrPrNumber,
-              existingRoomId,
-            },
-            "[war-room] subject_already_open — reusing existing mention room",
-          );
-          return { roomId: existingRoomId };
+          // A prior mention's room is still open for this issue.
+          // Emit a subject_updated event so workers re-engage if they
+          // already withdrew/resolved on the prior mention. Closes
+          // #549 builder R1 #2.
+          return await emitMentionSubjectUpdated({
+            client,
+            owner: args.owner,
+            repo: args.repo,
+            issueOrPrNumber: args.issueOrPrNumber,
+            commentId: args.commentId,
+            commentAuthor: args.commentAuthor,
+            existingRoomId,
+            log: args.log,
+          });
         }
       }
       args.log.error(
@@ -549,6 +579,7 @@ export async function maybeCreateMentionRoom(
           owner: args.owner,
           repo: args.repo,
           issueOrPrNumber: args.issueOrPrNumber,
+          commentId: args.commentId,
         },
         "[war-room] API rejected mention_response create — skipping (config / programmer error; see code).",
       );
@@ -560,9 +591,84 @@ export async function maybeCreateMentionRoom(
         owner: args.owner,
         repo: args.repo,
         issueOrPrNumber: args.issueOrPrNumber,
+        commentId: args.commentId,
       },
       "[war-room] mention_response create transient error — skipping (no auto-retry; see file docstring)",
     );
     return { roomId: null, skipped: "api_error" };
+  }
+}
+
+/**
+ * Emit a `subject_updated` event on an existing mention room when a
+ * fresh @hivemoot comment lands on the same issue. The event's
+ * idempotency key is keyed by `commentId` so re-deliveries of the
+ * same webhook resolve to the same event (not duplicated). Workers
+ * see the bumped sequence via /watching and re-engage if they had
+ * withdrawn/resolved on the prior mention.
+ */
+async function emitMentionSubjectUpdated(args: {
+  client: WarRoomClient;
+  owner: string;
+  repo: string;
+  issueOrPrNumber: number;
+  commentId: number;
+  commentAuthor: string;
+  existingRoomId: string;
+  log: Pick<Logger, "info" | "warn" | "error">;
+}): Promise<MaybeCreateMentionRoomResult> {
+  const idempotencyKey = `bot.subject_updated.${args.existingRoomId}.mention.${args.commentId}`;
+  try {
+    await args.client.appendEvent({
+      roomId: args.existingRoomId,
+      eventType: "subject_updated",
+      body: {
+        change_kind: "mention",
+        comment_id: args.commentId,
+        comment_author: args.commentAuthor,
+      },
+      idempotencyKey,
+    });
+    args.log.info(
+      {
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+        commentId: args.commentId,
+        commentAuthor: args.commentAuthor,
+        existingRoomId: args.existingRoomId,
+      },
+      "[war-room] re-mention on existing room — emitted subject_updated to re-engage workers",
+    );
+    return { roomId: args.existingRoomId, reusedExistingRoom: true };
+  } catch (err) {
+    if (err instanceof WarRoomApiError) {
+      args.log.warn(
+        {
+          err,
+          status: err.status,
+          code: err.code,
+          owner: args.owner,
+          repo: args.repo,
+          issueOrPrNumber: args.issueOrPrNumber,
+          commentId: args.commentId,
+          existingRoomId: args.existingRoomId,
+        },
+        "[war-room] re-mention subject_updated rejected (room may have just closed) — skipping",
+      );
+      return { roomId: args.existingRoomId, skipped: "api_error" };
+    }
+    args.log.warn(
+      {
+        err,
+        owner: args.owner,
+        repo: args.repo,
+        issueOrPrNumber: args.issueOrPrNumber,
+        commentId: args.commentId,
+        existingRoomId: args.existingRoomId,
+      },
+      "[war-room] re-mention subject_updated transient error — skipping",
+    );
+    return { roomId: args.existingRoomId, skipped: "api_error" };
   }
 }

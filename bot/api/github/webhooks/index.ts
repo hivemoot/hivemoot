@@ -603,6 +603,7 @@ export function app(probotApp: Probot): void {
             owner,
             repo,
             issueOrPrNumber: issue.number,
+            commentId: comment.id,
             commentAuthor: comment.user.login,
             log: context.log,
           });

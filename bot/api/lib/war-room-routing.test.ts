@@ -462,18 +462,40 @@ describe("commentHasHivemootMention", () => {
 });
 
 describe("deriveMentionRoomId", () => {
-  it("same identity → same roomId across calls (idempotent)", () => {
+  it("same identity (incl. commentId) → same roomId across calls (idempotent webhook redelivery)", () => {
     const a = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
     });
     const b = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
     });
     expect(a).toBe(b);
+  });
+
+  it("different commentId on same issue → different roomIds (post-close safety, #549 builder R1 #2)", () => {
+    // Storage retains room hashes for ~30 days after close. Without
+    // commentId in the derivation, a mention 31+ days after the
+    // previous mention's room closed would hit room_id_taken. Each
+    // mention now derives a fresh roomId.
+    const a = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+    });
+    const b = deriveMentionRoomId({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1002,
+    });
+    expect(a).not.toBe(b);
   });
 
   it("different issue/PR → different roomIds", () => {
@@ -481,20 +503,21 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
     });
     const b = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 43,
+      commentId: 1001,
     });
     expect(a).not.toBe(b);
   });
 
-  it("distinct namespace from derivePrRoomId (same owner/repo/num → different ids)", () => {
+  it("distinct namespace from derivePrRoomId", () => {
     // Critical invariant: a PR can have BOTH a pr_review room AND
     // a mention_response room simultaneously. The deterministic
-    // derivations MUST produce different ids for the same identity
-    // tuple, otherwise creating one would 409 on the other.
+    // derivations MUST produce different ids.
     const prId = derivePrRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
@@ -504,6 +527,7 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
     });
     expect(prId).not.toBe(mentionId);
   });
@@ -513,6 +537,7 @@ describe("deriveMentionRoomId", () => {
       owner: "x",
       repo: "y",
       issueOrPrNumber: 1,
+      commentId: 99,
     });
     expect(id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -534,6 +559,7 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
@@ -541,15 +567,22 @@ describe("maybeCreateMentionRoom", () => {
     expect(mockedClientCtor).not.toHaveBeenCalled();
   });
 
-  function setupCreateRoomMock(createRoom: ReturnType<typeof vi.fn>): void {
+  function setupCreateRoomMock(
+    createRoom: ReturnType<typeof vi.fn>,
+    appendEvent?: ReturnType<typeof vi.fn>,
+  ): void {
     mockedClientCtor.mockImplementation(
-      function (this: { createRoom: typeof createRoom }) {
+      function (this: {
+        createRoom: typeof createRoom;
+        appendEvent?: typeof appendEvent;
+      }) {
         this.createRoom = createRoom;
+        if (appendEvent) this.appendEvent = appendEvent;
       } as unknown as typeof WarRoomClient,
     );
   }
 
-  it("happy path — calls createRoom with mention_response subject + deterministic roomId", async () => {
+  it("happy path — calls createRoom with mention_response subject + comment-stable roomId", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockResolvedValue({});
     setupCreateRoomMock(createRoom);
@@ -557,14 +590,17 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
     expect(result.roomId).toMatch(/^[0-9a-f-]+$/);
+    expect(result.reusedExistingRoom).toBe(false);
     const expectedRoomId = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
     });
     expect(result.roomId).toBe(expectedRoomId);
     expect(createRoom).toHaveBeenCalledWith({
@@ -573,22 +609,70 @@ describe("maybeCreateMentionRoom", () => {
     });
   });
 
-  it("subject_already_open 409 → reuses existingRoomId (idempotent re-mention)", async () => {
+  it("subject_already_open 409 → emits subject_updated on existing room (re-mention safety, #549 builder R1 #2)", async () => {
+    // A prior @hivemoot's room is still open for this issue. The
+    // create attempt fails with subject_already_open (subject_ref
+    // is per-issue). The handler then emits subject_updated on the
+    // existing room so workers re-engage (per /watching contract,
+    // a new sequence past withdrew_at_sequence makes withdrawn
+    // workers re-eligible).
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
       new WarRoomApiError(409, "subject_already_open", "open", {
         existingRoomId: ROOM_ID,
       }),
     );
-    setupCreateRoomMock(createRoom);
+    const appendEvent = vi.fn().mockResolvedValue({ sequence: 5 });
+    setupCreateRoomMock(createRoom, appendEvent);
     const result = await maybeCreateMentionRoom({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
-    expect(result).toEqual({ roomId: ROOM_ID });
+    expect(result).toEqual({
+      roomId: ROOM_ID,
+      reusedExistingRoom: true,
+    });
+    expect(appendEvent).toHaveBeenCalledWith({
+      roomId: ROOM_ID,
+      eventType: "subject_updated",
+      body: {
+        change_kind: "mention",
+        comment_id: 1001,
+        comment_author: "alice",
+      },
+      // Idempotency key includes commentId so re-deliveries
+      // resolve to the same event (no double-emit on retry).
+      idempotencyKey: `bot.subject_updated.${ROOM_ID}.mention.1001`,
+    });
+  });
+
+  it("subject_already_open 409 → subject_updated emit fails → returns existing roomId with api_error (no throw)", async () => {
+    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
+    const createRoom = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "subject_already_open", "open", {
+        existingRoomId: ROOM_ID,
+      }),
+    );
+    const appendEvent = vi.fn().mockRejectedValue(
+      new WarRoomApiError(409, "status_precondition_failed", "room closing", {}),
+    );
+    setupCreateRoomMock(createRoom, appendEvent);
+    const result = await maybeCreateMentionRoom({
+      owner: "hivemoot",
+      repo: "hivemoot",
+      issueOrPrNumber: 42,
+      commentId: 1001,
+      commentAuthor: "alice",
+      log,
+    });
+    // Returns existing roomId (caller may want to log it) + api_error
+    // marker. Webhook handler shouldn't crash either way.
+    expect(result.roomId).toBe(ROOM_ID);
+    expect(result.skipped).toBe("api_error");
   });
 
   it("non-409 4xx → logs error + returns api_error", async () => {
@@ -601,6 +685,7 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
@@ -616,6 +701,7 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
@@ -632,6 +718,7 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+      commentId: 1001,
       commentAuthor: "alice",
       log,
     });
