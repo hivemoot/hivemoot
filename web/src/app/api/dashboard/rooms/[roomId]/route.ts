@@ -19,9 +19,15 @@
  *   core: RoomCore,
  *   participants: Record<role, RoomParticipant>,
  *   contributions: Record<role, RoomContribution>,
- *   events: RoomEvent[],            // most recent up to limit
+ *   events: RoomEvent[],            // most recent up to limit, chronological
  *   eventLimit: number,             // requested limit
  * }
+ *
+ * `events` is the tail of the room's event log — for a room with N
+ * events, the response includes the last `min(N, eventLimit)`
+ * entries in chronological order. Most-recent activity (close,
+ * recovery, subject_updated) is always visible, regardless of how
+ * deep the log is.
  * ```
  *
  * Errors:
@@ -38,7 +44,7 @@ import {
   getRoomCore,
   getRoomContributions,
   getRoomParticipants,
-  listRoomEvents,
+  listRecentRoomEvents,
   RoomNotFoundError,
   RoomIdFormatError,
 } from "@/server/war-room";
@@ -93,7 +99,12 @@ export async function GET(
     const [participants, contributions, events] = await Promise.all([
       getRoomParticipants({ roomId, redis: auth.redis }),
       getRoomContributions({ roomId, redis: auth.redis }),
-      listRoomEvents({ roomId, since: 0, limit: eventLimit, redis: auth.redis }),
+      // Tail read — newest `eventLimit` events (chronological in
+      // returned slice). Closes #551 builder R1 #2: prior code used
+      // listRoomEvents with since=0 which returns the OLDEST events,
+      // hiding the most recent close/recovery/subject_updated activity
+      // from the dashboard detail view.
+      listRecentRoomEvents({ roomId, limit: eventLimit, redis: auth.redis }),
     ]);
     return NextResponse.json({
       roomId,

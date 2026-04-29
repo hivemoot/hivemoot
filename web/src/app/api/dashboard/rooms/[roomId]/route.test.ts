@@ -14,7 +14,7 @@ vi.mock("@/server/war-room", async () => {
     getRoomCore: vi.fn(),
     getRoomParticipants: vi.fn(),
     getRoomContributions: vi.fn(),
-    listRoomEvents: vi.fn(),
+    listRecentRoomEvents: vi.fn(),
   };
 });
 
@@ -23,7 +23,7 @@ import {
   getRoomCore,
   getRoomContributions,
   getRoomParticipants,
-  listRoomEvents,
+  listRecentRoomEvents,
   RoomNotFoundError,
   RoomIdFormatError,
 } from "@/server/war-room";
@@ -34,7 +34,7 @@ const mockedAuth = vi.mocked(authenticateByokRequest);
 const mockedGetCore = vi.mocked(getRoomCore);
 const mockedGetParticipants = vi.mocked(getRoomParticipants);
 const mockedGetContributions = vi.mocked(getRoomContributions);
-const mockedListEvents = vi.mocked(listRoomEvents);
+const mockedListEvents = vi.mocked(listRecentRoomEvents);
 
 function makeRequest(url = `https://www.hivemoot.dev/api/dashboard/rooms/${ROOM_ID}`): NextRequest {
   return new NextRequest(url, { method: "GET" });
@@ -211,6 +211,46 @@ describe("GET /api/dashboard/rooms/:roomId", () => {
     expect(mockedListEvents).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 500 }),
     );
+  });
+
+  it("calls listRecentRoomEvents (tail) NOT listRoomEvents (since=0) — closes #551 builder R1 #2", async () => {
+    // Pin the contract: events response is the TAIL of the log
+    // (most-recent up to limit, chronological), not the head. This
+    // matters for rooms with > eventLimit events where the dashboard
+    // detail page needs to show recent close/recovery/subject_updated
+    // activity, not just the room_opened event from N days ago.
+    mockedAuth.mockResolvedValue(makeAuth("12345"));
+    mockedGetCore.mockResolvedValue(FAKE_CORE);
+    mockedGetParticipants.mockResolvedValue({});
+    mockedGetContributions.mockResolvedValue({});
+    // Storage returns recent events in chronological order.
+    mockedListEvents.mockResolvedValue([
+      {
+        seq: 999,
+        timestamp: "2026-04-28T20:30:00Z",
+        event_type: "room_decided",
+        actor_role: "manager",
+        actor_id: "queen",
+        body: {},
+      },
+    ]);
+    const res = await GET(makeRequest(), {
+      params: Promise.resolve({ roomId: ROOM_ID }),
+    });
+    const body = await res.json();
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0].seq).toBe(999); // recent event surfaced
+    // Verify the tail-reading function was called, NOT the
+    // head-reading listRoomEvents.
+    expect(mockedListEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roomId: ROOM_ID,
+        limit: 100,
+      }),
+    );
+    // Make sure no `since` arg was passed (would imply head-read).
+    const args = mockedListEvents.mock.calls[0][0];
+    expect("since" in args).toBe(false);
   });
 
   it("returns 500 on unexpected storage error (not RoomNotFound)", async () => {
