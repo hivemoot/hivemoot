@@ -193,3 +193,40 @@ export const RAW_MD_MAX_BYTES = 32 * 1024;
 /** Max summary length per server's `validateContributionBody`
  * (war-room.ts ContributionBody.summary "1-500 chars"). */
 export const SUMMARY_MAX_CHARS = 500;
+
+/**
+ * Per-role RSVP entry materialized in the room's participant hash.
+ * Mirrors `RoomParticipant` in `web/src/server/war-room.ts:349-364`.
+ * Status lifecycle:
+ *   pending  → resolved   (worker submits a contribution)
+ *   pending  → withdrew   (worker explicitly withdraws)
+ *   pending  → timed_out  (watchdog times out)
+ *   withdrew → pending    (re-RSVP after subject_updated)
+ */
+export interface RoomParticipant {
+  agent_id: string;
+  role: string;
+  status: "pending" | "resolved" | "withdrew" | "timed_out";
+  rsvp_at?: string;
+  withdrew_at_sequence?: number;
+}
+
+/**
+ * One entry in the enriched response from
+ * `GET /api/rooms/watching`. `core` is `RoomCoreWithId` so the
+ * caller has the roomId without a follow-up read.
+ *
+ * The /watching endpoint is the only V1 surface that bundles
+ * participants + currentSequence with the room core — the design's
+ * compensation for `rooms.read_all` not being on the worker preset
+ * (workers can't /api/rooms/{id} their way to the same view).
+ */
+export interface WatchingRoom {
+  core: ListedRoom;
+  participants: Record<string, RoomParticipant>;
+  currentSequence: number;
+}
+
+export interface WatchingRoomsResponse {
+  rooms: WatchingRoom[];
+}
