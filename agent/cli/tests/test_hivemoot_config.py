@@ -16,6 +16,7 @@ from hivemoot_agent.plugins_builtin.hivemoot.config import (
     HivemootGithubWorkflowsConfig,
     HivemootHealthConfig,
     HivemootTasksConfig,
+    HivemootWarRoomsConfig,
 )
 
 
@@ -26,6 +27,31 @@ class DefaultsTests(unittest.TestCase):
         self.assertFalse(cfg.tasks.enabled)
         self.assertFalse(cfg.github_workflows.enabled)
         self.assertFalse(cfg.apiarist.enabled)
+        self.assertFalse(cfg.war_rooms.enabled)
+
+    def test_war_rooms_defaults(self) -> None:
+        cfg = HivemootWarRoomsConfig()
+        self.assertFalse(cfg.enabled)
+        self.assertEqual(cfg.base_url, "https://www.hivemoot.dev")
+        self.assertEqual(cfg.poll_interval_secs, 60)
+        self.assertEqual(cfg.seen_cache_max, 1000)
+
+    def test_war_rooms_poll_interval_min_5s(self) -> None:
+        # Floor of 5s prevents tight-looping; raise to 120-300s on
+        # high-room-count fleets to reduce backend load.
+        with self.assertRaises(ValidationError):
+            HivemootWarRoomsConfig(poll_interval_secs=4)
+        # 5 is OK.
+        HivemootWarRoomsConfig(poll_interval_secs=5)
+
+    def test_war_rooms_seen_cache_min_10(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootWarRoomsConfig(seen_cache_max=9)
+        HivemootWarRoomsConfig(seen_cache_max=10)
+
+    def test_war_rooms_unknown_field_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootConfig(war_rooms={"enabled": True, "typo": "x"})
 
     def test_health_defaults(self) -> None:
         cfg = HivemootHealthConfig()

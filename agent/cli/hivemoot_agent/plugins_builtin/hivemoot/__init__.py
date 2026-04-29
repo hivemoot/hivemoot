@@ -1,6 +1,6 @@
 """Consolidated Hivemoot ecosystem plugin.
 
-One plugin, three independently-toggleable features:
+One plugin, five independently-toggleable features:
 
   * ``health`` — periodic heartbeats + per-run reports to
     ``POST {base_url}/api/agent-health`` (dashboard Agent Health tab).
@@ -9,6 +9,11 @@ One plugin, three independently-toggleable features:
   * ``github_workflows`` — autonomous contribution operating mode,
     buzz role loading, skill bundle.  Co-loads with the ``github``
     plugin (reads its typed config for the target repo).
+  * ``apiarist`` — broker GitHub installation tokens via the
+    apiarist Unix-socket service (host-side daemon).
+  * ``war_rooms`` — poll ``/api/rooms/watching``, dispatch a triage
+    Job per visible room, parse the agent's structured response,
+    and call ``/present + /contribute`` or ``/present + /withdraw``.
 
 YAML shape (``hivemoot.yaml``):
 
@@ -23,6 +28,8 @@ YAML shape (``hivemoot.yaml``):
           claim_url: https://www.hivemoot.dev/api/tasks/claim
           execute_base_url: https://www.hivemoot.dev/api/tasks
         github_workflows:
+          enabled: true
+        war_rooms:
           enabled: true
 
 Host behaviour is plugin-agnostic per ADR-002; this plugin owns its
@@ -144,6 +151,13 @@ class HivemootPlugin:
         # Cached typed config — populated in validate()/setup() so the
         # triggers/system_prompt methods don't re-read from the registry.
         self._cfg: "HivemootConfig | None" = None
+
+        # ── War-rooms subsystem state (F.5) ─────────────────────
+        # Trigger reference cached so on_job_finished can call
+        # `evict_seen_key` via the handler's on_post_failure callback
+        # when the post sequence totally fails. None when war_rooms
+        # disabled OR triggers() hasn't been called yet.
+        self._war_room_trigger: Any = None
 
         # Apiarist auth subscriber, populated in setup_lifecycle() when
         # cfg.apiarist.enabled is true. Cached for diagnostics and
@@ -441,6 +455,22 @@ class HivemootPlugin:
             )
             triggers.append(HealthHeartbeatTrigger(self))  # type: ignore[arg-type]
 
+        if cfg.war_rooms.enabled:
+            from hivemoot_agent.plugins_builtin.hivemoot.auth import (
+                resolve_agent_token,
+            )
+            from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
+                WarRoomWatcherTrigger,
+            )
+            token_path = str(cfg.token_file) if cfg.token_file else ""
+            self._war_room_trigger = WarRoomWatcherTrigger(
+                base_url=cfg.war_rooms.base_url,
+                token_resolver=lambda: resolve_agent_token(token_path),
+                poll_interval_secs=cfg.war_rooms.poll_interval_secs,
+                seen_cache_max=cfg.war_rooms.seen_cache_max,
+            )
+            triggers.append(self._war_room_trigger)  # type: ignore[arg-type]
+
         return triggers
 
     def system_prompt(self, config: PluginConfig) -> str:
@@ -542,6 +572,80 @@ class HivemootPlugin:
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr, flush=True,
                 )
+
+        # War-rooms handler dispatch (F.5). Wraps independently
+        # from tasks/health — one feature failing must not skip
+        # the others.
+        if cfg.war_rooms.enabled:
+            from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
+                is_war_room_job,
+            )
+            if is_war_room_job(job):
+                try:
+                    self._war_room_on_job_finished(job, result, config)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-war-rooms] on_job_finished raised "
+                        f"room={job.metadata.get('room_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+
+    def _war_room_on_job_finished(
+        self,
+        job: Job,
+        result: AgentResult,
+        config: PluginConfig,
+    ) -> None:
+        """Bridge from the engine's on_job_finished to the war-room
+        handler. Extracts the engine's markdown response (same
+        provider-agnostic extractor the tasks plugin uses) and hands
+        it to handle_war_room_job_finished. Wires the trigger's
+        seen-cache eviction as the on_post_failure callback so
+        total post-sequence failure re-dispatches on the next tick.
+        """
+        from hivemoot_agent.plugins_builtin.hivemoot.auth import (
+            resolve_agent_token,
+        )
+        from hivemoot_agent.plugins_builtin.hivemoot.tasks import (
+            result_extractor,
+        )
+        from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
+            handle_war_room_job_finished,
+        )
+
+        cfg = self._cfg
+        if cfg is None or not cfg.war_rooms.enabled:
+            return
+
+        bearer = resolve_agent_token(
+            str(cfg.token_file) if cfg.token_file else "",
+        )
+        provider = config.get("AGENT_PROVIDER", "claude")
+        log_path = self._resolve_provider_log_path(config)
+        sidecar = self._codex_sidecar_path
+
+        markdown = result_extractor.extract_result(
+            provider, log_path, sidecar_path=sidecar,
+        )
+
+        # Wire the trigger's evict_seen_key as the post-failure
+        # recovery callback. Triggers may be None if validate ran
+        # but triggers() hasn't yet — defensive null-guard.
+        evict = (
+            self._war_room_trigger.evict_seen_key
+            if self._war_room_trigger is not None
+            else None
+        )
+
+        handle_war_room_job_finished(
+            job,
+            result,
+            base_url=cfg.war_rooms.base_url,
+            bearer=bearer,
+            extracted_markdown=markdown,
+            on_post_failure=evict,
+        )
 
     # ── Helpers used by triggers ──────────────────────────────────
 
