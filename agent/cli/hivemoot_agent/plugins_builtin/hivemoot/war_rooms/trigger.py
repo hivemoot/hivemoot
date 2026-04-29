@@ -260,61 +260,48 @@ class WarRoomWatcherTrigger:
     def _build_job(self, room: wr_api.WatchingRoom) -> Any:
         """Construct the Job dispatched to the worker pipeline.
 
-        F.3 will replace the prompt body with the actual triage
-        prompt; this F.2 stub builds a minimal Job descriptor that
-        carries the room context in metadata. Returns a duck-typed
-        object so the test fixture doesn't need to import the real
-        `Job` dataclass (which lives in `hivemoot_agent.plugins.interfaces`).
+        Carries the room context in metadata so the on_job_finished
+        handler can post the engine's triage decision back to the
+        war-room API without re-reading the room's state. Returns a
+        duck-typed object so the test fixture doesn't need to
+        import the real `Job` dataclass (which lives in
+        `hivemoot_agent.plugins.interfaces`).
         """
+        from .handler import JOB_KIND_TRIAGE
+        from .triage import build_triage_prompt
+
+        metadata = {
+            # Job-kind discriminator so the parent plugin's
+            # on_job_finished can dispatch deterministically.
+            "job_kind": JOB_KIND_TRIAGE,
+            "room_id": room.room_id,
+            "current_sequence": room.current_sequence,
+            "subject_type": room.subject_type,
+            "subject_ref": room.subject_ref,
+            "manager": room.manager,
+            "status": room.status,
+            "participants": room.participants,
+        }
+        prompt = build_triage_prompt(room)
+        session_key = f"war-room:{room.room_id}@{room.current_sequence}"
+
         # Lazy import: the real Job dataclass requires pydantic +
         # the plugin-interface dependency graph. Tests inject a
-        # fake dispatcher, so the lazy import keeps F.2 testable
-        # in isolation.
+        # fake dispatcher, so the lazy import keeps the trigger
+        # testable in isolation.
         try:
             from hivemoot_agent.plugins.interfaces import Job  # type: ignore[import-not-found]
 
             return Job(
-                session_key=f"war-room:{room.room_id}@{room.current_sequence}",
-                prompt=_build_triage_prompt(room),
-                metadata={
-                    "room_id": room.room_id,
-                    "current_sequence": room.current_sequence,
-                    "subject_type": room.subject_type,
-                    "subject_ref": room.subject_ref,
-                    "manager": room.manager,
-                    "status": room.status,
-                    # F.3 will read this to decide whether to call
-                    # /present or /withdraw based on triage output.
-                    "participants": room.participants,
-                },
+                session_key=session_key,
+                prompt=prompt,
+                metadata=metadata,
             )
         except ImportError:
             # Fallback for tests that don't have the plugin interface
             # loaded — return a plain dict with the same shape.
             return {
-                "session_key": f"war-room:{room.room_id}@{room.current_sequence}",
-                "prompt": _build_triage_prompt(room),
-                "metadata": {
-                    "room_id": room.room_id,
-                    "current_sequence": room.current_sequence,
-                    "subject_type": room.subject_type,
-                    "subject_ref": room.subject_ref,
-                    "manager": room.manager,
-                    "status": room.status,
-                    "participants": room.participants,
-                },
+                "session_key": session_key,
+                "prompt": prompt,
+                "metadata": metadata,
             }
-
-
-def _build_triage_prompt(room: wr_api.WatchingRoom) -> str:
-    """Minimal F.2 stub. F.3 replaces with the actual triage prompt
-    template (cheap LLM call: should this role contribute?)."""
-    return (
-        f"# War-room triage\n\n"
-        f"Room: {room.room_id}\n"
-        f"Subject: {room.subject_type} {room.subject_ref}\n"
-        f"Status: {room.status}\n"
-        f"Sequence: {room.current_sequence}\n\n"
-        f"This is an F.2 stub prompt. F.3 will replace with the real "
-        f"triage prompt that drives the RSVP-vs-withdraw decision."
-    )
