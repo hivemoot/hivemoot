@@ -21,9 +21,16 @@ export function formatEvents(roomId: string, events: readonly RoomEvent[]): stri
   }
   lines.push("");
   for (const ev of events) {
-    const role = ev.agent_role ? ` role=${ev.agent_role}` : "";
-    const id = ev.agent_id ? ` agent=${ev.agent_id}` : "";
-    lines.push(`#${ev.seq}  ${ev.timestamp}  ${ev.event_type}${role}${id}`);
+    lines.push(
+      `#${ev.seq}  ${ev.timestamp}  ${ev.event_type}  by ${ev.actor_role}/${ev.actor_id}`,
+    );
+    // Body is event-type-specific (bounded ≤ 8 KiB serialized per
+    // server). Render compact JSON on a continuation line so
+    // operators see what changed without losing single-line
+    // grep-ability of the headline.
+    if (Object.keys(ev.body).length > 0) {
+      lines.push(`    body: ${JSON.stringify(ev.body)}`);
+    }
   }
   return lines.join("\n");
 }

@@ -72,22 +72,42 @@ export interface ListRoomsResponse {
 }
 
 /**
+ * Event classes the server emits. Mirrors `RoomEventType` in
+ * `web/src/server/war-room.ts:322-337`. CLI keeps a closed union
+ * for editor IntelliSense + grep-discoverability, but at parse time
+ * an unknown server-supplied value still flows through unchanged
+ * (the CLI never re-validates the type — it just renders whatever
+ * the server emits).
+ */
+export type RoomEventType =
+  | "room_opened"
+  | "participant_presented"
+  | "participant_timed_out"
+  | "participant_withdrawn"
+  | "contribution_submitted"
+  | "contribution_withdrawn"
+  | "room_decided"
+  | "room_recovered"
+  | "room_terminated"
+  | "subject_updated"
+  | "queen_question";
+
+/**
  * Single entry from `GET /api/rooms/{roomId}/events`. Mirrors
- * `RoomEvent` on the server side; the optional fields cover the
- * event-type-specific payload (e.g., `subject_updated` carries
- * `subject_ref`, `participant_*` events carry `agent_role`, etc.).
- *
- * Untyped here as `Record<string, unknown>` because the union of all
- * event-type-specific fields is large and event-type-discriminated;
- * V1 CLI displays them as opaque JSON. Future slices can narrow.
+ * `RoomEvent` in `web/src/server/war-room.ts:296-319` exactly —
+ * `actor_role` + `actor_id` are server-derived from the bearer's
+ * envelope (with sentinel values for system actors like the cron
+ * watchdog: `actor_role="manager"|"system"`, `actor_id="watchdog"|
+ * "vercel-cron"`). `body` carries event-type-specific payload,
+ * bounded ≤ 8 KiB serialized.
  */
 export interface RoomEvent {
   seq: number;
   timestamp: string;
-  event_type: string;
-  agent_role?: string;
-  agent_id?: string;
-  [extra: string]: unknown;
+  event_type: RoomEventType;
+  actor_role: string;
+  actor_id: string;
+  body: Record<string, unknown>;
 }
 
 export interface RoomEventsResponse {

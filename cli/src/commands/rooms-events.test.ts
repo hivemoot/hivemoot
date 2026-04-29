@@ -18,6 +18,9 @@ function makeEvent(overrides: Partial<RoomEvent> = {}): RoomEvent {
     seq: 1,
     timestamp: "2026-04-29T18:00:00.000Z",
     event_type: "room_opened",
+    actor_role: "manager",
+    actor_id: "bot-queen",
+    body: {},
     ...overrides,
   };
 }
@@ -45,23 +48,69 @@ describe("formatEvents", () => {
 
   it("renders seq, timestamp, event_type per event", () => {
     const out = formatEvents(VALID_ID, [
-      makeEvent({ seq: 5, event_type: "participant_rsvped" }),
+      makeEvent({ seq: 5, event_type: "participant_presented" }),
     ]);
-    expect(out).toContain("#5  2026-04-29T18:00:00.000Z  participant_rsvped");
+    expect(out).toContain("#5  2026-04-29T18:00:00.000Z  participant_presented");
   });
 
-  it("includes agent_role when present", () => {
+  it("renders actor_role/actor_id on every event (always present per server)", () => {
     const out = formatEvents(VALID_ID, [
-      makeEvent({ agent_role: "drone", event_type: "participant_rsvped" }),
+      makeEvent({
+        event_type: "participant_presented",
+        actor_role: "drone",
+        actor_id: "vercel.123",
+      }),
     ]);
-    expect(out).toContain("role=drone");
+    expect(out).toContain("by drone/vercel.123");
   });
 
-  it("includes agent_id when present", () => {
+  it("renders system-sentinel actors verbatim (manager/watchdog, system/vercel-cron)", () => {
     const out = formatEvents(VALID_ID, [
-      makeEvent({ agent_id: "vercel.123", event_type: "synthesis_claimed" }),
+      makeEvent({
+        seq: 9,
+        event_type: "room_recovered",
+        actor_role: "manager",
+        actor_id: "watchdog",
+      }),
+      makeEvent({
+        seq: 10,
+        event_type: "room_terminated",
+        actor_role: "system",
+        actor_id: "vercel-cron",
+      }),
     ]);
-    expect(out).toContain("agent=vercel.123");
+    expect(out).toContain("room_recovered  by manager/watchdog");
+    expect(out).toContain("room_terminated  by system/vercel-cron");
+  });
+
+  it("renders body as compact JSON on a continuation line when non-empty", () => {
+    const out = formatEvents(VALID_ID, [
+      makeEvent({
+        event_type: "subject_updated",
+        actor_role: "queen",
+        actor_id: "bot-queen",
+        body: { from_subject_ref: "x/y#1", to_subject_ref: "x/y#1@v2" },
+      }),
+    ]);
+    expect(out).toContain('body: {"from_subject_ref":"x/y#1","to_subject_ref":"x/y#1@v2"}');
+  });
+
+  it("omits body line when body is empty {}", () => {
+    const out = formatEvents(VALID_ID, [makeEvent({ body: {} })]);
+    expect(out).not.toContain("body:");
+  });
+
+  it("renders room_decided event_type with synthesis body", () => {
+    const out = formatEvents(VALID_ID, [
+      makeEvent({
+        event_type: "room_decided",
+        actor_role: "queen",
+        actor_id: "bot-queen",
+        body: { sequence_closed: 12 },
+      }),
+    ]);
+    expect(out).toContain("room_decided  by queen/bot-queen");
+    expect(out).toContain('body: {"sequence_closed":12}');
   });
 });
 
@@ -131,7 +180,7 @@ describe("roomsEventsCommand", () => {
   it("emits raw JSON wire response when --json", async () => {
     const payload = {
       roomId: VALID_ID,
-      events: [makeEvent({ seq: 1 }), makeEvent({ seq: 2, event_type: "participant_rsvped" })],
+      events: [makeEvent({ seq: 1 }), makeEvent({ seq: 2, event_type: "participant_presented" })],
     } satisfies RoomEventsResponse;
     mockedGet.mockResolvedValue(payload);
     const logSpy = vi.spyOn(console, "log");
