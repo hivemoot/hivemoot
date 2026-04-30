@@ -11,21 +11,21 @@ import {
   maybeCreatePrReviewRoom,
   maybeEmitSubjectUpdated,
 } from "./war-room-routing.js";
-import { WarRoomApiError } from "./war-room-client.js";
+import { WarRoomApiError } from "./war-room-store.js";
 
-vi.mock("./war-room-client.js", async () => {
-  const real = await vi.importActual<typeof import("./war-room-client.js")>(
-    "./war-room-client.js",
+vi.mock("./war-room-store.js", async () => {
+  const real = await vi.importActual<typeof import("./war-room-store.js")>(
+    "./war-room-store.js",
   );
   return {
     ...real,
-    WarRoomClient: vi.fn(),
+    WarRoomStore: vi.fn(),
   };
 });
 
-import { WarRoomClient } from "./war-room-client.js";
+import { WarRoomStore } from "./war-room-store.js";
 
-const mockedClientCtor = vi.mocked(WarRoomClient);
+const mockedClientCtor = vi.mocked(WarRoomStore);
 
 const log = {
   info: vi.fn(),
@@ -44,20 +44,12 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockReset();
   });
 
-  it("skips with `no_token` reason when env var is unset", async () => {
-    const result = await maybeCreatePrReviewRoom({
-      owner: "hivemoot",
-      repo: "hivemoot",
-      prNumber: 42,
-      log,
-    });
-    expect(result).toEqual({ roomId: null, skipped: "no_token" });
-    expect(mockedClientCtor).not.toHaveBeenCalled();
-    expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ pr: 42 }),
-      expect.stringContaining("HIVEMOOT_BOT_AGENT_TOKEN unset"),
-    );
-  });
+  // The pre-direct-Redis WarRoomClient skipped with `no_token` when
+  // HIVEMOOT_BOT_AGENT_TOKEN was unset; that env var (and the entire
+  // bearer requirement) was removed in the multi-tenant migration —
+  // the routing layer now uses the bot's GitHub App identity scoped
+  // by webhook installationId. The test that previously asserted the
+  // skip path was deleted with the behavior it covered.
 
   it("happy path: 201 — bot mints roomId + threads it through (closes #526 B1)", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
@@ -81,7 +73,7 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockImplementation(
       function (this: { createRoom: typeof createRoom }) {
         this.createRoom = createRoom;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeCreatePrReviewRoom({
@@ -129,7 +121,7 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockImplementation(
       function (this: { createRoom: typeof createRoom }) {
         this.createRoom = createRoom;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeCreatePrReviewRoom({
@@ -153,7 +145,7 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockImplementation(
       function (this: { createRoom: typeof createRoom }) {
         this.createRoom = createRoom;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeCreatePrReviewRoom({
@@ -174,7 +166,7 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockImplementation(
       function (this: { createRoom: typeof createRoom }) {
         this.createRoom = createRoom;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeCreatePrReviewRoom({
@@ -190,22 +182,6 @@ describe("maybeCreatePrReviewRoom", () => {
     );
   });
 
-  it("client construction error → skipped:'api_error', non-fatal", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
-    mockedClientCtor.mockImplementation(() => {
-      throw new Error("invalid baseUrl");
-    });
-
-    const result = await maybeCreatePrReviewRoom({
-      owner: "hivemoot",
-      repo: "hivemoot",
-      prNumber: 42,
-      log,
-    });
-    expect(result).toEqual({ roomId: null, skipped: "api_error" });
-    expect(log.error).toHaveBeenCalled();
-  });
-
   it("never throws — webhook handler relies on this for non-fatal contract", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const createRoom = vi.fn(async () => {
@@ -214,7 +190,7 @@ describe("maybeCreatePrReviewRoom", () => {
     mockedClientCtor.mockImplementation(
       function (this: { createRoom: typeof createRoom }) {
         this.createRoom = createRoom;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     await expect(
@@ -260,25 +236,13 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockReset();
   });
 
-  it("skips with `no_token` when env var unset", async () => {
-    const result = await maybeEmitSubjectUpdated({
-      owner: "hivemoot",
-      repo: "hivemoot",
-      prNumber: 42,
-      changeKind: "synchronize",
-      log,
-    });
-    expect(result).toEqual({ sequence: null, skipped: "no_token" });
-    expect(mockedClientCtor).not.toHaveBeenCalled();
-  });
-
   it("happy path: sends subject_updated with deterministic roomId + idempotencyKey", async () => {
     process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => ({ sequence: 5, replay: false }));
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeEmitSubjectUpdated({
@@ -310,7 +274,7 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     await maybeEmitSubjectUpdated({
@@ -339,7 +303,7 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeEmitSubjectUpdated({
@@ -362,7 +326,7 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeEmitSubjectUpdated({
@@ -379,7 +343,7 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeEmitSubjectUpdated({
@@ -400,7 +364,7 @@ describe("maybeEmitSubjectUpdated", () => {
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
         this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
 
     await expect(
@@ -554,19 +518,6 @@ describe("maybeCreateMentionRoom", () => {
     mockedClientCtor.mockReset();
   });
 
-  it("skips with `no_token` reason when env var is unset", async () => {
-    const result = await maybeCreateMentionRoom({
-      owner: "hivemoot",
-      repo: "hivemoot",
-      issueOrPrNumber: 42,
-      commentId: 1001,
-      commentAuthor: "alice",
-      log,
-    });
-    expect(result).toEqual({ roomId: null, skipped: "no_token" });
-    expect(mockedClientCtor).not.toHaveBeenCalled();
-  });
-
   function setupCreateRoomMock(
     createRoom: ReturnType<typeof vi.fn>,
     appendEvent?: ReturnType<typeof vi.fn>,
@@ -578,7 +529,7 @@ describe("maybeCreateMentionRoom", () => {
       }) {
         this.createRoom = createRoom;
         if (appendEvent) this.appendEvent = appendEvent;
-      } as unknown as typeof WarRoomClient,
+      } as unknown as typeof WarRoomStore,
     );
   }
 
@@ -741,22 +692,6 @@ describe("maybeCreateMentionRoom", () => {
     });
     expect(result).toEqual({ roomId: null, skipped: "api_error" });
     expect(log.warn).toHaveBeenCalled();
-  });
-
-  it("WarRoomClient construction throws → returns api_error without crashing", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
-    mockedClientCtor.mockImplementation(() => {
-      throw new Error("invalid baseUrl");
-    });
-    const result = await maybeCreateMentionRoom({
-      owner: "hivemoot",
-      repo: "hivemoot",
-      issueOrPrNumber: 42,
-      commentId: 1001,
-      commentAuthor: "alice",
-      log,
-    });
-    expect(result).toEqual({ roomId: null, skipped: "api_error" });
   });
 
   it("never throws — pin the non-throwing contract for webhook safety (drone #549 N1)", async () => {

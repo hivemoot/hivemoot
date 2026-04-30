@@ -1,51 +1,53 @@
 /**
  * GET /api/queen/tick — Vercel Cron-driven queen manager loop.
  *
- * Final slice of Phase G' (queen module). Wires together everything
- * G'.1-G'.4 built:
+ * Wires together the queen-side pieces:
  *
- *   1. WarRoomClient (G'.1) — talks to hivemoot.dev /api/rooms/*
- *   2. AiSdkSynthesizer / StubSynthesizer (G'.3) — produces decision
- *      prose; stub fallback when LLM is not configured
- *   3. GitHubDecisionPoster (G'.4) — posts decisions to PR threads
- *   4. runQueenManagerLoop (G'.2) — orchestrates the
- *      list → claim → synthesize → close → post cycle
+ *   1. WarRoomStore — direct-Redis adapter over @hivemoot/war-room
+ *      (replaced the HTTP+bearer WarRoomClient when this PR landed)
+ *   2. AiSdkSynthesizer / StubSynthesizer — decision-prose synthesizer;
+ *      stub fallback when LLM is not configured
+ *   3. GitHubDecisionPoster — posts decisions to PR threads via the
+ *      App's per-installation Octokit
+ *   4. runQueenManagerLoop — orchestrates the
+ *      list → claim → synthesize → close → post cycle per tenant
  *
  * Auth: `Authorization: Bearer ${CRON_SECRET}` per Vercel's
- * documented cron pattern. NOT V1 capability auth — this is a
- * platform-level invocation. Missing or mismatched bearer → 401
- * with empty body so an external probe can't differentiate
- * "wrong bearer" from "no deployment". CRON_SECRET unset ALSO
- * returns 401 (misconfig logged server-side via console.error,
- * matches the watchdog at web/src/app/api/internal/queen/tick).
+ * documented cron pattern. Missing or mismatched bearer → 401
+ * with empty body. CRON_SECRET unset ALSO returns 401.
  *
- * Method: GET only (Vercel Cron sends GET, no body). POST returns
- * 405. Keeps the surface narrow — no handcrafted-test backdoor
- * to maintain.
+ * Method: GET only.
  *
- * Installation selection (mirrors watchdog's #524 guard R2 N1):
- *   1. `?installationId=X` query param wins (manual test override)
- *   2. Otherwise read `HIVEMOOT_QUEEN_INSTALLATION_ID` env var
- *   3. Neither set → 500 misconfig (the cron-bearer holder is
- *      already authenticated, so fail-loud is acceptable)
+ * Multi-tenant iteration:
+ *   On each fire, the handler iterates EVERY installation the GitHub
+ *   App is on (via `app.eachInstallation()`) and runs the manager
+ *   loop per installation. The bot's GitHub App identity is the
+ *   load-bearing trust boundary — there is no per-tenant bearer to
+ *   juggle, no env-var pin to ONE installation. Per-installation
+ *   work is keyed by `installation.id` from the eachInstallation
+ *   iterator AND scoped Redis-side by the same id.
+ *
+ *   `?installationId=X` query param remains as a single-installation
+ *   override for ops smoke-testing; when set, the iterator is
+ *   replaced with a one-element list.
  *
  * Required env (per deployment):
  *   - CRON_SECRET — auth bearer
  *   - APP_ID + (PRIVATE_KEY | APP_PRIVATE_KEY) — GitHub App credentials
- *   - HIVEMOOT_BOT_AGENT_TOKEN — V1 capability bearer with
- *     rooms.read_all + rooms.decide + rooms.close (queen preset)
- *   - HIVEMOOT_QUEEN_INSTALLATION_ID — target installation
+ *   - HIVEMOOT_REDIS_REST_URL + HIVEMOOT_REDIS_REST_TOKEN — direct
+ *     Redis access (already used by BYOK envelope lookup)
  *   - LLM_PROVIDER + LLM_MODEL + provider API key (optional —
  *     loop falls back to StubSynthesizer when missing)
  *
  * Optional:
- *   - HIVEMOOT_API_BASE_URL (default: https://www.hivemoot.dev)
  *   - HIVEMOOT_QUEEN_RUNNER_ID (default: derived from deployment)
  *   - HIVEMOOT_QUEEN_MAX_ROOMS_PER_TICK (default: 100)
  *
- * Response: `{ runnerId, installationId, result }` where result is
- * `QueenManagerLoopResult`. Operators alert on `result.errors > 0`
- * or `result.postsFailed > 0`.
+ * Response: `{ runnerId, installations: [...], aggregated: {...} }`
+ * where `installations` is one entry per tenant scanned this fire,
+ * and `aggregated` sums the per-installation `QueenManagerLoopResult`
+ * fields. Operators alert on `aggregated.errors > 0` or
+ * `aggregated.postsFailed > 0`.
  */
 
 import type { IncomingMessage, ServerResponse } from "http";
@@ -59,11 +61,10 @@ import { GitHubDecisionPoster } from "../lib/queen/decision-poster.js";
 import { WarRoomStore } from "../lib/war-room-store.js";
 import { getRedisClient } from "../lib/redis.js";
 
-/** Numeric-only check — defense-in-depth even with an authenticated
- * caller. Mirrors the watchdog's INSTALLATION_ID_REGEX. */
+/** Numeric-only check — defense-in-depth on the optional
+ * `?installationId=X` override. Mirrors the watchdog's
+ * INSTALLATION_ID_REGEX. */
 const INSTALLATION_ID_REGEX = /^\d+$/;
-
-const DEFAULT_BASE_URL = "https://www.hivemoot.dev";
 
 function getCronSecret(): string | null {
   const v = process.env.CRON_SECRET;
@@ -85,47 +86,35 @@ function parseMaxRoomsPerTick(): number | undefined {
 }
 
 /**
- * Resolve `installationId` from query → env. Returns
- *   - `{ ok: true, installationId }` on success
- *   - `{ ok: false, status, body }` to short-circuit the response
+ * Resolve the iteration target: either the optional
+ * `?installationId=X` override (single tenant — ops smoke-testing),
+ * or `null` meaning "iterate every installation the App is on."
+ * Validates format on the override path; the all-installations
+ * path trusts whatever GitHub returns.
  */
-function resolveInstallationId(
+function resolveInstallationOverride(
   url: URL,
 ):
-  | { ok: true; installationId: string }
+  | { ok: true; installationId: string | null }
   | { ok: false; status: number; body: Record<string, unknown> } {
   const fromQuery = url.searchParams.get("installationId");
-  const fromEnv = process.env.HIVEMOOT_QUEEN_INSTALLATION_ID;
-  const installationId = fromQuery ?? fromEnv ?? null;
-
-  if (installationId === null || installationId.length === 0) {
-    logger.error(
-      "[queen-tick] no installationId — neither ?installationId query nor HIVEMOOT_QUEEN_INSTALLATION_ID env var is set",
-    );
-    return {
-      ok: false,
-      status: 500,
-      body: {
-        code: "no_installation_id",
-        message:
-          "No installationId resolved — neither ?installationId query nor HIVEMOOT_QUEEN_INSTALLATION_ID env var is set.",
-      },
-    };
+  if (fromQuery === null || fromQuery.length === 0) {
+    return { ok: true, installationId: null };
   }
 
-  if (!INSTALLATION_ID_REGEX.test(installationId)) {
+  if (!INSTALLATION_ID_REGEX.test(fromQuery)) {
     return {
       ok: false,
       status: 400,
       body: {
         code: "invalid_installation_id",
         message:
-          "installationId must be a non-empty numeric string (GitHub installation IDs).",
+          "?installationId= override must be a non-empty numeric string.",
       },
     };
   }
 
-  return { ok: true, installationId };
+  return { ok: true, installationId: fromQuery };
 }
 
 function writeJson(
@@ -191,28 +180,25 @@ export function makeManagerLoopLogAdapter(): {
  *     than skipping the tick (availability over duplicate-work
  *     prevention).
  */
-async function runOneTick(installationId: string): Promise<{
+async function runOneTickForInstallation(args: {
+  installationId: string;
+  app: App;
   runnerId: string;
+}): Promise<{
   result: Awaited<ReturnType<typeof runQueenManagerLoop>>;
   skipped?: boolean;
 }> {
-  const runnerId = makeRunnerId();
+  const { installationId, app, runnerId } = args;
 
   const acquired = await tryAcquireTickLock(installationId, runnerId);
   if (acquired === "contention") {
     logger.info(
       `[queen-tick] lock contention installation=${installationId} — skip`,
     );
-    // Return zeroed result so caller can serialize it consistently.
-    return { runnerId, result: emptyManagerLoopResult(), skipped: true };
+    return { result: emptyManagerLoopResult(), skipped: true };
   }
 
   try {
-    const appConfig = getAppConfig();
-    const app = new App({
-      appId: String(appConfig.appId),
-      privateKey: appConfig.privateKey,
-    });
     const octokit = await app.getInstallationOctokit(Number(installationId));
 
     const store = new WarRoomStore({
@@ -233,7 +219,7 @@ async function runOneTick(installationId: string): Promise<{
       log: makeManagerLoopLogAdapter(),
     });
 
-    return { runnerId, result };
+    return { result };
   } finally {
     await releaseTickLock(installationId, runnerId);
   }
@@ -407,35 +393,97 @@ export default async function handler(
     return;
   }
 
-  // Resolve installationId.
-  // url.parse via WHATWG URL; req.url is just the path so prepend a
-  // dummy origin to make WHATWG URL happy.
+  // Optional ?installationId=X override (single-tenant smoke test).
+  // Empty/absent → iterate every installation the App is on.
   const url = new URL(req.url ?? "/", "http://placeholder.local");
-  const idResult = resolveInstallationId(url);
-  if (!idResult.ok) {
-    writeJson(res, idResult.status, idResult.body);
+  const overrideResult = resolveInstallationOverride(url);
+  if (!overrideResult.ok) {
+    writeJson(res, overrideResult.status, overrideResult.body);
     return;
   }
 
-  // Run the tick.
+  const runnerId = makeRunnerId();
+  let app: App;
   try {
-    const { runnerId, result, skipped } = await runOneTick(
-      idResult.installationId,
-    );
-    writeJson(res, 200, {
-      runnerId,
-      installationId: idResult.installationId,
-      skipped: skipped ?? false,
-      ...(skipped ? { reason: "lock_contention" } : {}),
-      result,
+    const appConfig = getAppConfig();
+    app = new App({
+      appId: String(appConfig.appId),
+      privateKey: appConfig.privateKey,
     });
   } catch (err) {
     logger.error(
-      `[queen-tick] unhandled error installation=${idResult.installationId}: ${err instanceof Error ? err.message : String(err)}`,
+      `[queen-tick] failed to construct App: ${err instanceof Error ? err.message : String(err)}`,
     );
     writeJson(res, 500, {
-      code: "tick_failed",
+      code: "app_init_failed",
       message: err instanceof Error ? err.message : String(err),
     });
+    return;
   }
+
+  // Build the list of installations to scan this fire.
+  const installationIds: string[] = [];
+  if (overrideResult.installationId !== null) {
+    installationIds.push(overrideResult.installationId);
+  } else {
+    try {
+      for await (const { installation } of app.eachInstallation.iterator()) {
+        installationIds.push(String(installation.id));
+      }
+    } catch (err) {
+      logger.error(
+        `[queen-tick] eachInstallation iteration failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      writeJson(res, 500, {
+        code: "installations_iteration_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+
+  // Run the tick per installation. Aggregate results so operators
+  // can alert on totals; per-installation rows let them attribute.
+  const perInstallation: Array<{
+    installationId: string;
+    skipped?: boolean;
+    reason?: string;
+    error?: string;
+    result?: Awaited<ReturnType<typeof runQueenManagerLoop>>;
+  }> = [];
+  const aggregated = emptyManagerLoopResult();
+  for (const installationId of installationIds) {
+    try {
+      const { result, skipped } = await runOneTickForInstallation({
+        installationId,
+        app,
+        runnerId,
+      });
+      perInstallation.push({
+        installationId,
+        skipped: skipped ?? false,
+        ...(skipped ? { reason: "lock_contention" } : {}),
+        result,
+      });
+      // Aggregate the numeric counters so callers can alert on totals.
+      for (const k of Object.keys(aggregated) as Array<keyof typeof aggregated>) {
+        aggregated[k] += result[k] ?? 0;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(
+        `[queen-tick] unhandled error installation=${installationId}: ${message}`,
+      );
+      perInstallation.push({ installationId, error: message });
+      // Treat per-installation failures as one error for the
+      // aggregated counter so alerting picks them up.
+      aggregated.errors += 1;
+    }
+  }
+
+  writeJson(res, 200, {
+    runnerId,
+    installations: perInstallation,
+    aggregated,
+  });
 }
