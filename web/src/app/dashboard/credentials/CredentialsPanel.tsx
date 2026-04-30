@@ -1097,7 +1097,7 @@ function CapabilityTokensSection({
     if (rotating !== null) return;
     if (
       !confirm(
-        `Rotate "${name}"? The current bearer becomes invalid the moment the new one is issued — paste the new value into the target before this dialog closes.`,
+        `Rotate "${name}"? The current bearer becomes invalid immediately. The new bearer will be shown ONCE in a copy-and-paste dialog after this confirmation.`,
       )
     ) {
       return;
