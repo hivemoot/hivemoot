@@ -15,7 +15,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
-import { authenticateAgentRequest } from "@/server/agent-health-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { parseContentLength } from "@/server/request-utils";
 import {
   AGENT_ID_PATTERN,
@@ -93,7 +93,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const auth = await authenticateAgentRequest(request);
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "agent_health.report",
+  });
   if (!auth.ok) return auth.response;
 
   const { report } = validation;
@@ -185,7 +187,9 @@ async function handleHeartbeat(body: unknown, request: NextRequest) {
     );
   }
 
-  const auth = await authenticateAgentRequest(request);
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "agent_health.report",
+  });
   if (!auth.ok) return auth.response;
 
   const { heartbeat } = validation;

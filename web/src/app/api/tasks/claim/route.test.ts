@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
-vi.mock("@/server/task-executor-auth", () => ({
-  authenticateTaskExecutorRequest: vi.fn(),
+vi.mock("@/server/agent-token-v1-auth", () => ({
+  authenticateAgentRequestV1: vi.fn(),
 }));
 
 vi.mock("@/server/task-store", () => ({
@@ -10,18 +10,32 @@ vi.mock("@/server/task-store", () => ({
   getTaskMessages: vi.fn(),
 }));
 
-import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { claimNextPendingTask, getTaskMessages } from "@/server/task-store";
 import { POST } from "./route";
 
 beforeEach(() => {
   vi.clearAllMocks();
 
-  vi.mocked(authenticateTaskExecutorRequest).mockResolvedValue({
+  vi.mocked(authenticateAgentRequestV1).mockResolvedValue({
     ok: true,
     installationId: "inst-1",
+    name: "test-worker",
+    agent_role: "worker",
+    capabilities: ["tasks.claim"],
+    envelope: {
+      installationId: "inst-1",
+      name: "test-worker",
+      agent_role: "worker",
+      capabilities: ["tasks.claim"],
+      tokenHash: "stub",
+      fingerprint: "stub0001",
+      createdAt: "2026-04-30T00:00:00Z",
+      createdBy: "test",
+      expiresAt: null,
+    } as never,
     redis: {} as never,
-  });
+  } as never);
 
   vi.mocked(getTaskMessages).mockResolvedValue([
     { role: "user", content: "Initial prompt", created_at: "2026-03-03T12:00:00.000Z" },
@@ -99,7 +113,7 @@ describe("POST /api/tasks/claim", () => {
   });
 
   it("forwards auth failures", async () => {
-    vi.mocked(authenticateTaskExecutorRequest).mockResolvedValue({
+    vi.mocked(authenticateAgentRequestV1).mockResolvedValue({
       ok: false,
       response: NextResponse.json({ code: "task_not_authenticated" }, { status: 401 }),
     });

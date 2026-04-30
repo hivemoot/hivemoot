@@ -23,7 +23,7 @@
 
 import { createHash } from "crypto";
 import { generateAppJwt } from "@/server/github-auth";
-import type { GitHubPermissionLevel } from "@/server/agent-token";
+import type { GitHubPermissionLevel } from "@/server/agent-token-v1";
 
 // ---------------------------------------------------------------------------
 // Default permission set
