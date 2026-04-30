@@ -264,8 +264,9 @@ export async function maybeCreatePrReviewRoom(
       );
       return { roomId: null, skipped: "api_error" };
     }
-    // Network / 5xx → transient. Log + skip; webhook re-delivery
-    // will retry.
+    // Network / 5xx → transient. Log + skip; the helper still
+    // returns 200 to GitHub via the webhook handler, so there is no
+    // automatic re-delivery. See file docstring.
     args.log.warn(
       {
         err,
@@ -273,7 +274,7 @@ export async function maybeCreatePrReviewRoom(
         repo: args.repo,
         pr: args.prNumber,
       },
-      "[war-room] createRoom transient error — skipping (will retry on next webhook delivery)",
+      "[war-room] createRoom transient error — skipping (no auto-retry; see file docstring)",
     );
     return { roomId: null, skipped: "api_error" };
   }
