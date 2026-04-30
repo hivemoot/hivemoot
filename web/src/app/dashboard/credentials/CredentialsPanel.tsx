@@ -949,6 +949,413 @@ function AgentTokenSection({
 }
 
 // ---------------------------------------------------------------------------
+// Capability Tokens Section (V1 capability bearers — `/api/dashboard/agent-tokens`)
+// ---------------------------------------------------------------------------
+
+interface V1TokenSummary {
+  name: string;
+  agent_role: string;
+  capabilities: string[];
+  fingerprint: string;
+  createdAt: string;
+  createdBy: string;
+  expiresAt: string | null;
+}
+
+interface IssuedV1Token {
+  token: string;
+  name: string;
+  agent_role: string;
+  capabilities: string[];
+  fingerprint: string;
+  expiresAt: string | null;
+  message: string;
+}
+
+type CapabilityTokensState =
+  | { kind: "loading" }
+  | { kind: "loaded"; tokens: V1TokenSummary[]; presets: string[] }
+  | { kind: "error"; message: string };
+
+function CapabilityTokensSection({
+  sessionExpired,
+  onSessionExpired,
+}: {
+  sessionExpired: boolean;
+  onSessionExpired: () => void;
+}) {
+  const [state, setState] = useState<CapabilityTokensState>({ kind: "loading" });
+  const [issueName, setIssueName] = useState("");
+  const [issuePreset, setIssuePreset] = useState("queen");
+  const [issuing, setIssuing] = useState(false);
+  const [issueError, setIssueError] = useState<string | null>(null);
+  const [justIssued, setJustIssued] = useState<IssuedV1Token | null>(null);
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [rotating, setRotating] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
+
+  const fetchList = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dashboard/agent-tokens");
+      if (res.ok) {
+        const data = (await res.json()) as {
+          tokens: V1TokenSummary[];
+          presets: string[];
+        };
+        setState({ kind: "loaded", tokens: data.tokens, presets: data.presets });
+        return;
+      }
+      const err = await parseErrorResponse(res);
+      const errCode = err.code as string | undefined;
+      if (isSessionError(res.status, errCode)) {
+        onSessionExpired();
+        setState({ kind: "error", message: "Session expired" });
+        return;
+      }
+      setState({
+        kind: "error",
+        message: String(err.message ?? "Failed to load capability tokens."),
+      });
+    } catch {
+      setState({ kind: "error", message: "Network error — could not reach server." });
+    }
+  }, [onSessionExpired]);
+
+  useEffect(() => {
+    fetchList();
+  }, [fetchList]);
+
+  async function handleIssue() {
+    if (issuing || issueName.trim().length === 0) return;
+    setIssuing(true);
+    setIssueError(null);
+    try {
+      const res = await fetch("/api/dashboard/agent-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: issueName.trim(), preset: issuePreset }),
+      });
+      if (res.ok) {
+        const issued = (await res.json()) as IssuedV1Token;
+        setJustIssued(issued);
+        setIssueName("");
+        // Refresh list so the new entry appears.
+        await fetchList();
+        return;
+      }
+      const err = await parseErrorResponse(res);
+      const errCode = err.code as string | undefined;
+      if (isSessionError(res.status, errCode)) {
+        onSessionExpired();
+        return;
+      }
+      setIssueError(String(err.message ?? "Failed to issue token."));
+    } catch {
+      setIssueError("Network error — could not reach server.");
+    } finally {
+      setIssuing(false);
+    }
+  }
+
+  async function handleRevoke(name: string) {
+    if (revoking !== null) return;
+    if (
+      !confirm(
+        `Revoke "${name}"? Any agent or service holding this bearer will start getting 401 immediately.`,
+      )
+    ) {
+      return;
+    }
+    setRevoking(name);
+    try {
+      const res = await fetch(
+        `/api/dashboard/agent-tokens/${encodeURIComponent(name)}`,
+        { method: "DELETE" },
+      );
+      if (res.ok) {
+        await fetchList();
+        return;
+      }
+      const err = await parseErrorResponse(res);
+      const errCode = err.code as string | undefined;
+      if (isSessionError(res.status, errCode)) {
+        onSessionExpired();
+        return;
+      }
+      setState({
+        kind: "error",
+        message: String(err.message ?? "Failed to revoke token."),
+      });
+    } catch {
+      setState({ kind: "error", message: "Network error — could not reach server." });
+    } finally {
+      setRevoking(null);
+    }
+  }
+
+  async function handleRotate(name: string) {
+    if (rotating !== null) return;
+    if (
+      !confirm(
+        `Rotate "${name}"? The current bearer becomes invalid immediately. The new bearer will be shown ONCE in a copy-and-paste dialog after this confirmation.`,
+      )
+    ) {
+      return;
+    }
+    setRotating(name);
+    try {
+      const res = await fetch(
+        `/api/dashboard/agent-tokens/${encodeURIComponent(name)}/rotate`,
+        { method: "POST" },
+      );
+      if (res.ok) {
+        const rotated = (await res.json()) as IssuedV1Token;
+        setJustIssued(rotated);
+        await fetchList();
+        return;
+      }
+      const err = await parseErrorResponse(res);
+      const errCode = err.code as string | undefined;
+      if (isSessionError(res.status, errCode)) {
+        onSessionExpired();
+        return;
+      }
+      setState({
+        kind: "error",
+        message: String(err.message ?? "Failed to rotate token."),
+      });
+    } catch {
+      setState({ kind: "error", message: "Network error — could not reach server." });
+    } finally {
+      setRotating(null);
+    }
+  }
+
+  function handleCopyIssued() {
+    if (!justIssued || !navigator.clipboard?.writeText) {
+      setCopyState("fail");
+      return;
+    }
+    navigator.clipboard.writeText(justIssued.token).then(
+      () => {
+        setCopyState("ok");
+        setTimeout(() => setCopyState("idle"), 2000);
+      },
+      () => setCopyState("fail"),
+    );
+  }
+
+  if (sessionExpired) return null;
+
+  return (
+    <section className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
+      <div className="mb-6 flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
+          <TokenIcon className="h-5 w-5 text-honey-500" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold text-[#fafafa]">Capability Tokens</h2>
+          <p className="mt-0.5 text-sm text-zinc-400">
+            Per-installation bearer tokens with capability scopes
+            (rooms.create, rooms.watch, etc.). Issue one named{" "}
+            <code className="rounded bg-white/[0.05] px-1 py-0.5 text-xs text-zinc-300">
+              queen
+            </code>{" "}
+            with the queen preset and assign it to the queen agent so it can
+            create/manage war rooms.
+          </p>
+        </div>
+      </div>
+
+      {state.kind === "loading" && (
+        <div className="flex items-center gap-3 text-sm text-zinc-500">
+          <SpinnerIcon />
+          Loading tokens…
+        </div>
+      )}
+
+      {state.kind === "error" && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+          <XCircleIcon className="h-4 w-4 shrink-0 text-red-400" />
+          <p className="text-sm text-red-400">{state.message}</p>
+        </div>
+      )}
+
+      {state.kind === "loaded" && (
+        <>
+          {/* Existing tokens list */}
+          {state.tokens.length === 0 ? (
+            <p className="mb-6 text-sm text-zinc-500">
+              No capability tokens yet. Issue one below.
+            </p>
+          ) : (
+            <ul className="mb-6 divide-y divide-white/[0.04] rounded-lg border border-white/[0.06]">
+              {state.tokens.map((token) => (
+                <li
+                  key={token.name}
+                  className="flex items-center justify-between gap-4 p-4"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold text-[#fafafa]">
+                        {token.name}
+                      </span>
+                      <span className="rounded bg-white/[0.05] px-2 py-0.5 text-xs text-zinc-400">
+                        {token.agent_role}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      {token.capabilities.length} capabilit
+                      {token.capabilities.length === 1 ? "y" : "ies"}{" "}
+                      · ····{token.fingerprint} · created{" "}
+                      {formatDate(token.createdAt)}
+                      {token.expiresAt && (
+                        <> · expires {formatDate(token.expiresAt)}</>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleRotate(token.name)}
+                      disabled={rotating !== null || revoking !== null}
+                      className="rounded-md border border-white/[0.06] px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:border-white/10 hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {rotating === token.name ? "Rotating…" : "Rotate"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRevoke(token.name)}
+                      disabled={rotating !== null || revoking !== null}
+                      className="rounded-md border border-red-500/20 px-3 py-1.5 text-xs text-red-400 transition-colors hover:border-red-500/40 hover:bg-red-500/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {revoking === token.name ? "Revoking…" : "Revoke"}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* Issue form */}
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+            <h3 className="mb-3 text-sm font-semibold text-[#fafafa]">
+              Issue new token
+            </h3>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <label
+                  htmlFor="cap-token-name"
+                  className="mb-1.5 block text-xs text-zinc-500"
+                >
+                  Name
+                </label>
+                <input
+                  id="cap-token-name"
+                  type="text"
+                  value={issueName}
+                  onChange={(e) => setIssueName(e.target.value)}
+                  placeholder="queen"
+                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] placeholder-zinc-600 focus:border-honey-500/40 focus:outline-none"
+                  disabled={issuing}
+                />
+              </div>
+              <div className="sm:w-48">
+                <label
+                  htmlFor="cap-token-preset"
+                  className="mb-1.5 block text-xs text-zinc-500"
+                >
+                  Preset
+                </label>
+                <select
+                  id="cap-token-preset"
+                  value={issuePreset}
+                  onChange={(e) => setIssuePreset(e.target.value)}
+                  disabled={issuing}
+                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] focus:border-honey-500/40 focus:outline-none"
+                >
+                  {state.presets.map((preset) => (
+                    <option key={preset} value={preset}>
+                      {preset}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={handleIssue}
+                disabled={issuing || issueName.trim().length === 0}
+                className="rounded-lg bg-honey-500 px-5 py-2 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {issuing ? "Issuing…" : "Issue"}
+              </button>
+            </div>
+            {issueError && (
+              <p className="mt-2 text-xs text-red-400">{issueError}</p>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* One-time-display modal for newly issued / rotated tokens */}
+      {justIssued && (
+        <div className="mt-4 rounded-lg border border-honey-500/30 bg-honey-500/5 p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-honey-500">
+                New bearer for &quot;{justIssued.name}&quot;
+              </h3>
+              <p className="mt-1 text-xs text-zinc-400">
+                Shown ONCE. Copy now and store it where the queen agent (or
+                worker / CLI consumer) can read it. After this dialog closes,
+                only the fingerprint will be visible.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setJustIssued(null);
+                setCopyState("idle");
+              }}
+              className="text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={justIssued.token}
+              className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-[#fafafa]"
+              onFocus={(e) => e.target.select()}
+            />
+            <button
+              type="button"
+              onClick={handleCopyIssued}
+              className="shrink-0 rounded-lg border border-white/[0.06] px-3 py-2 text-xs text-zinc-300 hover:border-white/10 hover:bg-white/[0.04]"
+            >
+              {copyState === "ok"
+                ? "Copied"
+                : copyState === "fail"
+                  ? "Copy failed"
+                  : "Copy"}
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-zinc-500">
+            {justIssued.capabilities.length} capabilit
+            {justIssued.capabilities.length === 1 ? "y" : "ies"}: {" "}
+            <span className="font-mono text-zinc-400">
+              {justIssued.capabilities.join(", ")}
+            </span>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -959,6 +1366,10 @@ export default function CredentialsPanel() {
     <div className="space-y-6">
       {sessionExpired && <SessionExpiredBanner />}
       <LlmCredentialsSection
+        sessionExpired={sessionExpired}
+        onSessionExpired={() => setSessionExpired(true)}
+      />
+      <CapabilityTokensSection
         sessionExpired={sessionExpired}
         onSessionExpired={() => setSessionExpired(true)}
       />
