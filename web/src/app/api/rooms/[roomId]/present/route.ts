@@ -31,7 +31,7 @@ import {
   RoomParticipantOwnerConflictError,
   RoomRunnerFormatError,
   validateRunnerFormat,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 interface PresentRequestBody {
   sequenceObservedByClient?: number;

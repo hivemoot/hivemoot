@@ -1,0 +1,12 @@
+{
+  "name": "@hivemoot/war-room",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared war-room storage layer + redis-lock helper. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's `@upstash/redis` install is reused by source-level resolution; this package intentionally declares no @upstash/redis dependency to avoid a dual-package hazard (two installations producing non-assignable Redis types).",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./redis-lock": "./src/redis-lock.ts"
+  }
+}

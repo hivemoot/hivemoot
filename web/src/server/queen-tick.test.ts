@@ -12,9 +12,9 @@ import {
   WATCHDOG_TIMEOUT_ACTOR,
 } from "./queen-tick";
 
-vi.mock("@/server/war-room", async () => {
-  const real = await vi.importActual<typeof import("@/server/war-room")>(
-    "@/server/war-room",
+vi.mock("@hivemoot/war-room", async () => {
+  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
+    "@hivemoot/war-room",
   );
   return {
     ...real,
@@ -37,7 +37,7 @@ import {
   RoomParticipantStatePreconditionError,
   type RoomCoreWithId,
   type RoomParticipant,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 const mockedList = vi.mocked(listRooms);
 const mockedParticipants = vi.mocked(getRoomParticipants);

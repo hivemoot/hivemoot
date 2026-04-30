@@ -58,7 +58,7 @@ import {
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
   RoomEventIdempotencyReplayError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 /**
  * Watchdog actor sentinels — distinct pairs per emitted event

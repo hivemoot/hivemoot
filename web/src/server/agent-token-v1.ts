@@ -60,7 +60,7 @@
 import { createHash, randomBytes } from "crypto";
 import { type Redis } from "@upstash/redis";
 import { encrypt, type EncryptedEnvelope } from "@/server/crypto";
-import { withRedisLock } from "@/server/redis-lock";
+import { withRedisLock } from "@hivemoot/war-room/redis-lock";
 import {
   validateName,
   validateAgentRole,

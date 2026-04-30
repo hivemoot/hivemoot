@@ -38,7 +38,7 @@ import {
   seqKey,
   type RoomCoreWithId,
   type RoomParticipant,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 const MAX_LIMIT = 100;
 

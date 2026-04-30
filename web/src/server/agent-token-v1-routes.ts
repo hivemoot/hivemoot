@@ -39,7 +39,7 @@ import {
   type AgentTokenSummaryV1,
 } from "@/server/agent-token-v1";
 import { CapabilityValidationError } from "@/server/agent-token-capabilities";
-import { LockTimeoutError } from "@/server/redis-lock";
+import { LockTimeoutError } from "@hivemoot/war-room/redis-lock";
 // Audit-entry construction lives in the storage layer now (see header).
 // Endpoints just pass an `AuditMutationContext` from `agent-token-v1.ts`.
 import type { AgentTokenPolicy } from "@/server/agent-token-v1";

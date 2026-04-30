@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { type Redis } from "@upstash/redis";
-import { withRedisLock, LockTimeoutError } from "@/server/redis-lock";
+import { withRedisLock, LockTimeoutError } from "@hivemoot/war-room/redis-lock";
 
 export const MAX_CONCURRENT_TASKS = 3;
 export const DEFAULT_TASK_TIMEOUT_SECONDS = 5 * 60;

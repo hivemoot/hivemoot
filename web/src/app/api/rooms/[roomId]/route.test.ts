@@ -9,9 +9,9 @@ vi.mock("@/server/agent-token-v1-auth", () => ({
   authenticateAgentRequestV1: vi.fn(),
 }));
 
-vi.mock("@/server/war-room", async () => {
-  const real = await vi.importActual<typeof import("@/server/war-room")>(
-    "@/server/war-room",
+vi.mock("@hivemoot/war-room", async () => {
+  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
+    "@hivemoot/war-room",
   );
   return {
     ...real,
@@ -24,7 +24,7 @@ import {
   getRoomCore,
   RoomNotFoundError,
   RoomIdFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 import { GET } from "./route";
 
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);

@@ -23,7 +23,7 @@ import {
   getRoomCore,
   RoomNotFoundError,
   RoomIdFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 export async function GET(
   request: NextRequest,
