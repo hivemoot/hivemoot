@@ -154,14 +154,8 @@ function TokenIcon({ className }: { className?: string }) {
   );
 }
 
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className ?? "h-4 w-4"} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="5" y="5" width="8" height="8" rx="1" />
-      <path d="M3 11V3a1 1 0 0 1 1-1h8" />
-    </svg>
-  );
-}
+// CopyIcon removed — was only used by the legacy AgentTokenSection. The
+// new CapabilityTokensSection uses text labels on copy buttons instead.
 
 // ---------------------------------------------------------------------------
 // Session expired banner

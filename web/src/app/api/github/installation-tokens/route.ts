@@ -148,7 +148,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       repo,
       agentId,
       remediation:
-        "set a per-token policy via setAgentTokenPolicy to enforce request ⊆ policy ⊆ installation grant",
+        "set a per-token policy via the dashboard's Capability Tokens UI (or POST /api/agent-tokens with admin bearer + policy field) to enforce request ⊆ policy ⊆ installation grant",
     });
   } else if (!auth.envelope.policy.allowed_repos.includes(repo)) {
     console.warn("[installation-tokens] policy violation: repo not in allowed_repos", {
@@ -162,7 +162,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         error: "policy_violation",
         message:
           `Repo '${repo}' is not in the agent token's allowed_repos policy. ` +
-          "Either add it to the token's policy via setAgentTokenPolicy, " +
+          "Either reissue the token with an updated policy via the dashboard's Capability Tokens UI " +
+          "(or POST /api/agent-tokens/{name}/rotate with the new policy), " +
           "or rotate to a token whose policy includes this repo.",
       },
       { status: 403 },

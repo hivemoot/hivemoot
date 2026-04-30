@@ -303,7 +303,8 @@ export class InvalidPermissionLevelError extends MintError {
     super(
       `Token policy 'allowed_permissions.${permission}' has invalid value ` +
         `${JSON.stringify(badValue)} (expected one of ${validLevels.join(", ")}). ` +
-        `Fix the token's policy via setAgentTokenPolicy or rotate it.`,
+        `Reissue the token via the dashboard's Capability Tokens UI ` +
+        `(or POST /api/agent-tokens/{name}/rotate) with a corrected policy.`,
       400,
       "invalid_permission_level",
     );

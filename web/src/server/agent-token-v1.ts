@@ -2,11 +2,11 @@
  * V1 agent-token storage layer (Phase B.1.b).
  *
  * Implements the storage primitives for the per-key capability
- * system from `docs/architecture/CAPABILITIES_DESIGN.md` alongside
- * the legacy single-token-per-installation primitives in
- * `agent-token.ts`. NEW callers should use this module; legacy
- * callers stay on `agent-token.ts` until the cutover (B.1.e) flips
- * the middleware over.
+ * system from `docs/architecture/CAPABILITIES_DESIGN.md`. This is
+ * the only token system now — the legacy single-token-per-
+ * installation primitives in `agent-token.ts` were deleted in the
+ * B.1.e cutover; all callers issue / resolve V1 envelopes through
+ * this module.
  *
  * BEARER-RESURRECTION INVARIANT (load-bearing for B.1.c middleware)
  * ----------------------------------------------------------------
@@ -53,7 +53,8 @@
  *     middleware that writes it
  *   - audit-stream emit (`auditAppend`) — wired into the same
  *     middleware/endpoint PRs
- *   - cleanup script for legacy keys (B.1.e cutover)
+ *   - B.1.e cutover (DONE) — legacy /api/agent-token + storage
+ *     primitives + middlewares deleted; all routes on V1 now
  */
 
 import { createHash, randomBytes } from "crypto";
