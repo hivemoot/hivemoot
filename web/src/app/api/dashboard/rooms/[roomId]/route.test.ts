@@ -5,9 +5,9 @@ vi.mock("@/server/byok-auth", () => ({
   authenticateByokRequest: vi.fn(),
 }));
 
-vi.mock("@/server/war-room", async () => {
-  const real = await vi.importActual<typeof import("@/server/war-room")>(
-    "@/server/war-room",
+vi.mock("@hivemoot/war-room", async () => {
+  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
+    "@hivemoot/war-room",
   );
   return {
     ...real,
@@ -26,7 +26,7 @@ import {
   listRecentRoomEvents,
   RoomNotFoundError,
   RoomIdFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 import { GET } from "./route";
 
 const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";

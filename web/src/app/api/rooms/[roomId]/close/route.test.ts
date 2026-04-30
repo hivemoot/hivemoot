@@ -9,9 +9,9 @@ vi.mock("@/server/agent-token-v1-auth", () => ({
   authenticateAgentRequestV1: vi.fn(),
 }));
 
-vi.mock("@/server/war-room", async () => {
-  const real = await vi.importActual<typeof import("@/server/war-room")>(
-    "@/server/war-room",
+vi.mock("@hivemoot/war-room", async () => {
+  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
+    "@hivemoot/war-room",
   );
   return {
     ...real,
@@ -30,7 +30,7 @@ import {
   RoomCloseDriftError,
   RoomClaimPayloadCorruptError,
   RoomRunnerFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 import { POST } from "./route";
 
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);
@@ -227,7 +227,7 @@ describe("POST /api/rooms/:roomId/close", () => {
     // Use the typed class — closes the regex-fragility carry-forward.
     // If the storage primitive's message text changes, the route
     // mapping still fires via instanceof.
-    const { RoomDecisionTooLargeError } = await import("@/server/war-room");
+    const { RoomDecisionTooLargeError } = await import("@hivemoot/war-room");
     mockedClose.mockRejectedValue(new RoomDecisionTooLargeError(88000));
     const res = await POST(
       makeRequest({ expectedThroughSequence: 7, decision: VALID_DECISION }),

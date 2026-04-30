@@ -35,7 +35,7 @@ import {
   RoomNotFoundError,
   RoomIdFormatError,
   RoomAlreadyClosedError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 const VALID_REASONS: ReadonlySet<TerminalReason> = new Set<TerminalReason>([
   "expired",

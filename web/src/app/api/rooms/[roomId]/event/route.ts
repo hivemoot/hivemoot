@@ -47,7 +47,7 @@ import {
   RoomEventIdempotencyReplayError,
   RoomEventStatusPreconditionError,
   RoomEventBodyTooLargeError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 // Whitelist for /event — keep narrow per the docstring.
 const ALLOWED_META_EVENT_TYPES: ReadonlySet<RoomEventType> = new Set<RoomEventType>([

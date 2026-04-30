@@ -27,7 +27,7 @@ import {
   RoomSubjectRefError,
   RoomIdFormatError,
   RoomIdTakenError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;

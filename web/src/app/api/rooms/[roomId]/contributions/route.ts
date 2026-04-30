@@ -47,7 +47,7 @@ import {
   RoomRunnerFormatError,
   ContributionValidationError,
   validateRunnerFormat,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 /**
  * Resolve the per-runner agentId for the war-room first-wins gate.

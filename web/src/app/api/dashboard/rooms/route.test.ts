@@ -5,12 +5,12 @@ vi.mock("@/server/byok-auth", () => ({
   authenticateByokRequest: vi.fn(),
 }));
 
-vi.mock("@/server/war-room", () => ({
+vi.mock("@hivemoot/war-room", () => ({
   listRooms: vi.fn(),
 }));
 
 import { authenticateByokRequest } from "@/server/byok-auth";
-import { listRooms } from "@/server/war-room";
+import { listRooms } from "@hivemoot/war-room";
 import { GET } from "./route";
 
 const mockedAuth = vi.mocked(authenticateByokRequest);

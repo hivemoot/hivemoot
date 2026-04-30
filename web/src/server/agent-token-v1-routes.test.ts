@@ -28,7 +28,7 @@ import {
   type AgentTokenSummaryV1,
 } from "./agent-token-v1";
 import { CapabilityValidationError } from "./agent-token-capabilities";
-import { LockTimeoutError } from "./redis-lock";
+import { LockTimeoutError } from "@hivemoot/war-room/redis-lock";
 
 // ---------------------------------------------------------------------------
 // parseExpiresIn

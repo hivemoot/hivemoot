@@ -47,7 +47,7 @@ import {
   listRecentRoomEvents,
   RoomNotFoundError,
   RoomIdFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 500;

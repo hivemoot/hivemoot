@@ -35,7 +35,7 @@ import {
   RoomParticipantNotFoundError,
   RoomParticipantStatePreconditionError,
   RoomRoleFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 interface TimeoutRequestBody {
   subjectRole?: string;

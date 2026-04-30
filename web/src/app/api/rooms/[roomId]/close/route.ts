@@ -45,7 +45,7 @@ import {
   RoomClaimPayloadCorruptError,
   RoomRunnerFormatError,
   RoomDecisionTooLargeError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 interface CloseRequestBody {
   expectedThroughSequence?: number;

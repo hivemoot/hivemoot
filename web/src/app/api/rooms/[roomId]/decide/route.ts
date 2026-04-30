@@ -31,7 +31,7 @@ import {
   RoomTransitionInvalidStatusError,
   RoomClaimPayloadCorruptError,
   RoomRunnerFormatError,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 interface DecideRequestBody {
   queenRunner?: string;

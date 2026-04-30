@@ -30,7 +30,7 @@ import {
   RoomParticipantStatePreconditionError,
   RoomRunnerFormatError,
   validateRunnerFormat,
-} from "@/server/war-room";
+} from "@hivemoot/war-room";
 
 interface WithdrawRequestBody {
   sequenceObservedByClient?: number;

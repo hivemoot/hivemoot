@@ -17,7 +17,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
-import { listRooms } from "@/server/war-room";
+import { listRooms } from "@hivemoot/war-room";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
