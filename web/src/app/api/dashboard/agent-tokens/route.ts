@@ -46,13 +46,45 @@ import {
 } from "@/server/agent-token-v1-routes";
 
 // ---------------------------------------------------------------------------
+// Admin-class deny list
+// ---------------------------------------------------------------------------
+
+/**
+ * Presets disallowed via the dashboard issuance surface. Bypassing
+ * this list would let any fresh dashboard cookie mint long-lived
+ * admin-class bearers — defeating the designed split where:
+ *   - `POST /api/agent-tokens/bootstrap` is the cookie-auth admin
+ *     path, hardcoded to the admin preset with a 24h expiry cap
+ *   - `POST /api/agent-tokens` is the chain-from-existing-admin path
+ *     (admin-bearer auth, no expiry cap, can issue any preset)
+ *
+ * The dashboard wrapper here is intentionally non-admin so it can't
+ * be confused with either of those. Closes #567 builder R1.
+ */
+const ADMIN_CLASS_PRESETS: ReadonlySet<string> = new Set(["admin"]);
+
+/**
+ * Capabilities disallowed in explicit-capabilities issuance via the
+ * dashboard surface. Same rationale as ADMIN_CLASS_PRESETS — minting
+ * `*` (wildcard) or `agent_tokens.manage` from cookie auth with no
+ * expiry cap would bypass the bootstrap/chain split.
+ */
+const ADMIN_CLASS_CAPABILITIES: ReadonlySet<string> = new Set([
+  "*",
+  "agent_tokens.manage",
+]);
+
+// ---------------------------------------------------------------------------
 // GET — list tokens for this installation
 // ---------------------------------------------------------------------------
 
 interface ListResponse {
   tokens: AgentTokenSummaryV1[];
-  /** Available preset names so the UI can render an issuance dropdown
-   * without round-tripping for the catalog. */
+  /** Available NON-ADMIN preset names so the UI can render an issuance
+   * dropdown without round-tripping for the catalog. Admin-class
+   * presets (`admin`) are filtered out — admin issuance must go
+   * through `/api/agent-tokens/bootstrap` (cookie-auth, 24h cap) or
+   * `/api/agent-tokens` (admin-bearer chain). */
   presets: string[];
 }
 
@@ -71,7 +103,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     const body: ListResponse = {
       tokens,
-      presets: Object.keys(PRESETS),
+      presets: Object.keys(PRESETS).filter(
+        (name) => !ADMIN_CLASS_PRESETS.has(name),
+      ),
     };
     return NextResponse.json(body);
   } catch (err) {
@@ -136,9 +170,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Preset wins when both are supplied. The dashboard's primary UX is
   // preset-based (operator picks a role); explicit-capabilities is
   // for power users / admin overrides.
+  //
+  // Admin-class is rejected on BOTH paths (preset name OR explicit
+  // capability strings) — that route belongs to /api/agent-tokens/
+  // bootstrap (cookie auth, 24h cap) or /api/agent-tokens (admin-
+  // bearer chain). Closes #567 builder R1.
   let capabilities: readonly string[];
   let agent_role: string;
   if (typeof body.preset === "string") {
+    if (ADMIN_CLASS_PRESETS.has(body.preset)) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        `Preset '${body.preset}' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
+        400,
+        { field: "preset", value: body.preset },
+      );
+    }
     try {
       capabilities = resolvePreset(body.preset);
       agent_role = body.preset;
@@ -174,6 +221,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
       throw err;
     }
+    // Admin-class capabilities (`*`, `agent_tokens.manage`) blocked
+    // here too — explicit-list path can't sneak past the preset filter.
+    for (const c of body.capabilities) {
+      if (typeof c === "string" && ADMIN_CLASS_CAPABILITIES.has(c)) {
+        return v1Error(
+          AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+          `Capability '${c}' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
+          400,
+          { field: "capabilities", value: c },
+        );
+      }
+    }
     capabilities = body.capabilities as readonly string[];
     // When capabilities are supplied explicitly, default agent_role to
     // the name. Operators can still override via body.agent_role.
@@ -181,7 +240,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   } else {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
-      `Either \`preset\` (one of: ${Object.keys(PRESETS).join(", ")}) or \`capabilities\` (non-empty array) is required.`,
+      `Either \`preset\` (one of: ${Object.keys(PRESETS)
+        .filter((name) => !ADMIN_CLASS_PRESETS.has(name))
+        .join(", ")}) or \`capabilities\` (non-empty array) is required.`,
       400,
     );
   }

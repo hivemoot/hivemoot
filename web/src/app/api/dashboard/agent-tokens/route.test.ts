@@ -122,8 +122,10 @@ describe("GET /api/dashboard/agent-tokens", () => {
     const body = await res.json();
     expect(body.tokens).toHaveLength(1);
     expect(body.tokens[0].name).toBe("queen");
+    // Admin filtered out per #567 builder R1 — see the "preset catalog
+    // filter" describe block below for the explicit regression.
     expect(body.presets).toEqual(
-      expect.arrayContaining(["queen", "worker", "apiarist", "admin"]),
+      expect.arrayContaining(["queen", "worker", "apiarist"]),
     );
   });
 });
@@ -276,6 +278,89 @@ describe("POST /api/dashboard/agent-tokens — issuance success", () => {
     expect(body.message).toMatch(/Store this token securely/);
     expect(body.capabilities).toEqual(
       expect.arrayContaining(["rooms.create", "rooms.read"]),
+    );
+  });
+});
+
+describe("POST /api/dashboard/agent-tokens — admin-class deny list (#567 builder R1)", () => {
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeByokAuthOk());
+    mockedRequireInstallation.mockReturnValue({
+      ok: true,
+      installationId: "12345",
+    } as never);
+  });
+
+  it("preset 'admin' → 400 INVALID_CAPABILITIES (no storage call)", async () => {
+    const res = await POST(
+      makeRequest("POST", { name: "evil-admin", preset: "admin" }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.field).toBe("preset");
+    expect(body.value).toBe("admin");
+    expect(body.message).toMatch(/admin-class/);
+    expect(body.message).toMatch(/bootstrap/); // points to the right path
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("explicit capability '*' (wildcard) → 400 INVALID_CAPABILITIES", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "evil-wildcard",
+        capabilities: ["*"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.field).toBe("capabilities");
+    expect(body.value).toBe("*");
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("explicit capability 'agent_tokens.manage' → 400 INVALID_CAPABILITIES", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "evil-mint",
+        capabilities: ["agent_tokens.manage"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.field).toBe("capabilities");
+    expect(body.value).toBe("agent_tokens.manage");
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("explicit capabilities mixed with admin-class entry → 400 (rejection scans the list)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "evil-mixed",
+        capabilities: ["rooms.read", "agent_tokens.manage", "tasks.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/dashboard/agent-tokens — preset catalog filter", () => {
+  it("excludes 'admin' from the presets list (#567 builder R1)", async () => {
+    mockedAuth.mockResolvedValue(makeByokAuthOk());
+    mockedRequireInstallation.mockReturnValue({
+      ok: true,
+      installationId: "12345",
+    } as never);
+    mockedList.mockResolvedValue([] as never);
+    const res = await GET(makeRequest("GET"));
+    const body = await res.json();
+    expect(body.presets).not.toContain("admin");
+    // Sanity: non-admin presets are still there
+    expect(body.presets).toEqual(
+      expect.arrayContaining(["queen", "worker", "apiarist", "monitoring", "dispatcher"]),
     );
   });
 });
