@@ -18,7 +18,7 @@ import {
   InvalidMintRequestError,
   type MintOptions,
 } from "./github-installation-token";
-import type { GitHubPermissionLevel } from "./agent-token";
+import type { GitHubPermissionLevel } from "./agent-token-v1";
 
 const mockJwt = vi.mocked(generateAppJwt);
 

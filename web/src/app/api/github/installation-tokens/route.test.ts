@@ -73,15 +73,21 @@ function authOk(
     agent_role: "worker",
     capabilities: ["installation_token.mint"],
     envelope: {
-      installationId,
-      name: "test-agent",
-      agent_role: "worker",
-      capabilities: ["installation_token.mint"],
+      // Encryption fields required by AgentTokenEnvelopeV1 type even
+      // though tests don't decrypt — vitest hoisted-mock would also
+      // accept `as never`, but explicit stubs survive strict tsc in CI.
+      ciphertext: "stub-ct",
+      iv: "stub-iv",
+      tag: "stub-tag",
+      keyVersion: "v1",
       tokenHash: "stub",
       fingerprint: "stub0001",
       createdAt: "2026-04-30T00:00:00Z",
       createdBy: "test",
       expiresAt: null,
+      name: "test-agent",
+      agent_role: "worker",
+      capabilities: ["installation_token.mint"],
       ...(policy ? { policy } : {}),
     },
     redis: {} as never,
