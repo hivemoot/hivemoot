@@ -497,6 +497,116 @@ describe("WarRoomStore — error translation (closes #581 guard N1)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Happy-path read/write delegation
+// ---------------------------------------------------------------------------
+//
+// One test per delegating method to confirm:
+//   1. installationId / redis are threaded through to the shared
+//      function (the only state the store carries).
+//   2. The return shape matches what callers (manager-loop.ts,
+//      war-room-routing.ts) expect — pinning the contract so future
+//      shared-library refactors don't drift the wire shape.
+
+describe("WarRoomStore — happy-path delegation", () => {
+  let store: WarRoomStore;
+
+  beforeEach(() => {
+    store = new WarRoomStore({ installationId: "12345", redis: fakeRedis });
+  });
+
+  it("createRoom threads installationId + roomId + subject through to shared.createRoom", async () => {
+    const expectedCore = {
+      manager: "hivemoot-bot",
+      subject_type: "pr_review" as const,
+      subject_ref: "x/y#1",
+      status: "awaiting_rsvp" as const,
+      opened_at: "2026-04-30T00:00:00.000Z",
+    };
+    sharedMocks.createRoom.mockResolvedValueOnce(expectedCore);
+    const result = await store.createRoom({
+      subject: { type: "pr_review", ref: "x/y#1" },
+      roomId: "01234567-89ab-4cde-9012-3456789abcde",
+    });
+    expect(result).toBe(expectedCore);
+    expect(sharedMocks.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: "12345",
+        roomId: "01234567-89ab-4cde-9012-3456789abcde",
+        manager: "hivemoot-bot",
+        subject: { type: "pr_review", ref: "x/y#1" },
+        redis: fakeRedis,
+      }),
+    );
+  });
+
+  it("appendEvent returns {sequence} on success (no replay flag)", async () => {
+    sharedMocks.appendRoomEvent.mockResolvedValueOnce(7);
+    const result = await store.appendEvent({
+      roomId: "r",
+      eventType: "subject_updated",
+      body: { kind: "synchronize" },
+      idempotencyKey: "k1",
+    });
+    expect(result).toEqual({ sequence: 7 });
+    expect(sharedMocks.appendRoomEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: "12345",
+        roomId: "r",
+        idempotencyKey: "k1",
+        event: expect.objectContaining({
+          event_type: "subject_updated",
+          actor_role: "hivemoot-bot",
+        }),
+      }),
+    );
+  });
+
+  it("listRooms threads installationId + limit through", async () => {
+    sharedMocks.listRooms.mockResolvedValueOnce([]);
+    const result = await store.listRooms({ limit: 25 });
+    expect(result).toEqual([]);
+    expect(sharedMocks.listRooms).toHaveBeenCalledWith({
+      installationId: "12345",
+      limit: 25,
+      redis: fakeRedis,
+    });
+  });
+
+  it("listRoomEvents wraps result with roomId for caller convenience", async () => {
+    const events = [{ seq: 1 } as never, { seq: 2 } as never];
+    sharedMocks.listRoomEvents.mockResolvedValueOnce(events);
+    const result = await store.listRoomEvents({ roomId: "r", since: 0, limit: 10 });
+    expect(result).toEqual({ events, roomId: "r" });
+  });
+
+  it("getRoomParticipants wraps result with roomId", async () => {
+    const participants = { worker: { agent_id: "a", role: "worker" } as never };
+    sharedMocks.getRoomParticipants.mockResolvedValueOnce(participants);
+    const result = await store.getRoomParticipants("r");
+    expect(result).toEqual({ participants, roomId: "r" });
+  });
+
+  it("getRoomContributions wraps result with roomId", async () => {
+    const contributions = { worker: { body: {} } };
+    sharedMocks.getRoomContributions.mockResolvedValueOnce(contributions);
+    const result = await store.getRoomContributions("r");
+    expect(result).toEqual({ contributions, roomId: "r" });
+  });
+
+  it("claimSynthesis returns {throughSequence, claimTtlSecs} on success", async () => {
+    sharedMocks.claimSynthesis.mockResolvedValueOnce({
+      throughSequence: 5,
+      claimTtlSecs: 360,
+    });
+    const result = await store.claimSynthesis({
+      roomId: "r",
+      queenRunner: "vercel-queen.42",
+    });
+    expect(result).toEqual({ throughSequence: 5, claimTtlSecs: 360 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // closeRoom two-call sequence
 // ---------------------------------------------------------------------------
 
