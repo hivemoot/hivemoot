@@ -56,7 +56,8 @@ import { logger } from "../lib/logger.js";
 import { runQueenManagerLoop } from "../lib/queen/manager-loop.js";
 import { createSynthesizer } from "../lib/queen/ai-sdk-synthesizer.js";
 import { GitHubDecisionPoster } from "../lib/queen/decision-poster.js";
-import { WarRoomClient } from "../lib/war-room-client.js";
+import { WarRoomStore } from "../lib/war-room-store.js";
+import { getRedisClient } from "../lib/redis.js";
 
 /** Numeric-only check — defense-in-depth even with an authenticated
  * caller. Mirrors the watchdog's INSTALLATION_ID_REGEX. */
@@ -214,15 +215,17 @@ async function runOneTick(installationId: string): Promise<{
     });
     const octokit = await app.getInstallationOctokit(Number(installationId));
 
-    const baseUrl = process.env.HIVEMOOT_API_BASE_URL ?? DEFAULT_BASE_URL;
-    const client = new WarRoomClient({ baseUrl });
+    const store = new WarRoomStore({
+      installationId,
+      redis: getRedisClient(),
+    });
     const synthesizer = await createSynthesizer({
       installationId: Number(installationId),
     });
     const poster = new GitHubDecisionPoster({ octokit });
 
     const result = await runQueenManagerLoop({
-      client,
+      client: store,
       synthesizer,
       decisionPoster: poster,
       runnerId,

@@ -54,9 +54,9 @@ import type {
   RoomCoreResponse,
   RoomListEntry,
   RoomParticipant,
-  WarRoomClient,
+  WarRoomStore,
   WarRoomApiError,
-} from "../war-room-client.js";
+} from "../war-room-store.js";
 import type { DecisionPoster } from "./decision-poster.js";
 import type { Synthesizer } from "./synthesizer.js";
 
@@ -91,7 +91,7 @@ const BENIGN_CONFLICT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 export interface QueenManagerLoopArgs {
-  client: WarRoomClient;
+  client: WarRoomStore;
   synthesizer: Synthesizer;
   /** Optional decision poster (G'.4). When provided, the loop calls
    * `poster.postDecision(...)` after a successful `closeRoom` so the
@@ -268,7 +268,7 @@ export async function runQueenManagerLoop(
  */
 async function processOneRoom(args: {
   room: RoomListEntry;
-  client: WarRoomClient;
+  client: WarRoomStore;
   synthesizer: Synthesizer;
   decisionPoster: DecisionPoster | undefined;
   runnerId: string;

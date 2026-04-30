@@ -23,7 +23,7 @@ import type {
   RoomCoreResponse,
   RoomContribution,
   RoomParticipant,
-} from "../war-room-client.js";
+} from "../war-room-store.js";
 
 /**
  * Everything the synthesizer needs to produce a decision. The

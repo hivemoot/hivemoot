@@ -110,10 +110,13 @@ beforeEach(() => {
   });
   process.env.CRON_SECRET = "test-secret";
   process.env.HIVEMOOT_QUEEN_INSTALLATION_ID = "67890";
-  // WarRoomClient validates this at construction. Tests don't make
-  // real HTTP calls (the manager-loop is mocked), but the
-  // construction path runs.
-  process.env.HIVEMOOT_BOT_AGENT_TOKEN = "test-bearer-token";
+  // WarRoomStore validates these at construction. Tests don't hit
+  // real Redis (the manager-loop is mocked), but `getRedisClient()`
+  // throws if the env vars are missing, so the construction path
+  // needs them set.
+  process.env.HIVEMOOT_REDIS_REST_URL = "https://redis.example/test";
+  process.env.HIVEMOOT_REDIS_REST_TOKEN = "test-redis-token";
+  delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
   delete process.env.HIVEMOOT_QUEEN_RUNNER_ID;
   delete process.env.HIVEMOOT_QUEEN_MAX_ROOMS_PER_TICK;
 });
