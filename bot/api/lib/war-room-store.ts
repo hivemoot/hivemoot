@@ -224,6 +224,13 @@ export interface WarRoomStoreOptions {
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
+/** Numeric, non-zero — defense-in-depth for the constructor. Webhook
+ * payloads can technically arrive without `installation.id`, and a
+ * `0` fallback would reach the storage layer as the literal string
+ * `"0"` which keys real Redis writes under a phantom tenant
+ * namespace shared across installations. Reject at the boundary. */
+const INSTALLATION_ID_REGEX = /^[1-9][0-9]*$/;
+
 /**
  * Per-installation war-room operations backed by direct Redis calls
  * via `@hivemoot/war-room`. Drop-in replacement for `WarRoomClient`
@@ -236,8 +243,18 @@ export class WarRoomStore {
   private readonly log: Pick<Logger, "info" | "warn" | "error">;
 
   constructor(options: WarRoomStoreOptions) {
-    if (!options.installationId) {
-      throw new Error("WarRoomStore requires `installationId`.");
+    // Strict validation closes #581 guard B1: a falsy fallback like
+    // `?? 0` in callers would survive the prior `!options.installationId`
+    // check (`String(0)` is `"0"`, truthy) and write to a phantom
+    // tenant namespace shared across any installation that lacks a
+    // payload installation id. Reject anything that isn't a non-zero
+    // numeric string at the storage boundary so the bug can't
+    // re-emerge silently.
+    if (typeof options.installationId !== "string" || !INSTALLATION_ID_REGEX.test(options.installationId)) {
+      throw new Error(
+        `WarRoomStore requires \`installationId\` to be a non-zero numeric string (got ${JSON.stringify(options.installationId)}). ` +
+          "If the webhook payload didn't include an installation id, skip the war-room call instead of constructing a store.",
+      );
     }
     this.installationId = options.installationId;
     this.redis = options.redis;

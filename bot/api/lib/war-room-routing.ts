@@ -31,6 +31,59 @@ import type { Logger } from "pino";
 import { createHash } from "node:crypto";
 
 /**
+ * Construct a per-installation `WarRoomStore` while preserving the
+ * file-level non-fatal contract. Returns `null` on:
+ *
+ *   - Missing `HIVEMOOT_REDIS_REST_URL` / `_TOKEN` env (deployment
+ *     hasn't enabled war-rooms yet — same posture as the previous
+ *     missing-bearer skip path)
+ *   - Missing / `"0"` / non-numeric `installationId` (webhook payload
+ *     didn't include `installation.id` — drop the call instead of
+ *     writing to a phantom tenant namespace, closes #581 guard B1)
+ *   - Any other thrown construction error (defense-in-depth)
+ *
+ * On failure, logs a structured warning at `log.warn` (always
+ * available — Probot's context.log carries it). Caller branches on
+ * the null return to short-circuit with their own
+ * `{ skipped: "no_config" | "no_installation" | "api_error" }`
+ * variant.
+ *
+ * Closes #581 guard B2: previously, `getRedisClient()` and
+ * `new WarRoomStore` were called OUTSIDE each helper's try block, so
+ * a missing env var would propagate to the webhook handler's outer
+ * catch and re-throw — turning "war-room is off" config into "the
+ * whole bot returns 5xx for every PR/comment webhook."
+ */
+function tryConstructStore(args: {
+  installationId: number | string | undefined | null;
+  log: Pick<Logger, "info" | "warn" | "error">;
+  context: Record<string, unknown>;
+}): WarRoomStore | { skipped: "no_installation" | "no_config" } {
+  const rawId = args.installationId;
+  if (rawId === null || rawId === undefined || rawId === "" || rawId === 0) {
+    args.log.warn(
+      args.context,
+      "[war-room] webhook payload had no installation.id — skipping war-room call (would write to a phantom tenant namespace).",
+    );
+    return { skipped: "no_installation" };
+  }
+  const installationId = String(rawId);
+  try {
+    return new WarRoomStore({
+      installationId,
+      redis: getRedisClient(),
+      log: args.log,
+    });
+  } catch (err) {
+    args.log.warn(
+      { ...args.context, err },
+      "[war-room] WarRoomStore construction failed (likely missing HIVEMOOT_REDIS_REST_URL/TOKEN or invalid installationId) — skipping war-room call.",
+    );
+    return { skipped: "no_config" };
+  }
+}
+
+/**
  * Derive a deterministic UUIDv4-shaped roomId from a PR's identity.
  * Both `pull_request.opened` (E.1) and `pull_request.synchronize`
  * (E.2) call this with the same arguments and get the same roomId
@@ -149,20 +202,19 @@ interface MaybeCreatePrReviewRoomArgs {
    * (`payload.installation.id`). Per-tenant scoping for the
    * direct-Redis path: each call constructs a per-installation
    * store, so cross-tenant data never enters this code path. */
-  installationId: number | string;
+  installationId: number | string | undefined;
   log: Pick<Logger, "info" | "warn" | "error">;
 }
 
 interface MaybeCreatePrReviewRoomResult {
   /** The war-room roomId (newly created OR reused via the
-   * idempotent `subject_already_open` path). `null` only when the
-   * direct-Redis call surfaced a config / non-recoverable error;
-   * the bot doesn't bail on missing-bearer anymore (the multi-tenant
-   * design uses the App identity, not a per-tenant bearer). */
+   * idempotent `subject_already_open` path). `null` when the call
+   * was skipped (missing payload installation, missing Redis env,
+   * config error) or when a recoverable Redis error surfaced. */
   roomId: string | null;
   /** Why the room wasn't created when `roomId === null`. Useful for
-   * test assertions; logged at info. */
-  skipped?: "api_error";
+   * test assertions; logged at info/warn. */
+  skipped?: "no_installation" | "no_config" | "api_error";
 }
 
 /**
@@ -180,12 +232,15 @@ interface MaybeCreatePrReviewRoomResult {
 export async function maybeCreatePrReviewRoom(
   args: MaybeCreatePrReviewRoomArgs,
 ): Promise<MaybeCreatePrReviewRoomResult> {
-  const installationId = String(args.installationId);
-  const store = new WarRoomStore({
-    installationId,
-    redis: getRedisClient(),
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
     log: args.log,
+    context: { owner: args.owner, repo: args.repo, pr: args.prNumber },
   });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { roomId: null, skipped: constructed.skipped };
+  }
+  const store = constructed;
 
   const subject = prSubjectRef({
     owner: args.owner,
@@ -270,7 +325,7 @@ interface MaybeEmitSubjectUpdatedArgs {
   repo: string;
   prNumber: number;
   /** GitHub App installation id (`payload.installation.id`). */
-  installationId: number | string;
+  installationId: number | string | undefined;
   /** What changed — included in the event body for forensic /
    * worker-triage signal. */
   changeKind: "synchronize" | "closed" | "reopened";
@@ -284,7 +339,7 @@ interface MaybeEmitSubjectUpdatedArgs {
 interface MaybeEmitSubjectUpdatedResult {
   /** Sequence the event landed at, OR null when skipped. */
   sequence: number | null;
-  skipped?: "api_error" | "no_room";
+  skipped?: "api_error" | "no_room" | "no_installation" | "no_config";
 }
 
 /**
@@ -312,12 +367,15 @@ interface MaybeEmitSubjectUpdatedResult {
 export async function maybeEmitSubjectUpdated(
   args: MaybeEmitSubjectUpdatedArgs,
 ): Promise<MaybeEmitSubjectUpdatedResult> {
-  const installationId = String(args.installationId);
-  const store = new WarRoomStore({
-    installationId,
-    redis: getRedisClient(),
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
     log: args.log,
+    context: { owner: args.owner, repo: args.repo, pr: args.prNumber },
   });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { sequence: null, skipped: constructed.skipped };
+  }
+  const store = constructed;
 
   const roomId = derivePrRoomId({
     owner: args.owner,
@@ -418,7 +476,7 @@ interface MaybeCreateMentionRoomArgs {
    * `pull_request` on the original webhook payload if they need to. */
   issueOrPrNumber: number;
   /** GitHub App installation id (`payload.installation.id`). */
-  installationId: number | string;
+  installationId: number | string | undefined;
   /** GitHub comment.id of the @hivemoot mention. Folded into the
    * deterministic roomId so each mention gets a fresh room (post-
    * close safety) AND used as the `subject_updated` event's
@@ -446,7 +504,7 @@ interface MaybeCreateMentionRoomResult {
    * when roomId is null. */
   reusedExistingRoom?: boolean;
   /** Why the room wasn't created when `roomId === null`. */
-  skipped?: "api_error";
+  skipped?: "api_error" | "no_installation" | "no_config";
 }
 
 /**
@@ -470,12 +528,20 @@ interface MaybeCreateMentionRoomResult {
 export async function maybeCreateMentionRoom(
   args: MaybeCreateMentionRoomArgs,
 ): Promise<MaybeCreateMentionRoomResult> {
-  const installationId = String(args.installationId);
-  const store = new WarRoomStore({
-    installationId,
-    redis: getRedisClient(),
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
     log: args.log,
+    context: {
+      owner: args.owner,
+      repo: args.repo,
+      issueOrPrNumber: args.issueOrPrNumber,
+      commentAuthor: args.commentAuthor,
+    },
   });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { roomId: null, skipped: constructed.skipped };
+  }
+  const store = constructed;
 
   const subject = {
     type: "mention_response" as const,

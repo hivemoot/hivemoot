@@ -80,6 +80,8 @@ describe("maybeCreatePrReviewRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
       log,
     });
 
@@ -96,6 +98,8 @@ describe("maybeCreatePrReviewRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
     });
     expect(result.roomId).toBe(expectedRoomId);
     expect(createRoom).toHaveBeenCalledWith({
@@ -128,6 +132,8 @@ describe("maybeCreatePrReviewRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
       log,
     });
     expect(result.roomId).toBe(ROOM_ID);
@@ -152,6 +158,8 @@ describe("maybeCreatePrReviewRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
       log,
     });
     expect(result).toEqual({ roomId: null, skipped: "api_error" });
@@ -173,6 +181,8 @@ describe("maybeCreatePrReviewRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
       log,
     });
     expect(result).toEqual({ roomId: null, skipped: "api_error" });
@@ -198,6 +208,8 @@ describe("maybeCreatePrReviewRoom", () => {
         owner: "hivemoot",
         repo: "hivemoot",
         prNumber: 42,
+
+        installationId: 12345,
         log,
       }),
     ).resolves.toEqual({ roomId: null, skipped: "api_error" });
@@ -249,6 +261,8 @@ describe("maybeEmitSubjectUpdated", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
       changeKind: "synchronize",
       headSha: "abc123def",
       log,
@@ -259,6 +273,8 @@ describe("maybeEmitSubjectUpdated", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
     });
     expect(appendEvent).toHaveBeenCalledWith({
       roomId: expectedRoomId,
@@ -279,14 +295,17 @@ describe("maybeEmitSubjectUpdated", () => {
 
     await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "synchronize", headSha: "sha-A", log,
     });
     await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "synchronize", headSha: "sha-A", log,
     });
     await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "synchronize", headSha: "sha-B", log,
     });
 
@@ -308,6 +327,7 @@ describe("maybeEmitSubjectUpdated", () => {
 
     const result = await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "synchronize", log,
     });
     expect(result).toEqual({ sequence: null, skipped: "no_room" });
@@ -331,6 +351,7 @@ describe("maybeEmitSubjectUpdated", () => {
 
     const result = await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "synchronize", log,
     });
     expect(result).toEqual({ sequence: null, skipped: "api_error" });
@@ -348,6 +369,7 @@ describe("maybeEmitSubjectUpdated", () => {
 
     const result = await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
       changeKind: "closed", log,
     });
     expect(result.sequence).toBe(7);
@@ -370,6 +392,7 @@ describe("maybeEmitSubjectUpdated", () => {
     await expect(
       maybeEmitSubjectUpdated({
         owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
         changeKind: "synchronize", log,
       }),
     ).resolves.toEqual({ sequence: null, skipped: "api_error" });
@@ -431,12 +454,16 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     const b = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     expect(a).toBe(b);
@@ -451,12 +478,16 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     const b = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1002,
     });
     expect(a).not.toBe(b);
@@ -467,12 +498,16 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     const b = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 43,
+
+      installationId: 12345,
       commentId: 1001,
     });
     expect(a).not.toBe(b);
@@ -486,11 +521,15 @@ describe("deriveMentionRoomId", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       prNumber: 42,
+
+      installationId: 12345,
     });
     const mentionId = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     expect(prId).not.toBe(mentionId);
@@ -501,6 +540,8 @@ describe("deriveMentionRoomId", () => {
       owner: "x",
       repo: "y",
       issueOrPrNumber: 1,
+
+      installationId: 12345,
       commentId: 99,
     });
     expect(id).toMatch(
@@ -541,6 +582,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -551,6 +594,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     expect(result.roomId).toBe(expectedRoomId);
@@ -579,6 +624,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -611,6 +658,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
     });
     const createRoom = vi.fn().mockRejectedValue(
@@ -624,6 +673,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -650,6 +701,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -670,6 +723,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -686,6 +741,8 @@ describe("maybeCreateMentionRoom", () => {
       owner: "hivemoot",
       repo: "hivemoot",
       issueOrPrNumber: 42,
+
+      installationId: 12345,
       commentId: 1001,
       commentAuthor: "alice",
       log,
@@ -708,6 +765,8 @@ describe("maybeCreateMentionRoom", () => {
         owner: "hivemoot",
         repo: "hivemoot",
         issueOrPrNumber: 42,
+
+        installationId: 12345,
         commentAuthor: "alice",
         log,
       }),

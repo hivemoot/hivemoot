@@ -246,7 +246,7 @@ export function app(probotApp: Probot): void {
       await maybeCreatePrReviewRoom({
         owner,
         repo,
-        installationId: context.payload.installation?.id ?? 0,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         log: context.log,
       });
@@ -357,7 +357,7 @@ export function app(probotApp: Probot): void {
       await maybeEmitSubjectUpdated({
         owner,
         repo,
-        installationId: context.payload.installation?.id ?? 0,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         changeKind: "synchronize",
         headSha: context.payload.pull_request.head?.sha,
@@ -604,7 +604,7 @@ export function app(probotApp: Probot): void {
           await maybeCreateMentionRoom({
             owner,
             repo,
-            installationId: context.payload.installation?.id ?? 0,
+            installationId: context.payload.installation?.id,
             issueOrPrNumber: issue.number,
             commentId: comment.id,
             commentAuthor: comment.user.login,
@@ -708,7 +708,7 @@ export function app(probotApp: Probot): void {
         await maybeEmitSubjectUpdated({
           owner,
           repo,
-          installationId: context.payload.installation?.id ?? 0,
+          installationId: context.payload.installation?.id,
           prNumber: number,
           changeKind: "closed",
           log: context.log,
@@ -762,7 +762,7 @@ export function app(probotApp: Probot): void {
       await maybeEmitSubjectUpdated({
         owner,
         repo,
-        installationId: context.payload.installation?.id ?? 0,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         changeKind: "closed",
         log: context.log,
