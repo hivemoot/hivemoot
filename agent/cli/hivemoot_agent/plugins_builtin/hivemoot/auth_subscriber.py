@@ -51,7 +51,7 @@ Failure modes:
   script enables it as a systemd unit).
 - Apiarist returns ``BACKEND_FORBIDDEN`` (e.g. repo not in token
   policy) → same; fail-closed at startup, operator must fix the
-  policy via the set-agent-policy CLI.
+  policy via the dashboard's Capability Tokens UI.
 - Mint failure in the refresh loop → logged, retried after
   ``refresh_backoff_on_error_secs``. The previous token stays in env
   and may expire → triggers eventually start failing 401 → operator
