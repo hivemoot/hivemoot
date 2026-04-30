@@ -190,9 +190,18 @@ Operational note:
 
 ## 6. Redis Data Layout
 
-Agent token keys:
-- `hive:agent-token:{installationId}` (encrypted envelope)
-- `agent-token-hash:{sha256}` (reverse index)
+Agent token keys (V1 capability system):
+- `hive:v1:agent-token:{installationId}:{name}` — encrypted envelope per
+  named token. Multiple per installation; each has its own
+  `capabilities`, `agent_role`, `policy?`, and optional `expiresAt`.
+- `hive:v1:idx:agent-token:hash:{sha256}` — reverse index from raw
+  bearer hash to `{installationId, name}` for O(1) auth resolution.
+- `hive:v1:idx:agent-token:installation:{installationId}` — sorted set
+  of token names by `createdAt` (used by list endpoints + cap checks).
+- `hive:v1:agent-token:{installationId}:{name}:meta` — hash of
+  `lastUsedAt` / `callCount` (debounced 60s on the auth hot path).
+- `hive:v1:agent-token:{installationId}:audit` / `:auth` — Redis
+  Streams for mutation + auth audit trails.
 
 Agent health keys:
 - `agent-health:latest:{installId}:{agentId}:{repo}`
@@ -214,7 +223,7 @@ Required for all routes:
 - `HIVEMOOT_REDIS_REST_URL`
 - `HIVEMOOT_REDIS_REST_TOKEN`
 
-Required for setup-session-authenticated routes (`GET /api/agent-health`, all `/api/agent-token`):
+Required for setup-session-authenticated routes (`GET /api/agent-health`, dashboard token-issuance routes under `/api/dashboard/agent-tokens/*`, and the V1 `/api/agent-tokens/bootstrap` cookie-auth path):
 - `BYOK_ACTIVE_KEY_VERSION`
 - `BYOK_MASTER_KEYS` (JSON keyring, same format as BYOK contract)
 
