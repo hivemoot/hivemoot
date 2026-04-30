@@ -664,8 +664,36 @@ interface IssuedV1Token {
 
 type CapabilityTokensState =
   | { kind: "loading" }
-  | { kind: "loaded"; tokens: V1TokenSummary[]; presets: string[] }
+  | {
+      kind: "loaded";
+      tokens: V1TokenSummary[];
+      presets: string[];
+      capabilities: string[];
+    }
   | { kind: "error"; message: string };
+
+type IssueMode = "preset" | "custom";
+
+/** Subsystem prefix used to group capability checkboxes. The order
+ * here matches the order capabilities appear in the API response
+ * (subsystem-grouped at the source) so the rendering is stable. */
+const CAPABILITY_GROUP_LABELS: Record<string, string> = {
+  installation_token: "Installation token",
+  agent_health: "Agent health",
+  tasks: "Tasks",
+  rooms: "War rooms",
+};
+
+function capabilityGroupOrder(capabilities: string[]): string[] {
+  // Preserve first-seen order to keep the group order stable across
+  // renders even though presets / KNOWN_CAPABILITIES order can shift.
+  const seen: string[] = [];
+  for (const cap of capabilities) {
+    const prefix = cap.split(".")[0];
+    if (!seen.includes(prefix)) seen.push(prefix);
+  }
+  return seen;
+}
 
 function CapabilityTokensSection({
   sessionExpired,
@@ -676,13 +704,26 @@ function CapabilityTokensSection({
 }) {
   const [state, setState] = useState<CapabilityTokensState>({ kind: "loading" });
   const [issueName, setIssueName] = useState("");
+  const [issueMode, setIssueMode] = useState<IssueMode>("preset");
   const [issuePreset, setIssuePreset] = useState("queen");
+  const [issueCustomCaps, setIssueCustomCaps] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [issuing, setIssuing] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [justIssued, setJustIssued] = useState<IssuedV1Token | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [rotating, setRotating] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
+
+  function toggleCustomCap(cap: string): void {
+    setIssueCustomCaps((prev) => {
+      const next = new Set(prev);
+      if (next.has(cap)) next.delete(cap);
+      else next.add(cap);
+      return next;
+    });
+  }
 
   const fetchList = useCallback(async () => {
     try {
@@ -691,8 +732,14 @@ function CapabilityTokensSection({
         const data = (await res.json()) as {
           tokens: V1TokenSummary[];
           presets: string[];
+          capabilities: string[];
         };
-        setState({ kind: "loaded", tokens: data.tokens, presets: data.presets });
+        setState({
+          kind: "loaded",
+          tokens: data.tokens,
+          presets: data.presets,
+          capabilities: data.capabilities ?? [],
+        });
         return;
       }
       const err = await parseErrorResponse(res);
@@ -717,18 +764,43 @@ function CapabilityTokensSection({
 
   async function handleIssue() {
     if (issuing || issueName.trim().length === 0) return;
+
+    // Body shape depends on the mode the operator is in. The server
+    // accepts either `preset` (well-known role bundle) OR
+    // `capabilities` (explicit list); UI sends whichever the operator
+    // actually configured. In custom mode, reject zero-cap selections
+    // locally so the round-trip surfaces the right error message
+    // (server would also reject with INVALID_CAPABILITIES, but local
+    // surface is faster and clearer).
+    let body: { name: string; preset?: string; capabilities?: string[] };
+    if (issueMode === "preset") {
+      body = { name: issueName.trim(), preset: issuePreset };
+    } else {
+      if (issueCustomCaps.size === 0) {
+        setIssueError(
+          "Custom mode requires at least one capability checked.",
+        );
+        return;
+      }
+      body = {
+        name: issueName.trim(),
+        capabilities: Array.from(issueCustomCaps).sort(),
+      };
+    }
+
     setIssuing(true);
     setIssueError(null);
     try {
       const res = await fetch("/api/dashboard/agent-tokens", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: issueName.trim(), preset: issuePreset }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         const issued = (await res.json()) as IssuedV1Token;
         setJustIssued(issued);
         setIssueName("");
+        setIssueCustomCaps(new Set());
         // Refresh list so the new entry appears.
         await fetchList();
         return;
@@ -932,6 +1004,36 @@ function CapabilityTokensSection({
             <h3 className="mb-3 text-sm font-semibold text-[#fafafa]">
               Issue new token
             </h3>
+
+            {/* Mode toggle */}
+            <div className="mb-3 inline-flex rounded-lg border border-white/[0.06] p-0.5">
+              <button
+                type="button"
+                onClick={() => setIssueMode("preset")}
+                disabled={issuing}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  issueMode === "preset"
+                    ? "bg-honey-500/15 text-honey-500"
+                    : "text-zinc-400 hover:text-zinc-300"
+                }`}
+              >
+                Preset
+              </button>
+              <button
+                type="button"
+                onClick={() => setIssueMode("custom")}
+                disabled={issuing}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  issueMode === "custom"
+                    ? "bg-honey-500/15 text-honey-500"
+                    : "text-zinc-400 hover:text-zinc-300"
+                }`}
+              >
+                Custom
+              </button>
+            </div>
+
+            {/* Name + (preset OR issue button) row */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
               <div className="flex-1">
                 <label
@@ -950,36 +1052,91 @@ function CapabilityTokensSection({
                   disabled={issuing}
                 />
               </div>
-              <div className="sm:w-48">
-                <label
-                  htmlFor="cap-token-preset"
-                  className="mb-1.5 block text-xs text-zinc-500"
-                >
-                  Preset
-                </label>
-                <select
-                  id="cap-token-preset"
-                  value={issuePreset}
-                  onChange={(e) => setIssuePreset(e.target.value)}
-                  disabled={issuing}
-                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] focus:border-honey-500/40 focus:outline-none"
-                >
-                  {state.presets.map((preset) => (
-                    <option key={preset} value={preset}>
-                      {preset}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {issueMode === "preset" && (
+                <div className="sm:w-48">
+                  <label
+                    htmlFor="cap-token-preset"
+                    className="mb-1.5 block text-xs text-zinc-500"
+                  >
+                    Preset
+                  </label>
+                  <select
+                    id="cap-token-preset"
+                    value={issuePreset}
+                    onChange={(e) => setIssuePreset(e.target.value)}
+                    disabled={issuing}
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] focus:border-honey-500/40 focus:outline-none"
+                  >
+                    {state.presets.map((preset) => (
+                      <option key={preset} value={preset}>
+                        {preset}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={handleIssue}
-                disabled={issuing || issueName.trim().length === 0}
+                disabled={
+                  issuing
+                  || issueName.trim().length === 0
+                  || (issueMode === "custom" && issueCustomCaps.size === 0)
+                }
                 className="rounded-lg bg-honey-500 px-5 py-2 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {issuing ? "Issuing…" : "Issue"}
               </button>
             </div>
+
+            {/* Custom-mode capability checkboxes, grouped by subsystem */}
+            {issueMode === "custom" && (
+              <div className="mt-4 rounded-md border border-white/[0.04] bg-white/[0.02] p-3">
+                <div className="mb-2 flex items-center justify-between text-xs text-zinc-500">
+                  <span>
+                    Selected: {issueCustomCaps.size} of {state.capabilities.length}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIssueCustomCaps(new Set())}
+                    disabled={issuing || issueCustomCaps.size === 0}
+                    className="text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {capabilityGroupOrder(state.capabilities).map((prefix) => {
+                  const groupCaps = state.capabilities.filter(
+                    (c) => c.split(".")[0] === prefix,
+                  );
+                  return (
+                    <div key={prefix} className="mb-2 last:mb-0">
+                      <div className="mb-1 text-xs font-semibold text-zinc-400">
+                        {CAPABILITY_GROUP_LABELS[prefix] ?? prefix}
+                      </div>
+                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                        {groupCaps.map((cap) => (
+                          <label
+                            key={cap}
+                            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs text-zinc-300 hover:bg-white/[0.03]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={issueCustomCaps.has(cap)}
+                              onChange={() => toggleCustomCap(cap)}
+                              disabled={issuing}
+                              className="h-3.5 w-3.5 cursor-pointer"
+                            />
+                            <span className="font-mono">{cap}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {issueError && (
               <p className="mt-2 text-xs text-red-400">{issueError}</p>
             )}

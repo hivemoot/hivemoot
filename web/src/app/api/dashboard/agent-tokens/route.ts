@@ -36,6 +36,7 @@ import {
   validateCapabilityString,
   CapabilityValidationError,
   PRESETS,
+  KNOWN_CAPABILITIES,
 } from "@/server/agent-token-capabilities";
 import {
   parseExpiresIn,
@@ -86,6 +87,15 @@ interface ListResponse {
    * through `/api/agent-tokens/bootstrap` (cookie-auth, 24h cap) or
    * `/api/agent-tokens` (admin-bearer chain). */
   presets: string[];
+  /** Capability vocabulary filtered to non-admin entries so the UI
+   * can render a custom-selection mode (checkboxes per capability)
+   * without the operator having to consult the source. The wire
+   * order matches `KNOWN_CAPABILITIES` (subsystem-grouped:
+   * `installation_token` → `agent_health` → `tasks` → `rooms`),
+   * which is also the rendering order the UI uses for grouping
+   * headers. Admin-class capabilities (`agent_tokens.manage`) are
+   * excluded — same rationale as the preset filter. */
+  capabilities: string[];
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -105,6 +115,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       tokens,
       presets: Object.keys(PRESETS).filter(
         (name) => !ADMIN_CLASS_PRESETS.has(name),
+      ),
+      capabilities: KNOWN_CAPABILITIES.filter(
+        (cap) => !ADMIN_CLASS_CAPABILITIES.has(cap),
       ),
     };
     return NextResponse.json(body);
