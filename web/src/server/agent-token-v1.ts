@@ -477,75 +477,13 @@ end
 return {1}
 `;
 
-/**
- * RESOLVE_BEARER_SCRIPT — single-RTT bearer→envelope resolution.
- *
- * Closes builder R3: the design doc's earlier "pipeline both reads"
- * pseudocode was impossible because the envelope key requires
- * `{installationId, name}` from the hash record returned by the
- * FIRST get. The reads are dependent, so a JS-side
- * `redis.pipeline().get().get().all()` can't construct the second
- * key before the pipeline has run.
- *
- * Resolution: do both reads + the bearer-resurrection invariant
- * check (`envelope.tokenHash === presentedHash`) inside a single
- * Lua EVAL. The script:
- *   1. GET the hash index for the presented bearer.
- *   2. If missing → `{-1, "unknown_bearer"}`.
- *   3. cjson.decode the hash record → `{installationId, name}`.
- *   4. Compute the envelope key in Lua + GET it.
- *   5. If missing → `{-2, "envelope_missing"}` (TTL-swept or
- *      revoke race).
- *   6. cjson.decode the envelope + check `envelope.tokenHash ===
- *      ARGV[2]`. If mismatch → `{-3, "stale_bearer"}` (the
- *      same-name-reissue bearer-resurrection scenario the storage
- *      shape is designed to defend against — see the BEARER-
- *      RESURRECTION INVARIANT block at the top of this file).
- *   7. Otherwise return `{1, envelopeJson}`.
- *
- * Middleware (B.1.c) then:
- *   - Checks `envelope.expiresAt` against current time (Lua can't
- *     reliably compare wall-clock time across instances; the +300s
- *     TTL margin guarantees the envelope outlives its expiresAt
- *     by at least 5 min so this check is the user-visible gate).
- *   - Returns the typed auth result with capabilities + agent_role.
- *
- * KEYS: [hashIndexKey]
- * ARGV: [envelopeKeyPrefix, presentedHash]
- *   envelopeKeyPrefix = "hive:v1:agent-token:" — passed as ARGV
- *                       so the prefix lives in TS code (single
- *                       source of truth) rather than the Lua
- *                       string. Lua does
- *                         envelopeKey = prefix + installationId
- *                                      + ":" + name
- *
- * Returns:
- *   {1, envelopeJson, installationId}  success — caller cjson.parses
- *                                       envelope; installationId is
- *                                       surfaced from the hash record
- *                                       so the middleware can construct
- *                                       the meta-key (lastUsedAt write)
- *                                       and return it on the auth
- *                                       result without an extra round-
- *                                       trip. The V1 envelope schema
- *                                       does NOT carry installationId;
- *                                       it lives only in the storage
- *                                       key + the hash record.
- *   {-1, "unknown_bearer"}             hash index miss
- *   {-2, "envelope_missing"}           hash record points at a TTL'd or revoked envelope
- *   {-3, "stale_bearer"}               bearer-resurrection: hash → envelope but envelope.tokenHash differs
- */
-const RESOLVE_BEARER_SCRIPT = `
-local hashRecord = redis.call("get", KEYS[1])
-if not hashRecord then return {-1, "unknown_bearer"} end
-local parsed = cjson.decode(hashRecord)
-local envKey = ARGV[1] .. parsed.installationId .. ":" .. parsed.name
-local envelope = redis.call("get", envKey)
-if not envelope then return {-2, "envelope_missing"} end
-local envParsed = cjson.decode(envelope)
-if envParsed.tokenHash ~= ARGV[2] then return {-3, "stale_bearer"} end
-return {1, envelope, parsed.installationId}
-`;
+// Bearer→envelope resolution lives in `resolveBearerToEnvelope` below
+// as two sequential TS-side `redis.get` calls. An earlier design used a
+// Lua EVAL with `cjson.decode` to atomicize both reads, but Upstash's
+// serverless Redis does not expose `cjson` in its sandboxed Lua, so the
+// script erred at runtime and every authenticated Bearer request 503'd.
+// See the docblock on `resolveBearerToEnvelope` for the full
+// rationale + the +1 RTT trade-off.
 
 /**
  * ROTATE_TOKEN_SCRIPT — atomic bearer swap. Replaces the envelope +
@@ -1322,52 +1260,49 @@ export type ResolveBearerResult =
       code: "unknown_bearer" | "envelope_missing" | "stale_bearer";
     };
 
+/**
+ * Resolves a presented bearer to its envelope + installationId via two
+ * sequential Redis GETs (hash index → envelope). Originally a single
+ * Lua EVAL with `cjson.decode` for atomicity, but Upstash's serverless
+ * Redis sandbox does not expose `cjson` — the script erred at runtime
+ * and every authenticated Bearer request 503'd with
+ * `agent_auth_v1_server_misconfiguration`. Mocked unit tests passed
+ * because the test mock simulated the script in JS and never executed
+ * the Lua. The two-RTT TS form trades ~1 RTT of latency for portability
+ * and correctness; both reads are GETs, so a transient Redis blip on
+ * the second read produces the same `envelope_missing` result the Lua
+ * would have, with no race window worth defending against (the Lua
+ * version was already non-atomic vs concurrent revoke).
+ */
 export async function resolveBearerToEnvelope(args: {
   rawBearer: string;
   redis: Redis;
 }): Promise<ResolveBearerResult> {
   const presentedHash = hashToken(args.rawBearer);
-  const raw = await args.redis.eval(
-    RESOLVE_BEARER_SCRIPT,
-    [hashIndexKey(presentedHash)],
-    [ENVELOPE_PREFIX, presentedHash],
+
+  const hashRecord = await args.redis.get<AgentTokenHashRecordV1>(
+    hashIndexKey(presentedHash),
   );
-  // Custom dispatch: success returns {1, envelopeJson, installationId}
-  // (3 elements) whereas the standard dispatchScriptResult only
-  // surfaces position [1] as `reason`. Inline the parsing.
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error(
-      `RESOLVE_BEARER_SCRIPT returned malformed result: ${JSON.stringify(raw)}`,
-    );
-  }
-  const tag = Number(raw[0]);
-  if (tag === 1) {
-    if (raw.length !== 3) {
-      throw new Error(
-        `RESOLVE_BEARER_SCRIPT success expected 3-element tuple, got ${raw.length}`,
-      );
-    }
-    const envelopeJson = String(raw[1]);
-    const installationId = String(raw[2]);
-    return {
-      ok: true,
-      envelope: JSON.parse(envelopeJson) as AgentTokenEnvelopeV1,
-      installationId,
-    };
-  }
-  const reason = raw.length > 1 ? String(raw[1]) : undefined;
-  if (tag === -1 && reason === "unknown_bearer") {
-    return { ok: false, code: "unknown_bearer" };
-  }
-  if (tag === -2 && reason === "envelope_missing") {
-    return { ok: false, code: "envelope_missing" };
-  }
-  if (tag === -3 && reason === "stale_bearer") {
+  if (!hashRecord) return { ok: false, code: "unknown_bearer" };
+
+  const envelope = await args.redis.get<AgentTokenEnvelopeV1>(
+    envelopeKey(hashRecord.installationId, hashRecord.name),
+  );
+  if (!envelope) return { ok: false, code: "envelope_missing" };
+
+  // Bearer-resurrection guard: rotation issues a new hash record under a
+  // fresh hashIndexKey but the previous bearer's hashIndex is DELed in the
+  // same EVAL — so a presented bearer whose hash maps to an envelope whose
+  // tokenHash differs has been rotated out from under it.
+  if (envelope.tokenHash !== presentedHash) {
     return { ok: false, code: "stale_bearer" };
   }
-  throw new Error(
-    `RESOLVE_BEARER_SCRIPT returned unexpected result: ${JSON.stringify(raw)}`,
-  );
+
+  return {
+    ok: true,
+    envelope,
+    installationId: hashRecord.installationId,
+  };
 }
 
 /** Read a single token summary by name. Throws TokenNotFoundError. */
