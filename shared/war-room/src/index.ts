@@ -3,10 +3,12 @@
 // `./redis-lock` subpath export (see package.json) when they only
 // need the lock primitive.
 //
-// `.js` suffixes are required for consumers that compile with
-// `moduleResolution: "NodeNext"` (e.g. the bot); they're tolerated
-// by `bundler` resolution (e.g. web) so the same form works in
-// both contexts.
+// Extension-less relative imports — both consumers (web's Turbopack
+// + bot's tsc) compile the shared sources via `bundler` module
+// resolution, which finds the `.ts` files without an explicit
+// extension. (NodeNext would reject this; bot's tsconfig was
+// switched off NodeNext for that reason — see the rationale comment
+// in `bot/tsconfig.json`.)
 
-export * from "./war-room.js";
-export * from "./redis-lock.js";
+export * from "./war-room";
+export * from "./redis-lock";
