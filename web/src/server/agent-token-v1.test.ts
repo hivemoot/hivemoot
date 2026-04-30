@@ -137,26 +137,11 @@ function makeMockRedis() {
         return [1];
       }
 
-      // RESOLVE_BEARER_SCRIPT — 1 key, 2 args (R3: + envelopePrefix + presentedHash)
-      if (
-        keys.length === 1 &&
-        argv.length === 2 &&
-        script.includes("unknown_bearer")
-      ) {
-        const [hashIdxK] = keys;
-        const [envelopePrefix, presentedHash] = argv;
-        const hashRecord = store.get(hashIdxK) as
-          | { installationId: string; name: string }
-          | undefined;
-        if (!hashRecord) return [-1, "unknown_bearer"];
-        const envKey = `${envelopePrefix}${hashRecord.installationId}:${hashRecord.name}`;
-        const envelope = store.get(envKey) as
-          | { tokenHash: string }
-          | undefined;
-        if (!envelope) return [-2, "envelope_missing"];
-        if (envelope.tokenHash !== presentedHash) return [-3, "stale_bearer"];
-        return [1, JSON.stringify(envelope), hashRecord.installationId];
-      }
+      // RESOLVE_BEARER_SCRIPT was removed — bearer→envelope resolution
+      // is now two TS-side `redis.get` calls (the Lua version used
+      // cjson.decode which Upstash's sandboxed Lua does not expose).
+      // Tests for `resolveBearerToEnvelope` exercise the live `get` mock
+      // below directly.
 
       // ROTATE_TOKEN_SCRIPT — 4 keys, 5 args (R2: + auditStreamKey + name first + auditEntry)
       if (
@@ -1237,5 +1222,72 @@ describe("ROTATE_TOKEN_SCRIPT — {-1, no_envelope} race path (G7)", () => {
         redis,
       }),
     ).rejects.toThrow(TokenNotFoundError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upstash-Lua compatibility lint
+// ---------------------------------------------------------------------------
+//
+// The mock above simulates each Lua script in JS — it does NOT execute
+// the actual Lua. So a Lua-side bug (e.g. `cjson.decode` not existing
+// in Upstash's sandboxed Lua) sails through unit tests and only
+// surfaces in production. To close that gap, lint the SOURCE FILE for
+// Lua features that don't exist in Upstash's serverless runtime.
+//
+// History: an earlier RESOLVE_BEARER_SCRIPT used `cjson.decode` which
+// caused every `/api/whoami` and Bearer-authenticated request to 503
+// with `agent_auth_v1_server_misconfiguration` in production while
+// every test passed. Resolution moved to two TS-side `redis.get`
+// calls; this test prevents anyone reintroducing the same pattern.
+
+describe("Upstash-Lua compatibility (regression: cjson.decode in production)", () => {
+  const sourcePath = new URL("./agent-token-v1.ts", import.meta.url).pathname;
+  const source = readFileSync(sourcePath, "utf-8");
+
+  // Extract every backtick-template-literal that LOOKS like a Lua
+  // script (contains a Redis call invocation). Comments / docblocks
+  // aren't delimited by backticks so this is safe.
+  const REDIS_INVOCATION_TOKEN = "redis." + "call(";
+  function extractLuaScripts(src: string): string[] {
+    const scripts: string[] = [];
+    const regex = /`([^`]+)`/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(src)) !== null) {
+      const body = match[1];
+      if (body.includes(REDIS_INVOCATION_TOKEN)) scripts.push(body);
+    }
+    return scripts;
+  }
+
+  // Sandbox-incompatible Lua std-libs — Upstash's serverless Redis
+  // strips these from the eval context. Adding any of these to a
+  // script will make `redis["eval"]` throw at runtime even though
+  // mocked unit tests pass.
+  const INCOMPATIBLE_LUA_PATTERNS: { pattern: RegExp; lib: string }[] = [
+    { pattern: /\bcjson\./, lib: "cjson" },
+    { pattern: /\bcmsgpack\./, lib: "cmsgpack" },
+    { pattern: /\bbit\./, lib: "bit" },
+    { pattern: /\bstruct\./, lib: "struct" },
+  ];
+
+  it("source contains at least one Lua script (sanity)", () => {
+    const scripts = extractLuaScripts(source);
+    expect(scripts.length).toBeGreaterThan(0);
+  });
+
+  it("no Lua script uses cjson / cmsgpack / bit / struct (Upstash sandbox missing them)", () => {
+    const scripts = extractLuaScripts(source);
+    const offences: string[] = [];
+    for (const script of scripts) {
+      for (const { pattern, lib } of INCOMPATIBLE_LUA_PATTERNS) {
+        if (pattern.test(script)) {
+          offences.push(
+            `Script using \`${lib}\` (first 80 chars: "${script.trim().slice(0, 80)}…")`,
+          );
+        }
+      }
+    }
+    expect(offences).toEqual([]);
   });
 });
