@@ -714,18 +714,20 @@ set at issue time via the dashboard's Capability Tokens UI or
 be updated post-issue via rotate. The backend enforces `(request
 scope) ⊆ (token policy) ⊆ (installation grant)` on every mint.
 
-**V1.5 ship status** (per §10 row "V1 token-policy enforcement
+**V1.5 + V1.6 ship status** (per §10 row "V1 token-policy enforcement
 (allowed_repos, **shipped**)"):
 
-- `allowed_repos` enforcement is **live** — `request.repo ∈
+- `allowed_repos` enforcement is **live** (V1.5) — `request.repo ∈
   policy.allowed_repos` rejected with `403 policy_violation` when
-  the policy is set; legacy tokens (pre-V1.5, no policy field)
-  defer to the installation grant with a `console.warn`.
-- `allowed_permissions` enforcement is **deferred to V1.6** — V1
-  hard-codes a fixed permission set (`V1_PERMISSIONS` in
-  `web/src/server/github-installation-token.ts`) shared across all
-  callers; per-token permission narrowing is a second layer of
-  defense and hasn't been needed yet.
+  the policy is set; tokens issued without a policy field defer to
+  the installation grant with a `console.warn`.
+- `allowed_permissions` enforcement is **live** (V1.6) — the mint
+  endpoint intersects `request.permissions` with the token's
+  `policy.allowed_permissions` (and with the V1 default set
+  `V1_PERMISSIONS` in `web/src/server/github-installation-token.ts`)
+  before passing to GitHub. Tokens narrow the default but never
+  exceed it. Tokens issued without `allowed_permissions` use
+  `V1_PERMISSIONS` unchanged.
 
 A compromised agent token's blast radius is bounded by its policy
 (when set) or by the installation grant (when policy is absent);
