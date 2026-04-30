@@ -1,0 +1,256 @@
+/**
+ * Dashboard cookie-auth wrappers around the V1 capability-token API.
+ *
+ * Why this exists separately from `/api/agent-tokens` (the admin-V1-bearer
+ * surface): a browser dashboard operator authenticates via the
+ * SETUP_SESSION_COOKIE, not via an Authorization Bearer header. The
+ * existing `/api/agent-tokens` family requires a pre-existing
+ * `agent_tokens.manage` bearer — a chicken-and-egg problem for
+ * cold-start UX. These dashboard endpoints accept cookie auth
+ * (proven installation ownership) and call the same V1 storage
+ * primitives directly, so an operator can issue / list / rotate /
+ * revoke V1 capability tokens entirely from the UI without ever
+ * holding an admin bearer themselves.
+ *
+ * GET  — list tokens for the bearer's installation (metadata only,
+ *        no raw bearers).
+ * POST — issue a new token. Body: { name, preset?, capabilities?,
+ *        expiresIn? }. Either `preset` (well-known role bundle) OR
+ *        `capabilities` (explicit list); preset wins if both supplied.
+ *        Response includes the raw token ONCE — no GET-after-issue.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { authenticateByokRequest } from "@/server/byok-auth";
+import { requireInstallation } from "@/server/require-installation";
+import {
+  issueAgentToken,
+  listAgentTokens,
+  type AgentTokenSummaryV1,
+  type IssuedAgentTokenV1,
+} from "@/server/agent-token-v1";
+import {
+  resolvePreset,
+  validateName,
+  validateAgentRole,
+  validateCapabilityString,
+  CapabilityValidationError,
+  PRESETS,
+} from "@/server/agent-token-capabilities";
+import {
+  parseExpiresIn,
+  mapV1StorageErrorToResponse,
+  readJsonObject,
+  v1Error,
+  AGENT_TOKENS_V1_ERROR,
+} from "@/server/agent-token-v1-routes";
+
+// ---------------------------------------------------------------------------
+// GET — list tokens for this installation
+// ---------------------------------------------------------------------------
+
+interface ListResponse {
+  tokens: AgentTokenSummaryV1[];
+  /** Available preset names so the UI can render an issuance dropdown
+   * without round-tripping for the catalog. */
+  presets: string[];
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const auth = await authenticateByokRequest(request, { requireFresh: false });
+  if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
+  try {
+    const tokens = await listAgentTokens({
+      installationId,
+      redis: auth.redis,
+    });
+    const body: ListResponse = {
+      tokens,
+      presets: Object.keys(PRESETS),
+    };
+    return NextResponse.json(body);
+  } catch (err) {
+    return mapV1StorageErrorToResponse(err, {
+      route: "GET /api/dashboard/agent-tokens",
+      installationId,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST — issue a new token (cookie-auth)
+// ---------------------------------------------------------------------------
+
+interface IssueResponse {
+  /** Raw bearer (`hmt_xxx...`). Shown ONCE — no GET-after-issue. */
+  token: string;
+  name: string;
+  agent_role: string;
+  capabilities: string[];
+  fingerprint: string;
+  expiresAt: string | null;
+  message: string;
+}
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  // Mutating endpoint — `requireFresh: true` mirrors bootstrap and the
+  // legacy /api/agent-token POST so a stale-but-valid session must
+  // re-auth before issuing.
+  const auth = await authenticateByokRequest(request, { requireFresh: true });
+  if (!auth.ok) return auth.response;
+
+  const installationCheck = requireInstallation(auth.session);
+  if (!installationCheck.ok) return installationCheck.response;
+  const installationId = installationCheck.installationId;
+
+  const parsedBody = await readJsonObject(request);
+  if (!parsedBody.ok) return parsedBody.response;
+  const body = parsedBody.body;
+
+  // ----- name (required + format-validated at the boundary) -----
+  if (typeof body.name !== "string") {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_NAME,
+      "name (string) is required.",
+      400,
+    );
+  }
+  try {
+    validateName(body.name);
+  } catch (err) {
+    if (err instanceof CapabilityValidationError) {
+      return v1Error(AGENT_TOKENS_V1_ERROR.INVALID_NAME, err.message, 400, {
+        field: err.field,
+        value: err.value,
+      });
+    }
+    throw err;
+  }
+
+  // ----- capabilities (preset OR explicit list) -----
+  // Preset wins when both are supplied. The dashboard's primary UX is
+  // preset-based (operator picks a role); explicit-capabilities is
+  // for power users / admin overrides.
+  let capabilities: readonly string[];
+  let agent_role: string;
+  if (typeof body.preset === "string") {
+    try {
+      capabilities = resolvePreset(body.preset);
+      agent_role = body.preset;
+    } catch (err) {
+      if (err instanceof CapabilityValidationError) {
+        return v1Error(
+          AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+          err.message,
+          400,
+          { field: err.field, value: err.value },
+        );
+      }
+      throw err;
+    }
+  } else if (Array.isArray(body.capabilities)) {
+    if (body.capabilities.length === 0) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        "capabilities must be a non-empty array (or supply `preset`).",
+        400,
+      );
+    }
+    try {
+      for (const c of body.capabilities) validateCapabilityString(c);
+    } catch (err) {
+      if (err instanceof CapabilityValidationError) {
+        return v1Error(
+          AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+          err.message,
+          400,
+          { field: err.field, value: err.value },
+        );
+      }
+      throw err;
+    }
+    capabilities = body.capabilities as readonly string[];
+    // When capabilities are supplied explicitly, default agent_role to
+    // the name. Operators can still override via body.agent_role.
+    agent_role = typeof body.agent_role === "string" ? body.agent_role : body.name;
+  } else {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+      `Either \`preset\` (one of: ${Object.keys(PRESETS).join(", ")}) or \`capabilities\` (non-empty array) is required.`,
+      400,
+    );
+  }
+
+  try {
+    validateAgentRole(agent_role);
+  } catch (err) {
+    if (err instanceof CapabilityValidationError) {
+      return v1Error(AGENT_TOKENS_V1_ERROR.INVALID_AGENT_ROLE, err.message, 400, {
+        field: err.field,
+        value: err.value,
+      });
+    }
+    throw err;
+  }
+
+  // ----- expiresIn (optional; null = no expiry) -----
+  const expiresParse = parseExpiresIn(body.expiresIn);
+  if (!expiresParse.ok) {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_EXPIRES_IN,
+      expiresParse.message,
+      400,
+    );
+  }
+
+  // ----- issue -----
+  let issued: IssuedAgentTokenV1;
+  try {
+    issued = await issueAgentToken({
+      installationId,
+      name: body.name,
+      agent_role,
+      capabilities,
+      createdBy: auth.session.userLogin,
+      expiresAt: expiresParse.expiresAt,
+      keyring: auth.keyring,
+      keyVersion: auth.activeKeyVersion,
+      redis: auth.redis,
+      auditContext: {
+        // Cookie-auth path — no bearer fingerprint to record, so the
+        // operator slot uses the same `fingerprint: ""`, `name:
+        // "dashboard"` convention as bootstrap. The GitHub login goes
+        // in detailExtras so the forensic stream still attributes the
+        // mutation to a human identity.
+        operator: { fingerprint: "", name: "dashboard" },
+        detailExtras: { issued_by: auth.session.userLogin },
+      },
+    });
+  } catch (err) {
+    return mapV1StorageErrorToResponse(err, {
+      route: "POST /api/dashboard/agent-tokens",
+      installationId,
+      name: body.name,
+    });
+  }
+
+  // Audit row already landed atomically inside issueAgentToken via
+  // auditContext above — no separate auditAppend needed here.
+
+  const response: IssueResponse = {
+    token: issued.token,
+    name: issued.name,
+    agent_role: issued.agent_role,
+    capabilities: [...issued.capabilities],
+    fingerprint: issued.fingerprint,
+    expiresAt: issued.expiresAt,
+    message:
+      "Store this token securely — it will NOT be shown again. Rotate immediately if compromised.",
+  };
+  return NextResponse.json(response);
+}
