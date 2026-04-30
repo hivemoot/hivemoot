@@ -142,15 +142,12 @@ function toApiError(err: unknown): WarRoomApiError | null {
   if (err instanceof RoomEventStatusPreconditionError) {
     return new WarRoomApiError(409, "status_precondition_failed", err.message);
   }
-  if (err instanceof RoomEventIdempotencyReplayError) {
-    // The HTTP route surfaced replays as a 200 with `replay: true` —
-    // direct callers don't need that distinction (the wrapper below
-    // returns `{sequence, replay: true}` directly without throwing),
-    // but if a replay somehow surfaces here we still want a code.
-    return new WarRoomApiError(200, "duplicate_event", err.message, {
-      sequence: err.existingSequence,
-    });
-  }
+  // RoomEventIdempotencyReplayError is intentionally NOT mapped here
+  // — the only call site (`appendEvent`) catches it BEFORE calling
+  // `rethrowAsApi` and converts it to a `{sequence, replay: true}`
+  // success shape that matches the HTTP route's contract. Mapping
+  // it here would create dead code reachable only by a refactor
+  // that bypassed the wrapper.
   if (err instanceof RoomEventBodyTooLargeError) {
     return new WarRoomApiError(413, "event_body_too_large", err.message);
   }

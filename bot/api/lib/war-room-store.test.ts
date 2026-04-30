@@ -604,6 +604,39 @@ describe("WarRoomStore — happy-path delegation", () => {
     });
     expect(result).toEqual({ throughSequence: 5, claimTtlSecs: 360 });
   });
+
+  // Each read-only delegating method has its own catch block that
+  // routes errors through `rethrowAsApi`. The translation-table tests
+  // exercise the catch paths via createRoom/appendRoomEvent/claim/close;
+  // these four tests cover the paths in the read-only delegators
+  // (RoomNotFoundError shape comes back the same way regardless of
+  // which read primitive surfaced it).
+
+  it("listRoomEvents propagates errors through rethrowAsApi", async () => {
+    sharedMocks.listRoomEvents.mockRejectedValueOnce(new Error("redis down"));
+    await expect(store.listRoomEvents({ roomId: "r" })).rejects.toThrow(
+      "redis down",
+    );
+  });
+
+  it("getRoomParticipants propagates errors through rethrowAsApi", async () => {
+    sharedMocks.getRoomParticipants.mockRejectedValueOnce(
+      new Error("redis down"),
+    );
+    await expect(store.getRoomParticipants("r")).rejects.toThrow("redis down");
+  });
+
+  it("getRoomContributions propagates errors through rethrowAsApi", async () => {
+    sharedMocks.getRoomContributions.mockRejectedValueOnce(
+      new Error("redis down"),
+    );
+    await expect(store.getRoomContributions("r")).rejects.toThrow("redis down");
+  });
+
+  it("listRooms propagates errors through rethrowAsApi", async () => {
+    sharedMocks.listRooms.mockRejectedValueOnce(new Error("redis down"));
+    await expect(store.listRooms()).rejects.toThrow("redis down");
+  });
 });
 
 // ---------------------------------------------------------------------------
