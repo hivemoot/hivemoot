@@ -347,21 +347,56 @@ describe("POST /api/dashboard/agent-tokens — admin-class deny list (#567 build
   });
 });
 
-describe("GET /api/dashboard/agent-tokens — preset catalog filter", () => {
-  it("excludes 'admin' from the presets list (#567 builder R1)", async () => {
+describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)", () => {
+  beforeEach(() => {
     mockedAuth.mockResolvedValue(makeByokAuthOk());
     mockedRequireInstallation.mockReturnValue({
       ok: true,
       installationId: "12345",
     } as never);
     mockedList.mockResolvedValue([] as never);
+  });
+
+  it("excludes 'admin' from the presets list (#567 builder R1)", async () => {
     const res = await GET(makeRequest("GET"));
     const body = await res.json();
     expect(body.presets).not.toContain("admin");
-    // Sanity: non-admin presets are still there
     expect(body.presets).toEqual(
       expect.arrayContaining(["queen", "worker", "apiarist", "monitoring", "dispatcher"]),
     );
+  });
+
+  it("returns the capability vocabulary filtered to non-admin entries", async () => {
+    const res = await GET(makeRequest("GET"));
+    const body = await res.json();
+    // Admin-class capabilities are filtered (matches the deny list
+    // applied to the POST issuance path).
+    expect(body.capabilities).not.toContain("agent_tokens.manage");
+    expect(body.capabilities).not.toContain("*");
+    // Sanity: every preset's capabilities ARE in the catalog so the
+    // UI can faithfully render preset → custom transitions.
+    expect(body.capabilities).toEqual(
+      expect.arrayContaining([
+        "installation_token.mint",
+        "agent_health.report",
+        "tasks.claim",
+        "rooms.create",
+        "rooms.read_all",
+        "rooms.force_close",
+      ]),
+    );
+  });
+
+  it("preserves subsystem-grouping order (installation_token → agent_health → tasks → rooms)", async () => {
+    const res = await GET(makeRequest("GET"));
+    const body = await res.json();
+    const caps = body.capabilities as string[];
+    const idxOf = (cap: string) => caps.indexOf(cap);
+    // Each subsystem boundary stays ordered relative to the next so
+    // the UI can group by prefix without re-sorting.
+    expect(idxOf("installation_token.mint")).toBeLessThan(idxOf("agent_health.report"));
+    expect(idxOf("agent_health.read")).toBeLessThan(idxOf("tasks.claim"));
+    expect(idxOf("tasks.cancel")).toBeLessThan(idxOf("rooms.watch"));
   });
 });
 
