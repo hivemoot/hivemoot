@@ -1952,22 +1952,20 @@ on Hive (Phase 0).
    Defer until we have telemetry evidence the gap matters in
    practice.
 8. **Token-policy scoping in agent-token envelope.** **Shipped in V1.5
-   + V1.6**: the V1 capability bearer envelope carries `policy: {
-   allowed_repos: string[], allowed_permissions?: ... }`, the mint
-   endpoint enforces `request.repo ∈ policy.allowed_repos` and
-   `request.permissions ⊆ policy.allowed_permissions` when set.
-   Operators issue and rotate policy-bearing tokens via the dashboard's
-   Capability Tokens UI (`/dashboard/credentials`) or
-   `POST /api/agent-tokens` (admin-bearer chain). Tokens issued without
-   a policy field default to legacy-permissive with an explicit
-   `console.warn` pointing operators at the dashboard remediation.
-   **Updated post-cutover (B.1.e, 2026-04-30):** the legacy singular
-   `agent-token.ts` storage and `set-agent-policy.ts` CLI were
-   deleted; the V1 capability surface is now the only path. **Still
-   deferred:** `allowed_permissions`
-   per-token narrowing (currently V1's hard-coded permission set
-   covers everyone), and a dashboard UI for setting policies (CLI
-   suffices for the drone pilot).
+   + V1.6, cutover-complete in B.1.e (2026-04-30):** the V1 capability
+   bearer envelope carries `policy: { allowed_repos: string[],
+   allowed_permissions?: Record<perm, "read"|"write"|"admin"> }`. The
+   mint endpoint enforces both layers: `request.repo ∈
+   policy.allowed_repos` AND `request.permissions ⊆
+   policy.allowed_permissions` (intersected with the V1 default set
+   `V1_PERMISSIONS`) when set. Operators issue and rotate
+   policy-bearing tokens via the dashboard's Capability Tokens UI
+   (`/dashboard/credentials`) or `POST /api/agent-tokens` (admin-bearer
+   chain). Tokens issued without a policy field default to
+   legacy-permissive with an explicit `console.warn` pointing operators
+   at the dashboard remediation. The legacy singular `agent-token.ts`
+   storage + `set-agent-policy.ts` CLI were deleted in B.1.e; the V1
+   capability surface is now the only path.
 9. **`repository_ids` narrowing + install-repos cache.** §10's "V1
    short-name narrowing gap" row tracks this: we pass repo short names
    to GitHub rather than numeric IDs, so a rename + recreate at the
