@@ -236,13 +236,14 @@ export function app(probotApp: Probot): void {
         });
       }
 
-      // Phase E.1 — war-room routing. Non-fatal: a failure here
-      // never breaks the existing intake / governance flow; the
-      // routing helper logs + returns gracefully on errors. Gated
-      // on `HIVEMOOT_BOT_AGENT_TOKEN` env var so the integration
-      // is opt-in until Phase H fleet migration. Idempotent on
-      // webhook re-delivery (server returns 409 subject_already_open
-      // → routing helper reuses existingRoomId).
+      // War-room routing. Non-fatal: a failure here never breaks
+      // the existing intake / governance flow; the routing helper
+      // logs + returns gracefully on errors. Gated on
+      // `HIVEMOOT_REDIS_REST_URL/TOKEN` env vars (same vars BYOK
+      // already uses) so the integration is opt-in via the Redis
+      // env config. Idempotent on webhook re-delivery (server
+      // returns 409 subject_already_open → routing helper reuses
+      // existingRoomId).
       await maybeCreatePrReviewRoom({
         owner,
         repo,

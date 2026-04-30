@@ -1,17 +1,17 @@
 /**
  * War-room routing helpers — wrap `WarRoomStore` calls with the
- * bot's "auth-gated, idempotency-aware, non-fatal-on-error" policy.
+ * bot's "idempotency-aware, non-fatal-on-error" policy.
  *
- * Design intent (Phase E):
- *   - Construction is LAZY — missing `HIVEMOOT_BOT_AGENT_TOKEN`
- *     env var doesn't crash module load. The bot's existing
- *     governance features keep working without war-room
- *     integration; war-room is opt-in via env config until
- *     Phase H fleet migration.
+ * Design intent:
+ *   - Construction is LAZY — missing `HIVEMOOT_REDIS_REST_URL` /
+ *     `HIVEMOOT_REDIS_REST_TOKEN` env vars don't crash module
+ *     load. The bot's existing governance features keep working
+ *     without war-room integration; war-room is opt-in via the
+ *     Redis env config (which is also used by `byok.ts`).
  *   - Idempotent on webhook re-delivery — a `subject_already_open`
  *     409 is treated as success; the existing room is reused.
  *   - Non-fatal on error — war-room failures are logged but never
- *     thrown, so a 500 from the API can't break the PR's existing
+ *     thrown, so a Redis outage can't break the PR's existing
  *     intake / governance flow.
  *
  * **Recovery story (closes #526 guard N1):** because the routing

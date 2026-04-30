@@ -37,7 +37,6 @@ const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";
 
 describe("maybeCreatePrReviewRoom", () => {
   beforeEach(() => {
-    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
     log.info.mockReset();
     log.warn.mockReset();
     log.error.mockReset();
@@ -52,7 +51,6 @@ describe("maybeCreatePrReviewRoom", () => {
   // skip path was deleted with the behavior it covered.
 
   it("happy path: 201 — bot mints roomId + threads it through (closes #526 B1)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     // CRITICAL: server's POST /api/rooms 201 response serializes
     // RoomCore (NOT RoomCoreWithId), so the body has NO roomId
     // field. The bot mints the roomId and passes it as args.roomId;
@@ -113,7 +111,6 @@ describe("maybeCreatePrReviewRoom", () => {
   });
 
   it("subject_already_open 409 → reuses existingRoomId (idempotent on webhook re-delivery)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const createRoom = vi.fn(async () => {
       throw new WarRoomApiError(
         409,
@@ -144,7 +141,6 @@ describe("maybeCreatePrReviewRoom", () => {
   });
 
   it("4xx (validation error) → returns skipped:'api_error', logs error", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const createRoom = vi.fn(async () => {
       throw new WarRoomApiError(400, "invalid_subject", "bad", {});
     });
@@ -167,7 +163,6 @@ describe("maybeCreatePrReviewRoom", () => {
   });
 
   it("network/5xx error → returns skipped:'api_error', logs warn (transient)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const createRoom = vi.fn(async () => {
       throw new Error("ECONNREFUSED");
     });
@@ -193,7 +188,6 @@ describe("maybeCreatePrReviewRoom", () => {
   });
 
   it("never throws — webhook handler relies on this for non-fatal contract", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const createRoom = vi.fn(async () => {
       throw new TypeError("totally unexpected");
     });
@@ -241,7 +235,6 @@ describe("derivePrRoomId (E.2 deterministic helper)", () => {
 
 describe("maybeEmitSubjectUpdated", () => {
   beforeEach(() => {
-    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
     log.info.mockReset();
     log.warn.mockReset();
     log.error.mockReset();
@@ -249,7 +242,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("happy path: sends subject_updated with deterministic roomId + idempotencyKey", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => ({ sequence: 5, replay: false }));
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
@@ -285,7 +277,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("idempotency key derives from headSha — same sha twice = same key (re-delivery dedupe)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => ({ sequence: 5 }));
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
@@ -315,7 +306,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("room_not_found 404 → returns skipped:'no_room' (PR opened pre-war-room)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => {
       throw new WarRoomApiError(404, "room_not_found", "missing", {});
     });
@@ -334,7 +324,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("status_precondition_failed (queen claimed) → skipped:'api_error', logged warn", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => {
       throw new WarRoomApiError(
         409,
@@ -359,7 +348,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("changeKind 'closed' (no headSha) is supported", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => ({ sequence: 7 }));
     mockedClientCtor.mockImplementation(
       function (this: { appendEvent: typeof appendEvent }) {
@@ -379,7 +367,6 @@ describe("maybeEmitSubjectUpdated", () => {
   });
 
   it("never throws — webhook handler relies on this for non-fatal contract", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "hmt_x";
     const appendEvent = vi.fn(async () => {
       throw new TypeError("totally unexpected");
     });
@@ -552,7 +539,6 @@ describe("deriveMentionRoomId", () => {
 
 describe("maybeCreateMentionRoom", () => {
   beforeEach(() => {
-    delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
     log.info.mockReset();
     log.warn.mockReset();
     log.error.mockReset();
@@ -575,7 +561,6 @@ describe("maybeCreateMentionRoom", () => {
   }
 
   it("happy path — calls createRoom with mention_response subject + comment-stable roomId", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockResolvedValue({});
     setupCreateRoomMock(createRoom);
     const result = await maybeCreateMentionRoom({
@@ -612,7 +597,6 @@ describe("maybeCreateMentionRoom", () => {
     // existing room so workers re-engage (per /watching contract,
     // a new sequence past withdrew_at_sequence makes withdrawn
     // workers re-eligible).
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
       new WarRoomApiError(409, "subject_already_open", "open", {
         existingRoomId: ROOM_ID,
@@ -653,7 +637,6 @@ describe("maybeCreateMentionRoom", () => {
     // because OUR previous delivery created the room. Without this
     // guard, the redelivery would emit a spurious subject_updated
     // and re-dispatch workers for a non-event.
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const ourDerivedRoomId = deriveMentionRoomId({
       owner: "hivemoot",
       repo: "hivemoot",
@@ -687,7 +670,6 @@ describe("maybeCreateMentionRoom", () => {
   });
 
   it("subject_already_open 409 → subject_updated emit fails → returns existing roomId with api_error (no throw)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
       new WarRoomApiError(409, "subject_already_open", "open", {
         existingRoomId: ROOM_ID,
@@ -714,7 +696,6 @@ describe("maybeCreateMentionRoom", () => {
   });
 
   it("non-409 4xx → logs error + returns api_error", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
       new WarRoomApiError(403, "forbidden", "missing rooms.create", {}),
     );
@@ -734,7 +715,6 @@ describe("maybeCreateMentionRoom", () => {
   });
 
   it("transient 5xx / network error → logs warn + returns api_error (no throw)", async () => {
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     setupCreateRoomMock(createRoom);
     const result = await maybeCreateMentionRoom({
@@ -755,7 +735,6 @@ describe("maybeCreateMentionRoom", () => {
     // Webhook handler relies on this: a war-room failure must NOT
     // bubble out and disrupt the existing intake / governance flow.
     // Mirror maybeCreatePrReviewRoom's existing contract test.
-    process.env.HIVEMOOT_BOT_AGENT_TOKEN = "tk";
     const createRoom = vi.fn().mockRejectedValue(
       new Error("totally unexpected"),
     );
