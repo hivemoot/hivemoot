@@ -3,10 +3,16 @@ name: Web
 on:
   push:
     branches: [main]
-    paths: [web/**]
+    paths:
+      - 'web/**'
+      - 'shared/war-room/**'
+      - '.github/workflows/web.yml'
   pull_request:
     branches: [main]
-    paths: [web/**]
+    paths:
+      - 'web/**'
+      - 'shared/war-room/**'
+      - '.github/workflows/web.yml'
   workflow_dispatch:
 
 jobs:

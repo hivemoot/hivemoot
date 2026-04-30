@@ -15,8 +15,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
-      // Match the tsconfig.json `paths` entries so vitest resolves the
-      // shared package the same way tsc does. Order matters: the
+      // Mirror the package name + subpath so vitest's resolver matches
+      // tsc's symlink-based resolution (tsc reaches the shared sources
+      // through the npm `file:` symlink + `preserveSymlinks: true`,
+      // not through a tsconfig `paths` entry). vitest's resolver
+      // doesn't follow the symlink the same way, so explicit aliases
+      // here keep the two toolchains in sync. Order matters: the
       // `/redis-lock` subpath alias must come BEFORE the bare package
       // alias or `path.startsWith` matching will route subpath requests
       // through the index re-export.
