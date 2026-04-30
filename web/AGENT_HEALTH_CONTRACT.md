@@ -3,11 +3,16 @@
 This document defines the current production contract for agent health ingestion and dashboard retrieval in `web`.
 
 Scope:
-- API surface (`/api/agent-health`, `/api/agent-token`)
-- Authentication and trust boundaries
+- API surface (`/api/agent-health` — agents ingest reports here)
+- Authentication via V1 capability bearers (`agent_health.report` capability)
 - Payload validation and response semantics
 - Redis storage layout, TTL, retention, and status derivation
 - Operational requirements and acceptance coverage
+
+Token lifecycle (issue / list / rotate / revoke) is documented in the
+V1 capability token system (`/api/agent-tokens` family + dashboard's
+Capability Tokens UI). The legacy singular `/api/agent-token` was
+deleted in favor of that system.
 
 This is the canonical contract for the shipped implementation and supersedes the early GitHub-user-token design discussed in issue #169.
 
@@ -15,15 +20,20 @@ This is the canonical contract for the shipped implementation and supersedes the
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/agent-health` | `Authorization: Bearer <agent-token>` | Ingest one agent run report |
+| `POST /api/agent-health` | `Authorization: Bearer <V1-capability-bearer>` requiring `agent_health.report` | Ingest one agent run report |
 | `GET /api/agent-health` | Setup session cookie | Read dashboard overview or run history |
-| `POST /api/agent-token` | Setup session cookie | Generate or rotate an installation agent token |
-| `GET /api/agent-token` | Setup session cookie | Retrieve current plaintext token and metadata |
-| `DELETE /api/agent-token` | Setup session cookie | Revoke current token |
+
+Token lifecycle is in the V1 capability surface — see `/api/agent-tokens`,
+`/api/agent-tokens/bootstrap`, and the dashboard's "Capability Tokens"
+section under Credentials. Issue tokens with the `worker` preset (which
+includes `agent_health.report`) for hive agents that POST health reports.
 
 Auth split is intentional:
-- Machine writes (`POST /api/agent-health`) use installation-scoped agent tokens.
-- Human/admin reads and token lifecycle operations use setup-session auth.
+- Machine writes (`POST /api/agent-health`) use V1 capability bearers
+  with `agent_health.report` capability — issued per-installation,
+  Redis-stored, BYOK-encrypted.
+- Human/admin reads and token lifecycle operations use setup-session
+  cookie auth on the dashboard.
 
 ## 2. POST /api/agent-health Contract
 
@@ -150,31 +160,48 @@ Read behavior:
 
 ## 5. Agent Token Contract
 
-Token format and storage:
-- Raw token is 64-char hex (32 random bytes).
-- Exactly one active token per installation.
-- On rotate, old token is revoked atomically.
-- New tokens may be generated with `POST /api/agent-token` body `{ "expiresIn": "90d" }`.
-  Supported units are `m`, `h`, and `d`, capped at 365 days. Omitted or `null` keeps
-  the existing no-expiry behavior for backward compatibility.
+Token format and storage (V1 capability system):
+- Raw bearer is `hmt_` + opaque random hex.
+- Multiple named tokens per installation (each with its own capability set + policy).
+- On rotate, old bearer is invalidated and new bearer issued atomically.
+- New tokens may be generated via `POST /api/agent-tokens` (admin-bearer
+  auth) or `POST /api/dashboard/agent-tokens` (cookie auth) with body
+  `{ "name": "<name>", "preset": "worker" | "queen" | "monitoring" | ...,
+  "expiresIn": "90d" }`. Supported units are `m`, `h`, and `d`, capped at
+  365 days. Omitted or `null` = no expiry.
 
 Security model:
-- Raw token is encrypted with BYOK keyring and stored at `hive:agent-token:{installationId}`.
-- The encrypted envelope stores `expiresAt: string | null`.
-- A SHA-256 hash reverse index is stored at `agent-token-hash:{hash}` ->
-  `{ installationId, expiresAt }`.
-- `POST /api/agent-health` resolves installation by hash lookup (O(1)); no GitHub `/user` call on write path.
-- Expired tokens are rejected during hash-index resolution. Legacy records without
-  `expiresAt` remain valid until manually rotated or revoked.
+- Raw bearer is encrypted with BYOK keyring and stored at
+  `hive:v1:agent-token:{installationId}:{name}` (one envelope per named
+  token per installation).
+- Envelope carries `expiresAt: string | null`, `capabilities: string[]`,
+  `agent_role: string`, optional `policy?: AgentTokenPolicy`.
+- A SHA-256 hash reverse index at `hive:v1:idx:agent-token:hash:{hash}` →
+  `{ installationId, name }` enables O(1) bearer → identity lookup.
+- `POST /api/agent-health` resolves bearer + checks `agent_health.report`
+  capability via `authenticateAgentRequestV1`; no GitHub `/user` call on
+  write path.
+- Expired bearers are rejected at envelope-resolution time.
 
 Operational note:
-- `GET /api/agent-token` intentionally returns plaintext token for admin recovery/copy flows. Treat this route as sensitive and setup-session protected.
+- The dashboard's Capability Tokens UI shows one-time-display dialogs
+  for new bearers and the rotate flow. Existing bearers are NOT
+  retrievable post-issue — operators rotate to recover, never read.
 
 ## 6. Redis Data Layout
 
-Agent token keys:
-- `hive:agent-token:{installationId}` (encrypted envelope)
-- `agent-token-hash:{sha256}` (reverse index)
+Agent token keys (V1 capability system):
+- `hive:v1:agent-token:{installationId}:{name}` — encrypted envelope per
+  named token. Multiple per installation; each has its own
+  `capabilities`, `agent_role`, `policy?`, and optional `expiresAt`.
+- `hive:v1:idx:agent-token:hash:{sha256}` — reverse index from raw
+  bearer hash to `{installationId, name}` for O(1) auth resolution.
+- `hive:v1:idx:agent-token:installation:{installationId}` — sorted set
+  of token names by `createdAt` (used by list endpoints + cap checks).
+- `hive:v1:agent-token:{installationId}:{name}:meta` — hash of
+  `lastUsedAt` / `callCount` (debounced 60s on the auth hot path).
+- `hive:v1:agent-token:{installationId}:audit` / `:auth` — Redis
+  Streams for mutation + auth audit trails.
 
 Agent health keys:
 - `agent-health:latest:{installId}:{agentId}:{repo}`
@@ -196,7 +223,7 @@ Required for all routes:
 - `HIVEMOOT_REDIS_REST_URL`
 - `HIVEMOOT_REDIS_REST_TOKEN`
 
-Required for setup-session-authenticated routes (`GET /api/agent-health`, all `/api/agent-token`):
+Required for setup-session-authenticated routes (`GET /api/agent-health`, dashboard token-issuance routes under `/api/dashboard/agent-tokens/*`, and the V1 `/api/agent-tokens/bootstrap` cookie-auth path):
 - `BYOK_ACTIVE_KEY_VERSION`
 - `BYOK_MASTER_KEYS` (JSON keyring, same format as BYOK contract)
 
@@ -227,10 +254,12 @@ Error responses use the `agent_health_*` namespace:
 
 Primary coverage:
 - `web/src/app/api/agent-health/route.test.ts`
-- `web/src/app/api/agent-token/route.test.ts`
-- `web/src/server/agent-health-auth.test.ts`
+- `web/src/app/api/dashboard/agent-tokens/route.test.ts`
+- `web/src/app/api/dashboard/agent-tokens/[name]/route.test.ts`
+- `web/src/app/api/dashboard/agent-tokens/[name]/rotate/route.test.ts`
 - `web/src/server/agent-health-store.test.ts`
-- `web/src/server/agent-token.test.ts`
+- `web/src/server/agent-token-v1.test.ts`
+- `web/src/server/agent-token-v1-auth.test.ts`
 
 Related BYOK/session coverage:
 - `web/src/server/byok-auth.test.ts`

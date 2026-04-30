@@ -16,25 +16,12 @@ interface ByokStatus {
   updatedAt: string;
 }
 
-interface AgentTokenInfo {
-  token: string;
-  fingerprint: string;
-  createdAt: string;
-  createdBy: string;
-}
-
 type ByokState =
   | { kind: "loading" }
   | { kind: "not_configured" }
   | { kind: "configured"; data: ByokStatus }
   | { kind: "revoked"; data: ByokStatus }
   | { kind: "editing"; data: ByokStatus | null }
-  | { kind: "error"; message: string };
-
-type AgentTokenState =
-  | { kind: "loading" }
-  | { kind: "not_configured" }
-  | { kind: "configured"; data: AgentTokenInfo }
   | { kind: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -167,14 +154,8 @@ function TokenIcon({ className }: { className?: string }) {
   );
 }
 
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className ?? "h-4 w-4"} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="5" y="5" width="8" height="8" rx="1" />
-      <path d="M3 11V3a1 1 0 0 1 1-1h8" />
-    </svg>
-  );
-}
+// CopyIcon removed — was only used by the legacy AgentTokenSection. The
+// new CapabilityTokensSection uses text labels on copy buttons instead.
 
 // ---------------------------------------------------------------------------
 // Session expired banner
@@ -656,297 +637,6 @@ function LlmCredentialsSection({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Agent Token Section
-// ---------------------------------------------------------------------------
-
-function AgentTokenSection({
-  sessionExpired,
-  onSessionExpired,
-}: {
-  sessionExpired: boolean;
-  onSessionExpired: () => void;
-}) {
-  const [state, setState] = useState<AgentTokenState>({ kind: "loading" });
-  const [showToken, setShowToken] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [revoking, setRevoking] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
-  // Tracks whether the current token was just generated (raw token available
-  // from the POST response). Existing tokens fetched via GET are also decrypted
-  // and returned, but distinguishing "fresh" helps guide the user to copy it.
-  const [justGenerated, setJustGenerated] = useState(false);
-
-  const fetchToken = useCallback(async () => {
-    try {
-      const res = await fetch("/api/agent-token");
-
-      if (res.ok) {
-        const data = (await res.json()) as AgentTokenInfo;
-        setState({ kind: "configured", data });
-        return;
-      }
-
-      const err = await parseErrorResponse(res);
-      const errCode = err.code as string | undefined;
-      const errMessage = err.message as string | undefined;
-
-      if (isSessionError(res.status, errCode)) {
-        onSessionExpired();
-        setState({ kind: "error", message: "Session expired" });
-        return;
-      }
-
-      if (res.status === 404) {
-        setState({ kind: "not_configured" });
-        return;
-      }
-
-      setState({ kind: "error", message: errMessage ?? "Failed to load agent token status." });
-    } catch {
-      setState({ kind: "error", message: "Network error — could not reach server." });
-    }
-  }, [onSessionExpired]);
-
-  useEffect(() => {
-    fetchToken();
-  }, [fetchToken]);
-
-  async function handleGenerate() {
-    if (generating) return;
-    setGenerating(true);
-    setJustGenerated(false);
-    try {
-      const res = await fetch("/api/agent-token", { method: "POST" });
-      if (res.ok) {
-        const data = (await res.json()) as { token: string; fingerprint: string; message: string };
-        setState({
-          kind: "configured",
-          data: {
-            token: data.token,
-            fingerprint: data.fingerprint,
-            createdAt: new Date().toISOString(),
-            createdBy: "you",
-          },
-        });
-        setJustGenerated(true);
-        setShowToken(true);
-        return;
-      }
-      const err = await parseErrorResponse(res);
-      if (isSessionError(res.status, err.code as string | undefined)) {
-        onSessionExpired();
-        return;
-      }
-      setState({ kind: "error", message: String(err.message ?? "Failed to generate token.") });
-    } catch {
-      setState({ kind: "error", message: "Network error — could not reach server." });
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function handleRevoke() {
-    if (revoking) return;
-    setRevoking(true);
-    try {
-      const res = await fetch("/api/agent-token", { method: "DELETE" });
-      if (res.ok) {
-        setState({ kind: "not_configured" });
-        setJustGenerated(false);
-        setShowToken(false);
-        return;
-      }
-      const err = await parseErrorResponse(res);
-      if (isSessionError(res.status, err.code as string | undefined)) {
-        onSessionExpired();
-        return;
-      }
-      setState({ kind: "error", message: String(err.message ?? "Failed to revoke token.") });
-    } catch {
-      setState({ kind: "error", message: "Network error — could not reach server." });
-    } finally {
-      setRevoking(false);
-    }
-  }
-
-  function handleCopy(token: string) {
-    setCopyFailed(false);
-    if (!navigator.clipboard?.writeText) {
-      setCopyFailed(true);
-      return;
-    }
-    navigator.clipboard.writeText(token).then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      },
-      () => {
-        setCopyFailed(true);
-      },
-    );
-  }
-
-  if (sessionExpired) {
-    return null;
-  }
-
-  return (
-    <section className="rounded-xl border border-white/[0.06] bg-[#141414] p-6 sm:p-8">
-      <div className="mb-6 flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-honey-500/10">
-          <TokenIcon className="h-5 w-5 text-honey-500" />
-        </div>
-        <div>
-          <h2 className="text-lg font-semibold text-[#fafafa]">Agent Token</h2>
-          <p className="mt-0.5 text-sm text-zinc-400">
-            Bearer token used by agents to authenticate health reports.
-          </p>
-        </div>
-      </div>
-
-      {state.kind === "loading" && (
-        <div className="flex items-center gap-3 text-sm text-zinc-500">
-          <SpinnerIcon />
-          Loading token status…
-        </div>
-      )}
-
-      {state.kind === "error" && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
-          <XCircleIcon className="h-4 w-4 shrink-0 text-red-400" />
-          <p className="text-sm text-red-400">{state.message}</p>
-        </div>
-      )}
-
-      {state.kind === "configured" && (
-        <>
-          <div className="mb-4 flex items-center gap-2">
-            <CheckCircleIcon className="h-4 w-4 text-green-400" />
-            <span className="text-sm font-medium text-green-400">Active</span>
-          </div>
-
-          {justGenerated && (
-            <div className="mb-4 rounded-lg border border-green-500/20 bg-green-500/5 px-4 py-3">
-              <p className="text-sm text-green-400">
-                Token generated. Copy it now — you can always retrieve it later from this page.
-              </p>
-            </div>
-          )}
-
-          {/* Token display */}
-          <div className="mb-4">
-            <label className="mb-2 block text-sm text-zinc-400">Token</label>
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <input
-                  type={showToken ? "text" : "password"}
-                  readOnly
-                  value={state.data.token}
-                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 pr-10 font-mono text-sm text-[#fafafa] transition-colors focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors hover:text-zinc-300"
-                  aria-label={showToken ? "Hide token" : "Show token"}
-                >
-                  {showToken ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleCopy(state.data.token)}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] text-zinc-400 transition-colors hover:border-white/10 hover:text-zinc-300"
-                aria-label="Copy token"
-              >
-                {copied ? (
-                  <CheckCircleIcon className="h-4 w-4 text-green-400" />
-                ) : (
-                  <CopyIcon />
-                )}
-              </button>
-            </div>
-            {copyFailed && (
-              <p className="mt-1.5 text-xs text-red-400">
-                Could not copy to clipboard. Please select the token manually and copy it.
-              </p>
-            )}
-          </div>
-
-          <dl className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Fingerprint</dt>
-              <dd className="font-mono text-zinc-300">····{state.data.fingerprint}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Created</dt>
-              <dd className="text-zinc-300">{formatDate(state.data.createdAt)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-zinc-500">Created by</dt>
-              <dd className="text-zinc-300">{state.data.createdBy}</dd>
-            </div>
-          </dl>
-
-          <div className="mt-6 flex gap-3">
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={generating}
-              className="flex-1 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {generating ? (
-                <span className="flex items-center justify-center gap-2">
-                  <SpinnerIcon />
-                  Rotating…
-                </span>
-              ) : (
-                "Rotate token"
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={handleRevoke}
-              disabled={revoking}
-              className="rounded-lg border border-red-500/20 px-5 py-2.5 text-sm text-red-400 transition-colors hover:border-red-500/40 hover:bg-red-500/5 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {revoking ? "Revoking…" : "Revoke"}
-            </button>
-          </div>
-        </>
-      )}
-
-      {state.kind === "not_configured" && (
-        <>
-          <div className="mb-4 flex items-center gap-2">
-            <XCircleIcon className="h-4 w-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-500">Not configured</span>
-          </div>
-          <p className="mb-6 text-sm text-zinc-400">
-            Generate a bearer token so your agents can authenticate when sending health reports.
-          </p>
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={generating}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-honey-500 px-5 py-2.5 text-sm font-semibold text-[#0a0a0a] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {generating ? (
-              <>
-                <SpinnerIcon />
-                Generating…
-              </>
-            ) : (
-              "Generate token"
-            )}
-          </button>
-        </>
-      )}
-    </section>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Capability Tokens Section (V1 capability bearers — `/api/dashboard/agent-tokens`)
@@ -1370,10 +1060,6 @@ export default function CredentialsPanel() {
         onSessionExpired={() => setSessionExpired(true)}
       />
       <CapabilityTokensSection
-        sessionExpired={sessionExpired}
-        onSessionExpired={() => setSessionExpired(true)}
-      />
-      <AgentTokenSection
         sessionExpired={sessionExpired}
         onSessionExpired={() => setSessionExpired(true)}
       />

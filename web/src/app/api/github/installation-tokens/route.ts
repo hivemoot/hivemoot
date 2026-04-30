@@ -12,7 +12,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAgentRequest } from "@/server/agent-health-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { validateEnv } from "@/server/env";
 import {
   mintInstallationToken,
@@ -73,7 +73,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // shape we pass through unchanged for consistency. Auth runs BEFORE
   // any body inspection so an unauthenticated caller learns nothing
   // about the body-validation contract.
-  const auth = await authenticateAgentRequest(request);
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "installation_token.mint",
+  });
   if (!auth.ok) {
     return auth.response;
   }
@@ -140,27 +142,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // GitHub (mint endpoint will return 403 if the policy somehow grants
   // more than the installation does — defense in depth, not expected
   // in practice if policies are set sensibly).
-  if (auth.policy === undefined) {
+  if (auth.envelope.policy === undefined) {
     console.warn("[installation-tokens] legacy-permissive token used (no policy)", {
       installationId: auth.installationId,
       repo,
       agentId,
       remediation:
-        "set a per-token policy via setAgentTokenPolicy to enforce request ⊆ policy ⊆ installation grant",
+        "set a per-token policy via the dashboard's Capability Tokens UI (or POST /api/agent-tokens with admin bearer + policy field) to enforce request ⊆ policy ⊆ installation grant",
     });
-  } else if (!auth.policy.allowed_repos.includes(repo)) {
+  } else if (!auth.envelope.policy.allowed_repos.includes(repo)) {
     console.warn("[installation-tokens] policy violation: repo not in allowed_repos", {
       installationId: auth.installationId,
       repo,
       agentId,
-      allowedReposCount: auth.policy.allowed_repos.length,
+      allowedReposCount: auth.envelope.policy.allowed_repos.length,
     });
     return NextResponse.json(
       {
         error: "policy_violation",
         message:
           `Repo '${repo}' is not in the agent token's allowed_repos policy. ` +
-          "Either add it to the token's policy via setAgentTokenPolicy, " +
+          "Either reissue the token with an updated policy via the dashboard's Capability Tokens UI " +
+          "(or POST /api/agent-tokens/{name}/rotate with the new policy), " +
           "or rotate to a token whose policy includes this repo.",
       },
       { status: 403 },
@@ -201,7 +204,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // legacy / V1.5 tokens (mint asks for V1_PERMISSIONS unchanged);
       // when set, mintInstallationToken intersects it with V1_PERMISSIONS
       // before sending to GitHub. The token can narrow scope, never raise.
-      allowedPermissions: auth.policy?.allowed_permissions,
+      allowedPermissions: auth.envelope.policy?.allowed_permissions,
     });
     // Audit log: success. Token VALUE never logged — only metadata.
     // hashed_token is the audit-correlation handle (sha256/base64 of
@@ -225,7 +228,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // V1_PERMISSIONS is "configured but no-op". This flag = "policy
       // field is set on the envelope, regardless of effect."
       policyHasAllowedPermissions:
-        auth.policy?.allowed_permissions !== undefined,
+        auth.envelope.policy?.allowed_permissions !== undefined,
       // Whether the granted permissions actually differ from V1_PERMISSIONS.
       // True = some narrowing took effect (from token policy OR installation
       // grant); false = mint received the V1 default scope. This is the

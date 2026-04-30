@@ -24,9 +24,10 @@
  *      route handler needs — installationId, name, agent_role,
  *      capabilities, envelope (for policy access), redis client.
  *
- * NEW callers use this. Legacy `agent-health-auth.ts` callers stay
- * on the V1.5/V1.6 path until B.1.e cutover flips the middleware
- * over.
+ * This is the only middleware. The legacy `agent-health-auth.ts` /
+ * `task-executor-auth.ts` middlewares were deleted in the B.1.e
+ * cutover; all routes that previously used them now require an
+ * explicit `requires` capability and resolve V1 envelopes here.
  */
 
 import { type Redis } from "@upstash/redis";
@@ -62,9 +63,9 @@ export const LAST_USED_AT_DEBOUNCE_SECONDS = 60;
 // ---------------------------------------------------------------------------
 
 /**
- * Stable wire-error codes for the V1 auth middleware. Distinct
- * from the legacy `AGENT_HEALTH_ERROR` codes (those stay unchanged
- * for the legacy auth path until cutover).
+ * Stable wire-error codes for the V1 auth middleware. The legacy
+ * `AGENT_HEALTH_ERROR` codes used by the deleted singular auth path
+ * are gone; this is the only error vocabulary now.
  */
 export const AGENT_AUTH_V1_ERROR = {
   /** `Authorization: Bearer <token>` header missing or malformed. */

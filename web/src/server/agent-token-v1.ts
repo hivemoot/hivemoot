@@ -2,11 +2,11 @@
  * V1 agent-token storage layer (Phase B.1.b).
  *
  * Implements the storage primitives for the per-key capability
- * system from `docs/architecture/CAPABILITIES_DESIGN.md` alongside
- * the legacy single-token-per-installation primitives in
- * `agent-token.ts`. NEW callers should use this module; legacy
- * callers stay on `agent-token.ts` until the cutover (B.1.e) flips
- * the middleware over.
+ * system from `docs/architecture/CAPABILITIES_DESIGN.md`. This is
+ * the only token system now — the legacy single-token-per-
+ * installation primitives in `agent-token.ts` were deleted in the
+ * B.1.e cutover; all callers issue / resolve V1 envelopes through
+ * this module.
  *
  * BEARER-RESURRECTION INVARIANT (load-bearing for B.1.c middleware)
  * ----------------------------------------------------------------
@@ -53,7 +53,8 @@
  *     middleware that writes it
  *   - audit-stream emit (`auditAppend`) — wired into the same
  *     middleware/endpoint PRs
- *   - cleanup script for legacy keys (B.1.e cutover)
+ *   - B.1.e cutover (DONE) — legacy /api/agent-token + storage
+ *     primitives + middlewares deleted; all routes on V1 now
  */
 
 import { createHash, randomBytes } from "crypto";
@@ -65,10 +66,33 @@ import {
   validateAgentRole,
   validateCapabilityString,
 } from "@/server/agent-token-capabilities";
-import type {
-  AgentTokenPolicy,
-  GitHubPermissionLevel,
-} from "@/server/agent-token";
+// ---------------------------------------------------------------------------
+// Policy types (formerly in agent-token.ts; relocated here when the legacy
+// singular system was deleted). The V1.5 `AgentTokenPolicy` shape is
+// preserved verbatim — V1 envelopes carry it on the same field name on
+// the optional `policy?` slot, so existing data migrates without
+// transformation.
+// ---------------------------------------------------------------------------
+
+/** GitHub App permission level. The mint endpoint intersects per-token
+ * `allowed_permissions` with the hard-coded `V1_PERMISSIONS` default —
+ * a token can narrow the default but never exceed it. */
+export type GitHubPermissionLevel = "read" | "write" | "admin";
+
+export interface AgentTokenPolicy {
+  /** `owner/name` strings the token may request mints for. Empty array
+   * = reject everything (intentional). Field absence on the envelope =
+   * legacy permissive (defer to installation grant). */
+  allowed_repos: string[];
+  /** V1.6+: per-token permission narrowing. Map of GitHub App permission
+   * name (e.g. "contents", "pull_requests", "issues", "metadata") to
+   * the maximum level the token may request. Mint intersects with
+   * `V1_PERMISSIONS` (lower level wins per `read < write < admin`).
+   * Permissions named here that aren't in `V1_PERMISSIONS` are silently
+   * dropped (a token cannot grant scope the default doesn't have).
+   * Absence (`undefined`) = use `V1_PERMISSIONS` as-is. */
+  allowed_permissions?: Record<string, GitHubPermissionLevel>;
+}
 // `auditStreamKey` is owned by the audit module (where its sibling
 // `authStreamKey` lives, and where stream MAXLEN constants are
 // declared). Storage scripts in this file pass the stream key as a
@@ -1378,4 +1402,6 @@ function summarize(envelope: AgentTokenEnvelopeV1): AgentTokenSummaryV1 {
 // Re-exports
 // ---------------------------------------------------------------------------
 
-export type { GitHubPermissionLevel };
+// (GitHubPermissionLevel and AgentTokenPolicy already exported as
+// declarations above — no separate re-export needed since the legacy
+// singular agent-token.ts is gone.)

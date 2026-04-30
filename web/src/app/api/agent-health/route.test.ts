@@ -8,8 +8,8 @@ import { NextRequest, NextResponse } from "next/server";
 vi.mock("@/server/byok-auth", () => ({
   authenticateByokRequest: vi.fn(),
 }));
-vi.mock("@/server/agent-health-auth", () => ({
-  authenticateAgentRequest: vi.fn(),
+vi.mock("@/server/agent-token-v1-auth", () => ({
+  authenticateAgentRequestV1: vi.fn(),
 }));
 vi.mock("@/server/agent-health-store", () => ({
   AGENT_ID_PATTERN: /^[a-z0-9_-]+$/,
@@ -46,7 +46,7 @@ vi.mock("@/server/agent-health-error", async () => {
 });
 
 import { authenticateByokRequest } from "@/server/byok-auth";
-import { authenticateAgentRequest } from "@/server/agent-health-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   validateReport,
   validateHeartbeat,
@@ -74,19 +74,31 @@ const MOCK_SESSION = {
 const MOCK_KEYRING = new Map([["v1", Buffer.alloc(32)]]);
 
 function mockAgentAuthSuccess(installationId = "inst-1") {
-  vi.mocked(authenticateAgentRequest).mockResolvedValue({
+  vi.mocked(authenticateAgentRequestV1).mockResolvedValue({
     ok: true,
     installationId,
-    // Legacy-permissive token (no policy field) — agent-health route
-    // doesn't enforce policy, only the mint endpoint does. Either
-    // shape is fine here.
-    policy: undefined,
+    name: "test-agent",
+    agent_role: "worker",
+    capabilities: ["agent_health.report"],
+    envelope: {
+      // Minimal envelope stub — only fields the route actually
+      // touches need to be real. agent-health doesn't read .policy.
+      installationId,
+      name: "test-agent",
+      agent_role: "worker",
+      capabilities: ["agent_health.report"],
+      tokenHash: "stub",
+      fingerprint: "stub0001",
+      createdAt: "2026-04-30T00:00:00Z",
+      createdBy: "test",
+      expiresAt: null,
+    } as never,
     redis: {} as never,
-  });
+  } as never);
 }
 
 function mockAgentAuthFailure(status: number, code: string, message: string) {
-  vi.mocked(authenticateAgentRequest).mockResolvedValue({
+  vi.mocked(authenticateAgentRequestV1).mockResolvedValue({
     ok: false,
     response: NextResponse.json({ code, message }, { status }),
   });
@@ -236,7 +248,7 @@ describe("POST /api/agent-health", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("agent_health_invalid_json");
-    expect(authenticateAgentRequest).not.toHaveBeenCalled();
+    expect(authenticateAgentRequestV1).not.toHaveBeenCalled();
   });
 
   it("returns 400 when validation fails", async () => {
@@ -250,7 +262,7 @@ describe("POST /api/agent-health", () => {
     const body = await res.json();
     expect(body.code).toBe("agent_health_validation_failed");
     expect(body.message).toContain("run_id");
-    expect(authenticateAgentRequest).not.toHaveBeenCalled();
+    expect(authenticateAgentRequestV1).not.toHaveBeenCalled();
   });
 
   it("returns 413 when Content-Length exceeds 10KB", async () => {
@@ -262,7 +274,7 @@ describe("POST /api/agent-health", () => {
     expect(res.status).toBe(413);
     const body = await res.json();
     expect(body.code).toBe("agent_health_payload_too_large");
-    expect(authenticateAgentRequest).not.toHaveBeenCalled();
+    expect(authenticateAgentRequestV1).not.toHaveBeenCalled();
   });
 
   it("returns 413 when actual body exceeds 10KB even with spoofed Content-Length", async () => {
@@ -278,7 +290,7 @@ describe("POST /api/agent-health", () => {
     expect(res.status).toBe(413);
     const body = await res.json();
     expect(body.code).toBe("agent_health_payload_too_large");
-    expect(authenticateAgentRequest).not.toHaveBeenCalled();
+    expect(authenticateAgentRequestV1).not.toHaveBeenCalled();
   });
 
   it("returns 429 when rate-limited", async () => {

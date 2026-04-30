@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseContentLength } from "@/server/request-utils";
 import { extractTaskId } from "@/server/task-route-utils";
-import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import {
   completeTask,
@@ -88,7 +88,9 @@ function toTransitionResponse(result: TaskTransitionResult) {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = await authenticateTaskExecutorRequest(request);
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "tasks.progress",
+  });
   if (!auth.ok) return auth.response;
 
   const { pathname } = new URL(request.url);

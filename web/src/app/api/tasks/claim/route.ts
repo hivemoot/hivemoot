@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateTaskExecutorRequest } from "@/server/task-executor-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { TASK_ERROR, taskError } from "@/server/task-error";
 import { claimNextPendingTask, getTaskMessages } from "@/server/task-store";
 
 export async function POST(request: NextRequest) {
-  const auth = await authenticateTaskExecutorRequest(request);
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "tasks.claim",
+  });
   if (!auth.ok) return auth.response;
 
   try {

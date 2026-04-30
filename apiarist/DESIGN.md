@@ -160,7 +160,7 @@ all of the above without restructuring.**
                 │  POST /api/github/installation-tokens    │
                 │   Bearer <agent_token>                   │
                 │   {repo: "owner/name"}                   │
-                │   → resolveTokenToInstallation           │
+                │   → authenticateAgentRequestV1           │
                 │   → enforce token policy (allowed_repos) │
                 │   → sign JWT with App .pem               │
                 │   → POST api.github.com/app/installations│
@@ -518,7 +518,7 @@ Phase A-B's single-token assumption stays compatible: if an
 |---|---|
 | Container compromise (`refresh_token: true` repos) | Token in container is short-lived (1h max from GitHub, refreshed ~5 min before expiry) and resident in `os.environ["GITHUB_TOKEN"]` for the container's full uptime — **Phase L' shipping change (2026-04-26)**: the original sketch cleared env on IDLE, but watch-driven services need a valid token to poll between jobs and clearing on IDLE deadlocks them. The strong scope-narrowing guarantee (1h TTL via GitHub + apiarist policy server-side) is unchanged; the weaker "env clear when idle" layer was dropped for trigger viability. GitHub-side narrowing via `permissions` (and, in V1.5+, `repository_ids` — see V1 caveat row below) means a leaked token reaches only the policy-allowed scope. Container *can* reach apiarist socket (mounted into refresh_token containers) but cannot mint outside its `AGENT_SERVICE`'s token policy — apiarist looks up the policy server-side, container's request doesn't choose it. **Window comparison:** before Phase L', the exposure window was the ACTIVE period (minutes to hours); now it's container uptime (hours to days, bounded by the deploy cycle). The trade is documented in §12.3. **Subprocess caveat unchanged:** subprocesses spawned anytime inherit the env at fork time and retain `GITHUB_TOKEN` until they exit. Short-lived `gh`/`git` invocations (the common case) are fine. Long-running spawned processes inheriting the env need to be explicitly bounded by the caller. |
 | Container compromise (static-PAT repos, default until migration) | Token comes from `apiary.secrets.yaml`, is staged on disk at deploy time, and is resident in env from container boot until container exit. A compromised container leaks the static PAT in full; the only TTL bound is when the operator manually rotates the PAT (months in practice). This is today's posture for every repo without `refresh_token: true`. The apiarist migration shrinks this exposure to the short-TTL refresh model in the row above (~1h max from GitHub, refreshed automatically) — strictly better than months-of-PAT lifetime even without the original "clear on idle" defense-in-depth layer. Until a repo is flagged, that row's defenses don't apply. |
-| V1 token-policy enforcement (allowed_repos, **shipped**) | Agent token envelope carries an optional `policy: { allowed_repos: string[] }` field (`web/src/server/agent-token.ts:AgentTokenPolicy`). Mint endpoint enforces `request.repo ∈ policy.allowed_repos` if the policy is set; legacy tokens (no policy field) defer to GitHub's installation grant with an explicit `console.warn` pointing operators at `setAgentTokenPolicy` as the remediation. Policy is set via `web/scripts/set-agent-policy.ts` (operator CLI; production-mutate requires `--i-know-what-im-doing` flag). Empty `allowed_repos: []` is intentional reject-all (distinct from `undefined` legacy-permissive). The V1.5 ship narrows to `(request) ⊆ (token policy)`; the second containment `⊆ (installation grant)` is enforced by GitHub itself when the request hits `/access_tokens`. `allowed_permissions` enforcement is deferred to V1.6 — V1 already hard-codes a fixed permission set; per-token permission narrowing is a second layer of defense and hasn't been needed yet. |
+| V1 token-policy enforcement (allowed_repos, **shipped**) | V1 capability bearer envelope carries an optional `policy: { allowed_repos: string[]; allowed_permissions?: ... }` field (`web/src/server/agent-token-v1.ts:AgentTokenPolicy`). Mint endpoint enforces `request.repo ∈ policy.allowed_repos` if the policy is set; tokens issued without a policy field defer to GitHub's installation grant with an explicit `console.warn` pointing operators at the dashboard's Capability Tokens UI (or `POST /api/agent-tokens/{name}/rotate` with the policy field) as the remediation. Policy is set at issue time via the dashboard surface OR `POST /api/agent-tokens` with admin-bearer auth + `{ policy: { allowed_repos: [...] } }`. Empty `allowed_repos: []` is intentional reject-all (distinct from `undefined` legacy-permissive). The V1.5 ship narrows to `(request) ⊆ (token policy)`; the second containment `⊆ (installation grant)` is enforced by GitHub itself when the request hits `/access_tokens`. V1.6 added `allowed_permissions` for per-token GitHub permission narrowing — `request.permissions` are intersected with the token's allowed scope before passing to GitHub. |
 | V1 short-name narrowing gap (until V1.5) | The mint endpoint passes `repositories: [<short-name>]` to GitHub rather than `repository_ids: [<numeric-id>]`. Short names are mutable (rename / transfer); a stale `apiary.yaml` requesting an old name could mint for a new repo at the same short-name slot if the installation covers all repos. V1.5 target: stand up a Redis-backed `installation:<id>:repos` cache populated by the bot's `installation.repositories.added/removed` webhooks, resolve `owner/name` → numeric `id` before the GitHub call, and fail-closed on rename. Tracked in §16 #9. |
 | Cross-service token theft | An agent claiming `service: builder-claude` in its UDS request still authenticates against the **builder-claude token's policy** server-side. Apiarist trusts `AGENT_SERVICE` env (set by deploy, not by container code), and the broker→backend flow uses the bearer keyed off that. A compromised builder container cannot trick apiarist into minting against guard's token by lying about its service — apiarist's per-service policy lookup is the gate. (This does mean a fully-compromised container can mint within its OWN policy without bound — which is exactly the policy-shrink mitigation: don't grant a token broader scope than the agent legitimately needs.) |
 | Apiarist process memory dump | Disable core dumps via systemd `LimitCORE=0`. Lock pages with `mlock`-equivalent (`MemoryDenyWriteExecute=true`). Restart-on-crash is already systemd's default, so a transient crash doesn't leak the cache to disk via core file. Cache TTL of 5 min (default) bounds the in-memory residency window. |
@@ -590,8 +590,8 @@ Content-Type: application/json
 ```
 
 `repo` is **required and verified** server-side, even though
-`resolveTokenToInstallationAndPolicy(agent_token)` already determines
-which installation is being acted on.
+`authenticateAgentRequestV1` already resolves the bearer to an
+installation envelope (with `policy?` field) before this check.
 
 **V1 verification:** the mint endpoint enforces `request.repo ∈
 policy.allowed_repos` when the agent token has a policy set, then
@@ -707,24 +707,27 @@ only** until the requesting agent retrieves it over UDS. No on-disk
 file is written. The `token` field in the API response is always the
 latter.
 
-**Token-policy scoping model:** Each agent token can carry a
-server-side policy of `{ allowed_repos[], allowed_permissions{} }`
-set via the operator CLI (`web/scripts/set-agent-policy.ts`) or
-future dashboard UI. The backend enforces `(request scope) ⊆
-(token policy) ⊆ (installation grant)` on every mint.
+**Token-policy scoping model:** Each V1 capability bearer can carry
+a server-side policy of `{ allowed_repos[], allowed_permissions{} }`
+set at issue time via the dashboard's Capability Tokens UI or
+`POST /api/agent-tokens` with `{ policy: { ... } }`. Policy can also
+be updated post-issue via rotate. The backend enforces `(request
+scope) ⊆ (token policy) ⊆ (installation grant)` on every mint.
 
-**V1.5 ship status** (per §10 row "V1 token-policy enforcement
+**V1.5 + V1.6 ship status** (per §10 row "V1 token-policy enforcement
 (allowed_repos, **shipped**)"):
 
-- `allowed_repos` enforcement is **live** — `request.repo ∈
+- `allowed_repos` enforcement is **live** (V1.5) — `request.repo ∈
   policy.allowed_repos` rejected with `403 policy_violation` when
-  the policy is set; legacy tokens (pre-V1.5, no policy field)
-  defer to the installation grant with a `console.warn`.
-- `allowed_permissions` enforcement is **deferred to V1.6** — V1
-  hard-codes a fixed permission set (`V1_PERMISSIONS` in
-  `web/src/server/github-installation-token.ts`) shared across all
-  callers; per-token permission narrowing is a second layer of
-  defense and hasn't been needed yet.
+  the policy is set; tokens issued without a policy field defer to
+  the installation grant with a `console.warn`.
+- `allowed_permissions` enforcement is **live** (V1.6) — the mint
+  endpoint intersects `request.permissions` with the token's
+  `policy.allowed_permissions` (and with the V1 default set
+  `V1_PERMISSIONS` in `web/src/server/github-installation-token.ts`)
+  before passing to GitHub. Tokens narrow the default but never
+  exceed it. Tokens issued without `allowed_permissions` use
+  `V1_PERMISSIONS` unchanged.
 
 A compromised agent token's blast radius is bounded by its policy
 (when set) or by the installation grant (when policy is absent);
@@ -838,15 +841,15 @@ historically most-likely leak vector — becomes a dead artifact.
 **Implementation skeleton (TypeScript, in `web/src/app/api/github/installation-tokens/route.ts`):**
 
 ```typescript
-import { resolveTokenToInstallation } from "@/server/agent-token";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { mintInstallationToken } from "@/server/github-app";  // new helper
 
 export async function POST(request: NextRequest) {
-  const auth = extractBearer(request);
-  if (!auth) return new Response(null, { status: 401 });
-
-  const installationId = await resolveTokenToInstallation(auth, redis);
-  if (!installationId) return new Response(null, { status: 401 });
+  const auth = await authenticateAgentRequestV1(request, {
+    requires: "installation_token.mint",
+  });
+  if (!auth.ok) return auth.response;
+  const installationId = auth.installationId;
 
   const body = await request.json().catch(() => ({}));
   if (!body.repo || typeof body.repo !== "string") {
@@ -1642,7 +1645,8 @@ etc.) don't trigger subscriber events.
   `start()` raises during `setup_lifecycle`. Plugin setup fails
   fast; container exits with the apiarist error in stderr. Operator
   fixes apiarist health (it's a systemd unit on the host) or repo
-  policy (via `set-agent-policy` CLI), then redeploys. Container
+  policy (via the dashboard's Capability Tokens UI — rotate the
+  bearer with the corrected policy field), then redeploys. Container
   restart reattempts the full chain. The most-common operational
   failure here is a misconfigured repo (operator set
   `refresh_token: true` without installing the bot); the apiarist
@@ -1949,17 +1953,21 @@ on Hive (Phase 0).
      a graceful container restart.
    Defer until we have telemetry evidence the gap matters in
    practice.
-8. **Token-policy scoping in agent-token envelope.** **Partially shipped
-   in V1.5** (PR #489): the envelope now carries `policy: { allowed_repos:
-   string[] }`, the mint endpoint enforces `request.repo ∈
-   policy.allowed_repos` when set, and `web/scripts/set-agent-policy.ts`
-   is the operator CLI for setting policies on existing tokens. Legacy
-   tokens (created pre-V1.5, no policy field) default to legacy-permissive
-   with an explicit `console.warn` so operators see we're running
-   without enforcement. **Still deferred (V1.6):** `allowed_permissions`
-   per-token narrowing (currently V1's hard-coded permission set
-   covers everyone), and a dashboard UI for setting policies (CLI
-   suffices for the drone pilot).
+8. **Token-policy scoping in agent-token envelope.** **Shipped in V1.5
+   + V1.6, cutover-complete in B.1.e (2026-04-30):** the V1 capability
+   bearer envelope carries `policy: { allowed_repos: string[],
+   allowed_permissions?: Record<perm, "read"|"write"|"admin"> }`. The
+   mint endpoint enforces both layers: `request.repo ∈
+   policy.allowed_repos` AND `request.permissions ⊆
+   policy.allowed_permissions` (intersected with the V1 default set
+   `V1_PERMISSIONS`) when set. Operators issue and rotate
+   policy-bearing tokens via the dashboard's Capability Tokens UI
+   (`/dashboard/credentials`) or `POST /api/agent-tokens` (admin-bearer
+   chain). Tokens issued without a policy field default to
+   legacy-permissive with an explicit `console.warn` pointing operators
+   at the dashboard remediation. The legacy singular `agent-token.ts`
+   storage + `set-agent-policy.ts` CLI were deleted in B.1.e; the V1
+   capability surface is now the only path.
 9. **`repository_ids` narrowing + install-repos cache.** §10's "V1
    short-name narrowing gap" row tracks this: we pass repo short names
    to GitHub rather than numeric IDs, so a rename + recreate at the

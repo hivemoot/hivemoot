@@ -5,8 +5,8 @@ import { NextRequest, NextResponse } from "next/server";
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/server/agent-health-auth", () => ({
-  authenticateAgentRequest: vi.fn(),
+vi.mock("@/server/agent-token-v1-auth", () => ({
+  authenticateAgentRequestV1: vi.fn(),
 }));
 vi.mock("@/server/github-installation-token", async () => {
   // Re-export the typed errors from the real module so tests can
@@ -20,7 +20,7 @@ vi.mock("@/server/github-installation-token", async () => {
   };
 });
 
-import { authenticateAgentRequest } from "@/server/agent-health-auth";
+import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   mintInstallationToken,
   AppCredentialError,
@@ -31,7 +31,7 @@ import {
 } from "@/server/github-installation-token";
 import { POST } from "./route";
 
-const mockedAuth = vi.mocked(authenticateAgentRequest);
+const mockedAuth = vi.mocked(authenticateAgentRequestV1);
 const mockedMint = vi.mocked(mintInstallationToken);
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,27 @@ function authOk(
   return {
     ok: true as const,
     installationId,
-    policy,
+    name: "test-agent",
+    agent_role: "worker",
+    capabilities: ["installation_token.mint"],
+    envelope: {
+      // Encryption fields required by AgentTokenEnvelopeV1 type even
+      // though tests don't decrypt — vitest hoisted-mock would also
+      // accept `as never`, but explicit stubs survive strict tsc in CI.
+      ciphertext: "stub-ct",
+      iv: "stub-iv",
+      tag: "stub-tag",
+      keyVersion: "v1",
+      tokenHash: "stub",
+      fingerprint: "stub0001",
+      createdAt: "2026-04-30T00:00:00Z",
+      createdBy: "test",
+      expiresAt: null,
+      name: "test-agent",
+      agent_role: "worker",
+      capabilities: ["installation_token.mint"],
+      ...(policy ? { policy } : {}),
+    },
     redis: {} as never,
   };
 }
