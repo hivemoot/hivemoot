@@ -994,7 +994,7 @@ guarantee non-overlapping invocations; a tick that runs longer
 than 2 min could overlap with the next fire. The route acquires a
 distributed lock at entry:
 
-**Acquire** with `SET key runnerId NX EX 55`. **Release** with the
+**Acquire** with `SET key runnerId NX EX 290`. **Release** with the
 canonical Redlock compare-and-DEL pattern via a Lua script (NOT
 `if acquired === runnerId then redis.del()` — `SET ... NX` returns
 the string `"OK"` on success or `null` on contention, NOT the
@@ -1018,7 +1018,7 @@ Sequencing in the route:
 
 ```typescript
 const lockKey = `hive:v1:lock:queen-tick:${installationId}`;
-const acquired = await redis.set(lockKey, runnerId, "NX", { EX: 55 });
+const acquired = await redis.set(lockKey, runnerId, "NX", { EX: 290 });
 if (acquired === null) {
   // Contention — another tick is running. Skip cleanly.
   log.info("queen_tick_overlap_skipped", { installationId, runnerId });
@@ -1034,10 +1034,14 @@ try {
 }
 ```
 
-55 s TTL means the lock auto-releases just before the next fire,
-even if the runner crashes. Overlapping fires no-op cleanly with
+290 s TTL is sized to leave a 10 s margin under Vercel's
+`maxDuration: 300` for the function — the lock auto-releases via
+TTL before the function's hard timeout, so a crashed runner can't
+hold the lock past one fire. With the cron at 2-minute intervals,
+the next fire happens BEFORE TTL expiry, so a still-running
+predecessor produces clean contention (the next runner skips with
 an info-level log line; no double LLM calls, no double GitHub
-posts.
+posts).
 
 **The manager loop body:**
 
