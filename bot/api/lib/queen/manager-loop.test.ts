@@ -1,6 +1,6 @@
 /**
  * Tests for `runQueenManagerLoop` (G'.2). Uses a hand-rolled
- * `FakeWarRoomClient` rather than vitest mocks so behavior contracts
+ * `FakeWarRoomStore` rather than vitest mocks so behavior contracts
  * stay legible (the queen's invariants — claim-then-close, sequence
  * pinning, error fan-out — are subtle enough that mock-method-call
  * trees obscure intent).
@@ -18,8 +18,8 @@ import {
   type RoomContribution,
   type RoomListEntry,
   type RoomParticipant,
-  type WarRoomClient,
-} from "../war-room-client.js";
+  type WarRoomStore,
+} from "../war-room-store.js";
 
 const ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde";
 const RUNNER_ID = "queen-test-runner";
@@ -93,7 +93,7 @@ interface FakeCalls {
 }
 
 function makeFakeClient(opts: FakeOptions): {
-  client: WarRoomClient;
+  client: WarRoomStore;
   calls: FakeCalls;
 } {
   const calls: FakeCalls = {
@@ -162,7 +162,7 @@ function makeFakeClient(opts: FakeOptions): {
       if (t) throw t;
       return { closedSequence: args.expectedThroughSequence };
     },
-  } as unknown as WarRoomClient;
+  } as unknown as WarRoomStore;
 
   return { client, calls };
 }

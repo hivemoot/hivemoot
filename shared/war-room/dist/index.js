@@ -8,6 +8,5 @@
 // `.js` extensions — Node-native ESM-resolvable. The `.ts` form is
 // what bundlers (web's Turbopack, vitest, esbuild) resolve literally
 // from source.
-
-export * from "./war-room.ts";
-export * from "./redis-lock.ts";
+export * from "./war-room.js";
+export * from "./redis-lock.js";

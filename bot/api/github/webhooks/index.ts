@@ -236,16 +236,18 @@ export function app(probotApp: Probot): void {
         });
       }
 
-      // Phase E.1 — war-room routing. Non-fatal: a failure here
-      // never breaks the existing intake / governance flow; the
-      // routing helper logs + returns gracefully on errors. Gated
-      // on `HIVEMOOT_BOT_AGENT_TOKEN` env var so the integration
-      // is opt-in until Phase H fleet migration. Idempotent on
-      // webhook re-delivery (server returns 409 subject_already_open
-      // → routing helper reuses existingRoomId).
+      // War-room routing. Non-fatal: a failure here never breaks
+      // the existing intake / governance flow; the routing helper
+      // logs + returns gracefully on errors. Gated on
+      // `HIVEMOOT_REDIS_REST_URL/TOKEN` env vars (same vars BYOK
+      // already uses) so the integration is opt-in via the Redis
+      // env config. Idempotent on webhook re-delivery (server
+      // returns 409 subject_already_open → routing helper reuses
+      // existingRoomId).
       await maybeCreatePrReviewRoom({
         owner,
         repo,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         log: context.log,
       });
@@ -356,6 +358,7 @@ export function app(probotApp: Probot): void {
       await maybeEmitSubjectUpdated({
         owner,
         repo,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         changeKind: "synchronize",
         headSha: context.payload.pull_request.head?.sha,
@@ -602,6 +605,7 @@ export function app(probotApp: Probot): void {
           await maybeCreateMentionRoom({
             owner,
             repo,
+            installationId: context.payload.installation?.id,
             issueOrPrNumber: issue.number,
             commentId: comment.id,
             commentAuthor: comment.user.login,
@@ -705,6 +709,7 @@ export function app(probotApp: Probot): void {
         await maybeEmitSubjectUpdated({
           owner,
           repo,
+          installationId: context.payload.installation?.id,
           prNumber: number,
           changeKind: "closed",
           log: context.log,
@@ -758,6 +763,7 @@ export function app(probotApp: Probot): void {
       await maybeEmitSubjectUpdated({
         owner,
         repo,
+        installationId: context.payload.installation?.id,
         prNumber: number,
         changeKind: "closed",
         log: context.log,

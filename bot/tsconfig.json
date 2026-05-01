@@ -1,15 +1,26 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    // `module: NodeNext` keeps the EMITTED output as Node-native ESM
+    // (Vercel functions need this). `moduleResolution: bundler`
+    // relaxes the input-side check that NodeNext-emit otherwise pairs
+    // with — bot's `.js` extensions on its own internal imports stay
+    // valid (bundler resolution accepts them too) AND the shared
+    // `@hivemoot/war-room` source can use extension-less relative
+    // imports that web's Turbopack also tolerates. Without this
+    // split, NodeNext-resolution would reject `from "./war-room"`
+    // inside the shared package and force `.js` suffixes that
+    // Turbopack can't auto-rewrite to `.ts`.
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist",
     "rootDir": ".",
-    "declaration": false
+    "declaration": false,
+    "preserveSymlinks": true
   },
   "include": ["api/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "**/*.test.ts"]

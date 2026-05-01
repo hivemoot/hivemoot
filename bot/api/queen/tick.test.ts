@@ -105,15 +105,31 @@ beforeEach(() => {
     rest: { issues: { createComment: vi.fn() } },
   });
   AppCtorMock.mockReset().mockImplementation(function (this: unknown) {
-    (this as { getInstallationOctokit: typeof getInstallationOctokitMock }).getInstallationOctokit =
-      getInstallationOctokitMock;
+    const self = this as {
+      getInstallationOctokit: typeof getInstallationOctokitMock;
+      eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> };
+    };
+    self.getInstallationOctokit = getInstallationOctokitMock;
+    // Default mock fleet: a single installation matching the legacy
+    // env-var (67890) so individual tests don't have to set up the
+    // iterator unless they need a multi-tenant scenario. Tests that
+    // exercise multi-tenant iteration override `eachInstallation`
+    // before invoking the handler.
+    self.eachInstallation = {
+      iterator: () =>
+        (async function* () {
+          yield { installation: { id: 67890 } };
+        })(),
+    };
   });
   process.env.CRON_SECRET = "test-secret";
-  process.env.HIVEMOOT_QUEEN_INSTALLATION_ID = "67890";
-  // WarRoomClient validates this at construction. Tests don't make
-  // real HTTP calls (the manager-loop is mocked), but the
-  // construction path runs.
-  process.env.HIVEMOOT_BOT_AGENT_TOKEN = "test-bearer-token";
+  // WarRoomStore validates these at construction. Tests don't hit
+  // real Redis (the manager-loop is mocked), but `getRedisClient()`
+  // throws if the env vars are missing, so the construction path
+  // needs them set.
+  process.env.HIVEMOOT_REDIS_REST_URL = "https://redis.example/test";
+  process.env.HIVEMOOT_REDIS_REST_TOKEN = "test-redis-token";
+  delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
   delete process.env.HIVEMOOT_QUEEN_RUNNER_ID;
   delete process.env.HIVEMOOT_QUEEN_MAX_ROOMS_PER_TICK;
 });
@@ -191,22 +207,8 @@ describe("GET /api/queen/tick — method", () => {
   });
 });
 
-describe("GET /api/queen/tick — installationId resolution", () => {
-  it("returns 500 when neither query nor env supplies installationId", async () => {
-    delete process.env.HIVEMOOT_QUEEN_INSTALLATION_ID;
-    const res = makeResponse();
-    await handler(
-      makeRequest({ authorization: "Bearer test-secret" }),
-      res,
-    );
-    expect(res._statusCode).toBe(500);
-    expect(JSON.parse(res._body)).toMatchObject({
-      code: "no_installation_id",
-    });
-  });
-
-  it("returns 400 when installationId is non-numeric", async () => {
-    delete process.env.HIVEMOOT_QUEEN_INSTALLATION_ID;
+describe("GET /api/queen/tick — installation iteration", () => {
+  it("returns 400 when ?installationId= override is non-numeric", async () => {
     const res = makeResponse();
     await handler(
       makeRequest({
@@ -221,7 +223,21 @@ describe("GET /api/queen/tick — installationId resolution", () => {
     });
   });
 
-  it("uses query param when provided (overrides env)", async () => {
+  it("with ?installationId= override, runs ONE installation only", async () => {
+    // Wide default iterator (5 installations) — the override should
+    // skip iteration entirely and run just the one specified.
+    AppCtorMock.mockImplementationOnce(function (this: unknown) {
+      const self = this as { getInstallationOctokit: typeof getInstallationOctokitMock; eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> } };
+      self.getInstallationOctokit = getInstallationOctokitMock;
+      self.eachInstallation = {
+        iterator: () =>
+          (async function* () {
+            yield { installation: { id: 11111 } };
+            yield { installation: { id: 22222 } };
+            yield { installation: { id: 33333 } };
+          })(),
+      };
+    });
     const res = makeResponse();
     await handler(
       makeRequest({
@@ -231,24 +247,139 @@ describe("GET /api/queen/tick — installationId resolution", () => {
       res,
     );
     expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.installations).toHaveLength(1);
+    expect(body.installations[0].installationId).toBe("99999");
     expect(getInstallationOctokitMock).toHaveBeenCalledWith(99999);
-    expect(JSON.parse(res._body).installationId).toBe("99999");
+    expect(getInstallationOctokitMock).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to HIVEMOOT_QUEEN_INSTALLATION_ID env var", async () => {
+  it("without override, iterates every installation the App is on", async () => {
+    AppCtorMock.mockImplementationOnce(function (this: unknown) {
+      const self = this as { getInstallationOctokit: typeof getInstallationOctokitMock; eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> } };
+      self.getInstallationOctokit = getInstallationOctokitMock;
+      self.eachInstallation = {
+        iterator: () =>
+          (async function* () {
+            yield { installation: { id: 1001 } };
+            yield { installation: { id: 1002 } };
+            yield { installation: { id: 1003 } };
+          })(),
+      };
+    });
     const res = makeResponse();
     await handler(
       makeRequest({ authorization: "Bearer test-secret" }),
       res,
     );
     expect(res._statusCode).toBe(200);
-    expect(getInstallationOctokitMock).toHaveBeenCalledWith(67890);
-    expect(JSON.parse(res._body).installationId).toBe("67890");
+    const body = JSON.parse(res._body);
+    expect(body.installations.map((i: { installationId: string }) => i.installationId)).toEqual([
+      "1001",
+      "1002",
+      "1003",
+    ]);
+    expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("aggregates per-installation counters into the top-level summary", async () => {
+    AppCtorMock.mockImplementationOnce(function (this: unknown) {
+      const self = this as { getInstallationOctokit: typeof getInstallationOctokitMock; eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> } };
+      self.getInstallationOctokit = getInstallationOctokitMock;
+      self.eachInstallation = {
+        iterator: () =>
+          (async function* () {
+            yield { installation: { id: 2001 } };
+            yield { installation: { id: 2002 } };
+          })(),
+      };
+    });
+    runQueenManagerLoopMock.mockReset();
+    runQueenManagerLoopMock.mockResolvedValueOnce({
+      ...HAPPY_RESULT,
+      claimed: 2,
+      closed: 2,
+      postsSucceeded: 2,
+    });
+    runQueenManagerLoopMock.mockResolvedValueOnce({
+      ...HAPPY_RESULT,
+      claimed: 1,
+      closed: 0,
+      postsSucceeded: 0,
+      errors: 1,
+    });
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.aggregated.claimed).toBe(3);
+    expect(body.aggregated.closed).toBe(2);
+    expect(body.aggregated.postsSucceeded).toBe(2);
+    expect(body.aggregated.errors).toBe(1);
+  });
+
+  it("isolates per-installation failures: one tenant erroring doesn't block others", async () => {
+    AppCtorMock.mockImplementationOnce(function (this: unknown) {
+      const self = this as { getInstallationOctokit: typeof getInstallationOctokitMock; eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> } };
+      self.getInstallationOctokit = getInstallationOctokitMock;
+      self.eachInstallation = {
+        iterator: () =>
+          (async function* () {
+            yield { installation: { id: 3001 } };
+            yield { installation: { id: 3002 } };
+            yield { installation: { id: 3003 } };
+          })(),
+      };
+    });
+    runQueenManagerLoopMock.mockReset();
+    runQueenManagerLoopMock.mockResolvedValueOnce(HAPPY_RESULT);
+    runQueenManagerLoopMock.mockRejectedValueOnce(new Error("tenant 3002 broke"));
+    runQueenManagerLoopMock.mockResolvedValueOnce(HAPPY_RESULT);
+
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.installations).toHaveLength(3);
+    expect(body.installations[1].error).toContain("tenant 3002 broke");
+    expect(body.installations[0].result).toBeDefined();
+    expect(body.installations[2].result).toBeDefined();
+    // Per-tenant errors increment the aggregated errors counter so
+    // alerting catches them at the deployment level.
+    expect(body.aggregated.errors).toBe(1);
+  });
+
+  it("returns 500 when eachInstallation iteration throws (not per-tenant)", async () => {
+    AppCtorMock.mockImplementationOnce(function (this: unknown) {
+      const self = this as { getInstallationOctokit: typeof getInstallationOctokitMock; eachInstallation: { iterator: () => AsyncIterable<{ installation: { id: number } }> } };
+      self.getInstallationOctokit = getInstallationOctokitMock;
+      self.eachInstallation = {
+        iterator: () =>
+          (async function* () {
+            throw new Error("github api 503");
+          })(),
+      };
+    });
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(500);
+    expect(JSON.parse(res._body)).toMatchObject({
+      code: "installations_iteration_failed",
+    });
   });
 });
 
 describe("GET /api/queen/tick — happy path", () => {
-  it("returns 200 with runnerId + installationId + result", async () => {
+  it("returns 200 with runnerId + installations[] + aggregated", async () => {
     const res = makeResponse();
     await handler(
       makeRequest({ authorization: "Bearer test-secret" }),
@@ -257,8 +388,10 @@ describe("GET /api/queen/tick — happy path", () => {
     expect(res._statusCode).toBe(200);
     const body = JSON.parse(res._body);
     expect(body.runnerId).toBeDefined();
-    expect(body.installationId).toBe("67890");
-    expect(body.result).toEqual(HAPPY_RESULT);
+    expect(body.installations).toHaveLength(1);
+    expect(body.installations[0].installationId).toBe("67890");
+    expect(body.installations[0].result).toEqual(HAPPY_RESULT);
+    expect(body.aggregated).toMatchObject(HAPPY_RESULT);
   });
 
   it("constructs App with appId + privateKey from getAppConfig", async () => {
@@ -337,21 +470,24 @@ describe("GET /api/queen/tick — happy path", () => {
 });
 
 describe("GET /api/queen/tick — error paths", () => {
-  it("returns 500 when runQueenManagerLoop throws", async () => {
+  it("per-tenant runQueenManagerLoop failure surfaces in installations[].error (not 500)", async () => {
+    // With multi-tenant iteration, a single tenant erroring should NOT
+    // 500 the whole tick — the tick handler must keep going for the
+    // remaining tenants and surface the failure on the per-tenant row.
     runQueenManagerLoopMock.mockRejectedValueOnce(new Error("upstream 502"));
     const res = makeResponse();
     await handler(
       makeRequest({ authorization: "Bearer test-secret" }),
       res,
     );
-    expect(res._statusCode).toBe(500);
-    expect(JSON.parse(res._body)).toMatchObject({
-      code: "tick_failed",
-      message: "upstream 502",
-    });
+    expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.installations).toHaveLength(1);
+    expect(body.installations[0].error).toContain("upstream 502");
+    expect(body.aggregated.errors).toBe(1);
   });
 
-  it("returns 500 when getAppConfig throws", async () => {
+  it("returns 500 when getAppConfig throws (App can't be constructed)", async () => {
     getAppConfigMock.mockImplementationOnce(() => {
       throw new Error("APP_ID environment variable is not set");
     });
@@ -361,7 +497,7 @@ describe("GET /api/queen/tick — error paths", () => {
       res,
     );
     expect(res._statusCode).toBe(500);
-    expect(JSON.parse(res._body).code).toBe("tick_failed");
+    expect(JSON.parse(res._body).code).toBe("app_init_failed");
   });
 });
 
@@ -473,7 +609,7 @@ describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () =
     fetchSpy.mockRestore();
   });
 
-  it("returns skipped=true when another runner holds the lock (NX result null)", async () => {
+  it("returns skipped=true on per-installation row when another runner holds the lock (NX result null)", async () => {
     process.env.HIVEMOOT_REDIS_REST_URL = "https://fake-redis.upstash.io";
     process.env.HIVEMOOT_REDIS_REST_TOKEN = "fake-token";
     const fetchSpy = vi
@@ -488,8 +624,8 @@ describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () =
     );
     expect(res._statusCode).toBe(200);
     const body = JSON.parse(res._body);
-    expect(body.skipped).toBe(true);
-    expect(body.reason).toBe("lock_contention");
+    expect(body.installations[0].skipped).toBe(true);
+    expect(body.installations[0].reason).toBe("lock_contention");
     expect(runQueenManagerLoopMock).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
@@ -537,7 +673,12 @@ describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () =
       makeRequest({ authorization: "Bearer test-secret" }),
       res,
     );
-    expect(res._statusCode).toBe(500);
+    // Per-tenant manager-loop failure is captured on the installation
+    // row rather than 500'ing the whole tick (multi-tenant isolation
+    // — one bad tenant doesn't kill the others).
+    expect(res._statusCode).toBe(200);
+    const body = JSON.parse(res._body);
+    expect(body.installations[0].error).toContain("loop crash");
     // Release was still attempted via finally.
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const releaseCall = fetchSpy.mock.calls[1];

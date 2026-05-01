@@ -27,7 +27,7 @@
  * the verdict is fixed (never read its own output as a verdict).
  */
 
-import type { RoomContribution } from "../war-room-client.js";
+import type { RoomContribution } from "../war-room-store.js";
 import type { SynthesisInput } from "./synthesizer.js";
 
 /**

@@ -11,6 +11,15 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { app as registerWebhookApp } from "./index.js";
 
 // Mock probot to prevent actual initialization
+vi.mock("../../lib/war-room-routing.js", () => ({
+  maybeCreatePrReviewRoom: vi.fn(async () => ({ roomId: null })),
+  maybeEmitSubjectUpdated: vi.fn(async () => ({ sequence: null })),
+  maybeCreateMentionRoom: vi.fn(async () => ({ roomId: null })),
+  commentHasHivemootMention: () => false,
+  derivePrRoomId: ({ owner, repo, prNumber }) => `derived-${owner}-${repo}-${prNumber}`,
+  deriveMentionRoomId: ({ owner, repo, issueOrPrNumber, commentId }) => `derived-mention-${owner}-${repo}-${issueOrPrNumber}-${commentId}`,
+}));
+
 vi.mock("probot", () => ({
   createProbot: vi.fn(() => ({})),
   createNodeMiddleware: vi.fn(() => vi.fn()),

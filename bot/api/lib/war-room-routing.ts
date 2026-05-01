@@ -1,17 +1,17 @@
 /**
- * War-room routing helpers — wrap `WarRoomClient` calls with the
- * bot's "auth-gated, idempotency-aware, non-fatal-on-error" policy.
+ * War-room routing helpers — wrap `WarRoomStore` calls with the
+ * bot's "idempotency-aware, non-fatal-on-error" policy.
  *
- * Design intent (Phase E):
- *   - Construction is LAZY — missing `HIVEMOOT_BOT_AGENT_TOKEN`
- *     env var doesn't crash module load. The bot's existing
- *     governance features keep working without war-room
- *     integration; war-room is opt-in via env config until
- *     Phase H fleet migration.
+ * Design intent:
+ *   - Construction is LAZY — missing `HIVEMOOT_REDIS_REST_URL` /
+ *     `HIVEMOOT_REDIS_REST_TOKEN` env vars don't crash module
+ *     load. The bot's existing governance features keep working
+ *     without war-room integration; war-room is opt-in via the
+ *     Redis env config (which is also used by `byok.ts`).
  *   - Idempotent on webhook re-delivery — a `subject_already_open`
  *     409 is treated as success; the existing room is reused.
  *   - Non-fatal on error — war-room failures are logged but never
- *     thrown, so a 500 from the API can't break the PR's existing
+ *     thrown, so a Redis outage can't break the PR's existing
  *     intake / governance flow.
  *
  * **Recovery story (closes #526 guard N1):** because the routing
@@ -25,9 +25,63 @@
  * as a follow-up; pre-Phase H opt-in posture limits blast radius.
  */
 
-import { WarRoomClient, WarRoomApiError, prSubjectRef } from "./war-room-client.js";
+import { WarRoomStore, WarRoomApiError, prSubjectRef } from "./war-room-store.js";
+import { getRedisClient } from "./redis.js";
 import type { Logger } from "pino";
 import { createHash } from "node:crypto";
+
+/**
+ * Construct a per-installation `WarRoomStore` while preserving the
+ * file-level non-fatal contract. Returns `null` on:
+ *
+ *   - Missing `HIVEMOOT_REDIS_REST_URL` / `_TOKEN` env (deployment
+ *     hasn't enabled war-rooms yet — same posture as the previous
+ *     missing-bearer skip path)
+ *   - Missing / `"0"` / non-numeric `installationId` (webhook payload
+ *     didn't include `installation.id` — drop the call instead of
+ *     writing to a phantom tenant namespace, closes #581 guard B1)
+ *   - Any other thrown construction error (defense-in-depth)
+ *
+ * On failure, logs a structured warning at `log.warn` (always
+ * available — Probot's context.log carries it). Caller branches on
+ * the null return to short-circuit with their own
+ * `{ skipped: "no_config" | "no_installation" | "api_error" }`
+ * variant.
+ *
+ * Closes #581 guard B2: previously, `getRedisClient()` and
+ * `new WarRoomStore` were called OUTSIDE each helper's try block, so
+ * a missing env var would propagate to the webhook handler's outer
+ * catch and re-throw — turning "war-room is off" config into "the
+ * whole bot returns 5xx for every PR/comment webhook."
+ */
+function tryConstructStore(args: {
+  installationId: number | string | undefined | null;
+  log: Pick<Logger, "info" | "warn" | "error">;
+  context: Record<string, unknown>;
+}): WarRoomStore | { skipped: "no_installation" | "no_config" } {
+  const rawId = args.installationId;
+  if (rawId === null || rawId === undefined || rawId === "" || rawId === 0) {
+    args.log.warn(
+      args.context,
+      "[war-room] webhook payload had no installation.id — skipping war-room call (would write to a phantom tenant namespace).",
+    );
+    return { skipped: "no_installation" };
+  }
+  const installationId = String(rawId);
+  try {
+    return new WarRoomStore({
+      installationId,
+      redis: getRedisClient(),
+      log: args.log,
+    });
+  } catch (err) {
+    args.log.warn(
+      { ...args.context, err },
+      "[war-room] WarRoomStore construction failed (likely missing HIVEMOOT_REDIS_REST_URL/TOKEN or invalid installationId) — skipping war-room call.",
+    );
+    return { skipped: "no_config" };
+  }
+}
 
 /**
  * Derive a deterministic UUIDv4-shaped roomId from a PR's identity.
@@ -144,25 +198,32 @@ interface MaybeCreatePrReviewRoomArgs {
   owner: string;
   repo: string;
   prNumber: number;
+  /** GitHub App installation id from the webhook payload
+   * (`payload.installation.id`). Per-tenant scoping for the
+   * direct-Redis path: each call constructs a per-installation
+   * store, so cross-tenant data never enters this code path. */
+  installationId: number | string | undefined;
   log: Pick<Logger, "info" | "warn" | "error">;
 }
 
 interface MaybeCreatePrReviewRoomResult {
   /** The war-room roomId (newly created OR reused via the
-   * idempotent 409 path). `null` when the bot has no agent token
-   * configured (war-room is disabled in this deployment). */
+   * idempotent `subject_already_open` path). `null` when the call
+   * was skipped (missing payload installation, missing Redis env,
+   * config error) or when a recoverable Redis error surfaced. */
   roomId: string | null;
   /** Why the room wasn't created when `roomId === null`. Useful for
-   * test assertions; logged at info. */
-  skipped?: "no_token" | "api_error";
+   * test assertions; logged at info/warn. */
+  skipped?: "no_installation" | "no_config" | "api_error";
 }
 
 /**
  * Create a `pr_review` war room for an opened PR. Returns null and
- * logs a structured info line when:
- *   - `HIVEMOOT_BOT_AGENT_TOKEN` env is unset (bot opted out)
- *   - The API call fails with a 5xx / network error (transient;
- *     GitHub will re-deliver the webhook)
+ * logs a structured warning when:
+ *   - The Redis call fails with a transient error (next webhook
+ *     re-delivery may retry, but the bot's outer handler swallows
+ *     errors so GitHub itself does NOT auto-redeliver — see #526
+ *     guard N1 in the file docstring above).
  *
  * On `subject_already_open` 409 (re-delivery for a PR we already
  * have a room for), returns the `existingRoomId` from the response
@@ -171,35 +232,15 @@ interface MaybeCreatePrReviewRoomResult {
 export async function maybeCreatePrReviewRoom(
   args: MaybeCreatePrReviewRoomArgs,
 ): Promise<MaybeCreatePrReviewRoomResult> {
-  const token = process.env.HIVEMOOT_BOT_AGENT_TOKEN;
-  if (!token) {
-    args.log.info(
-      {
-        owner: args.owner,
-        repo: args.repo,
-        pr: args.prNumber,
-      },
-      "[war-room] HIVEMOOT_BOT_AGENT_TOKEN unset — skipping war-room creation. Set the env var to enable Phase E webhook routing.",
-    );
-    return { roomId: null, skipped: "no_token" };
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
+    log: args.log,
+    context: { owner: args.owner, repo: args.repo, pr: args.prNumber },
+  });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { roomId: null, skipped: constructed.skipped };
   }
-
-  let client: WarRoomClient;
-  try {
-    client = new WarRoomClient({ log: args.log });
-  } catch (err) {
-    // Construction can throw (invalid baseUrl etc.) — log and skip.
-    args.log.error(
-      {
-        err,
-        owner: args.owner,
-        repo: args.repo,
-        pr: args.prNumber,
-      },
-      "[war-room] failed to construct WarRoomClient — skipping war-room creation.",
-    );
-    return { roomId: null, skipped: "api_error" };
-  }
+  const store = constructed;
 
   const subject = prSubjectRef({
     owner: args.owner,
@@ -219,7 +260,7 @@ export async function maybeCreatePrReviewRoom(
   });
 
   try {
-    await client.createRoom({ subject, roomId });
+    await store.createRoom({ subject, roomId });
     args.log.info(
       {
         owner: args.owner,
@@ -283,6 +324,8 @@ interface MaybeEmitSubjectUpdatedArgs {
   owner: string;
   repo: string;
   prNumber: number;
+  /** GitHub App installation id (`payload.installation.id`). */
+  installationId: number | string | undefined;
   /** What changed — included in the event body for forensic /
    * worker-triage signal. */
   changeKind: "synchronize" | "closed" | "reopened";
@@ -296,21 +339,19 @@ interface MaybeEmitSubjectUpdatedArgs {
 interface MaybeEmitSubjectUpdatedResult {
   /** Sequence the event landed at, OR null when skipped. */
   sequence: number | null;
-  skipped?: "no_token" | "api_error" | "no_room";
+  skipped?: "api_error" | "no_room" | "no_installation" | "no_config";
 }
 
 /**
  * Emit a `subject_updated` event on the war-room corresponding to
  * a PR (synchronize / closed / reopened). Returns null + skipped
  * code when:
- *   - `HIVEMOOT_BOT_AGENT_TOKEN` env unset (war-room disabled)
  *   - The room doesn't exist (PR never had a war-room — likely a
  *     PR opened before war-room integration was enabled, or
- *     transient API failure on E.1's create call)
+ *     transient failure on E.1's create call)
  *   - Status precondition fail (room is `closed` or `deciding` —
  *     queen has the claim or it's already terminal)
- *   - Network / 5xx (transient; webhook re-delivery doesn't fire
- *     because the helper still returns 200 to GitHub)
+ *   - Transient Redis error
  *
  * Idempotency: caller-supplied key derives from a stable
  * `(roomId, action, headSha)` tuple — webhook re-deliveries with
@@ -326,25 +367,15 @@ interface MaybeEmitSubjectUpdatedResult {
 export async function maybeEmitSubjectUpdated(
   args: MaybeEmitSubjectUpdatedArgs,
 ): Promise<MaybeEmitSubjectUpdatedResult> {
-  const token = process.env.HIVEMOOT_BOT_AGENT_TOKEN;
-  if (!token) {
-    args.log.info(
-      { owner: args.owner, repo: args.repo, pr: args.prNumber },
-      "[war-room] HIVEMOOT_BOT_AGENT_TOKEN unset — skipping subject_updated",
-    );
-    return { sequence: null, skipped: "no_token" };
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
+    log: args.log,
+    context: { owner: args.owner, repo: args.repo, pr: args.prNumber },
+  });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { sequence: null, skipped: constructed.skipped };
   }
-
-  let client: WarRoomClient;
-  try {
-    client = new WarRoomClient({ log: args.log });
-  } catch (err) {
-    args.log.error(
-      { err, owner: args.owner, repo: args.repo, pr: args.prNumber },
-      "[war-room] failed to construct WarRoomClient — skipping subject_updated",
-    );
-    return { sequence: null, skipped: "api_error" };
-  }
+  const store = constructed;
 
   const roomId = derivePrRoomId({
     owner: args.owner,
@@ -363,7 +394,7 @@ export async function maybeEmitSubjectUpdated(
   if (args.headSha !== undefined) body.head_sha = args.headSha;
 
   try {
-    const result = await client.appendEvent({
+    const result = await store.appendEvent({
       roomId,
       eventType: "subject_updated",
       body,
@@ -444,6 +475,8 @@ interface MaybeCreateMentionRoomArgs {
    * distinguish; the room's downstream consumers can read
    * `pull_request` on the original webhook payload if they need to. */
   issueOrPrNumber: number;
+  /** GitHub App installation id (`payload.installation.id`). */
+  installationId: number | string | undefined;
   /** GitHub comment.id of the @hivemoot mention. Folded into the
    * deterministic roomId so each mention gets a fresh room (post-
    * close safety) AND used as the `subject_updated` event's
@@ -451,8 +484,9 @@ interface MaybeCreateMentionRoomArgs {
    * (re-mention safety). */
   commentId: number;
   /** GitHub login of the comment author. Logged for ops triage —
-   * NOT used for any access decision (the bot's own bearer is
-   * what authorizes the room creation). */
+   * NOT used for any access decision (the bot's own GitHub App
+   * identity is what authorizes the room creation; per-tenant
+   * scoping comes from `installationId`). */
   commentAuthor: string;
   log: Pick<Logger, "info" | "warn" | "error">;
 }
@@ -462,7 +496,7 @@ interface MaybeCreateMentionRoomResult {
    *   - The newly-created room (this comment opened a fresh mention room)
    *   - The pre-existing open room for this issue (re-mention path —
    *     a `subject_updated` event was emitted to advance its seq)
-   *   - `null` when no token configured / API error / etc.
+   *   - `null` when an unrecoverable Redis error occurred.
    */
   roomId: string | null;
   /** Whether the room already existed and we emitted subject_updated
@@ -470,7 +504,7 @@ interface MaybeCreateMentionRoomResult {
    * when roomId is null. */
   reusedExistingRoom?: boolean;
   /** Why the room wasn't created when `roomId === null`. */
-  skipped?: "no_token" | "api_error";
+  skipped?: "api_error" | "no_installation" | "no_config";
 }
 
 /**
@@ -481,11 +515,10 @@ interface MaybeCreateMentionRoomResult {
  * `subject_already_open` 409 path. Once that room closes, a new
  * mention will create a fresh room (storage frees the subject).
  *
- * Same auth-gated, non-fatal-on-error policy as `maybeCreatePrReviewRoom`:
- *   - `HIVEMOOT_BOT_AGENT_TOKEN` unset → log + return null
- *   - 5xx / network → log + return null
+ * Non-fatal-on-error policy preserved:
  *   - 409 `subject_already_open` → reuse existing roomId
  *   - other 4xx → log + return null
+ *   - 5xx / Redis transient → log + return null
  *
  * The webhook handler invokes this helper AFTER the /command parser
  * has rejected the comment (a comment that's primarily a /command
@@ -495,35 +528,20 @@ interface MaybeCreateMentionRoomResult {
 export async function maybeCreateMentionRoom(
   args: MaybeCreateMentionRoomArgs,
 ): Promise<MaybeCreateMentionRoomResult> {
-  const token = process.env.HIVEMOOT_BOT_AGENT_TOKEN;
-  if (!token) {
-    args.log.info(
-      {
-        owner: args.owner,
-        repo: args.repo,
-        issueOrPrNumber: args.issueOrPrNumber,
-        commentAuthor: args.commentAuthor,
-      },
-      "[war-room] HIVEMOOT_BOT_AGENT_TOKEN unset — skipping mention room creation. Set the env var to enable mention war-rooms.",
-    );
-    return { roomId: null, skipped: "no_token" };
+  const constructed = tryConstructStore({
+    installationId: args.installationId,
+    log: args.log,
+    context: {
+      owner: args.owner,
+      repo: args.repo,
+      issueOrPrNumber: args.issueOrPrNumber,
+      commentAuthor: args.commentAuthor,
+    },
+  });
+  if (!(constructed instanceof WarRoomStore)) {
+    return { roomId: null, skipped: constructed.skipped };
   }
-
-  let client: WarRoomClient;
-  try {
-    client = new WarRoomClient({ log: args.log });
-  } catch (err) {
-    args.log.error(
-      {
-        err,
-        owner: args.owner,
-        repo: args.repo,
-        issueOrPrNumber: args.issueOrPrNumber,
-      },
-      "[war-room] failed to construct WarRoomClient — skipping mention room creation.",
-    );
-    return { roomId: null, skipped: "api_error" };
-  }
+  const store = constructed;
 
   const subject = {
     type: "mention_response" as const,
@@ -537,7 +555,7 @@ export async function maybeCreateMentionRoom(
   });
 
   try {
-    await client.createRoom({ subject, roomId });
+    await store.createRoom({ subject, roomId });
     args.log.info(
       {
         owner: args.owner,
@@ -584,7 +602,7 @@ export async function maybeCreateMentionRoom(
             return { roomId, reusedExistingRoom: false };
           }
           return await emitMentionSubjectUpdated({
-            client,
+            store,
             owner: args.owner,
             repo: args.repo,
             issueOrPrNumber: args.issueOrPrNumber,
@@ -632,7 +650,7 @@ export async function maybeCreateMentionRoom(
  * withdrawn/resolved on the prior mention.
  */
 async function emitMentionSubjectUpdated(args: {
-  client: WarRoomClient;
+  store: WarRoomStore;
   owner: string;
   repo: string;
   issueOrPrNumber: number;
@@ -643,7 +661,7 @@ async function emitMentionSubjectUpdated(args: {
 }): Promise<MaybeCreateMentionRoomResult> {
   const idempotencyKey = `bot.subject_updated.${args.existingRoomId}.mention.${args.commentId}`;
   try {
-    await args.client.appendEvent({
+    await args.store.appendEvent({
       roomId: args.existingRoomId,
       eventType: "subject_updated",
       body: {
