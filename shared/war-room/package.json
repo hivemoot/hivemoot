@@ -4,9 +4,29 @@
   "private": true,
   "type": "module",
   "description": "Shared war-room storage layer + redis-lock helper. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's `@upstash/redis` install is reused by source-level resolution; this package intentionally declares no @upstash/redis dependency to avoid a dual-package hazard (two installations producing non-assignable Redis types).",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./redis-lock": "./src/redis-lock.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./redis-lock": {
+      "types": "./dist/redis-lock.d.ts",
+      "default": "./dist/redis-lock.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@upstash/redis": "1.37.0",
+    "typescript": "^5.9.0"
   }
 }
