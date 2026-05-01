@@ -68,12 +68,17 @@ acceptable; both share the same Vercel deploy lifecycle anyway.
 ### Decision
 
 **V1 ships bot-as-queen.** Queen logic lives in
-`bot/api/lib/queen/` — synthesis prompt, manager loop, and HTTP
-clients to the war-room API on hivemoot.dev. The bot's existing
-webhook handler dispatches `pull_request.opened` etc. to a queen
+`bot/api/lib/queen/` — synthesis prompt, manager loop, and a
+direct-Redis store (`bot/api/lib/war-room-store.ts`) that calls
+the shared `@hivemoot/war-room` storage primitives without going
+through hivemoot.dev's HTTP surface. Per-tenant scoping comes
+from the webhook payload (`installation.id`) on creates and from
+`app.eachInstallation()` iteration on the cron path; no
+per-installation bearer is required. The bot's existing webhook
+handler dispatches `pull_request.opened` etc. to a queen
 "create-room" routine. A scheduled background job (Vercel Cron or
-similar) drives the manager loop on a 60s tick (Hobby/Pro Vercel
-Cron minimum — see §Manager loop) to advance rooms past
+similar) drives the manager loop on a 2-minute tick (Hobby/Pro
+Vercel Cron minimum — see §Manager loop) to advance rooms past
 their RSVP/contribution windows.
 
 The standalone queen-agent variant is documented in §17 (Future
