@@ -732,9 +732,17 @@ arising from misvalidated input.
 
 ## API surface
 
-All endpoints live on hivemoot.dev. The bot (queen) reaches them via
-HTTP from the Vercel deployment; workers reach them via the agent
-runtime's existing HTTP plumbing.
+All endpoints live on hivemoot.dev. **External callers** (workers
+on the hive, CLI users) reach them via HTTP with a V1 capability
+bearer (`Authorization: Bearer …`). The **bot's queen** (colocated
+with the same Redis instance) bypasses HTTP entirely — it calls
+the shared `@hivemoot/war-room` storage primitives directly via
+`bot/api/lib/war-room-store.ts`, with per-tenant scoping from the
+webhook payload (`installation.id`) on creates and from
+`app.eachInstallation()` iteration on the cron path. The HTTP
+surface below is therefore the contract for external consumers;
+the bot's queen reproduces the same semantics by calling the
+underlying storage primitives directly.
 
 ```
 # Bot/queen-only (capability: rooms.create / rooms.update / rooms.decide / rooms.close)
@@ -758,7 +766,7 @@ POST   /api/rooms/{id}/force-close         # admin escalation (S5-aware)
 POST   /api/rooms/{id}/replay              # see §14 for semantics
 ```
 
-Background watchdog (V1): bot-side cron-driven scan every 60s of
+Background watchdog (V1): bot-side cron-driven scan every 2 min of
 `hive:v1:idx:room:status:{installationId}:awaiting_contributions`. For
 each room, check participants past their RSVP-to-contribution timeout
 → emit `participant_timed_out` (transitionless event); also check
@@ -915,11 +923,15 @@ App-installation auth chain.
 ### 2. Event-to-room translation
 
 The handler reads the event payload, decides the action (create vs.
-update vs. ignore), and POSTs to the war-room API on hivemoot.dev
-using a **bot-scoped agent token** (capability set:
-`{rooms.create, rooms.read, rooms.update, rooms.decide, rooms.close,
-agent_role: "queen"}`). The token is stored in Vercel env per the
-existing pattern.
+update vs. ignore), and calls the shared `@hivemoot/war-room`
+storage primitives directly via `bot/api/lib/war-room-store.ts`.
+Per-tenant scoping comes from `payload.installation.id` — the bot
+constructs a per-installation `WarRoomStore` per webhook, so
+cross-tenant data never enters the call. No bearer token is held
+by the bot; the bot's GitHub App identity is the load-bearing
+trust boundary. (External callers — workers on the hive, CLI —
+reach the same storage layer through hivemoot.dev's HTTP routes
+with a V1 capability bearer; the bot bypasses that path.)
 
 **Webhook-on-deciding-room behavior (closes Queen R2 #5).** When the
 handler tries to write `subject_updated` and
@@ -956,14 +968,18 @@ the metric breaches a single-PR-per-day rate.
 
 ### 3. Manager loop — `is_room_ready()`
 
-Driven by Vercel Cron at **60 s interval** (Hobby/Pro tier minimum;
-the prior R2 claim of 30 s is corrected per guard A2). The
+Driven by Vercel Cron at **2 minute interval** (Hobby/Pro tier
+minimum; the prior 60 s claim was the design target before Vercel
+Cron's tier limits became the binding constraint). The
 `queen_tick_lag` watchdog metric pivots accordingly: alert when
-the gap between scheduled and actual tick exceeds 180 s (= 3 ×
+the gap between scheduled and actual tick exceeds 360 s (= 3 ×
 tick interval).
 
-Calls a single bot endpoint `POST /api/internal/queen/tick` that
-runs the manager loop. Two correctness gates wrap the body:
+Calls a single bot endpoint `GET /api/queen/tick` that runs the
+manager loop, iterating `app.eachInstallation()` so the cron
+fires across every installation the bot's GitHub App is on
+(no per-tenant bearer required). Two correctness gates wrap the
+body:
 
 **Endpoint authentication (closes guard A1).** The route requires
 `Authorization: Bearer ${CRON_SECRET}` (Vercel Cron's documented
@@ -975,7 +991,7 @@ the installation's BYOK key on the operator's account).
 
 **Tick serialization (closes Queen R3 #2).** Vercel Cron does not
 guarantee non-overlapping invocations; a tick that runs longer
-than 60 s could overlap with the next fire. The route acquires a
+than 2 min could overlap with the next fire. The route acquires a
 distributed lock at entry:
 
 **Acquire** with `SET key runnerId NX EX 55`. **Release** with the
@@ -1230,9 +1246,10 @@ ships; `worker` tokens cannot mint room creation.
 
 ## Stuck-room watchdog and observability (G4)
 
-The 60s background watchdog is the only thing that moves rooms out of
-`awaiting_contributions` when a worker doesn't contribute. Failure of
-the watchdog → rooms accumulate silently. V1 ships:
+The 2-minute background watchdog is the only thing that moves
+rooms out of `awaiting_contributions` when a worker doesn't
+contribute. Failure of the watchdog → rooms accumulate silently.
+V1 ships:
 
 ### Health metrics (Vercel Cron + observability)
 
@@ -1240,7 +1257,7 @@ the watchdog → rooms accumulate silently. V1 ships:
 |---|---|---|
 | `rooms_past_max_age_count` | scan `hive:v1:idx:room:status:*` filtered by `opened_at` | > 0 for > 5 min |
 | `time_since_last_timeout_emit` | bot-side counter, reset on each emit | > 10 min when there are pending RSVPs |
-| `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 180s (3× 60s tick interval) |
+| `queen_tick_lag` | wall-clock drift between scheduled and actual tick | > 360s (3× 2-minute tick interval) |
 | `claim_held_too_long` | scan `hive:v1:room:*:claim` ages | any claim > 6 min (= TTL) |
 
 Alerts wire into the same channel the dashboard's existing
