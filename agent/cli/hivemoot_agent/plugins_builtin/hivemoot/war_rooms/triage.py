@@ -182,11 +182,23 @@ def build_triage_prompt(room: wr_api.WatchingRoom) -> str:
     lines.append("## Your task")
     lines.append("")
     lines.append(
-        "Investigate the subject (use your normal review tools — gh CLI, "
-        "code search, etc.) and produce a structured triage decision per "
-        "the output format below. If the subject is genuinely outside "
-        "your role's purview, withdraw cleanly rather than contributing "
-        "a low-signal review."
+        "Investigate the subject efficiently — budget yourself ~3-5 tool "
+        "calls (gh CLI, file reads, code search) and then emit the "
+        "structured triage block.  If the subject is genuinely outside "
+        "your role's purview, OR if the investigation is dragging, "
+        "withdraw cleanly with a brief reason rather than contributing a "
+        "low-signal review."
+    )
+    lines.append("")
+    lines.append(
+        "**Critical:** the triage block at the BOTTOM of the output "
+        "format below is REQUIRED.  Produce it before your response "
+        "ends, even if the investigation is incomplete.  A clean "
+        "WITHDRAW with reason `incomplete_investigation` (or similar) "
+        "is acceptable; a response that gets truncated mid-tool-call "
+        "with no triage block at all is NOT — the queen treats that as "
+        "a parse error and your role is dropped from the synthesis "
+        "input entirely."
     )
     lines.append("")
     lines.append(TRIAGE_OUTPUT_INSTRUCTIONS)
@@ -194,20 +206,57 @@ def build_triage_prompt(room: wr_api.WatchingRoom) -> str:
 
 
 # ── Parser ─────────────────────────────────────────────────────────
+#
+# All key regexes are intentionally permissive on incidentals (case,
+# leading markdown bullets / blockquote markers / bold emphasis,
+# trailing whitespace) so that a model that emits `**Decision:** present`
+# or `> DECISION: PRESENT` or `* decision: present` instead of the
+# canonical `DECISION: PRESENT` still parses cleanly.  The verdict
+# value itself is upper-cased before validation against
+# `VALID_VERDICTS`, so `verdict: approve` works too.  Keeping these
+# loose costs nothing — the canonical instructions in
+# `TRIAGE_OUTPUT_INSTRUCTIONS` still ask for the strict form, so most
+# models produce it; the relaxed regex just rescues the edge cases
+# (e.g. zai/glm-5.1 occasionally bolds the keys).
 
 
-_DECISION_RE = re.compile(r"^DECISION:\s*([A-Z_]+)\s*$", re.MULTILINE)
-_VERDICT_RE = re.compile(r"^VERDICT:\s*([A-Z_]+)\s*$", re.MULTILINE)
-_SUMMARY_RE = re.compile(r"^SUMMARY:\s*(.+)$", re.MULTILINE)
-_REASON_RE = re.compile(r"^REASON:\s*(.+)$", re.MULTILINE)
+# Optional leading markup: blockquote `>`, list bullet `* / - / +`,
+# or markdown bold/italic prefix `*` / `_`.  The trailing markup
+# brackets cover both `**DECISION**: VAL` (bold around key only) and
+# `**DECISION:** VAL` (bold around key+colon) — both are valid
+# markdown and observed in the wild.
+_PRE = r"[>*_\-+\s]*"           # before key
+_MID_KEY_TO_COLON = r"[*_]*"    # between key and `:` (closes a `**KEY**` bold)
+_MID_COLON_TO_VAL = r"[*_\s]*"  # between `:` and value (closes a `**KEY:**` bold)
+_POST = r"[\s*_]*"              # trailing markup after value
+
+
+_DECISION_RE = re.compile(
+    rf"^{_PRE}DECISION{_MID_KEY_TO_COLON}:{_MID_COLON_TO_VAL}([A-Za-z_]+){_POST}$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_VERDICT_RE = re.compile(
+    rf"^{_PRE}VERDICT{_MID_KEY_TO_COLON}:{_MID_COLON_TO_VAL}([A-Za-z_]+){_POST}$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_SUMMARY_RE = re.compile(
+    rf"^{_PRE}SUMMARY{_MID_KEY_TO_COLON}:{_MID_COLON_TO_VAL}(.+?){_POST}$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_REASON_RE = re.compile(
+    rf"^{_PRE}REASON{_MID_KEY_TO_COLON}:{_MID_COLON_TO_VAL}(.+?){_POST}$",
+    re.MULTILINE | re.IGNORECASE,
+)
 # Body section: everything from `## Review` (case-insensitive) to end
 # of string. Captured non-greedily up to optional trailing whitespace.
 _BODY_RE = re.compile(
     r"^##\s+Review\s*\n(.*?)\s*$", re.MULTILINE | re.DOTALL | re.IGNORECASE
 )
-# The triage block must come last; we look for the LAST occurrence
-# of a "## Triage decision" heading so the agent can think out loud
-# in earlier sections without confusing the parser.
+# The triage block normally comes last; we look for the LAST
+# occurrence of a "## Triage decision" heading so the agent can think
+# out loud in earlier sections without confusing the parser.  The
+# heading is OPTIONAL — see `parse_triage_response` for the fallback
+# when no heading is present but DECISION markers exist anyway.
 _TRIAGE_HEADER_RE = re.compile(
     r"^##\s+Triage\s+decision\s*$", re.MULTILINE | re.IGNORECASE
 )
@@ -218,31 +267,46 @@ def parse_triage_response(markdown: str) -> TriageDecision:
 
     Robust to:
       - Trailing whitespace / extra blank lines
-      - Earlier sections containing the markers (we only look at
-        the LAST `## Triage decision` block)
+      - Earlier sections containing the markers (we prefer the LAST
+        `## Triage decision` block, but fall back to scanning the full
+        document when no heading exists — covers models that emit
+        bare DECISION/VERDICT markers without the markdown header)
+      - Case variations (`Decision:`, `decision:`, `DECISION:`)
+      - Markdown decoration (`**DECISION:**`, `> DECISION:`, `* DECISION:`)
+      - Lowercase verdict values (`approve`, `Concerns` → uppercased)
       - Missing optional fields (REASON on WITHDRAW)
 
     Synthesizes a WITHDRAW with `parse_error=True` on:
       - Empty / whitespace-only response
-      - No `## Triage decision` heading
-      - Missing or invalid DECISION
+      - No DECISION marker anywhere in the response
       - DECISION=PRESENT with missing/invalid VERDICT
       - DECISION=PRESENT with missing SUMMARY
     """
     if not markdown or not markdown.strip():
         return _withdraw_parse_error("empty_response")
 
+    # Prefer the LAST `## Triage decision` block when one exists —
+    # avoids picking up a tentative draft from earlier prose.
     triage_block = _slice_last_triage_block(markdown)
-    if triage_block is None:
-        return _withdraw_parse_error("no_triage_heading")
+    # Fallback: if no header, scan the whole document.  Closes the
+    # case where a model emits `DECISION: PRESENT` / `VERDICT: ...`
+    # bare at the end without the `## Triage decision` header (zai
+    # has been observed to skip the header when its response is
+    # truncated mid-format).
+    haystack = triage_block if triage_block is not None else markdown
 
-    decision_match = _DECISION_RE.search(triage_block)
+    decision_match = _DECISION_RE.search(haystack)
     if decision_match is None:
-        return _withdraw_parse_error("no_decision_marker")
-    decision = decision_match.group(1).strip()
+        # No decision anywhere — distinguish "had heading but missing
+        # marker" from "no heading either" so operators can grep for
+        # which mode is failing.
+        return _withdraw_parse_error(
+            "no_decision_marker" if triage_block is not None else "no_triage_heading",
+        )
+    decision = decision_match.group(1).strip().upper()
 
     if decision == "WITHDRAW":
-        reason_match = _REASON_RE.search(triage_block)
+        reason_match = _REASON_RE.search(haystack)
         reason = reason_match.group(1).strip() if reason_match else None
         return TriageDecision(kind="withdraw", reason=reason)
 
@@ -250,14 +314,14 @@ def parse_triage_response(markdown: str) -> TriageDecision:
         return _withdraw_parse_error(f"invalid_decision:{decision[:32]}")
 
     # PRESENT path — verdict + summary required.
-    verdict_match = _VERDICT_RE.search(triage_block)
+    verdict_match = _VERDICT_RE.search(haystack)
     if verdict_match is None:
         return _withdraw_parse_error("missing_verdict")
-    verdict = verdict_match.group(1).strip()
+    verdict = verdict_match.group(1).strip().upper()
     if verdict not in VALID_VERDICTS:
         return _withdraw_parse_error(f"invalid_verdict:{verdict[:32]}")
 
-    summary_match = _SUMMARY_RE.search(triage_block)
+    summary_match = _SUMMARY_RE.search(haystack)
     if summary_match is None:
         return _withdraw_parse_error("missing_summary")
     summary = summary_match.group(1).strip()
