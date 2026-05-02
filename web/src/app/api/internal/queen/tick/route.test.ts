@@ -11,8 +11,18 @@ vi.mock("@upstash/redis", () => {
     eval: vi.fn(),
     get: vi.fn(),
   };
+  // Mock both shapes so the test stays decoupled from how the route
+  // constructs its client (we moved off Redis.fromEnv to read the
+  // canonical HIVEMOOT_REDIS_REST_URL/_TOKEN names directly).
+  // class-style so `new Redis(...)` works alongside `Redis.fromEnv()`.
+  class Redis {
+    constructor() {
+      Object.assign(this, fakeRedis);
+    }
+    static fromEnv = vi.fn(() => fakeRedis);
+  }
   return {
-    Redis: { fromEnv: vi.fn(() => fakeRedis) },
+    Redis,
     __fakeRedis: fakeRedis,
   };
 });
@@ -53,6 +63,8 @@ function makeRequest(body: unknown, opts?: { authHeader?: string }): NextRequest
 describe("POST /api/internal/queen/tick", () => {
   beforeEach(() => {
     vi.stubEnv("CRON_SECRET", CRON_SECRET);
+    vi.stubEnv("HIVEMOOT_REDIS_REST_URL", "https://test.upstash.io");
+    vi.stubEnv("HIVEMOOT_REDIS_REST_TOKEN", "test-token");
     fakeRedis.set.mockReset();
     fakeRedis.eval.mockReset();
     fakeRedis.get.mockReset();
@@ -237,6 +249,8 @@ describe("GET /api/internal/queen/tick (Vercel Cron entrypoint)", () => {
 
   beforeEach(() => {
     vi.stubEnv("CRON_SECRET", CRON_SECRET);
+    vi.stubEnv("HIVEMOOT_REDIS_REST_URL", "https://test.upstash.io");
+    vi.stubEnv("HIVEMOOT_REDIS_REST_TOKEN", "test-token");
     fakeRedis.set.mockReset();
     fakeRedis.eval.mockReset();
     mockedTick.mockReset();
