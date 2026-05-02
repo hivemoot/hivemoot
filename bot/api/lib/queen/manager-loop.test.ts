@@ -199,12 +199,15 @@ describe("runQueenManagerLoop — listing & filtering", () => {
   });
 
   it("ignores rooms not in awaiting_contributions", async () => {
+    // Heartbeat model collapses pre-decide states into a single
+    // `awaiting_contributions`. The non-awaiting_contributions
+    // statuses the manager loop must ignore are `deciding` (owned
+    // by another runner / watchdog) and the two terminals.
     const { client, calls } = makeFakeClient({
       rooms: [
-        makeRoom({ roomId: "a", status: "awaiting_rsvp" }),
-        makeRoom({ roomId: "b", status: "deciding" }),
-        makeRoom({ roomId: "c", status: "closed" }),
-        makeRoom({ roomId: "d", status: "expired" }),
+        makeRoom({ roomId: "a", status: "deciding" }),
+        makeRoom({ roomId: "b", status: "closed" }),
+        makeRoom({ roomId: "c", status: "expired" }),
       ],
     });
     const result = await runQueenManagerLoop({
@@ -212,7 +215,7 @@ describe("runQueenManagerLoop — listing & filtering", () => {
       synthesizer: new StubSynthesizer(),
       runnerId: RUNNER_ID,
     });
-    expect(result.totalRoomsScanned).toBe(4);
+    expect(result.totalRoomsScanned).toBe(3);
     expect(result.scannedAwaitingContributions).toBe(0);
     expect(calls.claimCalls).toEqual([]);
     expect(calls.closeCalls).toEqual([]);

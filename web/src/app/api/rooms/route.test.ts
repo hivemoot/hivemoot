@@ -81,7 +81,7 @@ describe("GET /api/rooms", () => {
 
   it("returns rooms scoped to the bearer's installation (no cross-installation read)", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk({ installationId: "12345" }));
-    const fakeRooms = [{ status: "awaiting_rsvp" } as never];
+    const fakeRooms = [{ status: "awaiting_contributions" } as never];
     mockedListRooms.mockResolvedValue(fakeRooms);
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
@@ -204,7 +204,7 @@ describe("POST /api/rooms (D.1.b-ii — create room)", () => {
       manager: "bot-queen",
       subject_type: "pr_review",
       subject_ref: "hivemoot/hivemoot#1",
-      status: "awaiting_rsvp",
+      status: "awaiting_contributions",
     } as never);
     const res = await POST(
       makePostRequest({

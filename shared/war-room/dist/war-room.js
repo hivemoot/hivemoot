@@ -249,8 +249,8 @@ export function validateRunnerFormat(runner) {
  * Establishes TWO uniqueness invariants:
  *   1. **Subject uniqueness** (per-installation): a single
  *      `(installationId, subject_type, subject_ref)` tuple has AT
- *      MOST one room in `awaiting_rsvp | awaiting_contributions |
- *      deciding` status. The subject-index key doubles as the lock.
+ *      MOST one room in `awaiting_contributions | deciding` status.
+ *      The subject-index key doubles as the lock.
  *   2. **RoomId uniqueness** (per-installation): EXISTS check on the
  *      room hash key prevents a second caller from overlaying an
  *      existing room's data with a different subject. Closes
@@ -266,7 +266,7 @@ export function validateRunnerFormat(runner) {
  *     fewer Redis call than the SET 0 + INCR pattern)
  *   - Initial `room_opened` event in `:events` (seq=1)
  *   - Membership in installation index (sorted set, score=opened_at_ms)
- *   - Membership in status:awaiting_rsvp set
+ *   - Membership in status:awaiting_contributions set
  *   - Membership in repo index (set)
  *
  * KEYS:
@@ -274,14 +274,14 @@ export function validateRunnerFormat(runner) {
  *   [2] roomKey                 — room hash (data + status fields)
  *   [3] seqKey                  — sequence counter
  *   [4] eventsKey               — event log sorted set
- *   [5] statusSetAwaitingRsvpKey — status:awaiting_rsvp index
+ *   [5] statusSetAwaitingContribsKey — status:awaiting_contributions index
  *   [6] installationIndexKey    — all-rooms-for-installation sorted set
  *   [7] repoIndexKey            — per-repo index
  *
  * ARGV:
  *   [1] roomId                  — for index values + error payload
  *   [2] roomCoreDataJson        — RoomCoreData (everything except status) as JSON
- *   [3] initialStatus           — "awaiting_rsvp"
+ *   [3] initialStatus           — "awaiting_contributions"
  *   [4] roomOpenedEventJson     — initial event payload (already encodes seq=1)
  *   [5] openedAtMs              — for installation-index sort score
  *   [6] maxAgeSecs              — TTL for the subject-uniqueness lock
@@ -370,8 +370,8 @@ export async function createRoom(args) {
     const openedAtIso = new Date(nowMs).toISOString();
     const timing = {
         max_age_secs: args.timing?.max_age_secs ?? DEFAULT_MAX_AGE_SECS,
-        rsvp_deadline_secs: args.timing?.rsvp_deadline_secs ?? 600,
-        contribution_deadline_secs: args.timing?.contribution_deadline_secs ?? 1200,
+        drop_threshold_secs: args.timing?.drop_threshold_secs ?? 1200,
+        quiet_period_secs: args.timing?.quiet_period_secs ?? 600,
     };
     const data = {
         manager: args.manager,
@@ -398,13 +398,13 @@ export async function createRoom(args) {
         roomKey(args.installationId, args.roomId),
         seqKey(args.roomId),
         eventsKey(args.roomId),
-        statusIndexKey(args.installationId, "awaiting_rsvp"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
         installationIndexKey(args.installationId),
         repoIndexKey(args.installationId, repo),
     ], [
         args.roomId,
         JSON.stringify(data),
-        "awaiting_rsvp",
+        "awaiting_contributions",
         JSON.stringify(openedEvent),
         String(nowMs),
         String(timing.max_age_secs),
@@ -419,7 +419,7 @@ export async function createRoom(args) {
     if (result.ok !== 1) {
         throw new Error(`ROOM_OPEN_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
     }
-    return { ...data, status: "awaiting_rsvp" };
+    return { ...data, status: "awaiting_contributions" };
 }
 /** Internal: parse all room-hash fields into a typed RoomCore. Used
  * by both `getRoomCore` and `listRooms` so the multi-field
@@ -1210,10 +1210,11 @@ return {seq}
  * transformation in-place, and HSETs back. `agent_id` + `rsvp_at`
  * are always preserved across `resolve` / `withdraw` / `timeout`.
  *
- * Closes #510 builder R2 #1 indirectly: `submitContribution` now
- * uses this script with `allowedRoomStatuses = "awaiting_rsvp,
- * awaiting_contributions"` per design L201 (RSVP'd workers may
- * contribute during either room status).
+ * Post-#510 / heartbeat-model revision: `submitContribution` now
+ * uses this script with `allowedRoomStatuses = ["awaiting_contributions"]`
+ * — there is only one open status in the heartbeat model. Workers
+ * RSVP'd via `presentParticipant` and then submit; or, in the
+ * heartbeat path, heartbeat then submit. Both paths land here.
  *
  * Order of operations:
  *   1. Idempotency check (replay-safe)
@@ -1865,13 +1866,10 @@ export async function transitionRoomParticipant(args) {
 }
 /**
  * Worker presents itself as a participant in a war room. Soft event —
- * doesn't transition room status (transition to
- * `awaiting_contributions` happens via a separate script when all
- * expected roles are present).
+ * doesn't transition room status (rooms are born `awaiting_contributions`
+ * in the heartbeat model and stay there until queen claims).
  *
- * Allowed statuses: `awaiting_rsvp` (canonical) + `awaiting_contributions`
- * (late RSVP after some other role has presented and the room moved
- * forward via a separate transition path).
+ * Allowed status: `awaiting_contributions` (the only open status).
  *
  * Per-(room, role) first-wins gate: if a different agent already
  * holds this role's slot AND the slot status isn't "withdrew", the
@@ -1919,7 +1917,7 @@ export async function presentParticipant(args) {
             agentId: args.agentId,
             sequenceObservedByClient: args.sequenceObservedByClient,
         }),
-        allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+        allowedStatuses: ["awaiting_contributions"],
         // First-wins gate: per-runner agentId distinguishes subscriber-
         // mode runners that share a bearer.
         ownerCheck: { field: args.role, expectedAgentId: args.agentId },
@@ -1939,8 +1937,8 @@ export async function presentParticipant(args) {
  * event's sequence. Status transforms from pending/resolved →
  * withdrew.
  *
- * Allowed statuses: room must be in awaiting_rsvp or
- * awaiting_contributions. Soft — doesn't transition room status.
+ * Allowed status: `awaiting_contributions` (the only open status
+ * in the heartbeat model). Soft — doesn't transition room status.
  *
  * **Requires existing participant slot** (per design L746): if the
  * caller never `/present`ed, this returns
@@ -1972,7 +1970,7 @@ export async function withdrawParticipant(args) {
         }),
         ownerRequired: true,
         ownerExpected: args.agentId,
-        allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+        allowedRoomStatuses: ["awaiting_contributions"],
         transform: "withdraw",
         // Withdraw a pending RSVP or a resolved (already-contributed)
         // RSVP. Already-withdrew or timed_out are terminal — caller
@@ -1994,11 +1992,9 @@ export async function withdrawParticipant(args) {
  * via `validateContributionBody` — malformed bodies throw
  * `ContributionValidationError` BEFORE any storage write.
  *
- * **Allowed statuses** (closes #510 builder R2 #1): both
- * `awaiting_rsvp` AND `awaiting_contributions` per design L201 —
- * RSVP'd workers may contribute during EITHER status. The
- * canonical timeline depends on the early-contribution path during
- * the RSVP window.
+ * **Allowed status**: `awaiting_contributions` (the only open
+ * status in the heartbeat model). Rooms are born in this status
+ * so workers may contribute from T+0 onwards.
  *
  * **Requires existing participant slot** (closes #510 builder R2 #2):
  * caller must have called `presentParticipant` first. Otherwise
@@ -2048,7 +2044,7 @@ export async function submitContribution(args) {
         }),
         ownerRequired: true,
         ownerExpected: args.agentId,
-        allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+        allowedRoomStatuses: ["awaiting_contributions"],
         transform: "resolve",
         // First contribution from "pending"; re-submit overwrites from
         // "resolved". A worker who withdrew or got timed_out must
@@ -2066,8 +2062,8 @@ export async function submitContribution(args) {
  * The participant's status is **unchanged** — that's a separate
  * signal from contribution withdrawal.
  *
- * **Allowed statuses**: `awaiting_rsvp` or `awaiting_contributions`
- * (matches submitContribution's allowed window).
+ * **Allowed status**: `awaiting_contributions` (matches
+ * submitContribution's allowed window in the heartbeat model).
  *
  * **Requires existing participant slot** (closes #510 builder R2 #2):
  * caller must have called `presentParticipant` first.
@@ -2104,7 +2100,7 @@ export async function withdrawContribution(args) {
         }),
         ownerRequired: true,
         ownerExpected: args.agentId,
-        allowedRoomStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+        allowedRoomStatuses: ["awaiting_contributions"],
         transform: "noop", // participant status unchanged
         // Only resolved participants have a contribution to withdraw.
         // Pending hasn't contributed; withdrew/timed_out are terminal.
@@ -2359,10 +2355,22 @@ export async function terminateRoom(args) {
     const result = dispatchScriptResult(await args.redis.eval(ROOM_TERMINATE_SCRIPT, [
         roomKey(args.installationId, args.roomId),
         subjectIndexKey(args.installationId, args.subject.type, args.subject.ref),
-        // All three non-terminal status sets — script SREMs each
+        // All non-terminal status sets — script SREMs each
         // idempotently. Closes #515 builder R1: a stale
         // caller-supplied currentStatus could SREM the wrong set
         // and leave phantom membership in the live one.
+        //
+        // Legacy `awaiting_rsvp` is included for one-time cleanup of
+        // pre-heartbeat-model rooms still hanging around in that
+        // index. The web watchdog also keeps `awaiting_rsvp` in its
+        // expire-scan branch (web/src/server/queen-tick.ts) so those
+        // rooms reach `terminateRoom` and trigger this SREM.
+        //
+        // TODO(post-deploy): once `max_age_secs` (default 1h) has
+        // elapsed since the heartbeat-model deploy, no `awaiting_rsvp`
+        // rooms remain in storage and this entry + the cast below
+        // can be dropped (search "awaiting_rsvp" across the repo to
+        // find all the cleanup paths to remove together).
         statusIndexKey(args.installationId, "awaiting_rsvp"),
         statusIndexKey(args.installationId, "awaiting_contributions"),
         statusIndexKey(args.installationId, "deciding"),

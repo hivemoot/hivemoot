@@ -18,7 +18,6 @@ import type { RoomCoreWithId, RoomParticipant } from "./types";
 
 describe("statusLabel", () => {
   it.each([
-    ["awaiting_rsvp", "Awaiting RSVPs"],
     ["awaiting_contributions", "Awaiting contributions"],
     ["deciding", "Synthesizing"],
     ["closed", "Closed"],
@@ -31,7 +30,6 @@ describe("statusLabel", () => {
 describe("statusPillClass", () => {
   it("returns class strings for every known status", () => {
     for (const s of [
-      "awaiting_rsvp",
       "awaiting_contributions",
       "deciding",
       "closed",
@@ -140,7 +138,7 @@ describe("relativeTime", () => {
 // ---------------------------------------------------------------------------
 
 describe("isActiveStatus + ACTIVE_STATUSES", () => {
-  it.each(["awaiting_rsvp", "awaiting_contributions", "deciding"] as const)(
+  it.each(["awaiting_contributions", "deciding"] as const)(
     "%s is active",
     (s) => {
       expect(isActiveStatus(s)).toBe(true);
@@ -154,44 +152,35 @@ describe("isActiveStatus + ACTIVE_STATUSES", () => {
 });
 
 describe("relevantDeadlineSecs", () => {
-  it("awaiting_rsvp uses rsvp_deadline_secs", () => {
-    expect(
-      relevantDeadlineSecs("awaiting_rsvp", {
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
-      }),
-    ).toBe(600);
-  });
-
-  it("awaiting_contributions uses contribution_deadline_secs", () => {
+  it("awaiting_contributions uses quiet_period_secs", () => {
     expect(
       relevantDeadlineSecs("awaiting_contributions", {
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        quiet_period_secs: 1200,
+        drop_threshold_secs: 600,
       }),
     ).toBe(1200);
   });
 
-  it("deciding uses contribution_deadline_secs", () => {
+  it("deciding uses quiet_period_secs", () => {
     expect(
       relevantDeadlineSecs("deciding", {
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        quiet_period_secs: 1200,
+        drop_threshold_secs: 600,
       }),
     ).toBe(1200);
   });
 
   it("returns null for terminal statuses", () => {
     expect(
-      relevantDeadlineSecs("closed", { rsvp_deadline_secs: 600 }),
+      relevantDeadlineSecs("closed", { quiet_period_secs: 600 }),
     ).toBeNull();
     expect(
-      relevantDeadlineSecs("expired", { rsvp_deadline_secs: 600 }),
+      relevantDeadlineSecs("expired", { quiet_period_secs: 600 }),
     ).toBeNull();
   });
 
   it("returns null when timing_config is undefined", () => {
-    expect(relevantDeadlineSecs("awaiting_rsvp", undefined)).toBeNull();
+    expect(relevantDeadlineSecs("awaiting_contributions", undefined)).toBeNull();
   });
 });
 
@@ -203,7 +192,7 @@ describe("stucknessRatio", () => {
       stucknessRatio(
         "2026-04-28T11:00:00Z",
         "closed",
-        { contribution_deadline_secs: 1200 },
+        { quiet_period_secs: 1200 },
         NOW,
       ),
     ).toBe(0);
@@ -211,7 +200,7 @@ describe("stucknessRatio", () => {
 
   it("0 when timing_config missing", () => {
     expect(
-      stucknessRatio("2026-04-28T11:00:00Z", "awaiting_rsvp", undefined, NOW),
+      stucknessRatio("2026-04-28T11:00:00Z", "awaiting_contributions", undefined, NOW),
     ).toBe(0);
   });
 
@@ -219,8 +208,8 @@ describe("stucknessRatio", () => {
     expect(
       stucknessRatio(
         "2026-04-28T11:00:00Z",
-        "awaiting_rsvp",
-        { rsvp_deadline_secs: 0 },
+        "awaiting_contributions",
+        { quiet_period_secs: 0 },
         NOW,
       ),
     ).toBe(0);
@@ -232,7 +221,7 @@ describe("stucknessRatio", () => {
       stucknessRatio(
         "2026-04-28T11:30:00Z",
         "awaiting_contributions",
-        { contribution_deadline_secs: 3600 },
+        { quiet_period_secs: 3600 },
         NOW,
       ),
     ).toBeCloseTo(0.5);
@@ -242,8 +231,8 @@ describe("stucknessRatio", () => {
     expect(
       stucknessRatio(
         "2026-04-28T10:00:00Z",
-        "awaiting_rsvp",
-        { rsvp_deadline_secs: 600 }, // 10m deadline, 2h elapsed
+        "awaiting_contributions",
+        { quiet_period_secs: 600 }, // 10m deadline, 2h elapsed
         NOW,
       ),
     ).toBeCloseTo(12);
@@ -253,8 +242,8 @@ describe("stucknessRatio", () => {
     expect(
       stucknessRatio(
         "not-a-date",
-        "awaiting_rsvp",
-        { rsvp_deadline_secs: 600 },
+        "awaiting_contributions",
+        { quiet_period_secs: 600 },
         NOW,
       ),
     ).toBe(0);
@@ -273,8 +262,8 @@ describe("isRoomStuck", () => {
     expect(
       isRoomStuck(
         "2026-04-28T11:52:00Z",
-        "awaiting_rsvp",
-        { rsvp_deadline_secs: 600 },
+        "awaiting_contributions",
+        { quiet_period_secs: 600 },
         NOW,
       ),
     ).toBe(true);
@@ -285,8 +274,8 @@ describe("isRoomStuck", () => {
     expect(
       isRoomStuck(
         "2026-04-28T11:53:00Z",
-        "awaiting_rsvp",
-        { rsvp_deadline_secs: 600 },
+        "awaiting_contributions",
+        { quiet_period_secs: 600 },
         NOW,
       ),
     ).toBe(false);
@@ -297,7 +286,7 @@ describe("isRoomStuck", () => {
       isRoomStuck(
         "2026-01-01T00:00:00Z", // ancient
         "closed",
-        { contribution_deadline_secs: 600 },
+        { quiet_period_secs: 600 },
         NOW,
       ),
     ).toBe(false);
@@ -310,14 +299,13 @@ describe("sortRoomsByStuckness", () => {
   function r(
     id: string,
     status:
-      | "awaiting_rsvp"
       | "awaiting_contributions"
       | "deciding"
       | "closed"
       | "expired",
     opened_at: string,
-    rsvpDeadline = 600,
-    contribDeadline = 1200,
+    quietPeriod = 1200,
+    dropThreshold = 600,
   ): RoomCoreWithId {
     return {
       roomId: id,
@@ -327,8 +315,8 @@ describe("sortRoomsByStuckness", () => {
       status,
       opened_at,
       timing_config: {
-        rsvp_deadline_secs: rsvpDeadline,
-        contribution_deadline_secs: contribDeadline,
+        quiet_period_secs: quietPeriod,
+        drop_threshold_secs: dropThreshold,
       },
     };
   }
@@ -337,7 +325,7 @@ describe("sortRoomsByStuckness", () => {
     const sorted = sortRoomsByStuckness(
       [
         r("a", "closed", "2026-04-28T11:59:00Z"),
-        r("b", "awaiting_rsvp", "2026-04-28T11:55:00Z"),
+        r("b", "awaiting_contributions", "2026-04-28T11:55:00Z"),
         r("c", "expired", "2026-04-28T11:50:00Z"),
         r("d", "deciding", "2026-04-28T11:30:00Z"),
       ],
@@ -352,9 +340,9 @@ describe("sortRoomsByStuckness", () => {
   it("active rooms sorted by stuckness DESC (most-stuck first)", () => {
     const sorted = sortRoomsByStuckness(
       [
-        r("low", "awaiting_rsvp", "2026-04-28T11:58:00Z"), // 2m / 10m = 0.2
-        r("high", "awaiting_rsvp", "2026-04-28T11:51:00Z"), // 9m / 10m = 0.9
-        r("mid", "awaiting_rsvp", "2026-04-28T11:54:00Z"), // 6m / 10m = 0.6
+        r("low", "awaiting_contributions", "2026-04-28T11:58:00Z"), // 2m / 10m = 0.2
+        r("high", "awaiting_contributions", "2026-04-28T11:51:00Z"), // 9m / 10m = 0.9
+        r("mid", "awaiting_contributions", "2026-04-28T11:54:00Z"), // 6m / 10m = 0.6
       ],
       NOW,
     );
@@ -379,7 +367,7 @@ describe("sortRoomsByStuckness", () => {
       manager: "x",
       subject_type: "pr_review",
       subject_ref: "o/r#1",
-      status: "awaiting_rsvp",
+      status: "awaiting_contributions",
       opened_at: "2026-04-28T11:00:00Z",
       // no timing_config
     };
@@ -397,7 +385,7 @@ describe("sortRoomsByStuckness", () => {
   it("does not mutate the input array", () => {
     const original = [
       r("a", "closed", "2026-04-28T11:59:00Z"),
-      r("b", "awaiting_rsvp", "2026-04-28T11:55:00Z"),
+      r("b", "awaiting_contributions", "2026-04-28T11:55:00Z"),
     ];
     const beforeIds = original.map((r) => r.roomId);
     sortRoomsByStuckness(original, NOW);

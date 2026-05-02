@@ -15,7 +15,7 @@
  *   - 404 — room not found
  *   - 409 — owner conflict (different agent already holds this role's
  *     slot), idempotency replay (returns 200 with replay flag),
- *     status precondition (room not in awaiting_rsvp/awaiting_contributions)
+ *     status precondition (room not in awaiting_contributions)
  */
 
 import { NextRequest, NextResponse } from "next/server";

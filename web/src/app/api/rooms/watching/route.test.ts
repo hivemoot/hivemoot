@@ -61,7 +61,7 @@ function makeWorkerAuth(role = "drone") {
 
 function room(
   id: string,
-  status: "awaiting_rsvp" | "awaiting_contributions" | "deciding" | "closed",
+  status: "awaiting_contributions" | "deciding" | "closed",
 ): RoomCoreWithId {
   return {
     roomId: id,
@@ -71,8 +71,8 @@ function room(
     opened_at: "2026-04-28T07:00:00.000Z",
     timing_config: {
       max_age_secs: 3600,
-      rsvp_deadline_secs: 600,
-      contribution_deadline_secs: 1200,
+      drop_threshold_secs: 600,
+      quiet_period_secs: 600,
     },
     status,
   };
@@ -131,9 +131,9 @@ describe("GET /api/rooms/watching", () => {
     expect(mockedGetParticipants).not.toHaveBeenCalled();
   });
 
-  it("includes awaiting_rsvp room when role has no participant slot", async () => {
+  it("includes awaiting_contributions room when role has no participant slot", async () => {
     mockedAuth.mockResolvedValue(makeWorkerAuth("drone"));
-    mockedListRooms.mockResolvedValue([room(RID_A, "awaiting_rsvp")]);
+    mockedListRooms.mockResolvedValue([room(RID_A, "awaiting_contributions")]);
     mockedGetParticipants.mockResolvedValue({}); // no slot for drone
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);

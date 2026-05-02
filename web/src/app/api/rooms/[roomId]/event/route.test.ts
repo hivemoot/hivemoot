@@ -245,7 +245,7 @@ describe("POST /api/rooms/:roomId/event", () => {
     // rooms during the retention window.
     expect(mockedAppend).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+        allowedStatuses: ["awaiting_contributions"],
       }),
     );
   });

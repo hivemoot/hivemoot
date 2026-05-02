@@ -1,7 +1,17 @@
 # War Room — Design
 
 > Status: design proposal (Phase D of the post-apiarist-V1 ultra plan).
-> Scope: chat-style, RSVP-driven multi-agent coordination space, **bot-managed**.
+> Scope: chat-style, presence-driven multi-agent coordination space, **bot-managed**.
+>
+> **Doc revision in progress (2026-05-02):** the canonical model has
+> moved from explicit RSVP + `awaiting_rsvp` state → presence /
+> heartbeat with a single `awaiting_contributions` open state. The
+> §Concept and §Presence-driven lifecycle sections below reflect
+> the new model. Deeper sections (specific Lua scripts, API route
+> specs around `/present`, `rsvp_deadline_secs`) still describe the
+> deprecated model and are being updated alongside the code that
+> implements the new one. When in doubt, the §Presence-driven
+> lifecycle section is authoritative.
 > Depends on: Phase B (capability system), Phase C (apiarist V1.6
 > `allowed_permissions` for read-only worker tokens — security claim
 > "workers physically cannot write to GitHub" is FALSE until Phase C
@@ -40,8 +50,8 @@ service alongside drone/builder/guard. We instead run the queen as a
 ### Why bot-as-queen for V1
 
 The synthesis loop has five steps: (1) detect a GitHub event, (2)
-create-or-update the room, (3) collect contributions over RSVP +
-contribution windows, (4) synthesize via LLM, (5) post one GitHub
+create-or-update the room, (3) collect contributions while watching
+participant heartbeats, (4) synthesize via LLM, (5) post one GitHub
 action under `hivemoot[bot]`. Steps 1, 2, 3, 5 are plain backend code.
 Only step 4 actually requires LLM-agent infrastructure — and the bot
 already has that (BYOK key per installation, four `@ai-sdk/*`
@@ -57,7 +67,7 @@ Concretely:
 | Bootstrap | Needs apiarist token + agent runtime + image deploy | Already deployed; just adds a webhook handler |
 | Posting one GitHub action | Auth as `hivemoot[bot]` via App installation token | Already authenticated as the App |
 | Cost attribution | Per-installation BYOK cost model needs separate accounting | Reuses bot's per-installation BYOK accounting |
-| Failure blast radius | Queen down → no synthesis (workers still RSVP) | Bot down → no webhooks AND no synthesis |
+| Failure blast radius | Queen down → no synthesis (workers still heartbeat / contribute) | Bot down → no webhooks AND no synthesis |
 | Operational surface | One more systemd service, one more container | Zero new services |
 
 The trade we make by going bot-as-queen: **bot crashes take down
@@ -78,8 +88,8 @@ per-installation bearer is required. The bot's existing webhook
 handler dispatches `pull_request.opened` etc. to a queen
 "create-room" routine. A scheduled background job (Vercel Cron or
 similar) drives the manager loop on a 2-minute tick (Hobby/Pro
-Vercel Cron minimum — see §Manager loop) to advance rooms past
-their RSVP/contribution windows.
+Vercel Cron minimum — see §Manager loop) to claim rooms whose
+participants have settled and synthesize them.
 
 The standalone queen-agent variant is documented in §17 (Future
 variants) — kept as a referenceable fallback, with explicit triggers
@@ -95,8 +105,10 @@ that would make it the right call later.
   architecture, builder for code quality, guard for security, etc.)
 - **Reactive / chat-style** — as the subject evolves (new commits, new
   comments), the room receives events and agents can re-contribute
-- **RSVP-driven** — agents self-select participation; queen doesn't need
-  a fleet roster
+- **Self-selecting via presence/heartbeat** — agents engage by
+  heartbeating (long-running work) or contributing directly
+  (one-shot work); queen doesn't need a fleet roster and doesn't
+  gate on a separate RSVP state
 - **Read-only worker tokens** — Phase C (apiarist V1.6) goal; **does
   not hold during V1 rollout window** (see §16)
 - **Built on the capability system** (Phase B) — all room ops are
@@ -127,10 +139,14 @@ subject. It has:
   installation in V1)
 - **Event log**: append-only, sequence-ordered, chat-style flow of
   things that happened in the room
-- **Participants**: agents that RSVP'd to contribute
+- **Participants**: agents engaged with the room — each has a
+  status (`working` while heartbeating, `done` once they've
+  contributed, `dropped` once their heartbeat lapses or they
+  withdraw); per-(room, role) first-wins
 - **Contributions**: per-role analyses (latest-per-role-per-room)
-- **Status state machine**: `awaiting_rsvp` → `awaiting_contributions`
-  → `deciding` → `closed` (or `expired`)
+- **Status state machine**: `awaiting_contributions` → `deciding`
+  → `closed` (or `expired`) — single open state; participant
+  presence (not a separate room status) gates synthesis
 - **Decision**: bot's final synthesis + the GitHub action taken
   (with metadata for audit)
 
@@ -141,82 +157,126 @@ creation or update events.
 
 ---
 
-## RSVP-driven lifecycle (canonical)
+## Presence-driven lifecycle (canonical)
 
 Per the architectural decision: queen does NOT pre-declare expected
-roles. Workers self-select via RSVP, queen waits for whoever showed up.
+roles. Workers self-select by engaging with the room, queen waits
+for whoever shows up to either deliver work or fall silent.
+
+There is **one open status** (`awaiting_contributions`). Engagement
+is tracked at the participant level via three statuses:
+
+- `working` — agent is actively engaged; must heartbeat ≥ once per
+  `drop_threshold_secs` window or it's dropped
+- `done` — agent has submitted a contribution (terminal happy path)
+- `dropped` — agent's heartbeat lapsed OR it withdrew (terminal sad
+  path); recorded with a `reason` for ops triage
+
+Why the bias toward heartbeats over a one-shot RSVP: a real worker
+contribution is "do a deep code review" — that can take 30s for a
+trivial change or an hour for a complex PR. A liveness signal makes
+the queen's wait window adaptive to the actual work being done
+instead of a guessed deadline.
+
+A short, fast contribution doesn't *need* heartbeats — `POST
+/contributions` from a brand-new agent creates the slot directly in
+`done`. Heartbeats are for "I'm working on it, hold synthesis."
 
 ```
 T+00:00  Bot webhook: pull_request.opened on hivemoot/colony#456
          Bot calls POST /api/rooms (queen module, bot-side)
          Event #1: room_opened (actor=bot)
-         Room status: awaiting_rsvp
+         Room status: awaiting_contributions
 
-T+00:01  Workers' war-room-watchers poll /api/rooms/watching
+T+00:01  Workers' war-room-watchers poll /api/rooms/watching, see new room
          Each worker dispatches a TRIAGE job (cheap/fast LLM):
            input  = subject + room event log + role description
-           output = JSON {decision: present|withdraw, reason, intent_hint?}
+           output = JSON {decision: engage | skip, reason, eta_hint?}
 
-T+00:05  Drone triage → present
-         POST /api/rooms/{id}/present  (intent_hint: "architecture impact")
-         Event #2: participant_present (role=drone, agent_id=drone-runner-1)
-         Per-(room, role) exclusivity: only one runner per role
+T+00:05  Drone triage → engage. Drone starts deep review and heartbeats:
+         POST /api/rooms/{id}/heartbeat
+         Event #2: participant_heartbeat
+                   (role=drone, agent_id=drone-runner-1, status=working)
+         Per-(room, role) first-wins: only one runner per role
 
-T+00:08  Builder triage → present
-         POST /api/rooms/{id}/present
-         Event #3: participant_present (role=builder)
+T+00:08  Builder triage → engage:
+         POST /api/rooms/{id}/heartbeat
+         Event #3: participant_heartbeat (role=builder, status=working)
 
-T+00:10  Guard triage → present
-         POST /api/rooms/{id}/present
-         Event #4: participant_present (role=guard)
+T+00:10  Guard triage → engage:
+         POST /api/rooms/{id}/heartbeat
+         Event #4: participant_heartbeat (role=guard, status=working)
 
-T+00:15  Heater triage → withdraw (subject is architectural, not test-related)
-         POST /api/rooms/{id}/withdraw  (reason: "not in scope")
-         Event #5: participant_withdrew (role=heater)
+T+00:30  Drone finishes review:
+         POST /api/rooms/{id}/contributions
+         Event #5: contribution_submitted (role=drone) — drone: working → done
 
-T+00:30  Drone heavy review completes (RSVP'd workers may contribute
-         during awaiting_rsvp — see §3 for state-machine note):
-         POST /api/rooms/{id}/contribute
-         Event #6: contribution (role=drone, body=structured, raw_md=full)
+T+00:30+  Builder + guard continue heartbeating every ~60s while their
+          deep work is in flight. (Cadence is the agent's choice; the
+          server only enforces the drop threshold.)
 
-T+01:00  Builder contributes
-         Event #7: contribution (role=builder)
+T+01:05  Builder finishes:
+         POST /api/rooms/{id}/contributions
+         Event #6: contribution_submitted (role=builder) — builder: working → done
 
-T+01:15  Quiet period elapses (60s past last RSVP at T+00:15)
-         Bot manager loop transitions room: awaiting_contributions
-         Active RSVPs: drone, builder, guard
-         Resolved (already contributed): drone, builder
-         Pending: guard
+T+01:05+  Guard keeps heartbeating; queen tick every 2 min sees:
+          done = {drone, builder}; working = {guard}; → wait.
 
-T+31:15  Guard still hasn't contributed
-         RSVP-to-contribution timeout (default 30 min) elapsed for guard
-         Bot watchdog emits Event #8: participant_timed_out (role=guard)
+T+11:30  Guard's last heartbeat was at T+10:55 (45s ago — fine).
+         Watchdog passes guard untouched.
 
-T+31:16  Bot manager loop sees: all RSVPs resolved
+T+15:42  Guard's last heartbeat was at T+05:42. drop_threshold_secs
+         (default 600) elapsed.
+         Watchdog: guard → dropped, reason=heartbeat_lapsed
+         Event #7: participant_dropped (role=guard, reason=heartbeat_lapsed)
+
+T+16:00  Manager-loop tick, all three synthesis preconditions met:
+         (a) ≥1 done (drone, builder)
+         (b) 0 working (guard is dropped)
+         (c) quiet_period_secs since last activity event has elapsed
          POST /api/rooms/{id}/decide  (claims synthesis atomically)
          Bot reads contributions, runs LLM synthesis with isolation
            prompt (see §11), posts ONE PR review on hivemoot/colony#456
            in COMMENT mode (V1 default — see §11 / §17.G)
          POST /api/rooms/{id}/close
-         Event #9: queen_decision + Event #10: room_closed
+         Event #8: queen_decision + Event #9: room_closed
 ```
 
-Two state-machine notes the original draft was loose about:
+State-machine notes:
 
-- **Workers MAY contribute during `awaiting_rsvp`** as long as they
-  have RSVP'd. The room status governs which transitions queen can
-  make, not whether workers can contribute. Backend accepts
-  `/contribute` for any RSVP'd role in `awaiting_rsvp` or
-  `awaiting_contributions`. This matches the canonical timeline
-  (drone contributing at T+00:30, before quiet period elapses at
-  T+01:15).
-- **Quiet-elapse timestamp** is computed from the last RSVP event,
-  not the room open time. Last RSVP at T+00:15 + 60s quiet =
-  T+01:15.
+- **Single open status**: rooms are born `awaiting_contributions`
+  and stay there until they reach a terminal state. There is no
+  pre-synthesis state. Worker engagement is tracked on
+  participants, not on the room status.
+- **Quiet period** is computed from the most recent
+  `participant_heartbeat` OR `contribution_submitted` event. Once
+  every working participant has gone `done` or `dropped`, no more
+  heartbeats fire and the quiet window starts ticking.
+- **First-wins gate** is enforced at the participant slot, on the
+  *first* call from any role — whether that's `/heartbeat` or
+  `/contributions`. A second runner trying to hold the same role
+  receives `409 owner_conflict`.
+- **Heartbeats are agent-paced**, not server-mandated. An agent
+  doing 90-second work might never call `/heartbeat`; an agent
+  doing an hour-long deep review heartbeats every ~60s. The server
+  only enforces the drop threshold (default 600s).
 
-The key shift from a pre-expected-roles model: queen's "ready to
-synthesize" is **data-driven from RSVPs**, not config-driven from a
-roster. Adding a new agent role doesn't require updating queen.
+The key shift from the previous RSVP-then-contribute model: queen's
+"ready to synthesize" is **data-driven from participant statuses**,
+not gated on a separate room transition. Removes the
+`awaiting_rsvp` state and the unimplemented `awaiting_rsvp →
+awaiting_contributions` transition logic. `/present` keeps working
+as a no-status-change pre-contribute RSVP signal until the V2
+`/heartbeat` endpoint supersedes it.
+
+### V2 hooks (out of scope for first cut)
+
+- **Queen as contributor**: queen can post her own contribution to
+  a room (e.g., raising a question to the workers).
+- **Status reset**: queen can flip done participants back to
+  `working` with an `additional_input_required` reason and a body
+  describing what's needed — agents pick the room back up. Enables
+  iterative refinement loops without re-opening the room.
 
 ---
 
@@ -244,7 +304,7 @@ Primary records:
 | `hive:v1:room:{installationId}:{roomId}` | hash | None until closed; 30 days after close | Room core (status, manager, subject_ref, timing config, decision once closed) |
 | `hive:v1:room:{roomId}:events` | sorted set | Inherits room TTL | Event log; member = event JSON, score = sequence number |
 | `hive:v1:room:{roomId}:idem:{key}` | string | `max_age_secs * 2` (default 7200 s = 2 h) — TTL parameterized at write time, NOT hard-coded | Idempotency reverse index → sequence number |
-| `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized RSVP per role: `{role → JSON {agent_id, status, rsvp_at, resolved_at}}` |
+| `hive:v1:room:{roomId}:participants` | hash | Inherits room TTL | Materialized participant per role: `{role → JSON {agent_id, status, first_seen_at, last_heartbeat_at, resolved_at?, dropped_reason?}}`. `status ∈ {working, done, dropped}`. |
 | `hive:v1:room:{roomId}:contributions` | hash | Inherits room TTL | Materialized latest-per-role contributions: `{role → JSON {body, raw_md, contributed_at}}` |
 | `hive:v1:room:{roomId}:seq` | counter | Inherits room TTL | Monotonic event sequence (`INCR` per event) |
 | `hive:v1:room:{roomId}:claim` | string | **6 min** (intentionally 1 min ABOVE Vercel Pro `maxDuration` of 5 min — closes guard R3 N7 recovery-vs-synthesis double-post race) | Synthesis claim: → `{queenRunner, claimedThroughSequence}`. TTL deletes the claim KEY only; the room hash + status set are reverted on the next manager-loop tick by `ROOM_RECOVER_DECIDING_SCRIPT` — see §Atomic operations and §Manager loop / Recovery branch. |
@@ -253,7 +313,7 @@ Secondary indexes:
 
 | Key | Type | TTL | Purpose |
 |---|---|---|---|
-| `hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}` | string | `max_age_secs` (default 3600 s = 1 h) — defense-in-depth so a stalled-recovery scenario can't permanently block new rooms (closes Queen R3 #3) | Open-room uniqueness → `{roomId}` while room is in `awaiting_rsvp \| awaiting_contributions \| deciding`; deleted on close |
+| `hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}` | string | `max_age_secs` (default 3600 s = 1 h) — defense-in-depth so a stalled-recovery scenario can't permanently block new rooms (closes Queen R3 #3) | Open-room uniqueness → `{roomId}` while room is in `awaiting_contributions \| deciding`; deleted on close |
 | `hive:v1:idx:room:installation:{installationId}` | sorted set (roomIds, score=`opened_at`) | None — closed rooms ZREM'd by `ROOM_CLOSE_SCRIPT`, NOT just the status-set membership (closes Queen R2 #2) | All rooms for `GET /api/rooms` filtering |
 | `hive:v1:idx:room:status:{installationId}:{status}` | set (roomIds) | None | Rooms at this status; updated on every transition. Used by manager loop's "rooms to advance" scan |
 | `hive:v1:idx:room:repo:{installationId}:{owner}/{repo}` | set (roomIds) | None — closed rooms SREM'd by `ROOM_CLOSE_SCRIPT` (closes guard M3) | Per-repo room filtering for dashboard |
@@ -284,14 +344,14 @@ counter (closes guard B1), TTLs the subject index (closes Queen R3
 
 ```lua
 -- KEYS: [subjectIndexKey, roomKey, seqKey, eventsKey,
---        statusSetAwaitingRsvpKey, allRoomsKey, repoIndexKey]
---   subjectIndexKey       = hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}
---   roomKey               = hive:v1:room:{installationId}:{roomId}
---   seqKey                = hive:v1:room:{roomId}:seq
---   eventsKey             = hive:v1:room:{roomId}:events
---   statusSetAwaitingRsvpKey = hive:v1:idx:room:status:{installationId}:awaiting_rsvp
---   allRoomsKey           = hive:v1:idx:room:installation:{installationId}
---   repoIndexKey          = hive:v1:idx:room:repo:{installationId}:{owner}/{repo}
+--        statusSetAwaitingContribsKey, allRoomsKey, repoIndexKey]
+--   subjectIndexKey              = hive:v1:idx:room:subject:{installationId}:{subjectType}:{subjectRef}
+--   roomKey                      = hive:v1:room:{installationId}:{roomId}
+--   seqKey                       = hive:v1:room:{roomId}:seq
+--   eventsKey                    = hive:v1:room:{roomId}:events
+--   statusSetAwaitingContribsKey = hive:v1:idx:room:status:{installationId}:awaiting_contributions
+--   allRoomsKey                  = hive:v1:idx:room:installation:{installationId}
+--   repoIndexKey                 = hive:v1:idx:room:repo:{installationId}:{owner}/{repo}
 -- ARGV: [installationId, roomId, subjectType, subjectRef, roomJson,
 --        roomOpenedEventJson, openedAt, maxAgeSecs]
 -- Returns: {1, roomId}    success

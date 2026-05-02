@@ -80,7 +80,7 @@ describe("GET /api/rooms/:roomId", () => {
 
   it("returns 200 with the room core on success", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk());
-    const fakeRoom = { status: "awaiting_rsvp", manager: "bot-queen" } as never;
+    const fakeRoom = { status: "awaiting_contributions", manager: "bot-queen" } as never;
     mockedGetRoomCore.mockResolvedValue(fakeRoom);
     const res = await GET(makeRequest(), {
       params: Promise.resolve({ roomId: VALID_ROOM_ID }),

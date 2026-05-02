@@ -216,7 +216,7 @@ describe("POST /api/rooms/:roomId/present", () => {
   it("RoomEventStatusPreconditionError → 409 status_precondition_failed", async () => {
     mockedAuth.mockResolvedValue(makeWorkerAuth());
     mockedPresent.mockRejectedValue(
-      new RoomEventStatusPreconditionError(VALID_ROOM_ID, "awaiting_rsvp", "closed"),
+      new RoomEventStatusPreconditionError(VALID_ROOM_ID, "awaiting_contributions", "closed"),
     );
     const res = await POST(makeRequest({ sequenceObservedByClient: 1 }), {
       params: Promise.resolve({ roomId: VALID_ROOM_ID }),

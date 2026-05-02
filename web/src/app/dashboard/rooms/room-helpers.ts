@@ -3,7 +3,6 @@
 import type { RoomParticipant, RoomStatus, SubjectType } from "./types";
 
 const STATUS_LABELS: Record<RoomStatus, string> = {
-  awaiting_rsvp: "Awaiting RSVPs",
   awaiting_contributions: "Awaiting contributions",
   deciding: "Synthesizing",
   closed: "Closed",
@@ -20,7 +19,6 @@ export function statusLabel(status: RoomStatus): string {
  */
 export function statusPillClass(status: RoomStatus): string {
   switch (status) {
-    case "awaiting_rsvp":
     case "awaiting_contributions":
       return "bg-honey-500/10 text-honey-400 ring-1 ring-honey-500/20";
     case "deciding":
@@ -82,7 +80,6 @@ export function participantStatusCounts(
  * dashboard prioritizes these above terminal rooms because they're
  * the ones that may need operator attention. */
 export const ACTIVE_STATUSES: ReadonlySet<RoomStatus> = new Set([
-  "awaiting_rsvp",
   "awaiting_contributions",
   "deciding",
 ]);
@@ -93,23 +90,24 @@ export function isActiveStatus(status: RoomStatus): boolean {
 
 /**
  * Pick the relevant deadline for a room based on its current status.
- * - awaiting_rsvp → rsvp_deadline_secs
- * - awaiting_contributions / deciding → contribution_deadline_secs
+ * - awaiting_contributions / deciding → quiet_period_secs (the
+ *   queen's settling window before claiming the room)
  * - terminal statuses → null (no deadline applies)
  *
  * Falls back to undefined when the room has no timing_config (older
  * rooms or test fixtures).
+ *
+ * Heartbeat-model note: there is no separate `awaiting_rsvp` state
+ * anymore, so a single relevant deadline (`quiet_period_secs`)
+ * covers both pre- and post-contribution waiting.
  */
 export function relevantDeadlineSecs(
   status: RoomStatus,
-  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
 ): number | null {
   if (!isActiveStatus(status)) return null;
   if (!timingConfig) return null;
-  if (status === "awaiting_rsvp") {
-    return timingConfig.rsvp_deadline_secs ?? null;
-  }
-  return timingConfig.contribution_deadline_secs ?? null;
+  return timingConfig.quiet_period_secs ?? null;
 }
 
 /**
@@ -124,7 +122,7 @@ export function relevantDeadlineSecs(
 export function stucknessRatio(
   openedAtIso: string,
   status: RoomStatus,
-  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
   nowMs: number = Date.now(),
 ): number {
   const deadline = relevantDeadlineSecs(status, timingConfig);
@@ -142,7 +140,7 @@ export const STUCK_THRESHOLD = 0.8;
 export function isRoomStuck(
   openedAtIso: string,
   status: RoomStatus,
-  timingConfig?: { rsvp_deadline_secs?: number; contribution_deadline_secs?: number },
+  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
   nowMs: number = Date.now(),
 ): boolean {
   return (
@@ -164,8 +162,8 @@ export function sortRoomsByStuckness<
     status: RoomStatus;
     opened_at: string;
     timing_config?: {
-      rsvp_deadline_secs?: number;
-      contribution_deadline_secs?: number;
+      quiet_period_secs?: number;
+      drop_threshold_secs?: number;
     };
   },
 >(rooms: T[], nowMs: number = Date.now()): T[] {

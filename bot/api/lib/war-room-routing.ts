@@ -357,8 +357,9 @@ interface MaybeEmitSubjectUpdatedResult {
  * `(roomId, action, headSha)` tuple — webhook re-deliveries with
  * the same head SHA don't duplicate events.
  *
- * Status precondition (`awaiting_rsvp` / `awaiting_contributions`
- * only): if the queen has claimed the room (status `deciding`),
+ * Status precondition (`awaiting_contributions` only — heartbeat
+ * model collapses the pre-decide states): if the queen has claimed
+ * the room (status `deciding`),
  * the bot's webhook event is buffered until queen releases — that
  * deferral mechanism is Phase G' (queen module). For E.2, a
  * `status_precondition_failed` 409 is logged + skipped; no

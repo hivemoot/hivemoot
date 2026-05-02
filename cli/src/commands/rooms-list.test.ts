@@ -20,8 +20,8 @@ function makeRoom(overrides: Partial<ListedRoom> = {}): ListedRoom {
     opened_at: "2026-04-29T18:00:00.000Z",
     timing_config: {
       max_age_secs: 7200,
-      rsvp_deadline_secs: 600,
-      contribution_deadline_secs: 1800,
+      drop_threshold_secs: 600,
+      quiet_period_secs: 600,
     },
     status: "awaiting_contributions",
     ...overrides,

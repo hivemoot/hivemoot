@@ -158,11 +158,12 @@ export async function POST(
       //   - `closed` / terminated rooms — polluting the audit log
       //     for the entire retention window AND resurfacing dead
       //     rooms on `/api/rooms/watching`
-      // Both `awaiting_rsvp` and `awaiting_contributions` accept
-      // bot meta-events; status-precondition failure → 409
-      // `status_precondition_failed` so the bot enqueues into its
-      // webhook-buffer and re-tries after the queen releases.
-      allowedStatuses: ["awaiting_rsvp", "awaiting_contributions"],
+      // Heartbeat-model: `awaiting_contributions` is the only
+      // pre-decide status; bot meta-events accepted there.
+      // status-precondition failure → 409 `status_precondition_failed`
+      // so the bot enqueues into its webhook-buffer and re-tries
+      // after the queen releases.
+      allowedStatuses: ["awaiting_contributions"],
       redis: auth.redis,
     });
     return NextResponse.json({ sequence }, { status: 200 });

@@ -5,10 +5,11 @@
  * Driven by Vercel Cron (G'.5) every ~60s. Per tick:
  *
  *   1. **List rooms** for the bearer's installation.
- *   2. **Filter** to status `awaiting_contributions`. Rooms in
- *      `awaiting_rsvp` aren't ready (no contributions to synthesize);
- *      rooms in `deciding` are owned by another runner OR by the
- *      watchdog's recovery path; `closed` / `expired` are terminal.
+ *   2. **Filter** to status `awaiting_contributions` (the only
+ *      pre-decide open status in the heartbeat model — see
+ *      WAR_ROOM_DESIGN.md §Presence-driven lifecycle). Rooms in
+ *      `deciding` are owned by another runner OR by the watchdog's
+ *      recovery path; `closed` / `expired` are terminal.
  *   3. **Eligibility check** per candidate room: fetch the
  *      materialized participants, confirm every entry's status is
  *      `resolved`. Pending / withdrew / timed_out are not synthesis-

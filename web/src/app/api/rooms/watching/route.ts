@@ -9,7 +9,7 @@
  * `canRoleRsvpToRoom` predicate from war-room.ts.
  *
  * Filter (per WAR_ROOM_DESIGN.md L780-790):
- *   - Status ∈ {awaiting_rsvp, awaiting_contributions} (closed and
+ *   - Status ∈ {awaiting_contributions} (closed and
  *     deciding rooms hidden — workers shouldn't act on either)
  *   - Per-role: include if NOT already terminally done (resolved /
  *     timed_out), AND if withdrew, only if room has new events
@@ -66,9 +66,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   // Filter to open statuses BEFORE the per-room participant fetches —
   // closed/deciding rooms are excluded by status alone, no need to
-  // pull their participants hash + currentSequence.
+  // pull their participants hash + currentSequence. Heartbeat model:
+  // `awaiting_contributions` is the only pre-decide open status.
   const openRooms = allRooms.filter(
-    (r) => r.status === "awaiting_rsvp" || r.status === "awaiting_contributions",
+    (r) => r.status === "awaiting_contributions",
   );
 
   if (openRooms.length === 0) {

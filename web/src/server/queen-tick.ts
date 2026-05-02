@@ -10,27 +10,33 @@
  *      claim TTL has expired. Active claims are skipped (the
  *      script's claim-existence check protects in-flight queens).
  *
- *   2. **Expire scan** — for every open room (awaiting_rsvp /
- *      awaiting_contributions / deciding), if `now - opened_at >
- *      max_age_secs` then call `terminateRoom(reason="expired")`.
- *      A room past max_age in `deciding` is terminated too — the
- *      claim DEL'd by terminate makes the queen's mid-flight close
- *      return RoomCloseClaimLostError and abort cleanly.
+ *   2. **Expire scan** — for every open room (heartbeat-model
+ *      `awaiting_contributions | deciding`, plus legacy
+ *      `awaiting_rsvp` for one-time pre-revision-room cleanup), if
+ *      `now - opened_at > max_age_secs` then call
+ *      `terminateRoom(reason="expired")`. A room past max_age in
+ *      `deciding` is terminated too — the claim DEL'd by terminate
+ *      makes the queen's mid-flight close return
+ *      RoomCloseClaimLostError and abort cleanly.
  *
- *   3. **Timeout scan** — for every `awaiting_contributions` room,
- *      iterate `pending` participants. If `now - rsvp_at >
- *      contribution_deadline_secs`, call `timeoutParticipant`. The
- *      script's participant-state precondition (`["pending"]`)
- *      protects against racing a worker's `submitContribution`.
+ *   3. **Timeout scan** — for every `awaiting_contributions` room
+ *      (legacy `awaiting_rsvp` rooms only reach the expire branch
+ *      above and never the timeout branch), iterate `pending`
+ *      participants. If `now - rsvp_at > drop_threshold_secs` (with
+ *      a fallback to legacy `contribution_deadline_secs` for
+ *      pre-revision rooms), call `timeoutParticipant`. The script's
+ *      participant-state precondition (`["pending"]`) protects
+ *      against racing a worker's `submitContribution`.
  *
  * NOT in this slice (D.1.c):
  *   - Synthesis trigger — Phase G' (queen module). When all
  *     participants in an `awaiting_contributions` room have
  *     resolved, the queen's manager loop body claims + synthesizes
  *     + closes. That code lives in `bot/api/lib/queen/`.
- *   - RSVP→contributions transition — uses the design's
- *     "rsvp_quiet_period_secs" field which isn't in the current
- *     `TimingConfig`. Tracked separately.
+ *   - `quiet_period_secs` consumption — TimingConfig stores the
+ *     field but neither the watchdog nor the manager-loop reads it
+ *     yet. The V2 heartbeat-endpoint PR wires it into the synthesis-
+ *     trigger predicate (≥1 done AND 0 working AND quiet elapsed).
  *
  * This module is pure orchestration over the war-room storage
  * primitives — no side effects beyond the storage calls. The
@@ -234,10 +240,20 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
   // expire-then-timeout means a stale room is closed first,
   // saving the timeout-scan cost.
   for (const room of rooms) {
+    // Heartbeat-model: `awaiting_contributions` is the canonical
+    // pre-decide open status. `awaiting_rsvp` is still recognized
+    // here as a *legacy* open status so pre-revision rooms still
+    // reach the expire branch below — without this, those rooms
+    // would sit in the room/status indexes until manual cleanup.
+    // The terminate script's defensive SREM of the legacy
+    // `awaiting_rsvp` index handles the per-room cleanup. The
+    // timeout-scan branch below filters back to
+    // `awaiting_contributions` only, so legacy rooms only ever
+    // get expired, never resurfaced.
     const isOpen =
-      room.status === "awaiting_rsvp" ||
       room.status === "awaiting_contributions" ||
-      room.status === "deciding";
+      room.status === "deciding" ||
+      (room.status as string) === "awaiting_rsvp";
     if (!isOpen) continue;
     result.scannedOpen += 1;
 
@@ -338,7 +354,21 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
       const rsvpAtMs = Date.parse(p.rsvp_at);
       if (!Number.isFinite(rsvpAtMs)) continue;
       const waitedSecs = (nowMs - rsvpAtMs) / 1000;
-      if (waitedSecs <= room.timing_config.contribution_deadline_secs) {
+      // Heartbeat model: `drop_threshold_secs` is the per-participant
+      // drop window (was `contribution_deadline_secs` in the
+      // pre-heartbeat model). Pre-revision rooms persisted on disk
+      // with only the legacy field, so we read both and fall back to
+      // the V1 default — without the fallback, `waitedSecs <= undefined`
+      // is always false and every pending participant gets timed out
+      // on the next tick regardless of how recently they RSVP'd.
+      const legacyConfig = room.timing_config as unknown as {
+        contribution_deadline_secs?: number;
+      };
+      const dropThresholdSecs =
+        room.timing_config.drop_threshold_secs ??
+        legacyConfig.contribution_deadline_secs ??
+        600;
+      if (waitedSecs <= dropThresholdSecs) {
         continue;
       }
 

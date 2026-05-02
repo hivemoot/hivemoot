@@ -3,7 +3,6 @@
 // (see web/src/server/war-room.ts for the canonical types).
 
 export type RoomStatus =
-  | "awaiting_rsvp"
   | "awaiting_contributions"
   | "deciding"
   | "closed"
@@ -19,8 +18,8 @@ export interface RoomCore {
   opened_at: string;
   timing_config?: {
     max_age_secs?: number;
-    rsvp_deadline_secs?: number;
-    contribution_deadline_secs?: number;
+    drop_threshold_secs?: number;
+    quiet_period_secs?: number;
   };
   closed_at?: string;
   closed_reason?: "expired" | "failed_synthesis" | "force_close" | "manual";

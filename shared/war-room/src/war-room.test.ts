@@ -772,8 +772,8 @@ describe("key construction", () => {
   });
 
   it("statusIndexKey includes installationId + status", () => {
-    expect(statusIndexKey("12345", "awaiting_rsvp")).toBe(
-      "hive:v1:idx:room:status:12345:awaiting_rsvp",
+    expect(statusIndexKey("12345", "awaiting_contributions")).toBe(
+      "hive:v1:idx:room:status:12345:awaiting_contributions",
     );
   });
 
@@ -908,7 +908,7 @@ describe("createRoom", () => {
     redis = makeMockRedis();
   });
 
-  it("creates a room with the awaiting_rsvp status + default timing", async () => {
+  it("creates a room with the awaiting_contributions status + default timing", async () => {
     const core = await createRoom({
       installationId: "12345",
       roomId: RID_A,
@@ -916,7 +916,10 @@ describe("createRoom", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       redis,
     });
-    expect(core.status).toBe("awaiting_rsvp");
+    // Heartbeat-model rooms are born in `awaiting_contributions` —
+    // there is no separate RSVP gate (see WAR_ROOM_DESIGN.md
+    // §Presence-driven lifecycle).
+    expect(core.status).toBe("awaiting_contributions");
     expect(core.manager).toBe("bot-queen");
     expect(core.subject_type).toBe("pr_review");
     expect(core.subject_ref).toBe("hivemoot/hivemoot#508");
@@ -934,9 +937,11 @@ describe("createRoom", () => {
       redis,
     });
     expect(core.timing_config.max_age_secs).toBe(7200);
-    // Other fields keep defaults
-    expect(core.timing_config.rsvp_deadline_secs).toBe(600);
-    expect(core.timing_config.contribution_deadline_secs).toBe(1200);
+    // Other fields keep defaults: drop_threshold_secs preserves the
+    // pre-heartbeat-model 1200s window so agent deep work isn't
+    // unexpectedly timed out before V2 ships /heartbeat.
+    expect(core.timing_config.drop_threshold_secs).toBe(1200);
+    expect(core.timing_config.quiet_period_secs).toBe(600);
   });
 
   it("registers the room in the installation index sorted set", async () => {
@@ -952,7 +957,7 @@ describe("createRoom", () => {
     expect(indexed?.[0].member).toBe(RID_A);
   });
 
-  it("registers the room in the status:awaiting_rsvp set", async () => {
+  it("registers the room in the status:awaiting_contributions set", async () => {
     await createRoom({
       installationId: "12345",
       roomId: RID_A,
@@ -961,7 +966,7 @@ describe("createRoom", () => {
       redis,
     });
     const statusSet = redis._sets.get(
-      statusIndexKey("12345", "awaiting_rsvp"),
+      statusIndexKey("12345", "awaiting_contributions"),
     );
     expect(statusSet?.has(RID_A)).toBe(true);
   });
@@ -1130,7 +1135,7 @@ describe("getRoomCore", () => {
       roomId: RID_A,
       redis,
     });
-    expect(core.status).toBe("awaiting_rsvp");
+    expect(core.status).toBe("awaiting_contributions");
     expect(core.subject_ref).toBe("hivemoot/hivemoot#508");
   });
 
@@ -1154,20 +1159,20 @@ describe("getRoomCore", () => {
       opened_at: "2026-04-27T00:00:00.000Z",
       timing_config: {
         max_age_secs: 3600,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
     };
     await redis.hset(roomKey("12345", RID_A), {
       data: JSON.stringify(data),
-      status: "awaiting_rsvp",
+      status: "awaiting_contributions",
     });
     const result = await getRoomCore({
       installationId: "12345",
       roomId: RID_A,
       redis,
     });
-    expect(result.status).toBe("awaiting_rsvp");
+    expect(result.status).toBe("awaiting_contributions");
     expect(result.subject_ref).toBe("hivemoot/hivemoot#508");
     expect(result.manager).toBe("bot-queen");
   });
@@ -1176,7 +1181,7 @@ describe("getRoomCore", () => {
     // A hash with only the status field (data sweep'd somehow) is
     // semantically "not a complete room" — surface as not-found.
     await redis.hset(roomKey("12345", RID_A), {
-      status: "awaiting_rsvp",
+      status: "awaiting_contributions",
     });
     await expect(
       getRoomCore({ installationId: "12345", roomId: RID_A, redis }),
@@ -1196,8 +1201,8 @@ describe("getRoomCore", () => {
       opened_at: "2026-04-28T00:00:00.000Z",
       timing_config: {
         max_age_secs: 3600,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
     };
     const decision = {
@@ -1239,8 +1244,8 @@ describe("getRoomCore", () => {
       opened_at: "2026-04-28T00:00:00.000Z",
       timing_config: {
         max_age_secs: 3600,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
     };
     await redis.hset(roomKey("12345", RID_A), {
@@ -1267,8 +1272,8 @@ describe("getRoomCore", () => {
       opened_at: "2026-04-28T00:00:00.000Z",
       timing_config: {
         max_age_secs: 3600,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
     };
     // Simulate the Lua script's HSET which writes numbers as
@@ -1300,8 +1305,8 @@ describe("getRoomCore", () => {
       opened_at: "2026-04-28T00:00:00.000Z",
       timing_config: {
         max_age_secs: 3600,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1200,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
     };
     await redis.hset(roomKey("12345", RID_A), {
@@ -1580,7 +1585,7 @@ describe("storage shape", () => {
     expect(parsed.manager).toBe("bot-queen");
     // The 'status' field is its own string (NOT inside the JSON blob)
     const statusField = await redis.hget(roomKey("12345", RID_A), "status");
-    expect(statusField).toBe("awaiting_rsvp");
+    expect(statusField).toBe("awaiting_contributions");
     // The plain GET shape is empty (room is a HASH, not a STRING)
     const rawGet = await redis.get(roomKey("12345", RID_A));
     expect(rawGet).toBeNull();
@@ -1864,8 +1869,8 @@ describe("appendRoomEvent", () => {
   });
 
   it("status precondition mismatch → RoomEventStatusPreconditionError", async () => {
-    // Room is in awaiting_rsvp; try to append with allowedStatuses
-    // = [awaiting_contributions]
+    // Room is in awaiting_contributions (the only open status in the
+    // heartbeat model); try to append with allowedStatuses = ["deciding"]
     try {
       await appendRoomEvent({
         installationId: "12345",
@@ -1878,15 +1883,15 @@ describe("appendRoomEvent", () => {
           body: {},
         },
         idempotencyKey: "",
-        allowedStatuses: ["awaiting_contributions"],
+        allowedStatuses: ["deciding"],
         redis,
       });
       throw new Error("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(RoomEventStatusPreconditionError);
       if (err instanceof RoomEventStatusPreconditionError) {
-        expect(err.expectedFrom).toBe("awaiting_contributions");
-        expect(err.actualStatus).toBe("awaiting_rsvp");
+        expect(err.expectedFrom).toBe("deciding");
+        expect(err.actualStatus).toBe("awaiting_contributions");
       }
     }
   });
@@ -2430,14 +2435,8 @@ describe("timeoutParticipant", () => {
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       redis,
     });
-    // Manually transition to awaiting_contributions so the watchdog
-    // path is gated correctly.
-    redis._sets.delete(statusIndexKey("12345", "awaiting_rsvp"));
-    redis._sets.set(
-      statusIndexKey("12345", "awaiting_contributions"),
-      new Set([RID_A]),
-    );
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+    // Heartbeat model: rooms are born in awaiting_contributions
+    // already, no manual status transition needed.
     // Pre-populate the participant slot so the new transition script's
     // existence check passes (per design L746, /present is required
     // before any non-create action like /timeout).
@@ -2524,7 +2523,7 @@ describe("timeoutParticipant", () => {
 // D.1.a-ii R3 — additional builder R2 closures (B5 + B6)
 // ===========================================================================
 
-describe("D.1.a-ii R3 / B5 — submitContribution allows awaiting_rsvp (early contribution path)", () => {
+describe("submitContribution during the canonical open status (heartbeat model)", () => {
   let redis: ReturnType<typeof makeMockRedis>;
   beforeEach(async () => {
     redis = makeMockRedis();
@@ -2544,11 +2543,11 @@ describe("D.1.a-ii R3 / B5 — submitContribution allows awaiting_rsvp (early co
         rsvp_at: "2026-04-28T00:00:00.000Z",
       }),
     });
-    // Room is in awaiting_rsvp (NOT awaiting_contributions) — early-
-    // contribution path per design L201.
+    // Room is in awaiting_contributions — the only open status under
+    // the heartbeat model (rooms are born here).
   });
 
-  it("contribute during awaiting_rsvp succeeds (no status precondition error)", async () => {
+  it("contribute during awaiting_contributions succeeds (no status precondition error)", async () => {
     const seq = await submitContribution({
       installationId: "12345",
       roomId: RID_A,
@@ -2907,13 +2906,11 @@ describe("D.1.a-ii R2 / B3 — participant lifecycle (pending/resolved/withdrew)
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
       redis,
     });
-    // Advance to awaiting_contributions for the contribute path
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
+    // Heartbeat model: rooms are born in awaiting_contributions
+    // already, no manual transition needed.
   });
 
   it("withdrawParticipant sets withdrew_at_sequence to the event seq (via __SEQ__)", async () => {
-    // Reset to awaiting_rsvp for the RSVP+withdraw flow
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_rsvp" });
     const presentSeq = await presentParticipant({
       installationId: "12345",
       roomId: RID_A,
@@ -2939,8 +2936,7 @@ describe("D.1.a-ii R2 / B3 — participant lifecycle (pending/resolved/withdrew)
   });
 
   it("submitContribution flips participant status pending → resolved (atomic dual-update)", async () => {
-    // Set up: RSVP first (awaiting_rsvp → pending)
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_rsvp" });
+    // Set up: RSVP first (creates participant in pending)
     await presentParticipant({
       installationId: "12345",
       roomId: RID_A,
@@ -2949,8 +2945,6 @@ describe("D.1.a-ii R2 / B3 — participant lifecycle (pending/resolved/withdrew)
       sequenceObservedByClient: 1,
       redis,
     });
-    // Move to awaiting_contributions for contribute
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_contributions" });
     // Verify pending
     let participants = await getRoomParticipants({ roomId: RID_A, redis });
     expect(participants.drone.status).toBe("pending");
@@ -3648,9 +3642,11 @@ describe("claimSynthesis", () => {
     }
   });
 
-  it("status precondition: rejects awaiting_rsvp with RoomTransitionInvalidStatusError", async () => {
-    // Reset status back to awaiting_rsvp
-    await redis.hset(roomKey("12345", RID_A), { status: "awaiting_rsvp" });
+  it("status precondition: rejects closed with RoomTransitionInvalidStatusError", async () => {
+    // claimSynthesis is only valid on awaiting_contributions; any
+    // other room status (including terminal `closed`) must be rejected
+    // with the expected/actual diagnostic.
+    await redis.hset(roomKey("12345", RID_A), { status: "closed" });
     try {
       await claimSynthesis({
         installationId: "12345",
@@ -3664,7 +3660,7 @@ describe("claimSynthesis", () => {
       const tErr = err as RoomTransitionInvalidStatusError;
       expect(tErr.action).toBe("claim_synthesis");
       expect(tErr.expectedStatuses).toEqual(["awaiting_contributions"]);
-      expect(tErr.actualStatus).toBe("awaiting_rsvp");
+      expect(tErr.actualStatus).toBe("closed");
     }
   });
 
@@ -4077,7 +4073,7 @@ describe("terminateRoom", () => {
     });
   });
 
-  it("terminates from awaiting_rsvp — emits event, flips status, releases subject lock", async () => {
+  it("terminates from awaiting_contributions — emits event, flips status, releases subject lock", async () => {
     const seq = await terminateRoom({
       installationId: "12345",
       roomId: RID_A,
@@ -4217,16 +4213,14 @@ describe("terminateRoom", () => {
     await redis.hset(roomKey("12345", RID_A), {
       status: "awaiting_contributions",
     });
-    // Replicate the claim's status-set membership migration that
-    // happens during normal claim flow — the room is now in the
-    // deciding status set. (createRoom put it in awaiting_rsvp; we
-    // simulate the awaiting_rsvp → awaiting_contributions and then
-    // → deciding moves explicitly here.)
-    const awaitingRsvpSetKey = statusIndexKey("12345", "awaiting_rsvp");
+    // Simulate the claim's status-set membership migration that
+    // happens during normal claim flow — the room moves out of the
+    // awaiting_contributions set and into the deciding set.
+    const awaitingContribsSetKey = statusIndexKey("12345", "awaiting_contributions");
     const decidingSetKey = statusIndexKey("12345", "deciding");
     // Ensure the room id is in the deciding set (concurrent claim's
     // post-state) and NOT in the awaiting_contributions set.
-    redis._sets.get(awaitingRsvpSetKey)?.delete(RID_A);
+    redis._sets.get(awaitingContribsSetKey)?.delete(RID_A);
     let decidingSet = redis._sets.get(decidingSetKey);
     if (!decidingSet) {
       decidingSet = new Set<string>();
@@ -4253,7 +4247,7 @@ describe("terminateRoom", () => {
 
     // CRITICAL — the room id is gone from EVERY non-terminal status set,
     // not just the one the caller might have observed.
-    expect(redis._sets.get(awaitingRsvpSetKey)?.has(RID_A) ?? false).toBe(false);
+    expect(redis._sets.get(awaitingContribsSetKey)?.has(RID_A) ?? false).toBe(false);
     expect(
       redis._sets
         .get(statusIndexKey("12345", "awaiting_contributions"))

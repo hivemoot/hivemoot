@@ -53,11 +53,12 @@ const NOW = 1735574400000; // 2025-12-30T16:00:00Z
 
 function room(
   roomId: string,
-  status: "awaiting_rsvp" | "awaiting_contributions" | "deciding" | "closed",
+  status: "awaiting_contributions" | "deciding" | "closed",
   options?: {
     openedAtSecondsAgo?: number;
     maxAgeSecs?: number;
-    contributionDeadlineSecs?: number;
+    dropThresholdSecs?: number;
+    quietPeriodSecs?: number;
   },
 ): RoomCoreWithId {
   const opts = options ?? {};
@@ -70,8 +71,8 @@ function room(
     opened_at: new Date(openedAtMs).toISOString(),
     timing_config: {
       max_age_secs: opts.maxAgeSecs ?? 3600,
-      rsvp_deadline_secs: 600,
-      contribution_deadline_secs: opts.contributionDeadlineSecs ?? 1200,
+      drop_threshold_secs: opts.dropThresholdSecs ?? 600,
+      quiet_period_secs: opts.quietPeriodSecs ?? 600,
     },
     status,
   };
@@ -160,7 +161,7 @@ describe("runQueenTick — expire scan", () => {
   it("terminates rooms past max_age_secs as `expired` with watchdog actor", async () => {
     // Room opened 4000s ago, max_age 3600s → 400s past expiry.
     mockedList.mockResolvedValue([
-      room(RID_A, "awaiting_rsvp", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }),
+      room(RID_A, "awaiting_contributions", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }),
     ]);
     mockedParticipants.mockResolvedValue({});
     mockedTerm.mockResolvedValue(7);
@@ -186,7 +187,7 @@ describe("runQueenTick — expire scan", () => {
 
   it("does NOT terminate rooms within max_age", async () => {
     mockedList.mockResolvedValue([
-      room(RID_A, "awaiting_rsvp", { openedAtSecondsAgo: 100, maxAgeSecs: 3600 }),
+      room(RID_A, "awaiting_contributions", { openedAtSecondsAgo: 100, maxAgeSecs: 3600 }),
     ]);
     mockedParticipants.mockResolvedValue({});
     const result = await runQueenTick({
@@ -219,7 +220,7 @@ describe("runQueenTick — expire scan", () => {
 
   it("RoomAlreadyClosedError on terminate is benign (race with operator force-close)", async () => {
     mockedList.mockResolvedValue([
-      room(RID_A, "awaiting_rsvp", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }),
+      room(RID_A, "awaiting_contributions", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }),
     ]);
     mockedParticipants.mockResolvedValue({});
     mockedTerm.mockRejectedValue(new RoomAlreadyClosedError(RID_A, "closed"));
@@ -260,7 +261,7 @@ describe("runQueenTick — timeout scan", () => {
       room(RID_A, "awaiting_contributions", {
         openedAtSecondsAgo: 1500,
         maxAgeSecs: 3600,
-        contributionDeadlineSecs: 1200,
+        dropThresholdSecs: 1200,
       }),
     ]);
     mockedParticipants.mockResolvedValue({
@@ -291,25 +292,11 @@ describe("runQueenTick — timeout scan", () => {
     );
   });
 
-  it("does NOT scan participants on awaiting_rsvp rooms (per design L1055 timeout is contribution-deadline only)", async () => {
-    mockedList.mockResolvedValue([
-      room(RID_A, "awaiting_rsvp", { openedAtSecondsAgo: 100 }),
-    ]);
-    const result = await runQueenTick({
-      installationId: "12345",
-      redis: fakeRedisAsRedis,
-      nowMs: NOW,
-    });
-    expect(result.scannedAwaitingContributions).toBe(0);
-    expect(mockedParticipants).not.toHaveBeenCalled();
-    expect(mockedTimeout).not.toHaveBeenCalled();
-  });
-
   it("RoomParticipantStatePreconditionError on timeout is benign (worker resolved between scan and EVAL)", async () => {
     mockedList.mockResolvedValue([
       room(RID_A, "awaiting_contributions", {
         openedAtSecondsAgo: 1500,
-        contributionDeadlineSecs: 1200,
+        dropThresholdSecs: 1200,
       }),
     ]);
     mockedParticipants.mockResolvedValue({
@@ -415,9 +402,9 @@ describe("runQueenTick — orchestration + bounds", () => {
       room(RID_A, "deciding"), // recovery
       room(RID_B, "awaiting_contributions", {
         openedAtSecondsAgo: 1500,
-        contributionDeadlineSecs: 1200,
+        dropThresholdSecs: 1200,
       }), // timeout
-      room(RID_C, "awaiting_rsvp", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }), // expire
+      room(RID_C, "awaiting_contributions", { openedAtSecondsAgo: 4000, maxAgeSecs: 3600 }), // expire
     ]);
     mockedParticipants.mockResolvedValue({
       drone: participant("drone", "pending", 1300),
@@ -451,7 +438,7 @@ describe("runQueenTick — roomsUnscanned counter (closes #524 guard N2 + builde
   });
 
   it("roomsUnscanned=0 when total fits within cap (steady state)", async () => {
-    mockedList.mockResolvedValue([room(RID_A, "awaiting_rsvp")]);
+    mockedList.mockResolvedValue([room(RID_A, "awaiting_contributions")]);
     fakeRedis.zcard.mockResolvedValue(1);
     mockedParticipants.mockResolvedValue({});
     const result = await runQueenTick({
@@ -465,7 +452,7 @@ describe("runQueenTick — roomsUnscanned counter (closes #524 guard N2 + builde
   it("roomsUnscanned=N when index has more rooms than cap (backlog visible)", async () => {
     // listRooms returns 100 (capped); index has 250 → 150 unscanned
     const slice = Array.from({ length: 100 }, (_, i) =>
-      room(`${i}`.padStart(8, "0") + "-89ab-4cde-9012-3456789abcde", "awaiting_rsvp"),
+      room(`${i}`.padStart(8, "0") + "-89ab-4cde-9012-3456789abcde", "awaiting_contributions"),
     );
     mockedList.mockResolvedValue(slice);
     fakeRedis.zcard.mockResolvedValue(250);
@@ -479,7 +466,7 @@ describe("runQueenTick — roomsUnscanned counter (closes #524 guard N2 + builde
   });
 
   it("roomsUnscanned=0 when zcard fails (defensive — never negative)", async () => {
-    mockedList.mockResolvedValue([room(RID_A, "awaiting_rsvp")]);
+    mockedList.mockResolvedValue([room(RID_A, "awaiting_contributions")]);
     fakeRedis.zcard.mockRejectedValue(new Error("Redis hiccup"));
     mockedParticipants.mockResolvedValue({});
     const result = await runQueenTick({
