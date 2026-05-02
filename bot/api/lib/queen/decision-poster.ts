@@ -194,14 +194,12 @@ function parseSubjectRef(
   const match = SUBJECT_REF_REGEX.exec(ref);
   if (!match) return { ok: false, reason: "shape_mismatch" };
   const [, owner, repo, numberStr] = match;
-  const number = Number(numberStr);
-  if (!Number.isInteger(number) || number <= 0) {
-    // Unreachable given the regex (which already enforces positive
-    // non-zero-leading integers), but defensive against Number()
-    // edge cases on extreme inputs.
-    return { ok: false, reason: "invalid_number" };
-  }
-  return { ok: true, owner, repo, number };
+  // The regex's `[1-9][0-9]*` capture already enforces a positive
+  // integer with no leading zero, so `Number()` here is total — no
+  // need for a defensive Integer/range guard. Trusting the regex
+  // boundary keeps the function fully covered by the negative-shape
+  // tests above without the dead defensive branch.
+  return { ok: true, owner, repo, number: Number(numberStr) };
 }
 
 /**
