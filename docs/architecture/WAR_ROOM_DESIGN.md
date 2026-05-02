@@ -14,16 +14,22 @@
 > lifecycle section is authoritative.
 >
 > **Fleet activation (2026-05-01):** the agent-side `hivemoot.war_rooms`
-> plugin is now live for the three reviewer services on the hive
+> plugin is live for the three reviewer services on the hive
 > (drone / builder / guard). They poll `/api/rooms/watching` every
 > 60s on per-agent capability bearers (worker preset:
 > `rooms.{watch,read,contribute}`) and post `/present + /contribute`
-> per the agent's structured triage response. Verified end-to-end
-> on PR #594: bot-queen created the room, builder + guard both
-> contributed `verdict=APPROVE`, queen-tick synthesized, bot posted
-> the aggregated decision back to the PR. Drone's triage path has
-> a known follow-up (zai engine returns empty triage prompt response
-> → handler withdraws with `unparseable_triage_output:empty_response`).
+> per the agent's structured triage response. The legacy
+> `github-new-pr` review trigger has been disabled in
+> `apiary.yaml` since war_rooms is now the dedicated review path —
+> previously both fired on every fresh PR, producing 3 individual
+> reviews PLUS 1 queen synthesis comment AND starving the war-room
+> jobs behind the long-running github plugin runs.
+>
+> Known follow-up (drone): the zai engine returns empty / non-
+> conformant triage output (no `TRIAGE:` heading), so the handler
+> falls back to `unparseable_triage_output:*` and withdraws.
+> Builder (codex) and guard (claude) emit the expected format and
+> contribute cleanly.
 > Depends on: Phase B (capability system), Phase C (apiarist V1.6
 > `allowed_permissions` for read-only worker tokens — security claim
 > "workers physically cannot write to GitHub" is FALSE until Phase C
