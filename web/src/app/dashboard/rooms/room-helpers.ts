@@ -89,6 +89,45 @@ export function isActiveStatus(status: RoomStatus): boolean {
 }
 
 /**
+ * Status-filter buckets used by the rooms-list UI.  `all` shows
+ * every room the API returned; the other buckets narrow to a single
+ * matching status (or status set).  Operators flip between these
+ * to inspect past conversations without scrolling past active
+ * rooms — the API already returns closed + expired rooms but they
+ * sort below active ones, so a filter is the quickest lookup.
+ */
+export type RoomStatusFilter = "all" | "active" | "closed" | "expired";
+
+export function roomMatchesFilter<T extends { status: RoomStatus }>(
+  room: T,
+  filter: RoomStatusFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "active") return isActiveStatus(room.status);
+  return room.status === filter;
+}
+
+/** Per-filter room counts.  Used to render the count next to each
+ * filter chip so the operator sees at a glance how many rooms each
+ * bucket holds. */
+export function countRoomsByFilter<T extends { status: RoomStatus }>(
+  rooms: T[],
+): Record<RoomStatusFilter, number> {
+  const counts: Record<RoomStatusFilter, number> = {
+    all: rooms.length,
+    active: 0,
+    closed: 0,
+    expired: 0,
+  };
+  for (const r of rooms) {
+    if (isActiveStatus(r.status)) counts.active += 1;
+    if (r.status === "closed") counts.closed += 1;
+    if (r.status === "expired") counts.expired += 1;
+  }
+  return counts;
+}
+
+/**
  * Pick the relevant deadline for a room based on its current status.
  * - awaiting_contributions / deciding → quiet_period_secs (the
  *   queen's settling window before claiming the room)
