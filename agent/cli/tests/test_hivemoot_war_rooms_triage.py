@@ -282,5 +282,145 @@ body
         self.assertIn("body", d.body)
 
 
+class LenientMatchersTests(unittest.TestCase):
+    """Cases observed in the wild from non-strict-following models
+    (zai/glm-5.1, etc.).  The canonical instructions in
+    ``TRIAGE_OUTPUT_INSTRUCTIONS`` still ask for the strict form, so
+    most models produce it; the relaxed regex just rescues edge cases
+    so the agent's verdict isn't lost."""
+
+    def test_lowercase_decision_and_verdict(self) -> None:
+        response = """\
+## Triage decision
+
+decision: present
+verdict: approve
+summary: lowercase keys + values still parse
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "present")
+        self.assertEqual(d.verdict, "APPROVE")
+        self.assertEqual(d.summary, "lowercase keys + values still parse")
+
+    def test_mixed_case_decision(self) -> None:
+        response = """\
+## Triage decision
+
+Decision: Present
+Verdict: Concerns
+Summary: title case keys + values
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "present")
+        self.assertEqual(d.verdict, "CONCERNS")
+
+    def test_markdown_bold_emphasis_around_keys(self) -> None:
+        response = """\
+## Triage decision
+
+**DECISION:** PRESENT
+**VERDICT:** REQUEST_CHANGES
+**SUMMARY:** keys wrapped in markdown bold
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "present")
+        self.assertEqual(d.verdict, "REQUEST_CHANGES")
+        self.assertEqual(d.summary, "keys wrapped in markdown bold")
+
+    def test_blockquote_prefix_on_keys(self) -> None:
+        response = """\
+## Triage decision
+
+> DECISION: PRESENT
+> VERDICT: COMMENT
+> SUMMARY: blockquote prefix lines
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "present")
+        self.assertEqual(d.verdict, "COMMENT")
+
+    def test_list_bullet_prefix_on_keys(self) -> None:
+        response = """\
+## Triage decision
+
+- DECISION: WITHDRAW
+- REASON: bulleted list under the heading
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "withdraw")
+        self.assertEqual(d.reason, "bulleted list under the heading")
+
+    def test_no_heading_but_decision_marker_present(self) -> None:
+        # Model emitted DECISION + VERDICT bare, without the
+        # `## Triage decision` heading.  Earlier the parser would
+        # synthesize a `no_triage_heading` withdraw and the verdict
+        # would be lost; now it falls back to scanning the whole
+        # document.  zai/glm-5.1 has been observed to skip the
+        # heading when its response is mid-truncation.
+        response = """\
+After investigating the diff and reading the test fixtures, here's my call.
+
+DECISION: PRESENT
+VERDICT: APPROVE
+SUMMARY: docs-only change, accurate against the linked sections
+"""
+        d = parse_triage_response(response)
+        self.assertEqual(d.kind, "present")
+        self.assertEqual(d.verdict, "APPROVE")
+        self.assertEqual(
+            d.summary,
+            "docs-only change, accurate against the linked sections",
+        )
+        self.assertFalse(d.parse_error)
+
+    def test_no_heading_no_decision_marker_anywhere(self) -> None:
+        # Pure prose — no DECISION marker anywhere; should still
+        # withdraw cleanly with the `no_triage_heading` reason
+        # (preserves the original signal so operators grep for it).
+        d = parse_triage_response(
+            "Just some thinking-out-loud prose with no markers at all.",
+        )
+        self.assertTrue(d.parse_error)
+        assert d.reason is not None
+        self.assertIn("no_triage_heading", d.reason)
+
+    def test_heading_present_but_no_decision_marker(self) -> None:
+        # Heading exists but no DECISION line — different failure
+        # class than the no-heading case.
+        d = parse_triage_response("## Triage decision\n\nVERDICT: APPROVE\n")
+        self.assertTrue(d.parse_error)
+        assert d.reason is not None
+        self.assertIn("no_decision_marker", d.reason)
+
+
+class PromptBudgetGuidanceTests(unittest.TestCase):
+    """The prompt should warn the agent that mid-investigation
+    truncation is unacceptable — at minimum a clean WITHDRAW with a
+    brief reason is required.  Without this, models that hit a
+    response budget often stop mid-tool-call and produce nothing
+    parseable."""
+
+    def test_prompt_mentions_required_triage_block(self) -> None:
+        prompt = build_triage_prompt(_room())
+        self.assertIn("REQUIRED", prompt)
+
+    def test_prompt_warns_about_truncation(self) -> None:
+        prompt = build_triage_prompt(_room())
+        self.assertIn("truncat", prompt.lower())
+
+    def test_prompt_suggests_a_tool_call_budget(self) -> None:
+        prompt = build_triage_prompt(_room())
+        # Number not pinned; just verify there's some explicit budget
+        # guidance so models that meander through tool calls are
+        # nudged to bound their investigation.
+        self.assertTrue(
+            any(
+                hint in prompt.lower()
+                for hint in ("3-5 tool", "budget", "efficiently")
+            ),
+            f"prompt missing budget guidance: {prompt[-500:]}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
