@@ -140,6 +140,20 @@ describe("GitHubDecisionPoster.postDecision — non-PR subject types (mention / 
       expect.objectContaining({ owner: "o", repo: "r", issue_number: 42 }),
     );
   });
+
+  it("returns attempted=false for an unknown subject type (defensive catch-all)", async () => {
+    // Forces the not-in-POSTABLE branch — guards against a future
+    // PR adding to the union without wiring a posting handler.
+    const { octokit, createCommentFn } = makeOctokit({});
+    const poster = new GitHubDecisionPoster({ octokit });
+    const result = await poster.postDecision({
+      ...PR_ARGS,
+      subjectType: "future_subject" as PostDecisionArgs["subjectType"],
+    });
+    expect(result.attempted).toBe(false);
+    expect(result.commentUrl).toBeNull();
+    expect(createCommentFn).not.toHaveBeenCalled();
+  });
 });
 
 describe("GitHubDecisionPoster.postDecision — malformed subject_ref", () => {
@@ -266,15 +280,43 @@ describe("RecordingDecisionPoster", () => {
     expect(result.commentUrl).toContain(PR_ARGS.roomId);
   });
 
-  it("returns attempted=false for non-pr_review subjects", async () => {
+  // Aligned with GitHubDecisionPoster's subject coverage so manager-
+  // loop tests using this double don't silently diverge from
+  // production behaviour for non-PR subject types.
+  it("records calls and returns a fake URL for mention_response", async () => {
     const poster = new RecordingDecisionPoster();
     const result = await poster.postDecision({
       ...PR_ARGS,
       subjectType: "mention_response",
     });
+    expect(poster.calls).toHaveLength(1);
+    expect(result.attempted).toBe(true);
+    expect(result.commentUrl).toContain(PR_ARGS.roomId);
+  });
+
+  it("records calls and returns a fake URL for issue_triage", async () => {
+    const poster = new RecordingDecisionPoster();
+    const result = await poster.postDecision({
+      ...PR_ARGS,
+      subjectType: "issue_triage",
+    });
+    expect(poster.calls).toHaveLength(1);
+    expect(result.attempted).toBe(true);
+    expect(result.commentUrl).toContain(PR_ARGS.roomId);
+  });
+
+  it("returns attempted=false for an unknown subject type (defensive catch-all)", async () => {
+    // Forces the not-in-POSTABLE branch — guards against a future
+    // PR adding to the union without wiring a posting handler.
+    const poster = new RecordingDecisionPoster();
+    const result = await poster.postDecision({
+      ...PR_ARGS,
+      // Intentional cast to bypass the type union — exercises the
+      // defensive runtime check.
+      subjectType: "future_subject" as PostDecisionArgs["subjectType"],
+    });
     expect(result.attempted).toBe(false);
     expect(result.commentUrl).toBeNull();
-    // Still records the call (so tests can verify the loop tried).
     expect(poster.calls).toHaveLength(1);
   });
 });
