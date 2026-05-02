@@ -12,6 +12,20 @@
 > deprecated model and are being updated alongside the code that
 > implements the new one. When in doubt, the §Presence-driven
 > lifecycle section is authoritative.
+>
+> **Triage prompt + parser hardening (2026-05-02):** the triage
+> prompt now includes a tool-call budget (~3-5 calls) and an
+> explicit truncation-protection instruction so models that cap
+> their response budget mid-investigation still emit a clean
+> WITHDRAW rather than nothing parseable.  The parser regex is
+> case-insensitive and tolerates markdown decoration around the
+> `DECISION:` / `VERDICT:` keys (bold emphasis, blockquote prefix,
+> list bullets); when the `## Triage decision` heading is missing,
+> it falls back to scanning the whole document for bare DECISION
+> markers.  Originally drone (zai/glm-5.1) withdrew from every PR
+> with `unparseable_triage_output:*` — log inspection showed
+> mid-tool-call truncation was the dominant failure mode (failed
+> runs were 57-227 bytes vs 1500+ for successful ones).
 > Depends on: Phase B (capability system), Phase C (apiarist V1.6
 > `allowed_permissions` for read-only worker tokens — security claim
 > "workers physically cannot write to GitHub" is FALSE until Phase C
