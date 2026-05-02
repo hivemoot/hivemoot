@@ -12,6 +12,15 @@
 > deprecated model and are being updated alongside the code that
 > implements the new one. When in doubt, the §Presence-driven
 > lifecycle section is authoritative.
+>
+> **Fleet activation (2026-05-01):** the agent-side `hivemoot.war_rooms`
+> plugin runs on the three reviewer services on the hive (drone /
+> builder / guard). Each polls `/api/rooms/watching` every 60s on
+> its capability bearer (worker preset: `rooms.{watch,read,contribute}`)
+> and posts `/present + /contribute` per the agent's structured
+> triage response. The legacy `github-new-pr` review trigger is
+> disabled in apiary so war_rooms is the single review path on this
+> fleet — `@-mentions` and review-requests still fire normally.
 > Depends on: Phase B (capability system), Phase C (apiarist V1.6
 > `allowed_permissions` for read-only worker tokens — security claim
 > "workers physically cannot write to GitHub" is FALSE until Phase C
