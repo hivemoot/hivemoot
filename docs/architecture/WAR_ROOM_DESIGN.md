@@ -12,6 +12,18 @@
 > deprecated model and are being updated alongside the code that
 > implements the new one. When in doubt, the §Presence-driven
 > lifecycle section is authoritative.
+>
+> **Fleet activation (2026-05-01):** the agent-side `hivemoot.war_rooms`
+> plugin is now live for the three reviewer services on the hive
+> (drone / builder / guard). They poll `/api/rooms/watching` every
+> 60s on per-agent capability bearers (worker preset:
+> `rooms.{watch,read,contribute}`) and post `/present + /contribute`
+> per the agent's structured triage response. Verified end-to-end
+> on PR #594: bot-queen created the room, builder + guard both
+> contributed `verdict=APPROVE`, queen-tick synthesized, bot posted
+> the aggregated decision back to the PR. Drone's triage path has
+> a known follow-up (zai engine returns empty triage prompt response
+> → handler withdraws with `unparseable_triage_output:empty_response`).
 > Depends on: Phase B (capability system), Phase C (apiarist V1.6
 > `allowed_permissions` for read-only worker tokens — security claim
 > "workers physically cannot write to GitHub" is FALSE until Phase C
