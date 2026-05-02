@@ -651,11 +651,22 @@ function makeMockRedis() {
         const sorted = [...set].sort((a, b) => a.score - b.score);
         if (opts?.byScore) {
           // BYSCORE mode: start/stop are scores; "+inf" / "-inf" supported.
-          const minScore = start === "-inf" ? -Infinity : Number(start);
-          const maxScore = stop === "+inf" ? Infinity : Number(stop);
-          const filtered = sorted.filter(
+          // When rev:true, Redis treats `start` as the HIGH bound and
+          // `stop` as the LOW bound; mirror that here.
+          const toScore = (v: number | string, posInf: boolean): number => {
+            if (v === "+inf") return Infinity;
+            if (v === "-inf") return -Infinity;
+            const n = Number(v);
+            return Number.isFinite(n) ? n : (posInf ? Infinity : -Infinity);
+          };
+          const startScore = toScore(start, !opts.rev);
+          const stopScore = toScore(stop, !!opts.rev);
+          const minScore = opts.rev ? stopScore : startScore;
+          const maxScore = opts.rev ? startScore : stopScore;
+          let filtered = sorted.filter(
             (e) => e.score >= minScore && e.score <= maxScore,
           );
+          if (opts.rev) filtered = filtered.reverse();
           const offset = opts.offset ?? 0;
           const end = opts.count !== undefined ? offset + opts.count : filtered.length;
           return filtered.slice(offset, end).map((e) => e.member);
@@ -1596,6 +1607,7 @@ import {
   withdrawContribution,
   timeoutParticipant,
   listRoomEvents,
+  listRecentRoomEvents,
   getRoomParticipants,
   getRoomContributions,
   RoomEventStatusPreconditionError,
@@ -2700,6 +2712,69 @@ describe("listRoomEvents", () => {
     expect(events).toHaveLength(1);
     expect(events[0].event_type).toBe("participant_presented");
     expect(events[0].seq).toBe(2);
+  });
+
+  // Upstash auto-parses JSON-string ZSET members when the response
+  // type generic isn't `string[]`. The reader must accept both shapes
+  // (raw strings from the ZADD path and pre-parsed objects). Without
+  // the guard, dashboard detail and queen-tick event reads fail with
+  // `SyntaxError: "[object Object]" is not valid JSON`.
+  it("decodes pre-parsed objects from Upstash auto-deserialization", async () => {
+    // Override zrange to mimic Upstash returning already-parsed objects
+    const originalZrange = redis.zrange;
+    (redis as { zrange: unknown }).zrange = vi.fn(
+      async (...args: Parameters<typeof originalZrange>) => {
+        const raw = await originalZrange.apply(redis, args);
+        return (raw as string[]).map((s) => JSON.parse(s));
+      },
+    );
+    const events = await listRoomEvents({ roomId: RID_A, redis });
+    expect(events).toHaveLength(1);
+    expect(events[0].event_type).toBe("room_opened");
+  });
+});
+
+describe("listRecentRoomEvents", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+  });
+
+  it("returns events in chronological order", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    const events = await listRecentRoomEvents({ roomId: RID_A, redis });
+    expect(events).toHaveLength(2);
+    expect(events[0].seq).toBe(1);
+    expect(events[1].seq).toBe(2);
+  });
+
+  // Same Upstash auto-parse case as listRoomEvents — closes the
+  // SyntaxError that bricked the dashboard detail page.
+  it("decodes pre-parsed objects from Upstash auto-deserialization", async () => {
+    const originalZrange = redis.zrange;
+    (redis as { zrange: unknown }).zrange = vi.fn(
+      async (...args: Parameters<typeof originalZrange>) => {
+        const raw = await originalZrange.apply(redis, args);
+        return (raw as string[]).map((s) => JSON.parse(s));
+      },
+    );
+    const events = await listRecentRoomEvents({ roomId: RID_A, redis });
+    expect(events).toHaveLength(1);
+    expect(events[0].event_type).toBe("room_opened");
   });
 });
 
