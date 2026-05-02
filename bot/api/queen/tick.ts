@@ -219,13 +219,11 @@ async function runOneTickForInstallation(args: {
       log: makeManagerLoopLogAdapter(),
     });
 
-    // TEMP DEBUG: emit one-line summary so Vercel's per-request log
-    // capture surfaces the post counters. The bot's `vercel logs`
-    // CLI only shows the FIRST log line per request, which has been
-    // hiding `[queen.poster] posted ...` and the manager-loop's
-    // `tick_complete` summary. Single-line console.log via stderr
-    // is captured separately. Revert once posting is verified.
-    console.error(
+    // TEMP DEBUG: emit one-line summary via logger.error so it
+    // surfaces in `vercel logs` (error-level entries are reliably
+    // captured per-request even when info-level synth-factory
+    // suppresses the rest). Revert once posting is verified.
+    logger.error(
       `[queen-tick.summary] installationId=${installationId} ` +
         `scanned=${result.totalRoomsScanned} ` +
         `awaiting=${result.scannedAwaitingContributions} ` +
