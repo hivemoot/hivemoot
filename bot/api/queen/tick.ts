@@ -219,6 +219,23 @@ async function runOneTickForInstallation(args: {
       log: makeManagerLoopLogAdapter(),
     });
 
+    // TEMP DEBUG: emit one-line summary so Vercel's per-request log
+    // capture surfaces the post counters. The bot's `vercel logs`
+    // CLI only shows the FIRST log line per request, which has been
+    // hiding `[queen.poster] posted ...` and the manager-loop's
+    // `tick_complete` summary. Single-line console.log via stderr
+    // is captured separately. Revert once posting is verified.
+    console.error(
+      `[queen-tick.summary] installationId=${installationId} ` +
+        `scanned=${result.totalRoomsScanned} ` +
+        `awaiting=${result.scannedAwaitingContributions} ` +
+        `eligible=${result.eligible} claimed=${result.claimed} ` +
+        `closed=${result.closed} conflicts=${result.conflicts} ` +
+        `errors=${result.errors} ` +
+        `posts=succeeded:${result.postsSucceeded}|` +
+        `failed:${result.postsFailed}|skipped:${result.postsSkipped}`,
+    );
+
     return { result };
   } finally {
     await releaseTickLock(installationId, runnerId);
