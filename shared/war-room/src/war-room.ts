@@ -180,12 +180,17 @@ export interface TimingConfig {
    * don't permanently block new rooms on the same subject. */
   max_age_secs: number;
   /** Soft deadline before a `working` participant whose heartbeat
-   * has lapsed gets dropped by the watchdog. Default 600 (10m).
+   * has lapsed gets dropped by the watchdog. Default 1200 (20m) —
+   * preserves the pre-heartbeat-model `contribution_deadline_secs`
+   * default so agents doing deep work that previously fit the old
+   * window aren't unexpectedly timed out. Once V2 ships the
+   * `/heartbeat` endpoint, agents will be able to keep their slot
+   * alive past this window and the default can drop to ~600.
    *
    * Replaces the deprecated `rsvp_deadline_secs` /
    * `contribution_deadline_secs` pair from the pre-heartbeat model.
-   * Agents heartbeat at their own cadence; the server only enforces
-   * this drop threshold. */
+   * Agents will heartbeat at their own cadence (V2); the server
+   * enforces this drop threshold. */
   drop_threshold_secs: number;
   /** Quiet window the queen waits for after the last
    * participant-relevant event (`participant_heartbeat`,
@@ -744,7 +749,7 @@ export async function createRoom(args: {
 
   const timing: TimingConfig = {
     max_age_secs: args.timing?.max_age_secs ?? DEFAULT_MAX_AGE_SECS,
-    drop_threshold_secs: args.timing?.drop_threshold_secs ?? 600,
+    drop_threshold_secs: args.timing?.drop_threshold_secs ?? 1200,
     quiet_period_secs: args.timing?.quiet_period_secs ?? 600,
   };
 
@@ -3386,8 +3391,18 @@ export async function terminateRoom(args: {
         // idempotently. Closes #515 builder R1: a stale
         // caller-supplied currentStatus could SREM the wrong set
         // and leave phantom membership in the live one.
-        // Includes legacy `awaiting_rsvp` for one-time cleanup of
-        // pre-heartbeat-model rooms still hanging around in that index.
+        //
+        // Legacy `awaiting_rsvp` is included for one-time cleanup of
+        // pre-heartbeat-model rooms still hanging around in that
+        // index. The web watchdog also keeps `awaiting_rsvp` in its
+        // expire-scan branch (web/src/server/queen-tick.ts) so those
+        // rooms reach `terminateRoom` and trigger this SREM.
+        //
+        // TODO(post-deploy): once `max_age_secs` (default 1h) has
+        // elapsed since the heartbeat-model deploy, no `awaiting_rsvp`
+        // rooms remain in storage and this entry + the cast below
+        // can be dropped (search "awaiting_rsvp" across the repo to
+        // find all the cleanup paths to remove together).
         statusIndexKey(args.installationId, "awaiting_rsvp" as RoomStatus),
         statusIndexKey(args.installationId, "awaiting_contributions"),
         statusIndexKey(args.installationId, "deciding"),

@@ -519,7 +519,7 @@ describe("WarRoomStore — happy-path delegation", () => {
       manager: "hivemoot-bot",
       subject_type: "pr_review" as const,
       subject_ref: "x/y#1",
-      status: "awaiting_rsvp" as const,
+      status: "awaiting_contributions" as const,
       opened_at: "2026-04-30T00:00:00.000Z",
     };
     sharedMocks.createRoom.mockResolvedValueOnce(expectedCore);

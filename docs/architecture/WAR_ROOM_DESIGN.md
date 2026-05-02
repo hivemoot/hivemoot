@@ -263,9 +263,11 @@ State-machine notes:
 
 The key shift from the previous RSVP-then-contribute model: queen's
 "ready to synthesize" is **data-driven from participant statuses**,
-not gated on a separate room transition. Removes one state, one
-endpoint (`/present`), and the entire `awaiting_rsvp` →
-`awaiting_contributions` transition logic.
+not gated on a separate room transition. Removes the
+`awaiting_rsvp` state and the unimplemented `awaiting_rsvp →
+awaiting_contributions` transition logic. `/present` keeps working
+as a no-status-change pre-contribute RSVP signal until the V2
+`/heartbeat` endpoint supersedes it.
 
 ### V2 hooks (out of scope for first cut)
 

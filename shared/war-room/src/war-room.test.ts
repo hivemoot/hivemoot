@@ -937,8 +937,10 @@ describe("createRoom", () => {
       redis,
     });
     expect(core.timing_config.max_age_secs).toBe(7200);
-    // Other fields keep defaults
-    expect(core.timing_config.drop_threshold_secs).toBe(600);
+    // Other fields keep defaults: drop_threshold_secs preserves the
+    // pre-heartbeat-model 1200s window so agent deep work isn't
+    // unexpectedly timed out before V2 ships /heartbeat.
+    expect(core.timing_config.drop_threshold_secs).toBe(1200);
     expect(core.timing_config.quiet_period_secs).toBe(600);
   });
 

@@ -95,12 +95,17 @@ export interface TimingConfig {
      * don't permanently block new rooms on the same subject. */
     max_age_secs: number;
     /** Soft deadline before a `working` participant whose heartbeat
-     * has lapsed gets dropped by the watchdog. Default 600 (10m).
+     * has lapsed gets dropped by the watchdog. Default 1200 (20m) —
+     * preserves the pre-heartbeat-model `contribution_deadline_secs`
+     * default so agents doing deep work that previously fit the old
+     * window aren't unexpectedly timed out. Once V2 ships the
+     * `/heartbeat` endpoint, agents will be able to keep their slot
+     * alive past this window and the default can drop to ~600.
      *
      * Replaces the deprecated `rsvp_deadline_secs` /
      * `contribution_deadline_secs` pair from the pre-heartbeat model.
-     * Agents heartbeat at their own cadence; the server only enforces
-     * this drop threshold. */
+     * Agents will heartbeat at their own cadence (V2); the server
+     * enforces this drop threshold. */
     drop_threshold_secs: number;
     /** Quiet window the queen waits for after the last
      * participant-relevant event (`participant_heartbeat`,

@@ -60,7 +60,7 @@ describe("maybeCreatePrReviewRoom", () => {
       manager: "bot-queen",
       subject_type: "pr_review",
       subject_ref: "hivemoot/hivemoot#42",
-      status: "awaiting_rsvp",
+      status: "awaiting_contributions",
       opened_at: "2026-04-28T10:00:00.000Z",
       // NOTE: no `roomId` here — pinning the actual server contract.
     }));
