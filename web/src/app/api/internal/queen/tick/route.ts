@@ -58,7 +58,19 @@ function getCronSecret(): string | null {
 }
 
 function getRedis(): Redis {
-  return Redis.fromEnv();
+  // Web standardised on HIVEMOOT_REDIS_REST_URL / _TOKEN (used by
+  // BYOK auth + war-room storage). Redis.fromEnv() defaults to
+  // UPSTASH_REDIS_REST_URL / _TOKEN, which we don't set — read the
+  // canonical names directly so the watchdog matches the rest of
+  // the codebase.
+  const url = process.env.HIVEMOOT_REDIS_REST_URL;
+  const token = process.env.HIVEMOOT_REDIS_REST_TOKEN;
+  if (!url || !token) {
+    throw new Error(
+      "queen-tick watchdog Redis is misconfigured: set both HIVEMOOT_REDIS_REST_URL and HIVEMOOT_REDIS_REST_TOKEN.",
+    );
+  }
+  return new Redis({ url, token });
 }
 
 function makeRunnerId(): string {
