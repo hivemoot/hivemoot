@@ -155,35 +155,47 @@ describe("isActiveStatus + ACTIVE_STATUSES", () => {
 });
 
 describe("relevantDeadlineSecs", () => {
-  it("awaiting_contributions uses quiet_period_secs", () => {
+  it("awaiting_contributions uses max_age_secs (room expiration)", () => {
     expect(
       relevantDeadlineSecs("awaiting_contributions", {
-        quiet_period_secs: 1200,
-        drop_threshold_secs: 600,
+        max_age_secs: 3600,
+        quiet_period_secs: 180,
+        drop_threshold_secs: 1200,
       }),
-    ).toBe(1200);
+    ).toBe(3600);
   });
 
-  it("deciding uses quiet_period_secs", () => {
+  it("deciding uses max_age_secs", () => {
     expect(
       relevantDeadlineSecs("deciding", {
-        quiet_period_secs: 1200,
-        drop_threshold_secs: 600,
+        max_age_secs: 3600,
+        quiet_period_secs: 180,
       }),
-    ).toBe(1200);
+    ).toBe(3600);
   });
 
   it("returns null for terminal statuses", () => {
     expect(
-      relevantDeadlineSecs("closed", { quiet_period_secs: 600 }),
+      relevantDeadlineSecs("closed", { max_age_secs: 3600 }),
     ).toBeNull();
     expect(
-      relevantDeadlineSecs("expired", { quiet_period_secs: 600 }),
+      relevantDeadlineSecs("expired", { max_age_secs: 3600 }),
     ).toBeNull();
   });
 
   it("returns null when timing_config is undefined", () => {
     expect(relevantDeadlineSecs("awaiting_contributions", undefined)).toBeNull();
+  });
+
+  it("returns null when max_age_secs is missing (older rooms / fixtures)", () => {
+    // quiet_period_secs alone is NOT a fallback — it's the gate
+    // before claim, not the room expiration.  Stuckness is anchored
+    // to the actual expiration deadline only.
+    expect(
+      relevantDeadlineSecs("awaiting_contributions", {
+        quiet_period_secs: 180,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -195,7 +207,7 @@ describe("stucknessRatio", () => {
       stucknessRatio(
         "2026-04-28T11:00:00Z",
         "closed",
-        { quiet_period_secs: 1200 },
+        { max_age_secs: 3600 },
         NOW,
       ),
     ).toBe(0);
@@ -212,30 +224,30 @@ describe("stucknessRatio", () => {
       stucknessRatio(
         "2026-04-28T11:00:00Z",
         "awaiting_contributions",
-        { quiet_period_secs: 0 },
+        { max_age_secs: 0 },
         NOW,
       ),
     ).toBe(0);
   });
 
-  it("computes ratio as (now - opened) / deadline_secs", () => {
-    // 30 minutes elapsed, deadline=3600s (1h) → ratio=0.5
+  it("computes ratio as (now - opened) / max_age_secs", () => {
+    // 30 minutes elapsed, max_age=3600s (1h) → ratio=0.5
     expect(
       stucknessRatio(
         "2026-04-28T11:30:00Z",
         "awaiting_contributions",
-        { quiet_period_secs: 3600 },
+        { max_age_secs: 3600 },
         NOW,
       ),
     ).toBeCloseTo(0.5);
   });
 
-  it("returns >1 when past deadline", () => {
+  it("returns >1 when past max_age (overdue for expiration)", () => {
     expect(
       stucknessRatio(
         "2026-04-28T10:00:00Z",
         "awaiting_contributions",
-        { quiet_period_secs: 600 }, // 10m deadline, 2h elapsed
+        { max_age_secs: 600 }, // 10m max_age, 2h elapsed
         NOW,
       ),
     ).toBeCloseTo(12);
@@ -246,10 +258,25 @@ describe("stucknessRatio", () => {
       stucknessRatio(
         "not-a-date",
         "awaiting_contributions",
-        { quiet_period_secs: 600 },
+        { max_age_secs: 3600 },
         NOW,
       ),
     ).toBe(0);
+  });
+
+  it("a fresh room with default 1h max_age + 180s quiet_period is NOT stuck", () => {
+    // Regression case for the previous bug where stuckness was
+    // computed against quiet_period_secs (180s).  A 4-min-old room
+    // mid-triage would have rated 4*60/180 = 1.33 → flagged as stuck.
+    // Anchored to max_age_secs (3600), it's 0.067 → not stuck.
+    expect(
+      stucknessRatio(
+        "2026-04-28T11:56:00Z", // 4 minutes old
+        "awaiting_contributions",
+        { max_age_secs: 3600, quiet_period_secs: 180 },
+        NOW,
+      ),
+    ).toBeCloseTo(0.067, 2);
   });
 });
 
@@ -261,24 +288,24 @@ describe("isRoomStuck", () => {
   });
 
   it("true when ratio >= 0.8", () => {
-    // 8m elapsed of 10m deadline = 0.8
+    // 8m elapsed of 10m max_age = 0.8
     expect(
       isRoomStuck(
         "2026-04-28T11:52:00Z",
         "awaiting_contributions",
-        { quiet_period_secs: 600 },
+        { max_age_secs: 600 },
         NOW,
       ),
     ).toBe(true);
   });
 
   it("false when ratio < 0.8", () => {
-    // 7m elapsed of 10m deadline = 0.7
+    // 7m elapsed of 10m max_age = 0.7
     expect(
       isRoomStuck(
         "2026-04-28T11:53:00Z",
         "awaiting_contributions",
-        { quiet_period_secs: 600 },
+        { max_age_secs: 600 },
         NOW,
       ),
     ).toBe(false);
@@ -289,7 +316,7 @@ describe("isRoomStuck", () => {
       isRoomStuck(
         "2026-01-01T00:00:00Z", // ancient
         "closed",
-        { quiet_period_secs: 600 },
+        { max_age_secs: 3600 },
         NOW,
       ),
     ).toBe(false);
@@ -307,8 +334,8 @@ describe("sortRoomsByStuckness", () => {
       | "closed"
       | "expired",
     opened_at: string,
-    quietPeriod = 1200,
-    dropThreshold = 600,
+    maxAge = 600,
+    quietPeriod = 180,
   ): RoomCoreWithId {
     return {
       roomId: id,
@@ -318,8 +345,9 @@ describe("sortRoomsByStuckness", () => {
       status,
       opened_at,
       timing_config: {
+        max_age_secs: maxAge,
         quiet_period_secs: quietPeriod,
-        drop_threshold_secs: dropThreshold,
+        drop_threshold_secs: 1200,
       },
     };
   }
