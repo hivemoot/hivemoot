@@ -219,21 +219,6 @@ async function runOneTickForInstallation(args: {
       log: makeManagerLoopLogAdapter(),
     });
 
-    // TEMP DEBUG: emit one-line summary via logger.error so it
-    // surfaces in `vercel logs` (error-level entries are reliably
-    // captured per-request even when info-level synth-factory
-    // suppresses the rest). Revert once posting is verified.
-    logger.error(
-      `[queen-tick.summary] installationId=${installationId} ` +
-        `scanned=${result.totalRoomsScanned} ` +
-        `awaiting=${result.scannedAwaitingContributions} ` +
-        `eligible=${result.eligible} claimed=${result.claimed} ` +
-        `closed=${result.closed} conflicts=${result.conflicts} ` +
-        `errors=${result.errors} ` +
-        `posts=succeeded:${result.postsSucceeded}|` +
-        `failed:${result.postsFailed}|skipped:${result.postsSkipped}`,
-    );
-
     return { result };
   } finally {
     await releaseTickLock(installationId, runnerId);
