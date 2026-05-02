@@ -101,28 +101,44 @@ describe("GitHubDecisionPoster.postDecision — pr_review subjects", () => {
   });
 });
 
-describe("GitHubDecisionPoster.postDecision — non-pr_review subjects (V1 skip)", () => {
-  it("skips mention_response (V1: pr_review only)", async () => {
-    const { octokit, createCommentFn } = makeOctokit({});
+describe("GitHubDecisionPoster.postDecision — non-PR subject types (mention / issue)", () => {
+  // pr_review, mention_response, and issue_triage all share the
+  // `{owner}/{repo}#{number}` ref shape; GitHub's
+  // `issues.createComment` works for both PRs and plain issues, so
+  // the poster handles all three uniformly.
+  it("posts mention_response decisions to the mentioned issue", async () => {
+    const { octokit, createCommentFn } = makeOctokit({
+      htmlUrl: "https://github.com/o/r/issues/9#issuecomment-123",
+    });
     const poster = new GitHubDecisionPoster({ octokit });
     const result = await poster.postDecision({
       ...PR_ARGS,
       subjectType: "mention_response",
+      subjectRef: "o/r#9",
     });
-    expect(result.attempted).toBe(false);
-    expect(result.commentUrl).toBeNull();
-    expect(createCommentFn).not.toHaveBeenCalled();
+    expect(result.attempted).toBe(true);
+    expect(result.commentUrl).toBe(
+      "https://github.com/o/r/issues/9#issuecomment-123",
+    );
+    expect(createCommentFn).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", issue_number: 9 }),
+    );
   });
 
-  it("skips issue_triage (V1: pr_review only)", async () => {
-    const { octokit, createCommentFn } = makeOctokit({});
+  it("posts issue_triage decisions to the triaged issue", async () => {
+    const { octokit, createCommentFn } = makeOctokit({
+      htmlUrl: "https://github.com/o/r/issues/42#issuecomment-456",
+    });
     const poster = new GitHubDecisionPoster({ octokit });
     const result = await poster.postDecision({
       ...PR_ARGS,
       subjectType: "issue_triage",
+      subjectRef: "o/r#42",
     });
-    expect(result.attempted).toBe(false);
-    expect(createCommentFn).not.toHaveBeenCalled();
+    expect(result.attempted).toBe(true);
+    expect(createCommentFn).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", issue_number: 42 }),
+    );
   });
 });
 
@@ -199,21 +215,21 @@ describe("GitHubDecisionPoster.postDecision — strict subject_ref regex (R1 #54
   });
 
   it.each([
-    ["org/repo#1", { owner: "org", repo: "repo", prNumber: 1 }],
-    ["a/b#42", { owner: "a", repo: "b", prNumber: 42 }],
+    ["org/repo#1", { owner: "org", repo: "repo", number: 1 }],
+    ["a/b#42", { owner: "a", repo: "b", number: 42 }],
     [
       "my-org/my-repo#100",
-      { owner: "my-org", repo: "my-repo", prNumber: 100 },
+      { owner: "my-org", repo: "my-repo", number: 100 },
     ],
     [
       "my.org/my.repo#7",
-      { owner: "my.org", repo: "my.repo", prNumber: 7 },
+      { owner: "my.org", repo: "my.repo", number: 7 },
     ],
     [
       "my_org/my_repo#9999",
-      { owner: "my_org", repo: "my_repo", prNumber: 9999 },
+      { owner: "my_org", repo: "my_repo", number: 9999 },
     ],
-    ["1org/2repo#1", { owner: "1org", repo: "2repo", prNumber: 1 }],
+    ["1org/2repo#1", { owner: "1org", repo: "2repo", number: 1 }],
   ])("accepts %j", async (goodRef, expected) => {
     const { octokit, createCommentFn } = makeOctokit({
       htmlUrl: "https://github.com/example/example/pull/1",
@@ -224,7 +240,7 @@ describe("GitHubDecisionPoster.postDecision — strict subject_ref regex (R1 #54
       expect.objectContaining({
         owner: expected.owner,
         repo: expected.repo,
-        issue_number: expected.prNumber,
+        issue_number: expected.number,
       }),
     );
   });

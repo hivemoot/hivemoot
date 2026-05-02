@@ -80,32 +80,41 @@ export class GitHubDecisionPoster implements DecisionPoster {
   }
 
   async postDecision(args: PostDecisionArgs): Promise<PostDecisionResult> {
-    if (args.subjectType !== "pr_review") {
+    // V1 supports `pr_review`, `mention_response`, and `issue_triage`.
+    // All three use the same `{owner}/{repo}#{number}` subject_ref
+    // shape and the same `issues.createComment` GitHub API (which
+    // works for both PRs and plain issues).
+    const POSTABLE: ReadonlySet<typeof args.subjectType> = new Set([
+      "pr_review",
+      "mention_response",
+      "issue_triage",
+    ]);
+    if (!POSTABLE.has(args.subjectType)) {
       this.logger.info(
-        `[queen.poster] skip subject_type=${args.subjectType} roomId=${args.roomId} (V1: pr_review only)`,
+        `[queen.poster] skip subject_type=${args.subjectType} roomId=${args.roomId} (no posting handler)`,
       );
       return { attempted: false, commentUrl: null };
     }
 
-    const parsed = parsePrSubjectRef(args.subjectRef);
+    const parsed = parseSubjectRef(args.subjectRef);
     if (!parsed.ok) {
       this.logger.warn(
         `[queen.poster] subject_ref parse failed roomId=${args.roomId} subject_ref=${args.subjectRef} reason=${parsed.reason}`,
       );
       throw new DecisionPostError(
-        `Invalid pr_review subject_ref: ${parsed.reason}`,
+        `Invalid ${args.subjectType} subject_ref: ${parsed.reason}`,
         args.roomId,
       );
     }
 
     this.logger.info(
-      `[queen.poster] posting roomId=${args.roomId} repo=${parsed.owner}/${parsed.repo} pr=${parsed.prNumber} bytes=${new TextEncoder().encode(args.content).length}`,
+      `[queen.poster] posting roomId=${args.roomId} subject_type=${args.subjectType} repo=${parsed.owner}/${parsed.repo} number=${parsed.number} bytes=${new TextEncoder().encode(args.content).length}`,
     );
 
     const response = await this.octokit.rest.issues.createComment({
       owner: parsed.owner,
       repo: parsed.repo,
-      issue_number: parsed.prNumber,
+      issue_number: parsed.number,
       body: args.content,
     });
 
@@ -132,7 +141,10 @@ export class DecisionPostError extends Error {
 }
 
 /**
- * Parse a `pr_review` subject_ref of the form `{owner}/{repo}#{prNumber}`.
+ * Parse a war-room subject_ref of the form `{owner}/{repo}#{number}`.
+ * The same shape covers `pr_review`, `mention_response`, and
+ * `issue_triage` (PR numbers and issue numbers share the per-repo
+ * sequence on GitHub, and `issues.createComment` works for both).
  * Mirrors the format documented at WAR_ROOM_DESIGN.md L165-167 and
  * the storage layer's regex at room-create time.
  *
@@ -150,29 +162,29 @@ export class DecisionPostError extends Error {
  * rather than reaching Octokit with a malformed ref and getting
  * a confusing GitHub 404.
  */
-const PR_SUBJECT_REF_REGEX = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)#([1-9][0-9]*)$/;
+const SUBJECT_REF_REGEX = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)#([1-9][0-9]*)$/;
 
-function parsePrSubjectRef(
+function parseSubjectRef(
   ref: string,
 ):
-  | { ok: true; owner: string; repo: string; prNumber: number }
+  | { ok: true; owner: string; repo: string; number: number }
   | { ok: false; reason: string } {
   // Defense-in-depth: explicit length cap to keep regex backtracking
   // bounded even though the regex is linear-time.
   if (ref.length === 0 || ref.length > 256) {
     return { ok: false, reason: "shape_mismatch" };
   }
-  const match = PR_SUBJECT_REF_REGEX.exec(ref);
+  const match = SUBJECT_REF_REGEX.exec(ref);
   if (!match) return { ok: false, reason: "shape_mismatch" };
-  const [, owner, repo, prNumberStr] = match;
-  const prNumber = Number(prNumberStr);
-  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+  const [, owner, repo, numberStr] = match;
+  const number = Number(numberStr);
+  if (!Number.isInteger(number) || number <= 0) {
     // Unreachable given the regex (which already enforces positive
     // non-zero-leading integers), but defensive against Number()
     // edge cases on extreme inputs.
-    return { ok: false, reason: "invalid_pr_number" };
+    return { ok: false, reason: "invalid_number" };
   }
-  return { ok: true, owner, repo, prNumber };
+  return { ok: true, owner, repo, number };
 }
 
 /**
