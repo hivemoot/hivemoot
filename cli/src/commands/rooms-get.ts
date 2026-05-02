@@ -36,7 +36,7 @@ export function formatRoom(roomId: string, room: RoomCore): string {
     );
   }
   lines.push(
-    `  timing:  max_age=${room.timing_config.max_age_secs}s rsvp=${room.timing_config.rsvp_deadline_secs}s contribute=${room.timing_config.contribution_deadline_secs}s`,
+    `  timing:  max_age=${room.timing_config.max_age_secs}s drop=${room.timing_config.drop_threshold_secs}s quiet=${room.timing_config.quiet_period_secs}s`,
   );
   return lines.join("\n");
 }

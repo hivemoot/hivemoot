@@ -234,8 +234,9 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
   // expire-then-timeout means a stale room is closed first,
   // saving the timeout-scan cost.
   for (const room of rooms) {
+    // Heartbeat-model: `awaiting_contributions` is the only
+    // pre-decide open status (no separate awaiting_rsvp anymore).
     const isOpen =
-      room.status === "awaiting_rsvp" ||
       room.status === "awaiting_contributions" ||
       room.status === "deciding";
     if (!isOpen) continue;
@@ -338,7 +339,11 @@ export async function runQueenTick(args: QueenTickArgs): Promise<QueenTickResult
       const rsvpAtMs = Date.parse(p.rsvp_at);
       if (!Number.isFinite(rsvpAtMs)) continue;
       const waitedSecs = (nowMs - rsvpAtMs) / 1000;
-      if (waitedSecs <= room.timing_config.contribution_deadline_secs) {
+      // Heartbeat model: `drop_threshold_secs` is the per-participant
+      // drop window (was contribution_deadline_secs in the
+      // pre-heartbeat model). Pending participants whose effective
+      // last activity is older than this get timed out.
+      if (waitedSecs <= room.timing_config.drop_threshold_secs) {
         continue;
       }
 

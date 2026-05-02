@@ -62,8 +62,8 @@ const FAKE_CORE = {
   opened_at: "2026-04-28T20:00:00Z",
   timing_config: {
     max_age_secs: 3600,
-    rsvp_deadline_secs: 600,
-    contribution_deadline_secs: 1200,
+    drop_threshold_secs: 600,
+    quiet_period_secs: 600,
   },
 };
 

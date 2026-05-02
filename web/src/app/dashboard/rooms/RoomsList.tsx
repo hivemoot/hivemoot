@@ -115,8 +115,9 @@ export default function RoomsList() {
 
 function RoomRow({ room }: { room: RoomCoreWithId }) {
   // Red highlight when past 80% of the relevant deadline
-  // (rsvp_deadline_secs for awaiting_rsvp, contribution_deadline_secs
-  // for awaiting_contributions/deciding). Per WAR_ROOM_DESIGN.md L1248.
+  // (`quiet_period_secs` for awaiting_contributions / deciding;
+  // heartbeat-model rooms have no separate awaiting_rsvp state).
+  // Per WAR_ROOM_DESIGN.md L1248.
   const stuck = isRoomStuck(room.opened_at, room.status, room.timing_config);
   const stuckHighlight = stuck
     ? "border-l-2 border-red-500/60 bg-red-500/5"

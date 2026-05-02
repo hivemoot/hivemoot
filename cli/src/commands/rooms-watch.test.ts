@@ -28,8 +28,8 @@ function makeWatching(overrides: Partial<WatchingRoom> = {}): WatchingRoom {
       opened_at: "2026-04-29T18:00:00.000Z",
       timing_config: {
         max_age_secs: 7200,
-        rsvp_deadline_secs: 600,
-        contribution_deadline_secs: 1800,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
       },
       status: "awaiting_contributions",
     },
@@ -339,7 +339,7 @@ describe("roomsWatchCommand — output modes", () => {
       core: {
         ...makeWatching().core,
         roomId: "r1",
-        status: "awaiting_rsvp",
+        status: "awaiting_contributions",
         subject_ref: "owner/repo#1",
       },
       currentSequence: 1,
@@ -385,7 +385,7 @@ describe("roomsWatchCommand — output modes", () => {
     const newEvent = JSON.parse(logSpy.mock.calls[0][0] as string);
     expect(newEvent).toMatchObject({
       event: "new",
-      core: { roomId: "r1", status: "awaiting_rsvp", subject_ref: "owner/repo#1" },
+      core: { roomId: "r1", status: "awaiting_contributions", subject_ref: "owner/repo#1" },
       currentSequence: 1,
     });
     const removedEvent = JSON.parse(logSpy.mock.calls[1][0] as string);

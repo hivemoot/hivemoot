@@ -10,7 +10,6 @@
  */
 
 export type RoomStatus =
-  | "awaiting_rsvp"
   | "awaiting_contributions"
   | "deciding"
   | "closed"
@@ -29,8 +28,8 @@ export type TerminalReason =
 
 export interface TimingConfig {
   max_age_secs: number;
-  rsvp_deadline_secs: number;
-  contribution_deadline_secs: number;
+  drop_threshold_secs: number;
+  quiet_period_secs: number;
 }
 
 export interface RoomDecision {
