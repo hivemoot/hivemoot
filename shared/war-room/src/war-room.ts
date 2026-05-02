@@ -3591,7 +3591,12 @@ export async function listRoomEvents(args: {
       count: limit,
     },
   );
-  return raw.map((s) => JSON.parse(s) as RoomEvent);
+  // Upstash auto-parses JSON when stored values are JSON strings and
+  // the response type generic isn't `string[]`. Defensive: accept
+  // both shapes (raw string from the ZADD path; object after auto-parse).
+  return raw.map((s) =>
+    typeof s === "string" ? (JSON.parse(s) as RoomEvent) : (s as unknown as RoomEvent),
+  );
 }
 
 /**
@@ -3626,7 +3631,13 @@ export async function listRecentRoomEvents(args: {
   );
   // ZREVRANGE returns newest-first; reverse for chronological
   // delivery so callers don't need to know about the rev: detail.
-  return raw.map((s) => JSON.parse(s) as RoomEvent).reverse();
+  // Upstash auto-parses JSON when stored values are JSON strings and
+  // the response type generic isn't `string[]`. Accept both shapes.
+  return raw
+    .map((s) =>
+      typeof s === "string" ? (JSON.parse(s) as RoomEvent) : (s as unknown as RoomEvent),
+    )
+    .reverse();
 }
 
 /** Read all participants for a room, keyed by role. Returns `{}`
