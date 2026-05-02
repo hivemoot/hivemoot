@@ -50,6 +50,12 @@
     "node": "22.x"
   },
   "overrides": {
-    "minimatch": "10.2.4"
+    "minimatch": "10.2.4",
+    "@probot/octokit-plugin-config": {
+      "@octokit/core": "^5.2.2"
+    },
+    "octokit-auth-probot": {
+      "@octokit/core": "^5.2.2"
+    }
   }
 }
