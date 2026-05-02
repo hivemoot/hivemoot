@@ -32,6 +32,16 @@ function makeRoom(overrides: Partial<RoomListEntry> = {}): RoomListEntry {
     subject_ref: "owner/repo#42",
     status: "awaiting_contributions",
     opened_at: "2026-04-28T20:00:00Z",
+    // 0s quiet_period_secs disables the manager-loop's quiet-period
+    // gate so the existing test scenarios — which assert "claim
+    // happens THIS tick when participants are eligible" — keep
+    // working without each test having to supply a faraway nowMs.
+    // Scenarios that exercise the gate explicitly override this.
+    timing_config: {
+      max_age_secs: 3600,
+      drop_threshold_secs: 1200,
+      quiet_period_secs: 0,
+    },
     ...overrides,
   };
 }
@@ -338,6 +348,95 @@ describe("runQueenManagerLoop — eligibility check", () => {
     expect(result.scannedAwaitingContributions).toBe(1);
     expect(result.eligible).toBe(0);
     expect(calls.claimCalls).toEqual([]);
+  });
+});
+
+describe("runQueenManagerLoop — quiet-period gate", () => {
+  // The gate prevents the bot from claiming a room the moment the
+  // first fast worker resolves, which would let slower workers
+  // 409 against `awaiting_contributions` and never make it into
+  // the participants map (observed on PR #595/#596 with builder
+  // running ~2-3min behind guard).  Tests below cover both the
+  // hold and the eventual release.
+
+  it("holds a fast-eligible room until quiet_period_secs has elapsed", async () => {
+    const { client, calls } = makeFakeClient({
+      rooms: [
+        makeRoom({
+          timing_config: {
+            max_age_secs: 3600,
+            drop_threshold_secs: 1200,
+            quiet_period_secs: 180,
+          },
+        }),
+      ],
+      participants: {
+        [ROOM_ID]: { guard: resolvedParticipant("guard") },
+      },
+    });
+    // Latest event (guard.resolved_at) is 2026-04-28T20:05:00Z.
+    // 60s later — under the 180s gate → hold.
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      runnerId: RUNNER_ID,
+      nowMs: Date.parse("2026-04-28T20:06:00Z"),
+    });
+    expect(result.eligible).toBe(1);
+    expect(result.quietPeriodHeld).toBe(1);
+    expect(result.claimed).toBe(0);
+    expect(calls.claimCalls).toEqual([]);
+  });
+
+  it("claims once quiet_period_secs has elapsed since the last event", async () => {
+    const { client, calls } = makeFakeClient({
+      rooms: [
+        makeRoom({
+          timing_config: {
+            max_age_secs: 3600,
+            drop_threshold_secs: 1200,
+            quiet_period_secs: 180,
+          },
+        }),
+      ],
+      participants: {
+        [ROOM_ID]: { guard: resolvedParticipant("guard") },
+      },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    // 200s after the latest event — past the 180s gate → claim.
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      runnerId: RUNNER_ID,
+      nowMs: Date.parse("2026-04-28T20:08:20Z"),
+    });
+    expect(result.quietPeriodHeld).toBe(0);
+    expect(result.claimed).toBe(1);
+    expect(result.closed).toBe(1);
+  });
+
+  it("zero quiet_period_secs disables the gate (claims immediately)", async () => {
+    // The default makeRoom() fixture uses quiet_period_secs: 0
+    // exactly so existing tests don't have to thread an explicit
+    // nowMs.  This test pins that contract — a 0 in timing_config
+    // means "no gate" regardless of how recent the events are.
+    const { client, calls } = makeFakeClient({
+      rooms: [makeRoom()],
+      participants: {
+        [ROOM_ID]: { guard: resolvedParticipant("guard") },
+      },
+      contributions: { [ROOM_ID]: { guard: presentContribution() } },
+    });
+    const result = await runQueenManagerLoop({
+      client,
+      synthesizer: new StubSynthesizer(),
+      runnerId: RUNNER_ID,
+      nowMs: Date.parse("2026-04-28T20:05:01Z"), // 1s after last event
+    });
+    expect(result.quietPeriodHeld).toBe(0);
+    expect(result.claimed).toBe(1);
+    expect(calls.claimCalls).toHaveLength(1);
   });
 });
 

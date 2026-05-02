@@ -103,6 +103,8 @@ describe("maybeCreatePrReviewRoom", () => {
     expect(createRoom).toHaveBeenCalledWith({
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#42" },
       roomId: expectedRoomId,
+      // 180s tuned for PR review fleets; see war-room-routing.ts.
+      timing: { quiet_period_secs: 180 },
     });
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ roomId: result.roomId }),
@@ -587,6 +589,7 @@ describe("maybeCreateMentionRoom", () => {
     expect(createRoom).toHaveBeenCalledWith({
       subject: { type: "mention_response", ref: "hivemoot/hivemoot#42" },
       roomId: expectedRoomId,
+      timing: { quiet_period_secs: 180 },
     });
   });
 

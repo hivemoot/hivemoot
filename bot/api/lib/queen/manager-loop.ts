@@ -138,6 +138,13 @@ export interface QueenManagerLoopResult {
   scannedAwaitingContributions: number;
   /** Subset where every participant resolved (synthesis-eligible). */
   eligible: number;
+  /** Eligible rooms held back by the quiet-period gate (last
+   * participant transition newer than `quiet_period_secs`). They'll
+   * be retried on the next tick once the room has been quiet long
+   * enough.  Closes the race where a fast worker contributes,
+   * eligibility flips true, and the bot claims before slower
+   * workers can /present. */
+  quietPeriodHeld: number;
   /** Eligible rooms where claim succeeded (drives synthesis call). */
   claimed: number;
   /** Rooms successfully closed with a synthesis decision. */
@@ -184,6 +191,7 @@ export async function runQueenManagerLoop(
     totalRoomsScanned: 0,
     scannedAwaitingContributions: 0,
     eligible: 0,
+    quietPeriodHeld: 0,
     claimed: 0,
     closed: 0,
     conflicts: 0,
@@ -301,6 +309,31 @@ async function processOneRoom(args: {
     return;
   }
   result.eligible += 1;
+
+  // 1b. Quiet-period gate.  Eligibility being true on its first
+  //     fast worker would let the bot claim before slower workers
+  //     can /present — they then 409 against `awaiting_contributions`
+  //     and never make it into the participants map (observed on
+  //     PR #595/#596: builder triage runs ~minutes; guard finished
+  //     first; bot claimed before builder could /present).  Wait
+  //     until the room has been quiet for `quiet_period_secs`
+  //     since the last participant transition.  Late workers'
+  //     /present + /contribute lands inside the window, and the
+  //     next tick claims with everyone included.
+  const remainingSecs = quietPeriodRemainingSecs(
+    room,
+    participantsResp.participants,
+    nowMs,
+  );
+  if (remainingSecs > 0) {
+    result.quietPeriodHeld += 1;
+    log.info("queen.manager_loop.waiting_quiet_period", {
+      roomId: room.roomId,
+      remainingSecs,
+      quietPeriodSecs: room.timing_config.quiet_period_secs,
+    });
+    return;
+  }
 
   // 2. Claim.
   let throughSequence: number;
@@ -500,6 +533,43 @@ function isSynthesisEligible(
     if (p.status === "resolved") hasResolved = true;
   }
   return hasResolved;
+}
+
+/**
+ * Quiet-period gate.  Eligibility flips true the moment the first
+ * fast worker finishes (no pending + at least one resolved), but
+ * other workers may still be running their triage.  Wait until the
+ * room has been quiet for `timing_config.quiet_period_secs` since
+ * the last participant transition before claiming, so late workers'
+ * /present + /contribute can land inside the window.
+ *
+ * Reference timestamp is the latest of (room opened, every
+ * participant's `resolved_at` ?? `rsvp_at`).  Returns the seconds
+ * still remaining (0 = ready to claim, positive = wait that long).
+ *
+ * The gate uses the room's stored `quiet_period_secs` so per-room
+ * tuning is possible at `createRoom` time without changing the
+ * manager-loop.
+ */
+function quietPeriodRemainingSecs(
+  room: RoomListEntry,
+  participants: Record<string, RoomParticipant>,
+  nowMs: number,
+): number {
+  const quietSecs = room.timing_config.quiet_period_secs;
+  if (!Number.isFinite(quietSecs) || quietSecs <= 0) return 0;
+
+  let latestMs = Date.parse(room.opened_at);
+  if (!Number.isFinite(latestMs)) latestMs = 0;
+  for (const p of Object.values(participants)) {
+    const ts = Date.parse(p.resolved_at ?? p.rsvp_at);
+    if (Number.isFinite(ts) && ts > latestMs) latestMs = ts;
+  }
+  if (latestMs === 0) return 0;
+
+  const ageSecs = (nowMs - latestMs) / 1000;
+  const remaining = quietSecs - ageSecs;
+  return remaining > 0 ? remaining : 0;
 }
 
 /**

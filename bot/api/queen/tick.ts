@@ -232,6 +232,7 @@ function emptyManagerLoopResult(): Awaited<
     totalRoomsScanned: 0,
     scannedAwaitingContributions: 0,
     eligible: 0,
+    quietPeriodHeld: 0,
     claimed: 0,
     closed: 0,
     conflicts: 0,

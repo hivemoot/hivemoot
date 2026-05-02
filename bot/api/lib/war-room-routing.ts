@@ -260,7 +260,20 @@ export async function maybeCreatePrReviewRoom(
   });
 
   try {
-    await store.createRoom({ subject, roomId });
+    // 180s quiet_period_secs: tuned for PR review fleets where
+    // each agent's triage takes ~1-3min.  The default 600s leaves
+    // every PR sitting for 10min after the first contribution
+    // before synthesis fires, which is too long for reviewer
+    // feedback.  At 180s, the manager-loop's quiet-period gate
+    // gives slower agents up to 3min after the latest event to
+    // catch up before claiming.  Combined with the 2-min cron
+    // cadence, end-to-end is ~4-5min from last contribution to
+    // synthesis comment.
+    await store.createRoom({
+      subject,
+      roomId,
+      timing: { quiet_period_secs: 180 },
+    });
     args.log.info(
       {
         owner: args.owner,
@@ -556,7 +569,13 @@ export async function maybeCreateMentionRoom(
   });
 
   try {
-    await store.createRoom({ subject, roomId });
+    // 180s quiet_period_secs: see pr_review path above for the
+    // tuning rationale — same fleet, same engine wall-time profile.
+    await store.createRoom({
+      subject,
+      roomId,
+      timing: { quiet_period_secs: 180 },
+    });
     args.log.info(
       {
         owner: args.owner,
