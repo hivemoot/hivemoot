@@ -657,28 +657,6 @@ denormalized SQL tables, and the events sorted set replaces
 code, same as the existing `agent-token.ts` and `task-store.ts`
 patterns.
 
-### Why Redis is sufficient for V1
-
-The relational queries the original SQL design relied on (list by
-status, filter by repo, join events + participants) decompose into
-narrow Redis lookups:
-
-- "List open rooms in installation X" → `SMEMBERS
-  hive:v1:idx:room:status:{X}:awaiting_rsvp ∪ awaiting_contributions ∪
-  deciding`, then `HMGET` per room key.
-- "List rooms by repo" → fetched set intersected against a per-repo
-  index `hive:v1:idx:room:repo:{installationId}:{owner}/{repo}` (added
-  on room open, removed on room close).
-- "Stuck-room watchdog" — same status set + per-room hash read.
-
-Avoiding SQL is an explicit project value (see CONCEPT.md: *"There is
-no external database, no hidden state, no admin panel"*). The
-materialized hashes (participants, contributions) replace the
-denormalized SQL tables, and the events sorted set replaces
-`war_room_events`. Foreign-key consistency moves to application
-code, same as the existing `agent-token.ts` and `task-store.ts`
-patterns.
-
 ---
 
 ## Authoritative role binding (S1)

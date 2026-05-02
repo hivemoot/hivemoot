@@ -26,12 +26,73 @@ from hivemoot_agent.plugins_builtin.hivemoot.http import (
 
 
 __all__ = (
+    "RoomStateRaceError",
     "WatchingRoom",
     "list_watching_rooms",
     "present_to_room",
     "submit_contribution",
     "withdraw_participant",
 )
+
+
+class RoomStateRaceError(RuntimeError):
+    """The room moved to a status that no longer accepts this op
+    while the worker was producing its triage.  Distinguishes
+    benign races (e.g. queen claimed → `deciding` between the
+    worker's triage finishing and its /present) from real failures
+    (network, 5xx, malformed bearer, etc.).
+
+    Carries the underlying API error code (`status_precondition_failed`,
+    etc.) so the handler can log it at info level and skip the
+    post-failure callback — there's nothing to retry, the room is
+    already past us.
+    """
+
+    def __init__(self, op: str, code: str, body_excerpt: str) -> None:
+        super().__init__(
+            f"{op} lost race to room state transition (code={code}): {body_excerpt}",
+        )
+        self.op = op
+        self.code = code
+        self.body_excerpt = body_excerpt
+
+
+# API error codes the storage layer returns on a status-precondition
+# 409.  Listed here so the api module can distinguish them from
+# other 409s (e.g. `participant_already_present` is also 409 but
+# means "you already RSVP'd, harmless replay" — handled separately
+# by the handler's continue-to-contribute path).
+_RACE_409_CODES: frozenset[str] = frozenset(
+    {"status_precondition_failed"},
+)
+
+
+def _maybe_raise_race(
+    *,
+    op: str,
+    status: int,
+    parsed: Any,
+    raw: bytes,
+) -> None:
+    """Raise `RoomStateRaceError` when the response is a 409 with a
+    known room-state-race code.  No-op for 2xx, 4xx with unknown
+    code, or any other status — caller still wraps those as a
+    generic `RuntimeError` so the failure-mode signal isn't lost.
+    """
+    if status != 409:
+        return
+    if not isinstance(parsed, dict):
+        return
+    code = parsed.get("code")
+    if not isinstance(code, str):
+        return
+    if code not in _RACE_409_CODES:
+        return
+    raise RoomStateRaceError(
+        op=op,
+        code=code,
+        body_excerpt=raw.decode(errors="replace")[:200],
+    )
 
 
 @dataclass
@@ -161,6 +222,7 @@ def present_to_room(
 
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
+    _maybe_raise_race(op="present", status=status, parsed=parsed, raw=raw)
     if status != 200:
         raise RuntimeError(
             f"present returned status {status}: "
@@ -203,6 +265,7 @@ def submit_contribution(
     }
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
+    _maybe_raise_race(op="contributions", status=status, parsed=parsed, raw=raw)
     if status != 200:
         raise RuntimeError(
             f"contributions returned status {status}: "
@@ -247,6 +310,7 @@ def withdraw_participant(
 
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
+    _maybe_raise_race(op="withdraw", status=status, parsed=parsed, raw=raw)
     if status != 200:
         raise RuntimeError(
             f"withdraw returned status {status}: "
