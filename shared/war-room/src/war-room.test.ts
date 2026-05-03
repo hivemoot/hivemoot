@@ -4689,6 +4689,42 @@ describe("recordPostCloseDrift", () => {
     expect(core.last_post_close_drift_head_sha).toBeUndefined();
   });
 
+  it("clears stale head_sha when a later attempt has no SHA (no orphan pairing)", async () => {
+    // Closes guard's COMMENT on PR #606: the SHA + timestamp fields
+    // are semantically paired (the SHA explains WHICH head was
+    // rejected at that timestamp).  Earlier impl left the SHA field
+    // untouched when a later attempt arrived without a SHA, leaking
+    // a stale value paired with a fresh timestamp.  The fix mirrors
+    // `deciding_through_sequence`'s empty-string sentinel pattern
+    // (WAR_ROOM_DESIGN.md L415) — write `""` to explicitly clear.
+    const redis = makeMockRedis();
+    await seedClosedRoom(redis);
+
+    // First: synchronize with a SHA — both fields set.
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+      headSha: "abc1234",
+      redis,
+    });
+    // Second: closed event without a SHA — stale SHA must clear.
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:05:00.000Z",
+      redis,
+    });
+
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.last_post_close_drift_at).toBe("2026-05-03T10:05:00.000Z");
+    expect(core.last_post_close_drift_head_sha).toBeUndefined();
+  });
+
   it("last-write-wins on repeated drift attempts", async () => {
     const redis = makeMockRedis();
     await seedClosedRoom(redis);

@@ -522,12 +522,19 @@ export async function getRoomCore(args) {
  */
 export async function recordPostCloseDrift(args) {
     validateRoomId(args.roomId);
+    // Always HSET both fields — the SHA + timestamp are semantically
+    // paired (the SHA explains WHICH head was rejected at the timestamp),
+    // so we MUST clear a stale SHA when a later attempt arrives without
+    // one (e.g. the first rejection carries `synchronize` + headSha,
+    // the next is a `closed` event with no SHA). Write `""` for the
+    // missing case rather than DELing the field — mirrors the
+    // empty-string sentinel pattern used for `deciding_through_sequence`
+    // in RECOVER / CLOSE-drift paths (WAR_ROOM_DESIGN.md L415, L523).
+    // The reader (`parseRoomCoreFields`) treats `""` as absent.
     const fields = {
         last_post_close_drift_at: args.attemptedAt,
+        last_post_close_drift_head_sha: args.headSha !== undefined && args.headSha !== "" ? args.headSha : "",
     };
-    if (args.headSha !== undefined && args.headSha !== "") {
-        fields.last_post_close_drift_head_sha = args.headSha;
-    }
     await args.redis.hset(roomKey(args.installationId, args.roomId), fields);
 }
 /**
