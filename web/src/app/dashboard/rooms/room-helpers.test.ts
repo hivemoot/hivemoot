@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_STATUSES,
   countRoomsByFilter,
+  hasDiffDriftedPostVerdict,
   isActiveStatus,
   isRoomStuck,
   participantStatusCounts,
@@ -533,4 +534,57 @@ describe("roomMatchesSubjectQuery", () => {
     expect(roomMatchesSubjectQuery(r("owner/repo#1"), "999")).toBe(false);
     expect(roomMatchesSubjectQuery(r("owner/repo#1"), "different")).toBe(false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// hasDiffDriftedPostVerdict — closes hivemoot/hivemoot#605 (Option A)
+// ---------------------------------------------------------------------------
+
+describe("hasDiffDriftedPostVerdict", () => {
+  const ATTEMPTED = "2026-05-03T10:00:00.000Z";
+
+  it("true for closed room with drift marker set", () => {
+    expect(
+      hasDiffDriftedPostVerdict({
+        status: "closed",
+        last_post_close_drift_at: ATTEMPTED,
+      }),
+    ).toBe(true);
+  });
+
+  it("false for closed room without drift marker", () => {
+    expect(
+      hasDiffDriftedPostVerdict({
+        status: "closed",
+      }),
+    ).toBe(false);
+  });
+
+  it("false for closed room with empty-string drift marker (treat as cleared)", () => {
+    // Defensive: HSET stores nothing as `""` rather than DELing — same
+    // sentinel pattern as `deciding_through_sequence`. The badge
+    // shouldn't render for a cleared marker.
+    expect(
+      hasDiffDriftedPostVerdict({
+        status: "closed",
+        last_post_close_drift_at: "",
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["awaiting_contributions"],
+    ["deciding"],
+    ["expired"],
+  ] as const)(
+    "false for non-closed status %s even when drift marker is set",
+    (status) => {
+      expect(
+        hasDiffDriftedPostVerdict({
+          status,
+          last_post_close_drift_at: ATTEMPTED,
+        }),
+      ).toBe(false);
+    },
+  );
 });

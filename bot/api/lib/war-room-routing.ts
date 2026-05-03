@@ -460,6 +460,35 @@ export async function maybeEmitSubjectUpdated(
         },
         "[war-room] API rejected subject_updated — skipping (queen-claimed or terminal room)",
       );
+      // Persist a drift marker so the dashboard can render a
+      // "diff drifted post-verdict" badge — the verdict the room
+      // synthesized over an earlier head SHA, but the PR has since
+      // advanced past what it reviewed. Closes hivemoot/hivemoot#605
+      // (Option A). Only the precondition-failure code maps to drift;
+      // other codes (validation, body-too-large, etc.) are caller
+      // bugs, not state-machine drift.
+      if (err.code === "status_precondition_failed") {
+        try {
+          await store.recordPostCloseDrift({
+            roomId,
+            attemptedAt: new Date().toISOString(),
+            headSha: args.headSha,
+          });
+        } catch (driftErr) {
+          // Non-fatal: a failure to persist the badge marker MUST
+          // NOT escalate the webhook handler's 200 response. Log and
+          // move on — the operator still sees the warn-level rejection
+          // log above; the badge is a UI nicety.
+          args.log.warn(
+            {
+              err: driftErr,
+              roomId,
+              changeKind: args.changeKind,
+            },
+            "[war-room] failed to persist post-close drift marker — non-fatal",
+          );
+        }
+      }
       return { sequence: null, skipped: "api_error" };
     }
     args.log.warn(

@@ -38,6 +38,7 @@ const sharedMocks = vi.hoisted(() => ({
   listRoomEvents: vi.fn(),
   getRoomParticipants: vi.fn(),
   getRoomContributions: vi.fn(),
+  recordPostCloseDrift: vi.fn(),
 }));
 
 // Real exception classes — we want instanceof checks against the
@@ -58,6 +59,7 @@ vi.mock("@hivemoot/war-room", async () => {
     listRoomEvents: sharedMocks.listRoomEvents,
     getRoomParticipants: sharedMocks.getRoomParticipants,
     getRoomContributions: sharedMocks.getRoomContributions,
+    recordPostCloseDrift: sharedMocks.recordPostCloseDrift,
   };
 });
 
@@ -636,6 +638,43 @@ describe("WarRoomStore — happy-path delegation", () => {
   it("listRooms propagates errors through rethrowAsApi", async () => {
     sharedMocks.listRooms.mockRejectedValueOnce(new Error("redis down"));
     await expect(store.listRooms()).rejects.toThrow("redis down");
+  });
+
+  // Closes hivemoot/hivemoot#605 (Option A) — drift marker delegation.
+  it("recordPostCloseDrift threads installationId + drift fields to shared", async () => {
+    sharedMocks.recordPostCloseDrift.mockResolvedValueOnce(undefined);
+    await store.recordPostCloseDrift({
+      roomId: "01234567-89ab-4cde-9012-3456789abcde",
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+      headSha: "deadbeef",
+    });
+    expect(sharedMocks.recordPostCloseDrift).toHaveBeenCalledWith({
+      installationId: "12345",
+      roomId: "01234567-89ab-4cde-9012-3456789abcde",
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+      headSha: "deadbeef",
+      redis: fakeRedis,
+    });
+  });
+
+  it("recordPostCloseDrift omits headSha when caller doesn't provide one", async () => {
+    sharedMocks.recordPostCloseDrift.mockResolvedValueOnce(undefined);
+    await store.recordPostCloseDrift({
+      roomId: "01234567-89ab-4cde-9012-3456789abcde",
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+    });
+    const callArg = sharedMocks.recordPostCloseDrift.mock.calls[0][0];
+    expect(callArg.headSha).toBeUndefined();
+  });
+
+  it("recordPostCloseDrift propagates errors through rethrowAsApi", async () => {
+    sharedMocks.recordPostCloseDrift.mockRejectedValueOnce(new Error("redis down"));
+    await expect(
+      store.recordPostCloseDrift({
+        roomId: "01234567-89ab-4cde-9012-3456789abcde",
+        attemptedAt: "2026-05-03T10:00:00.000Z",
+      }),
+    ).rejects.toThrow("redis down");
   });
 });
 
