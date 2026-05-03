@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTIVE_STATUSES,
+  countRoomsByFilter,
   isActiveStatus,
   isRoomStuck,
   participantStatusCounts,
   relativeTime,
   relevantDeadlineSecs,
+  roomMatchesFilter,
   sortRoomsByStuckness,
   statusLabel,
   statusPillClass,
@@ -14,7 +16,7 @@ import {
   subjectGithubUrl,
   subjectLabel,
 } from "./room-helpers";
-import type { RoomCoreWithId, RoomParticipant } from "./types";
+import type { RoomCoreWithId, RoomParticipant, RoomStatus } from "./types";
 
 describe("statusLabel", () => {
   it.each([
@@ -390,5 +392,81 @@ describe("sortRoomsByStuckness", () => {
     const beforeIds = original.map((r) => r.roomId);
     sortRoomsByStuckness(original, NOW);
     expect(original.map((r) => r.roomId)).toEqual(beforeIds);
+  });
+});
+
+describe("roomMatchesFilter", () => {
+  const r = (status: RoomStatus) => ({ status });
+
+  it("'all' matches every status", () => {
+    for (const s of [
+      "awaiting_contributions",
+      "deciding",
+      "closed",
+      "expired",
+    ] as const) {
+      expect(roomMatchesFilter(r(s), "all")).toBe(true);
+    }
+  });
+
+  it("'active' matches only awaiting_contributions and deciding", () => {
+    expect(roomMatchesFilter(r("awaiting_contributions"), "active")).toBe(true);
+    expect(roomMatchesFilter(r("deciding"), "active")).toBe(true);
+    expect(roomMatchesFilter(r("closed"), "active")).toBe(false);
+    expect(roomMatchesFilter(r("expired"), "active")).toBe(false);
+  });
+
+  it("'closed' matches only the closed status (not expired)", () => {
+    expect(roomMatchesFilter(r("closed"), "closed")).toBe(true);
+    expect(roomMatchesFilter(r("expired"), "closed")).toBe(false);
+    expect(roomMatchesFilter(r("awaiting_contributions"), "closed")).toBe(false);
+  });
+
+  it("'expired' matches only the expired status", () => {
+    expect(roomMatchesFilter(r("expired"), "expired")).toBe(true);
+    expect(roomMatchesFilter(r("closed"), "expired")).toBe(false);
+    expect(roomMatchesFilter(r("deciding"), "expired")).toBe(false);
+  });
+});
+
+describe("countRoomsByFilter", () => {
+  const r = (status: RoomStatus) => ({ status });
+
+  it("returns all-zero counts for an empty list", () => {
+    expect(countRoomsByFilter([])).toEqual({
+      all: 0,
+      active: 0,
+      closed: 0,
+      expired: 0,
+    });
+  });
+
+  it("counts each filter bucket independently", () => {
+    const counts = countRoomsByFilter([
+      r("awaiting_contributions"),
+      r("awaiting_contributions"),
+      r("deciding"),
+      r("closed"),
+      r("closed"),
+      r("closed"),
+      r("expired"),
+    ]);
+    expect(counts).toEqual({
+      all: 7,
+      active: 3,    // awaiting_contributions × 2 + deciding
+      closed: 3,
+      expired: 1,
+    });
+  });
+
+  it("active + closed + expired sums to all (no double-counting)", () => {
+    const rooms = [
+      r("awaiting_contributions"),
+      r("deciding"),
+      r("closed"),
+      r("expired"),
+    ];
+    const counts = countRoomsByFilter(rooms);
+    expect(counts.active + counts.closed + counts.expired).toBe(counts.all);
   });
 });
