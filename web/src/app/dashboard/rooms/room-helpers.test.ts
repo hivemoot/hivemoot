@@ -8,6 +8,7 @@ import {
   relativeTime,
   relevantDeadlineSecs,
   roomMatchesFilter,
+  roomMatchesSubjectQuery,
   sortRoomsByStuckness,
   statusLabel,
   statusPillClass,
@@ -468,5 +469,40 @@ describe("countRoomsByFilter", () => {
     ];
     const counts = countRoomsByFilter(rooms);
     expect(counts.active + counts.closed + counts.expired).toBe(counts.all);
+  });
+});
+
+describe("roomMatchesSubjectQuery", () => {
+  const r = (subject_ref: string) => ({ subject_ref });
+
+  it("empty query matches every room", () => {
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("any/repo#1"), "")).toBe(true);
+  });
+
+  it("whitespace-only query matches every room", () => {
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "   ")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "\t\n")).toBe(true);
+  });
+
+  it("substring match against subject_ref", () => {
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "hivemoot")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "#42")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "42")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "/hivemoot#")).toBe(true);
+  });
+
+  it("case-insensitive on both sides", () => {
+    expect(roomMatchesSubjectQuery(r("hivemoot/hivemoot#42"), "HIVEMOOT")).toBe(true);
+    expect(roomMatchesSubjectQuery(r("HiveMoot/Hivemoot#42"), "hivemoot")).toBe(true);
+  });
+
+  it("trims surrounding whitespace before matching", () => {
+    expect(roomMatchesSubjectQuery(r("owner/repo#7"), "  repo#7  ")).toBe(true);
+  });
+
+  it("returns false on no match", () => {
+    expect(roomMatchesSubjectQuery(r("owner/repo#1"), "999")).toBe(false);
+    expect(roomMatchesSubjectQuery(r("owner/repo#1"), "different")).toBe(false);
   });
 });
