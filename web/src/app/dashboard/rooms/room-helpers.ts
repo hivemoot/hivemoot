@@ -147,25 +147,45 @@ export function roomMatchesSubjectQuery<T extends { subject_ref: string }>(
 }
 
 /**
+ * Shape of the timing-config the stuckness helpers below read.
+ * Mirrors `RoomCoreWithId['timing_config']` from `./types` but
+ * inlined as a narrow structural type so each helper's signature
+ * documents exactly which fields it touches.
+ */
+type StuckTimingConfig = {
+  max_age_secs?: number;
+  quiet_period_secs?: number;
+  drop_threshold_secs?: number;
+};
+
+/**
  * Pick the relevant deadline for a room based on its current status.
- * - awaiting_contributions / deciding → quiet_period_secs (the
- *   queen's settling window before claiming the room)
- * - terminal statuses → null (no deadline applies)
+ * - awaiting_contributions / deciding → max_age_secs (the hard cap
+ *   on room lifetime; rooms past this get terminated by the
+ *   watchdog as `expired`).
+ * - terminal statuses → null (no deadline applies).
  *
  * Falls back to undefined when the room has no timing_config (older
  * rooms or test fixtures).
  *
- * Heartbeat-model note: there is no separate `awaiting_rsvp` state
- * anymore, so a single relevant deadline (`quiet_period_secs`)
- * covers both pre- and post-contribution waiting.
+ * Why `max_age_secs` and not `quiet_period_secs` (the previous
+ * choice): under the heartbeat model, `quiet_period_secs` is the
+ * bot manager-loop's settling window BEFORE claiming a room — it
+ * resets every time a participant transition lands.  Treating it
+ * as the dashboard "deadline" highlighted every active room as
+ * "near deadline" within a couple minutes of opening, which is
+ * normal triage progress, not a stuck-room signal.  `max_age_secs`
+ * is the actual expiration deadline (3600s default = 1h) and the
+ * one operators care about: "this room has been open long enough
+ * that it's about to be force-expired."
  */
 export function relevantDeadlineSecs(
   status: RoomStatus,
-  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
+  timingConfig?: StuckTimingConfig,
 ): number | null {
   if (!isActiveStatus(status)) return null;
   if (!timingConfig) return null;
-  return timingConfig.quiet_period_secs ?? null;
+  return timingConfig.max_age_secs ?? null;
 }
 
 /**
@@ -180,7 +200,7 @@ export function relevantDeadlineSecs(
 export function stucknessRatio(
   openedAtIso: string,
   status: RoomStatus,
-  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
+  timingConfig?: StuckTimingConfig,
   nowMs: number = Date.now(),
 ): number {
   const deadline = relevantDeadlineSecs(status, timingConfig);
@@ -198,7 +218,7 @@ export const STUCK_THRESHOLD = 0.8;
 export function isRoomStuck(
   openedAtIso: string,
   status: RoomStatus,
-  timingConfig?: { quiet_period_secs?: number; drop_threshold_secs?: number },
+  timingConfig?: StuckTimingConfig,
   nowMs: number = Date.now(),
 ): boolean {
   return (
@@ -219,10 +239,7 @@ export function sortRoomsByStuckness<
   T extends {
     status: RoomStatus;
     opened_at: string;
-    timing_config?: {
-      quiet_period_secs?: number;
-      drop_threshold_secs?: number;
-    };
+    timing_config?: StuckTimingConfig;
   },
 >(rooms: T[], nowMs: number = Date.now()): T[] {
   return [...rooms].sort((a, b) => {
