@@ -306,6 +306,97 @@ class WithdrawParticipantTests(unittest.TestCase):
         self.assertEqual(sent["reason"], "out of scope")
 
 
+class RoomStateRaceErrorTests(unittest.TestCase):
+    """The /present, /contributions, and /withdraw POST helpers
+    must distinguish 409 `status_precondition_failed` (the room
+    moved on while the worker was triaging — benign race) from
+    other 409s and other failures, so the handler can log the race
+    at info level instead of WARN/ERROR.  Without this distinction
+    operator log volume is high enough to mask real errors."""
+
+    ROOM_ID = "01234567-89ab-4cde-9012-3456789abcde"
+
+    def _race_409(self) -> bytes:
+        return json.dumps({
+            "code": "status_precondition_failed",
+            "message": "room is currently 'deciding'",
+        }).encode()
+
+    def test_present_raises_RoomStateRaceError_on_409_status_precondition_failed(
+        self,
+    ) -> None:
+        with patch.object(
+            hm_http._OPENER,
+            "open",
+            return_value=_fake_response(409, self._race_409()),
+        ):
+            with self.assertRaises(wr_api.RoomStateRaceError) as cm:
+                wr_api.present_to_room(
+                    "https://api.example", self.ROOM_ID, 1, "tok",
+                )
+        self.assertEqual(cm.exception.op, "present")
+        self.assertEqual(cm.exception.code, "status_precondition_failed")
+        # RoomStateRaceError is itself a RuntimeError so existing
+        # callers that catch the broader type still match.
+        self.assertIsInstance(cm.exception, RuntimeError)
+
+    def test_contributions_raises_RoomStateRaceError_on_race(self) -> None:
+        with patch.object(
+            hm_http._OPENER,
+            "open",
+            return_value=_fake_response(409, self._race_409()),
+        ):
+            with self.assertRaises(wr_api.RoomStateRaceError) as cm:
+                wr_api.submit_contribution(
+                    "https://api.example",
+                    self.ROOM_ID,
+                    1,
+                    {"verdict": "APPROVE", "summary": "ok"},
+                    "# body",
+                    "tok",
+                )
+        self.assertEqual(cm.exception.op, "contributions")
+
+    def test_withdraw_raises_RoomStateRaceError_on_race(self) -> None:
+        with patch.object(
+            hm_http._OPENER,
+            "open",
+            return_value=_fake_response(409, self._race_409()),
+        ):
+            with self.assertRaises(wr_api.RoomStateRaceError) as cm:
+                wr_api.withdraw_participant(
+                    "https://api.example", self.ROOM_ID, 1, "tok",
+                    reason="out of scope",
+                )
+        self.assertEqual(cm.exception.op, "withdraw")
+
+    def test_other_409_codes_still_raise_generic_RuntimeError(self) -> None:
+        # owner_conflict, participant_already_present, etc. are
+        # distinct race classes that the handler treats differently.
+        # They MUST NOT collapse into RoomStateRaceError.
+        body = json.dumps({"code": "owner_conflict"}).encode()
+        with patch.object(
+            hm_http._OPENER, "open", return_value=_fake_response(409, body),
+        ):
+            with self.assertRaises(RuntimeError) as cm:
+                wr_api.present_to_room(
+                    "https://api.example", self.ROOM_ID, 1, "tok",
+                )
+        self.assertNotIsInstance(cm.exception, wr_api.RoomStateRaceError)
+        self.assertIn("status 409", str(cm.exception))
+
+    def test_409_without_recognizable_code_still_raises_generic(self) -> None:
+        body = json.dumps({"message": "no code field"}).encode()
+        with patch.object(
+            hm_http._OPENER, "open", return_value=_fake_response(409, body),
+        ):
+            with self.assertRaises(RuntimeError) as cm:
+                wr_api.present_to_room(
+                    "https://api.example", self.ROOM_ID, 1, "tok",
+                )
+        self.assertNotIsInstance(cm.exception, wr_api.RoomStateRaceError)
+
+
 class GetJsonTransportTests(unittest.TestCase):
     """Sanity checks on the new shared `get_json` helper that the
     war-room watcher depends on. Mirrors the post_json invariants."""

@@ -18,6 +18,7 @@ from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
     is_war_room_job,
     truncate_raw_md,
 )
+from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import api as wr_api
 from hivemoot_agent.plugins.interfaces import AgentResult, Job
 
 
@@ -331,6 +332,157 @@ class HandleWithdrawPathTests(unittest.TestCase):
             )
         # Still doesn't raise; decision returned for caller introspection.
         self.assertEqual(decision.kind, "withdraw")
+
+
+class RoomStateRaceTests(unittest.TestCase):
+    """Closes the log-noise issue from PR #599 follow-up: when the
+    bot's quiet-period gate hasn't quite expired and a fast worker
+    reaches /present, the room may have transitioned to `deciding`
+    in the race window.  The handler must:
+      - Treat `RoomStateRaceError` as a benign no-op (info-level
+        log, no on_post_failure callback, no follow-up call).
+      - Stop the post sequence at the failed leg — don't try
+        /contribute or /withdraw against a room that won't accept
+        them.
+    """
+
+    def test_present_race_skips_contribute_no_callback(self) -> None:
+        """Race on /present (the first leg) must short-circuit the
+        whole sequence: no /contribute call, no on_post_failure."""
+        contribute_called: list[bool] = []
+        callback_invocations: list[tuple] = []
+
+        def _race_present(**_kwargs: Any) -> int:
+            raise wr_api.RoomStateRaceError(
+                op="present",
+                code="status_precondition_failed",
+                body_excerpt="room is currently 'deciding'",
+            )
+
+        def _contribute(**_kwargs: Any) -> int:
+            contribute_called.append(True)
+            return 7
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.present_to_room",
+            side_effect=_race_present,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.submit_contribution",
+            side_effect=_contribute,
+        ):
+            decision = handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=_present_response(),
+                on_post_failure=lambda *args: callback_invocations.append(args),
+            )
+
+        self.assertEqual(decision.kind, "present")  # parse still works
+        self.assertEqual(contribute_called, [], "race must skip /contribute")
+        self.assertEqual(callback_invocations, [], "race must NOT fire callback")
+
+    def test_contribute_race_after_successful_present_no_callback(self) -> None:
+        """Present succeeded; /contribute hits the race.  Still no
+        callback (the room moved on, re-dispatching is pointless —
+        it would just race again next tick)."""
+        callback_invocations: list[tuple] = []
+
+        def _present(**_kwargs: Any) -> int:
+            return 6
+
+        def _race_contribute(**_kwargs: Any) -> int:
+            raise wr_api.RoomStateRaceError(
+                op="contributions",
+                code="status_precondition_failed",
+                body_excerpt="room is currently 'deciding'",
+            )
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.present_to_room",
+            side_effect=_present,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.submit_contribution",
+            side_effect=_race_contribute,
+        ):
+            decision = handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=_present_response(),
+                on_post_failure=lambda *args: callback_invocations.append(args),
+            )
+
+        self.assertEqual(decision.kind, "present")
+        self.assertEqual(callback_invocations, [])
+
+    def test_withdraw_path_present_race_skips_withdraw(self) -> None:
+        """Same race on the withdraw path: /present (RSVP-then-
+        withdraw step 1) hits the race → skip the /withdraw call."""
+        withdraw_called: list[bool] = []
+
+        def _race_present(**_kwargs: Any) -> int:
+            raise wr_api.RoomStateRaceError(
+                op="present",
+                code="status_precondition_failed",
+                body_excerpt="room is currently 'deciding'",
+            )
+
+        def _withdraw(**_kwargs: Any) -> int:
+            withdraw_called.append(True)
+            return 6
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.present_to_room",
+            side_effect=_race_present,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.withdraw_participant",
+            side_effect=_withdraw,
+        ):
+            decision = handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=_withdraw_response(),
+            )
+
+        self.assertEqual(decision.kind, "withdraw")
+        self.assertEqual(withdraw_called, [], "race must skip /withdraw")
+
+    def test_withdraw_race_after_successful_present_no_callback(self) -> None:
+        callback_invocations: list[tuple] = []
+
+        def _present(**_kwargs: Any) -> int:
+            return 6
+
+        def _race_withdraw(**_kwargs: Any) -> int:
+            raise wr_api.RoomStateRaceError(
+                op="withdraw",
+                code="status_precondition_failed",
+                body_excerpt="room is currently 'deciding'",
+            )
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.present_to_room",
+            side_effect=_present,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler.wr_api.withdraw_participant",
+            side_effect=_race_withdraw,
+        ):
+            decision = handle_war_room_job_finished(
+                _job(),
+                _result(),
+                base_url="https://api",
+                bearer="bearer",
+                extracted_markdown=_withdraw_response(),
+                on_post_failure=lambda *args: callback_invocations.append(args),
+            )
+
+        self.assertEqual(decision.kind, "withdraw")
+        self.assertEqual(callback_invocations, [])
 
 
 class HandlerSafetyInvariantTests(unittest.TestCase):

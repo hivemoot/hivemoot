@@ -215,6 +215,15 @@ def _do_present_and_contribute(
     side). Only when BOTH fail do we fire `on_post_failure` — at
     that point no participant-state change has landed and the
     worker dropped this room silently without re-dispatch.
+
+    `RoomStateRaceError` (the room moved to `deciding` / `closed`
+    while the worker was triaging) is treated as a benign race:
+    both legs are skipped, no callback fires, and the operator log
+    line is INFO-level instead of WARN/ERROR.  This is the
+    expected outcome whenever the bot's quiet-period gate hasn't
+    quite expired by the time a fast worker reaches /present;
+    elevating it to a noisy error trains operators to ignore the
+    log lines that DO indicate real problems.
     """
 
     present_failed_exc: Optional[Exception] = None
@@ -226,6 +235,19 @@ def _do_present_and_contribute(
             bearer=bearer,
             intent_hint=decision.summary,
         )
+    except wr_api.RoomStateRaceError as exc:
+        # Room moved on between watching → triage → present.  No
+        # state change landed; nothing to retry.  /contribute will
+        # also race so we skip it AND the post-failure callback
+        # (the trigger's seen-cache eviction would re-dispatch a
+        # room that no longer accepts our event — pointless work).
+        _log(
+            f"raced room transition on present "
+            f"room={room_id} subject={subject_ref} seq={current_sequence} "
+            f"code={exc.code} — skipping contribute",
+            level="info",
+        )
+        return
     except Exception as exc:  # noqa: BLE001 — log + continue
         present_failed_exc = exc
         _log(
@@ -255,6 +277,18 @@ def _do_present_and_contribute(
             f"contributed room={room_id} subject={subject_ref} "
             f"verdict={decision.verdict} body_bytes={len(raw_md.encode('utf-8'))} "
             f"truncated={truncated} landed_seq={seq} agent_exit={result.exit_code}",
+            level="info",
+        )
+    except wr_api.RoomStateRaceError as exc:
+        # Same race as the /present case but reached on the second
+        # leg.  Do NOT fire on_post_failure — the room moved on,
+        # not a transient failure; re-dispatching would just race
+        # again.  The agent's exit code is preserved by the trigger
+        # for observability.
+        _log(
+            f"raced room transition on contribute "
+            f"room={room_id} subject={subject_ref} seq={current_sequence} "
+            f"verdict={decision.verdict} code={exc.code}",
             level="info",
         )
     except Exception as exc:  # noqa: BLE001
@@ -306,6 +340,16 @@ def _do_present_then_withdraw(
             bearer=bearer,
             intent_hint=decision.reason,
         )
+    except wr_api.RoomStateRaceError as exc:
+        # See `_do_present_and_contribute` for the rationale: the
+        # room moved on, /withdraw will also race, no callback.
+        _log(
+            f"raced room transition on present (for withdraw) "
+            f"room={room_id} subject={subject_ref} seq={current_sequence} "
+            f"code={exc.code} — skipping withdraw",
+            level="info",
+        )
+        return
     except Exception as exc:  # noqa: BLE001
         present_failed = True
         _log(
@@ -329,6 +373,13 @@ def _do_present_then_withdraw(
             f"seq={current_sequence} reason={decision.reason or 'unspecified'} "
             f"landed_seq={seq} parse_error={decision.parse_error}",
             level=level,
+        )
+    except wr_api.RoomStateRaceError as exc:
+        _log(
+            f"raced room transition on withdraw "
+            f"room={room_id} subject={subject_ref} seq={current_sequence} "
+            f"code={exc.code}",
+            level="info",
         )
     except Exception as exc:  # noqa: BLE001
         _log(
