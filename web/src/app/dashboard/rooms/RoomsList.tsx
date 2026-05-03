@@ -7,6 +7,7 @@ import {
   isRoomStuck,
   relativeTime,
   roomMatchesFilter,
+  roomMatchesSubjectQuery,
   sortRoomsByStuckness,
   statusLabel,
   statusPillClass,
@@ -40,6 +41,9 @@ export default function RoomsList() {
   // (no querystring sync) since the rooms list is a transient
   // operator inspection surface, not a shareable view.
   const [filter, setFilter] = useState<RoomStatusFilter>("all");
+  // Substring match against subject_ref. Empty = no filter.  Like
+  // `filter`, this is component state only — no URL sync.
+  const [search, setSearch] = useState<string>("");
 
   const fetchRooms = useCallback(async () => {
     try {
@@ -93,9 +97,12 @@ export default function RoomsList() {
 
   const visibleRooms = useMemo(() => {
     if (state.status !== "ready") return [];
-    const filtered = state.rooms.filter((r) => roomMatchesFilter(r, filter));
+    const filtered = state.rooms.filter(
+      (r) =>
+        roomMatchesFilter(r, filter) && roomMatchesSubjectQuery(r, search),
+    );
     return sortRoomsByStuckness(filtered);
-  }, [state, filter]);
+  }, [state, filter, search]);
 
   return (
     <div className="space-y-6">
@@ -110,11 +117,18 @@ export default function RoomsList() {
       </header>
 
       {state.status === "ready" && state.rooms.length > 0 && (
-        <FilterBar
-          current={filter}
-          onChange={setFilter}
-          counts={counts}
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <FilterBar
+            current={filter}
+            onChange={setFilter}
+            counts={counts}
+          />
+          <SearchBox
+            value={search}
+            onChange={setSearch}
+            placeholder="Filter by subject (e.g. owner/repo#42)"
+          />
+        </div>
       )}
 
       {state.status === "loading" && (
@@ -148,7 +162,8 @@ export default function RoomsList() {
         visibleRooms.length === 0 && (
           <div className="rounded-lg border border-white/5 bg-zinc-900/50 p-6 text-center">
             <p className="text-sm text-zinc-400">
-              No rooms match the current filter.
+              No rooms match the current filter
+              {search.trim() !== "" && ` and search "${search.trim()}"`}.
             </p>
           </div>
         )}
@@ -212,6 +227,52 @@ function FilterBar({
         );
       })}
     </nav>
+  );
+}
+
+function SearchBox({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <label
+      className="flex items-center gap-2 rounded-full bg-zinc-800/60 px-3 py-1 text-xs ring-1 ring-white/5 focus-within:ring-honey-500/40"
+    >
+      <span className="sr-only">Filter rooms by subject</span>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className="h-3.5 w-3.5 text-zinc-500"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <circle cx="7" cy="7" r="4.5" />
+        <path d="M10.5 10.5l3 3" strokeLinecap="round" />
+      </svg>
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-64 max-w-full bg-transparent text-zinc-200 placeholder:text-zinc-500 focus:outline-none"
+      />
+      {value !== "" && (
+        <button
+          type="button"
+          aria-label="Clear search"
+          onClick={() => onChange("")}
+          className="text-zinc-500 hover:text-zinc-300"
+        >
+          ×
+        </button>
+      )}
+    </label>
   );
 }
 

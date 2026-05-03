@@ -128,6 +128,25 @@ export function countRoomsByFilter<T extends { status: RoomStatus }>(
 }
 
 /**
+ * Substring match against a room's `subject_ref` (e.g.
+ * `owner/repo#42`).  Case-insensitive so `HIVEMOOT/HIVEMOOT#42`
+ * matches `hivemoot/hivemoot#42`, and a bare `42` matches the
+ * trailing `#42`.  Empty / whitespace-only query matches every
+ * room — that's the "no filter" default the UI starts in.
+ *
+ * Pure on `(room, query)` so the rooms-list component can run it
+ * client-side over the full fetched set without thrashing the API.
+ */
+export function roomMatchesSubjectQuery<T extends { subject_ref: string }>(
+  room: T,
+  query: string,
+): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (normalized === "") return true;
+  return room.subject_ref.toLowerCase().includes(normalized);
+}
+
+/**
  * Pick the relevant deadline for a room based on its current status.
  * - awaiting_contributions / deciding → quiet_period_secs (the
  *   queen's settling window before claiming the room)
