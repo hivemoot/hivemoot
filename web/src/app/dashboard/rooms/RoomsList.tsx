@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   countRoomsByFilter,
@@ -45,6 +46,8 @@ export default function RoomsList() {
   // Substring match against subject_ref. Empty = no filter.  Like
   // `filter`, this is component state only — no URL sync.
   const [search, setSearch] = useState<string>("");
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const router = useRouter();
 
   const fetchRooms = useCallback(async () => {
     try {
@@ -107,15 +110,35 @@ export default function RoomsList() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-          War Rooms
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          Active and past governance synthesis rooms for this installation.
-          Refreshes every 30 seconds.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+            War Rooms
+          </h1>
+          <p className="mt-1 text-sm text-zinc-500">
+            Active and past governance synthesis rooms for this installation.
+            Refreshes every 30 seconds.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCreatorOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md bg-honey-500/15 px-3 py-1.5 text-sm font-medium text-honey-300 ring-1 ring-honey-500/40 transition-colors hover:bg-honey-500/25"
+        >
+          <span aria-hidden="true">+</span>
+          <span>New war-room</span>
+        </button>
       </header>
+
+      {creatorOpen && (
+        <CreateRoomModal
+          onClose={() => setCreatorOpen(false)}
+          onCreated={(roomId) => {
+            setCreatorOpen(false);
+            router.push(`/dashboard/rooms/${roomId}`);
+          }}
+        />
+      )}
 
       {state.status === "ready" && state.rooms.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -337,5 +360,136 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
         </div>
       </Link>
     </li>
+  );
+}
+
+const TITLE_MAX_LENGTH = 200;
+
+/**
+ * Modal form for operator-driven war-room creation. Currently only
+ * `general` (free-form coordination) — repo-anchored types are
+ * bot-driven with deterministic roomIds and would risk colliding
+ * with future bot creates if we accepted them here. The API route
+ * enforces the same allowlist server-side.
+ */
+function CreateRoomModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (roomId: string) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const trimmed = title.trim();
+  const isValid = trimmed.length > 0 && trimmed.length <= TITLE_MAX_LENGTH;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isValid || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/dashboard/rooms", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          subject_type: "general",
+          subject_ref: trimmed,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(
+          typeof body.message === "string"
+            ? body.message
+            : `Failed to create room (HTTP ${res.status})`,
+        );
+        setSubmitting(false);
+        return;
+      }
+      if (typeof body.roomId !== "string") {
+        setError("Server didn't return a roomId.");
+        setSubmitting(false);
+        return;
+      }
+      onCreated(body.roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-room-title"
+        className="w-full max-w-md rounded-lg border border-white/10 bg-zinc-950 p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2
+          id="create-room-title"
+          className="text-lg font-semibold text-zinc-100"
+        >
+          New war-room
+        </h2>
+        <p className="mt-1 text-sm text-zinc-500">
+          Create an ad-hoc room. Agents on this installation will discover
+          and engage with it like any other room — no special handling.
+        </p>
+
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+          <label className="block">
+            <span className="text-xs font-medium text-zinc-300">Title</span>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="What is this room about?"
+              maxLength={TITLE_MAX_LENGTH}
+              autoFocus
+              className="mt-1 block w-full rounded-md border border-white/10 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-honey-500/60 focus:outline-none"
+            />
+            <span className="mt-1 block text-xs text-zinc-600">
+              {trimmed.length}/{TITLE_MAX_LENGTH}
+            </span>
+          </label>
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300"
+            >
+              {error}
+            </p>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!isValid || submitting}
+              className="rounded-md bg-honey-500/15 px-3 py-1.5 text-sm font-medium text-honey-300 ring-1 ring-honey-500/40 hover:bg-honey-500/25 disabled:opacity-50"
+            >
+              {submitting ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

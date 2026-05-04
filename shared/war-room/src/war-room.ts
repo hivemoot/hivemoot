@@ -109,6 +109,49 @@ export function statusIndexKey(
   return `${STATUS_INDEX_PREFIX}${installationId}:${status}`;
 }
 
+/**
+ * Subject-uniqueness lock key for room creation. For repo-anchored
+ * subject types (`pr_review` / `mention_response` / `issue_triage`),
+ * collisions on the same `subject_ref` block a duplicate open room.
+ *
+ * For `general` (operator-created free-form rooms) the lock is keyed
+ * per-roomId rather than per-subject_ref so two ad-hoc rooms can
+ * share a title — uniqueness is degenerate (always passes), the
+ * key still gets cleaned up by the close/terminate scripts via the
+ * same KEYS slot. Closes the "no special handling" requirement —
+ * existing Lua scripts work unchanged because the key shape is
+ * still `hive:v1:idx:room:subject:...`.
+ */
+export function subjectLockKey(
+  installationId: string,
+  subjectType: SubjectType,
+  subjectRef: string,
+  roomId: string,
+): string {
+  if (subjectType === "general") {
+    return `${SUBJECT_INDEX_PREFIX}${installationId}:general:${roomId}`;
+  }
+  return subjectIndexKey(installationId, subjectType, subjectRef);
+}
+
+/**
+ * Per-repo index key derived from a subject. Repo-anchored types
+ * use `{owner}/{repo}` parsed from `subject_ref`. `general` rooms
+ * have no repo — they all share a single `_general` bucket so the
+ * close/terminate scripts can still SREM the same key on cleanup
+ * without introducing a "skip this slot" branch in the Lua.
+ */
+export function repoIndexKeyForSubject(
+  installationId: string,
+  subjectType: SubjectType,
+  subjectRef: string,
+): string {
+  if (subjectType === "general") {
+    return repoIndexKey(installationId, "_general");
+  }
+  return repoIndexKey(installationId, repoFromSubjectRef(subjectRef));
+}
+
 export function repoIndexKey(installationId: string, repo: string): string {
   return `${REPO_INDEX_PREFIX}${installationId}:${repo}`;
 }
@@ -144,8 +187,16 @@ export type RoomStatus =
   | "expired";
 
 /** Subject classes V1 supports. New types require backend
- * regex validation per `subject_ref` shape. */
-export type SubjectType = "pr_review" | "mention_response" | "issue_triage";
+ * regex validation per `subject_ref` shape.
+ *
+ * `general` is the operator-driven escape hatch — a free-form
+ * coordination room created manually from the dashboard, not
+ * anchored to any GitHub artifact. `subject_ref` for `general`
+ * is just a free-form title (1-200 chars, no control chars).
+ * Decision-poster skips it (no GitHub comment to post to);
+ * agents discover and engage via the existing `/api/rooms/watching`
+ * path with no special handling. */
+export type SubjectType = "pr_review" | "mention_response" | "issue_triage" | "general";
 
 /** Reason a room reached a terminal state via the
  * `ROOM_TERMINATE_SCRIPT` path (vs the queen's happy-path close). */
@@ -512,6 +563,11 @@ const SUBJECT_REF_REGEX: Record<SubjectType, RegExp> = {
     /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?\/[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,99}#[1-9][0-9]*$/,
   issue_triage:
     /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?\/[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,99}#[1-9][0-9]*$/,
+  // Free-form title for operator-created rooms. 1-200 chars, no
+  // C0/C1 control chars (allows letters in any script, punctuation,
+  // emoji). React escapes these on render so XSS isn't a concern;
+  // the bound is just to keep keys + display predictable.
+  general: /^[^\u0000-\u001f\u007f-\u009f]{1,200}$/u,
 };
 
 const SUBJECT_REF_DESCRIPTION =
@@ -793,19 +849,17 @@ export async function createRoom(args: {
     },
   };
 
-  const repo = repoFromSubjectRef(args.subject.ref);
-
   const result = dispatchScriptResult(
     await args.redis.eval(
       ROOM_OPEN_SCRIPT,
       [
-        subjectIndexKey(args.installationId, args.subject.type, args.subject.ref),
+        subjectLockKey(args.installationId, args.subject.type, args.subject.ref, args.roomId),
         roomKey(args.installationId, args.roomId),
         seqKey(args.roomId),
         eventsKey(args.roomId),
         statusIndexKey(args.installationId, "awaiting_contributions"),
         installationIndexKey(args.installationId),
-        repoIndexKey(args.installationId, repo),
+        repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
       ],
       [
         args.roomId,
@@ -3453,17 +3507,16 @@ export async function terminateRoom(args: {
   });
   const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
 
-  const repo = repoFromSubjectRef(args.subject.ref);
-
   const result = dispatchScriptResult(
     await args.redis.eval(
       ROOM_TERMINATE_SCRIPT,
       [
         roomKey(args.installationId, args.roomId),
-        subjectIndexKey(
+        subjectLockKey(
           args.installationId,
           args.subject.type,
           args.subject.ref,
+          args.roomId,
         ),
         // All non-terminal status sets — script SREMs each
         // idempotently. Closes #515 builder R1: a stale
@@ -3485,7 +3538,7 @@ export async function terminateRoom(args: {
         statusIndexKey(args.installationId, "awaiting_contributions"),
         statusIndexKey(args.installationId, "deciding"),
         installationIndexKey(args.installationId),
-        repoIndexKey(args.installationId, repo),
+        repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
         seqKey(args.roomId),
         eventsKey(args.roomId),
         participantsKey(args.roomId),
@@ -3595,8 +3648,6 @@ export async function closeRoomWithDecision(args: {
   });
   const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
 
-  const repo = repoFromSubjectRef(args.subject.ref);
-
   const result = dispatchScriptResult(
     await args.redis.eval(
       ROOM_CLOSE_SCRIPT,
@@ -3606,16 +3657,17 @@ export async function closeRoomWithDecision(args: {
         seqKey(args.roomId),
         statusIndexKey(args.installationId, "deciding"),
         statusIndexKey(args.installationId, "awaiting_contributions"),
-        subjectIndexKey(
+        subjectLockKey(
           args.installationId,
           args.subject.type,
           args.subject.ref,
+          args.roomId,
         ),
         eventsKey(args.roomId),
         participantsKey(args.roomId),
         contributionsKey(args.roomId),
         installationIndexKey(args.installationId),
-        repoIndexKey(args.installationId, repo),
+        repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
       ],
       [
         args.roomId,

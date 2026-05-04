@@ -26,7 +26,12 @@ import type { Logger } from "../logger.js";
 import { logger as defaultLogger } from "../logger.js";
 
 export interface PostDecisionArgs {
-  subjectType: "pr_review" | "mention_response" | "issue_triage";
+  /** Mirror the shared `SubjectType` union so manager-loop can pass
+   * `core.subject_type` directly. The `POSTABLE` set below decides
+   * which subtypes have a posting handler — operator-created
+   * `general` rooms intentionally don't, so the queen falls into
+   * the "skip" branch rather than posting nowhere. */
+  subjectType: "pr_review" | "mention_response" | "issue_triage" | "general";
   subjectRef: string;
   /** Markdown content to post. Already includes verdict header +
    * LLM prose + footer per G'.3's deterministic assembly. */

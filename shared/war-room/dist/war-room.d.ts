@@ -46,6 +46,28 @@ export declare function idemKey(roomId: string, idempotencyKey: string): string;
 export declare function subjectIndexKey(installationId: string, subjectType: SubjectType, subjectRef: string): string;
 export declare function installationIndexKey(installationId: string): string;
 export declare function statusIndexKey(installationId: string, status: RoomStatus): string;
+/**
+ * Subject-uniqueness lock key for room creation. For repo-anchored
+ * subject types (`pr_review` / `mention_response` / `issue_triage`),
+ * collisions on the same `subject_ref` block a duplicate open room.
+ *
+ * For `general` (operator-created free-form rooms) the lock is keyed
+ * per-roomId rather than per-subject_ref so two ad-hoc rooms can
+ * share a title — uniqueness is degenerate (always passes), the
+ * key still gets cleaned up by the close/terminate scripts via the
+ * same KEYS slot. Closes the "no special handling" requirement —
+ * existing Lua scripts work unchanged because the key shape is
+ * still `hive:v1:idx:room:subject:...`.
+ */
+export declare function subjectLockKey(installationId: string, subjectType: SubjectType, subjectRef: string, roomId: string): string;
+/**
+ * Per-repo index key derived from a subject. Repo-anchored types
+ * use `{owner}/{repo}` parsed from `subject_ref`. `general` rooms
+ * have no repo — they all share a single `_general` bucket so the
+ * close/terminate scripts can still SREM the same key on cleanup
+ * without introducing a "skip this slot" branch in the Lua.
+ */
+export declare function repoIndexKeyForSubject(installationId: string, subjectType: SubjectType, subjectRef: string): string;
 export declare function repoIndexKey(installationId: string, repo: string): string;
 export declare function roomLockKey(installationId: string, roomId: string): string;
 /**
@@ -66,8 +88,16 @@ export declare function roomLockKey(installationId: string, roomId: string): str
  */
 export type RoomStatus = "awaiting_contributions" | "deciding" | "closed" | "expired";
 /** Subject classes V1 supports. New types require backend
- * regex validation per `subject_ref` shape. */
-export type SubjectType = "pr_review" | "mention_response" | "issue_triage";
+ * regex validation per `subject_ref` shape.
+ *
+ * `general` is the operator-driven escape hatch — a free-form
+ * coordination room created manually from the dashboard, not
+ * anchored to any GitHub artifact. `subject_ref` for `general`
+ * is just a free-form title (1-200 chars, no control chars).
+ * Decision-poster skips it (no GitHub comment to post to);
+ * agents discover and engage via the existing `/api/rooms/watching`
+ * path with no special handling. */
+export type SubjectType = "pr_review" | "mention_response" | "issue_triage" | "general";
 /** Reason a room reached a terminal state via the
  * `ROOM_TERMINATE_SCRIPT` path (vs the queen's happy-path close). */
 export type TerminalReason = "expired" | "failed_synthesis" | "force_close" | "manual";
