@@ -46,6 +46,7 @@ import {
   appendRoomEvent as sharedAppendRoomEvent,
   claimSynthesis as sharedClaimSynthesis,
   closeRoomWithDecision as sharedCloseRoomWithDecision,
+  recordPostCloseDrift as sharedRecordPostCloseDrift,
   // Read primitives
   getRoomCore as sharedGetRoomCore,
   listRooms as sharedListRooms,
@@ -317,6 +318,39 @@ export class WarRoomStore {
       if (err instanceof RoomEventIdempotencyReplayError) {
         return { sequence: err.existingSequence, replay: true };
       }
+      rethrowAsApi(err);
+    }
+  }
+
+  /**
+   * Persist a "post-close drift" marker on a room. Called by
+   * `maybeEmitSubjectUpdated` when the war-room API rejects a
+   * `subject_updated` event with `status_precondition_failed` (the
+   * room is `closed` or `deciding` and can't accept the update).
+   *
+   * Surfaces the "diff drifted post-verdict" signal: the verdict was
+   * synthesized over an earlier head SHA, but the PR has since
+   * advanced. The dashboard reads `last_post_close_drift_at` /
+   * `_head_sha` on the room core to render a badge so operators
+   * spot weak-signal merges. Closes hivemoot/hivemoot#605 (Option A).
+   *
+   * Best-effort: caller swallows errors — failure to persist the
+   * badge marker MUST NOT escalate the webhook handler's 200 to 500.
+   */
+  async recordPostCloseDrift(args: {
+    roomId: string;
+    attemptedAt: string;
+    headSha?: string;
+  }): Promise<void> {
+    try {
+      await sharedRecordPostCloseDrift({
+        installationId: this.installationId,
+        roomId: args.roomId,
+        attemptedAt: args.attemptedAt,
+        headSha: args.headSha,
+        redis: this.redis,
+      });
+    } catch (err) {
       rethrowAsApi(err);
     }
   }

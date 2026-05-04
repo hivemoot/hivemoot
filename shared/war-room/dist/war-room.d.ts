@@ -180,6 +180,25 @@ export interface RoomCore extends RoomCoreData {
     /** Decision payload — set ONLY by `ROOM_CLOSE_SCRIPT` on the
      * queen happy path. */
     decision?: RoomDecision;
+    /** ISO 8601 timestamp of the most recent rejected `subject_updated`
+     * event on this room. Set by `recordPostCloseDrift` when the bot's
+     * webhook handler observes a `status_precondition_failed` rejection
+     * (the room is `closed`/`deciding` and can't accept the update).
+     *
+     * Surfaces the "diff drifted post-verdict" signal: a closed room's
+     * verdict was synthesized over an earlier head SHA, but the PR has
+     * since advanced. The dashboard reads this field to render a badge
+     * so operators can spot weak-signal merges (PR diff diverged from
+     * what the war-room reviewed). Closes hivemoot/hivemoot#605 (Option A).
+     *
+     * Last-write-wins on repeated rejections — only the most recent
+     * attempt's metadata is retained. */
+    last_post_close_drift_at?: string;
+    /** Head SHA the rejected `subject_updated` event carried, when the
+     * bot had one in the webhook payload (typically present for
+     * `synchronize` and `reopened`, absent for plain `closed`).
+     * Paired with `last_post_close_drift_at`. */
+    last_post_close_drift_head_sha?: string;
 }
 /**
  * `RoomCore` enriched with its `roomId`. Returned by `listRooms` so
@@ -420,6 +439,38 @@ export declare function getRoomCore(args: {
     roomId: string;
     redis: Redis;
 }): Promise<RoomCore>;
+/**
+ * Persist a "post-close drift" marker on a room: the bot's webhook
+ * handler observed a `subject_updated` rejection (typically
+ * `status_precondition_failed` because the room is `closed`/`deciding`)
+ * and wants the dashboard to surface that the PR's diff has advanced
+ * past what the verdict reviewed.
+ *
+ * Single-key, two-field HSET — no Lua needed since there's no
+ * cross-key invariant. Last-write-wins: a later rejection with a
+ * different head SHA overwrites the previous markers, so the badge
+ * always reflects the most recent post-close attempt.
+ *
+ * Caller responsibilities:
+ *   - Validate `roomId` shape (we re-validate defensively).
+ *   - Pass an ISO 8601 `attemptedAt`. The function does NOT call
+ *     `new Date().toISOString()` itself so callers can deterministically
+ *     test the wire shape.
+ *   - `headSha` is optional — `pull_request.closed` events arrive
+ *     without a SHA change; in that case omit the field rather than
+ *     persisting a stale value.
+ *
+ * Closes hivemoot/hivemoot#605 (Option A — dashboard signal). The
+ * subsequent merge-gate check (Option C) reads these markers in a
+ * follow-up PR.
+ */
+export declare function recordPostCloseDrift(args: {
+    installationId: string;
+    roomId: string;
+    attemptedAt: string;
+    headSha?: string;
+    redis: Redis;
+}): Promise<void>;
 /**
  * List rooms for an installation, newest-first by `opened_at`.
  *

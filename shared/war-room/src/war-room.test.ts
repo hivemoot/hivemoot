@@ -38,6 +38,7 @@ import {
   RoomSubjectRefError,
   RoomIdFormatError,
   RoomIdTakenError,
+  recordPostCloseDrift,
   type RoomCore,
   type RoomCoreData,
 } from "./war-room";
@@ -4608,5 +4609,189 @@ describe("D.1.a-iii.c end-to-end: claim → close happy path", () => {
     });
     expect(room?.status).toBe("closed");
     expect(room?.decision?.content).toBe("Decision: ship.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordPostCloseDrift — closes hivemoot/hivemoot#605 (Option A)
+// ---------------------------------------------------------------------------
+
+describe("recordPostCloseDrift", () => {
+  const ATTEMPT_ISO = "2026-05-03T10:00:00.000Z";
+  const HEAD_SHA = "abc1234def5678901234567890abcdef12345678";
+
+  async function seedClosedRoom(redis: ReturnType<typeof makeMockRedis>) {
+    const data: RoomCoreData = {
+      manager: "bot-queen",
+      subject_type: "pr_review",
+      subject_ref: "hivemoot/hivemoot#508",
+      opened_at: "2026-05-03T08:00:00.000Z",
+      timing_config: {
+        max_age_secs: 3600,
+        drop_threshold_secs: 600,
+        quiet_period_secs: 600,
+      },
+    };
+    await redis.hset(roomKey("12345", RID_A), {
+      data: JSON.stringify(data),
+      status: "closed",
+      closed_at: "2026-05-03T09:00:00.000Z",
+      decision: JSON.stringify({
+        synthesized_at: "2026-05-03T09:00:00.000Z",
+        synthesis_runner: "queen-prod.pid7",
+        content: "## Verdict: CONCERNS",
+        sequence_closed: 5,
+      }),
+    });
+  }
+
+  it("writes both drift fields readable via getRoomCore", async () => {
+    const redis = makeMockRedis();
+    await seedClosedRoom(redis);
+
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: ATTEMPT_ISO,
+      headSha: HEAD_SHA,
+      redis,
+    });
+
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.last_post_close_drift_at).toBe(ATTEMPT_ISO);
+    expect(core.last_post_close_drift_head_sha).toBe(HEAD_SHA);
+    // Existing fields untouched
+    expect(core.status).toBe("closed");
+    expect(core.decision?.content).toBe("## Verdict: CONCERNS");
+  });
+
+  it("omits headSha field when not provided", async () => {
+    const redis = makeMockRedis();
+    await seedClosedRoom(redis);
+
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: ATTEMPT_ISO,
+      redis,
+    });
+
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.last_post_close_drift_at).toBe(ATTEMPT_ISO);
+    expect(core.last_post_close_drift_head_sha).toBeUndefined();
+  });
+
+  it("clears stale head_sha when a later attempt has no SHA (no orphan pairing)", async () => {
+    // Closes guard's COMMENT on PR #606: the SHA + timestamp fields
+    // are semantically paired (the SHA explains WHICH head was
+    // rejected at that timestamp).  Earlier impl left the SHA field
+    // untouched when a later attempt arrived without a SHA, leaking
+    // a stale value paired with a fresh timestamp.  The fix mirrors
+    // `deciding_through_sequence`'s empty-string sentinel pattern
+    // (WAR_ROOM_DESIGN.md L415) — write `""` to explicitly clear.
+    const redis = makeMockRedis();
+    await seedClosedRoom(redis);
+
+    // First: synchronize with a SHA — both fields set.
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+      headSha: "abc1234",
+      redis,
+    });
+    // Second: closed event without a SHA — stale SHA must clear.
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:05:00.000Z",
+      redis,
+    });
+
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.last_post_close_drift_at).toBe("2026-05-03T10:05:00.000Z");
+    expect(core.last_post_close_drift_head_sha).toBeUndefined();
+  });
+
+  it("last-write-wins on repeated drift attempts", async () => {
+    const redis = makeMockRedis();
+    await seedClosedRoom(redis);
+
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:00:00.000Z",
+      headSha: "1111111111111111111111111111111111111111",
+      redis,
+    });
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: "2026-05-03T10:05:00.000Z",
+      headSha: "2222222222222222222222222222222222222222",
+      redis,
+    });
+
+    const core = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(core.last_post_close_drift_at).toBe("2026-05-03T10:05:00.000Z");
+    expect(core.last_post_close_drift_head_sha).toBe(
+      "2222222222222222222222222222222222222222",
+    );
+  });
+
+  it("rejects invalid roomId at the boundary", async () => {
+    const redis = makeMockRedis();
+    await expect(
+      recordPostCloseDrift({
+        installationId: "12345",
+        roomId: "not-a-uuid",
+        attemptedAt: ATTEMPT_ISO,
+        redis,
+      }),
+    ).rejects.toThrow(RoomIdFormatError);
+  });
+
+  it("listRooms surfaces drift fields on the wire shape", async () => {
+    const redis = makeMockRedis();
+    // Seed via createRoom so the installation index is populated.
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "closed",
+      closed_at: "2026-05-03T09:00:00.000Z",
+    });
+    await recordPostCloseDrift({
+      installationId: "12345",
+      roomId: RID_A,
+      attemptedAt: ATTEMPT_ISO,
+      headSha: HEAD_SHA,
+      redis,
+    });
+
+    const rooms = await listRooms({ installationId: "12345", redis });
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].last_post_close_drift_at).toBe(ATTEMPT_ISO);
+    expect(rooms[0].last_post_close_drift_head_sha).toBe(HEAD_SHA);
   });
 });

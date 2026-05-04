@@ -467,6 +467,12 @@ function parseRoomCoreFields(fields) {
                 ? JSON.parse(fields.decision)
                 : fields.decision;
     }
+    if (typeof fields.last_post_close_drift_at === "string" && fields.last_post_close_drift_at !== "") {
+        core.last_post_close_drift_at = fields.last_post_close_drift_at;
+    }
+    if (typeof fields.last_post_close_drift_head_sha === "string" && fields.last_post_close_drift_head_sha !== "") {
+        core.last_post_close_drift_head_sha = fields.last_post_close_drift_head_sha;
+    }
     return core;
 }
 /**
@@ -488,6 +494,48 @@ export async function getRoomCore(args) {
         throw new RoomNotFoundError(args.installationId, args.roomId);
     }
     return core;
+}
+/**
+ * Persist a "post-close drift" marker on a room: the bot's webhook
+ * handler observed a `subject_updated` rejection (typically
+ * `status_precondition_failed` because the room is `closed`/`deciding`)
+ * and wants the dashboard to surface that the PR's diff has advanced
+ * past what the verdict reviewed.
+ *
+ * Single-key, two-field HSET — no Lua needed since there's no
+ * cross-key invariant. Last-write-wins: a later rejection with a
+ * different head SHA overwrites the previous markers, so the badge
+ * always reflects the most recent post-close attempt.
+ *
+ * Caller responsibilities:
+ *   - Validate `roomId` shape (we re-validate defensively).
+ *   - Pass an ISO 8601 `attemptedAt`. The function does NOT call
+ *     `new Date().toISOString()` itself so callers can deterministically
+ *     test the wire shape.
+ *   - `headSha` is optional — `pull_request.closed` events arrive
+ *     without a SHA change; in that case omit the field rather than
+ *     persisting a stale value.
+ *
+ * Closes hivemoot/hivemoot#605 (Option A — dashboard signal). The
+ * subsequent merge-gate check (Option C) reads these markers in a
+ * follow-up PR.
+ */
+export async function recordPostCloseDrift(args) {
+    validateRoomId(args.roomId);
+    // Always HSET both fields — the SHA + timestamp are semantically
+    // paired (the SHA explains WHICH head was rejected at the timestamp),
+    // so we MUST clear a stale SHA when a later attempt arrives without
+    // one (e.g. the first rejection carries `synchronize` + headSha,
+    // the next is a `closed` event with no SHA). Write `""` for the
+    // missing case rather than DELing the field — mirrors the
+    // empty-string sentinel pattern used for `deciding_through_sequence`
+    // in RECOVER / CLOSE-drift paths (WAR_ROOM_DESIGN.md L415, L523).
+    // The reader (`parseRoomCoreFields`) treats `""` as absent.
+    const fields = {
+        last_post_close_drift_at: args.attemptedAt,
+        last_post_close_drift_head_sha: args.headSha !== undefined && args.headSha !== "" ? args.headSha : "",
+    };
+    await args.redis.hset(roomKey(args.installationId, args.roomId), fields);
 }
 /**
  * List rooms for an installation, newest-first by `opened_at`.

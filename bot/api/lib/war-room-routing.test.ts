@@ -334,19 +334,123 @@ describe("maybeEmitSubjectUpdated", () => {
         { actualStatus: "deciding" },
       );
     });
+    const recordPostCloseDrift = vi.fn(async () => undefined);
     mockedClientCtor.mockImplementation(
-      function (this: { appendEvent: typeof appendEvent }) {
+      function (this: {
+        appendEvent: typeof appendEvent;
+        recordPostCloseDrift: typeof recordPostCloseDrift;
+      }) {
         this.appendEvent = appendEvent;
+        this.recordPostCloseDrift = recordPostCloseDrift;
       } as unknown as typeof WarRoomStore,
     );
 
     const result = await maybeEmitSubjectUpdated({
       owner: "hivemoot", repo: "hivemoot", prNumber: 42,
  installationId: 12345,
-      changeKind: "synchronize", log,
+      changeKind: "synchronize", headSha: "abc123def", log,
     });
     expect(result).toEqual({ sequence: null, skipped: "api_error" });
     expect(log.warn).toHaveBeenCalled();
+    // Closes hivemoot/hivemoot#605 (Option A): the dashboard reads
+    // these markers to render a "diff drifted" badge so operators
+    // see weak-signal merges (PR diff diverged past the verdict).
+    expect(recordPostCloseDrift).toHaveBeenCalledWith({
+      roomId: expect.any(String),
+      attemptedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      headSha: "abc123def",
+    });
+  });
+
+  it("rejection without headSha (changeKind=closed) still records drift, omitting head_sha", async () => {
+    const appendEvent = vi.fn(async () => {
+      throw new WarRoomApiError(
+        409,
+        "status_precondition_failed",
+        "closed",
+        { actualStatus: "closed" },
+      );
+    });
+    const recordPostCloseDrift = vi.fn(async () => undefined);
+    mockedClientCtor.mockImplementation(
+      function (this: {
+        appendEvent: typeof appendEvent;
+        recordPostCloseDrift: typeof recordPostCloseDrift;
+      }) {
+        this.appendEvent = appendEvent;
+        this.recordPostCloseDrift = recordPostCloseDrift;
+      } as unknown as typeof WarRoomStore,
+    );
+
+    const result = await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
+      changeKind: "closed", log,
+    });
+    expect(result).toEqual({ sequence: null, skipped: "api_error" });
+    expect(recordPostCloseDrift).toHaveBeenCalledTimes(1);
+    const callArg = recordPostCloseDrift.mock.calls[0][0];
+    expect(callArg.headSha).toBeUndefined();
+    expect(callArg.attemptedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("rejection with non-precondition code (e.g. event_body_too_large) does NOT record drift", async () => {
+    const appendEvent = vi.fn(async () => {
+      throw new WarRoomApiError(
+        413,
+        "event_body_too_large",
+        "too large",
+        {},
+      );
+    });
+    const recordPostCloseDrift = vi.fn(async () => undefined);
+    mockedClientCtor.mockImplementation(
+      function (this: {
+        appendEvent: typeof appendEvent;
+        recordPostCloseDrift: typeof recordPostCloseDrift;
+      }) {
+        this.appendEvent = appendEvent;
+        this.recordPostCloseDrift = recordPostCloseDrift;
+      } as unknown as typeof WarRoomStore,
+    );
+
+    await maybeEmitSubjectUpdated({
+      owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
+      changeKind: "synchronize", headSha: "abc", log,
+    });
+    expect(recordPostCloseDrift).not.toHaveBeenCalled();
+  });
+
+  it("recordPostCloseDrift throwing is swallowed — still returns api_error skip (non-fatal)", async () => {
+    const appendEvent = vi.fn(async () => {
+      throw new WarRoomApiError(
+        409,
+        "status_precondition_failed",
+        "closed",
+        {},
+      );
+    });
+    const recordPostCloseDrift = vi.fn(async () => {
+      throw new Error("redis flapped");
+    });
+    mockedClientCtor.mockImplementation(
+      function (this: {
+        appendEvent: typeof appendEvent;
+        recordPostCloseDrift: typeof recordPostCloseDrift;
+      }) {
+        this.appendEvent = appendEvent;
+        this.recordPostCloseDrift = recordPostCloseDrift;
+      } as unknown as typeof WarRoomStore,
+    );
+
+    await expect(
+      maybeEmitSubjectUpdated({
+        owner: "hivemoot", repo: "hivemoot", prNumber: 42,
+ installationId: 12345,
+        changeKind: "synchronize", headSha: "abc", log,
+      }),
+    ).resolves.toEqual({ sequence: null, skipped: "api_error" });
   });
 
   it("changeKind 'closed' (no headSha) is supported", async () => {

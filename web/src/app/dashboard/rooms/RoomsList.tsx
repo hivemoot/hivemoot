@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   countRoomsByFilter,
+  hasDiffDriftedPostVerdict,
   isRoomStuck,
   relativeTime,
   roomMatchesFilter,
@@ -285,6 +286,17 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
   const stuckHighlight = stuck
     ? "border-l-2 border-red-500/60 bg-red-500/5"
     : "";
+  // "Diff drifted post-verdict" — closed room received a `subject_updated`
+  // rejection (PR head SHA advanced past what the verdict reviewed).
+  // Closes hivemoot/hivemoot#605 (Option A): the merge-gate (Option C)
+  // will read the same marker in a follow-up PR.
+  const drifted = hasDiffDriftedPostVerdict(room);
+  const driftTitle = drifted
+    ? `Subject_updated rejected at ${room.last_post_close_drift_at}` +
+      (room.last_post_close_drift_head_sha
+        ? ` (head ${room.last_post_close_drift_head_sha.slice(0, 7)})`
+        : "")
+    : undefined;
   return (
     <li className={stuckHighlight}>
       <Link
@@ -301,6 +313,14 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
             {stuck && (
               <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-300 ring-1 ring-red-500/30">
                 near deadline
+              </span>
+            )}
+            {drifted && (
+              <span
+                className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30"
+                title={driftTitle}
+              >
+                diff drifted
               </span>
             )}
             <span className="text-xs uppercase tracking-wide text-zinc-500">

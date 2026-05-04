@@ -267,6 +267,25 @@ export interface RoomCore extends RoomCoreData {
   /** Decision payload — set ONLY by `ROOM_CLOSE_SCRIPT` on the
    * queen happy path. */
   decision?: RoomDecision;
+  /** ISO 8601 timestamp of the most recent rejected `subject_updated`
+   * event on this room. Set by `recordPostCloseDrift` when the bot's
+   * webhook handler observes a `status_precondition_failed` rejection
+   * (the room is `closed`/`deciding` and can't accept the update).
+   *
+   * Surfaces the "diff drifted post-verdict" signal: a closed room's
+   * verdict was synthesized over an earlier head SHA, but the PR has
+   * since advanced. The dashboard reads this field to render a badge
+   * so operators can spot weak-signal merges (PR diff diverged from
+   * what the war-room reviewed). Closes hivemoot/hivemoot#605 (Option A).
+   *
+   * Last-write-wins on repeated rejections — only the most recent
+   * attempt's metadata is retained. */
+  last_post_close_drift_at?: string;
+  /** Head SHA the rejected `subject_updated` event carried, when the
+   * bot had one in the webhook payload (typically present for
+   * `synchronize` and `reopened`, absent for plain `closed`).
+   * Paired with `last_post_close_drift_at`. */
+  last_post_close_drift_head_sha?: string;
 }
 
 /**
@@ -872,6 +891,12 @@ function parseRoomCoreFields(
         ? (JSON.parse(fields.decision) as RoomDecision)
         : (fields.decision as RoomDecision);
   }
+  if (typeof fields.last_post_close_drift_at === "string" && fields.last_post_close_drift_at !== "") {
+    core.last_post_close_drift_at = fields.last_post_close_drift_at;
+  }
+  if (typeof fields.last_post_close_drift_head_sha === "string" && fields.last_post_close_drift_head_sha !== "") {
+    core.last_post_close_drift_head_sha = fields.last_post_close_drift_head_sha;
+  }
   return core;
 }
 
@@ -900,6 +925,59 @@ export async function getRoomCore(args: {
     throw new RoomNotFoundError(args.installationId, args.roomId);
   }
   return core;
+}
+
+/**
+ * Persist a "post-close drift" marker on a room: the bot's webhook
+ * handler observed a `subject_updated` rejection (typically
+ * `status_precondition_failed` because the room is `closed`/`deciding`)
+ * and wants the dashboard to surface that the PR's diff has advanced
+ * past what the verdict reviewed.
+ *
+ * Single-key, two-field HSET — no Lua needed since there's no
+ * cross-key invariant. Last-write-wins: a later rejection with a
+ * different head SHA overwrites the previous markers, so the badge
+ * always reflects the most recent post-close attempt.
+ *
+ * Caller responsibilities:
+ *   - Validate `roomId` shape (we re-validate defensively).
+ *   - Pass an ISO 8601 `attemptedAt`. The function does NOT call
+ *     `new Date().toISOString()` itself so callers can deterministically
+ *     test the wire shape.
+ *   - `headSha` is optional — `pull_request.closed` events arrive
+ *     without a SHA change; in that case omit the field rather than
+ *     persisting a stale value.
+ *
+ * Closes hivemoot/hivemoot#605 (Option A — dashboard signal). The
+ * subsequent merge-gate check (Option C) reads these markers in a
+ * follow-up PR.
+ */
+export async function recordPostCloseDrift(args: {
+  installationId: string;
+  roomId: string;
+  attemptedAt: string;
+  headSha?: string;
+  redis: Redis;
+}): Promise<void> {
+  validateRoomId(args.roomId);
+  // Always HSET both fields — the SHA + timestamp are semantically
+  // paired (the SHA explains WHICH head was rejected at the timestamp),
+  // so we MUST clear a stale SHA when a later attempt arrives without
+  // one (e.g. the first rejection carries `synchronize` + headSha,
+  // the next is a `closed` event with no SHA). Write `""` for the
+  // missing case rather than DELing the field — mirrors the
+  // empty-string sentinel pattern used for `deciding_through_sequence`
+  // in RECOVER / CLOSE-drift paths (WAR_ROOM_DESIGN.md L415, L523).
+  // The reader (`parseRoomCoreFields`) treats `""` as absent.
+  const fields: Record<string, string> = {
+    last_post_close_drift_at: args.attemptedAt,
+    last_post_close_drift_head_sha:
+      args.headSha !== undefined && args.headSha !== "" ? args.headSha : "",
+  };
+  await args.redis.hset(
+    roomKey(args.installationId, args.roomId),
+    fields,
+  );
 }
 
 /**

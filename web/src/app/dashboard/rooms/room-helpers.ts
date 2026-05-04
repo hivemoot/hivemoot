@@ -226,6 +226,38 @@ export function isRoomStuck(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Diff-drifted-post-verdict — closes hivemoot/hivemoot#605 (Option A)
+// ---------------------------------------------------------------------------
+
+/**
+ * "Diff drifted post-verdict" — true when a closed room's verdict
+ * was synthesized over an earlier head SHA but the bot has since
+ * observed a `subject_updated` rejection (the PR's diff advanced
+ * past what the war-room reviewed).  The bot persists
+ * `last_post_close_drift_at` on the room core when the rejection
+ * happens; the dashboard surfaces the marker as a badge so operators
+ * see at a glance that the visible verdict doesn't cover the latest
+ * diff — a pre-condition for the merge-gate check (Option C, follow-up).
+ *
+ * Only meaningful for `closed` rooms — `awaiting_contributions` and
+ * `deciding` haven't produced a verdict yet, and `expired` rooms
+ * never closed cleanly.  A `deciding`-then-rejected attempt may end
+ * up with a marker that's only visible after the room subsequently
+ * closes (the close path doesn't clear the marker by design — the
+ * verdict is still over the pre-drift SHA, so the badge is honest).
+ */
+export function hasDiffDriftedPostVerdict<T extends {
+  status: RoomStatus;
+  last_post_close_drift_at?: string;
+}>(room: T): boolean {
+  return (
+    room.status === "closed" &&
+    typeof room.last_post_close_drift_at === "string" &&
+    room.last_post_close_drift_at !== ""
+  );
+}
+
 /**
  * Sort rooms for the default dashboard view per WAR_ROOM_DESIGN.md
  * L1247 — active rooms by stuck-ness DESC (most-stuck first), then

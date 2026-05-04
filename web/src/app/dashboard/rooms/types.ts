@@ -30,6 +30,13 @@ export interface RoomCore {
     content: string;
     sequence_closed: number;
   };
+  /** Drift markers set by the bot when a `subject_updated` event was
+   * rejected on a closed/deciding room — surfaces "diff drifted
+   * post-verdict" on the dashboard list. Closes hivemoot/hivemoot#605
+   * (Option A). See shared/war-room/src/war-room.ts for the source
+   * of truth on field semantics. */
+  last_post_close_drift_at?: string;
+  last_post_close_drift_head_sha?: string;
 }
 
 export interface RoomCoreWithId extends RoomCore {
