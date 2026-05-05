@@ -32,7 +32,6 @@ from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.handler import (
     truncate_raw_md,
 )
 from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.triage import (
-    TRIAGE_OUTPUT_INSTRUCTIONS,
     TriageDecision,
     build_triage_prompt,
     parse_triage_response,
@@ -54,7 +53,6 @@ __all__ = (
     "DEFAULT_POLL_INTERVAL_SECS",
     "DEFAULT_SEEN_CACHE_MAX",
     "TriageDecision",
-    "TRIAGE_OUTPUT_INSTRUCTIONS",
     "build_triage_prompt",
     "parse_triage_response",
     "JOB_KIND_TRIAGE",
