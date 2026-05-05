@@ -257,10 +257,14 @@ def _do_present_and_contribute(
             level="warn",
         )
 
-    body: dict[str, Any] = {
-        "verdict": decision.verdict,
-        "summary": decision.summary,
-    }
+    # Body is empty by design: agents always submit free-form markdown
+    # in `raw_md` and the queen synthesizer's LLM derives the verdict
+    # via forced structured tool-call output (Zod-enum schema). The
+    # shared validator was relaxed to accept `body = {}` in the same
+    # PR series. Removes the noisy auto-withdraw cycles the structured-
+    # output requirement caused on non-verdictable rooms (operator-
+    # created `general` rooms, etc.).
+    body: dict[str, Any] = {}
     raw_md = truncate_raw_md(decision.body or "")
     truncated = len(raw_md) < len(decision.body or "")
 
@@ -275,7 +279,7 @@ def _do_present_and_contribute(
         )
         _log(
             f"contributed room={room_id} subject={subject_ref} "
-            f"verdict={decision.verdict} body_bytes={len(raw_md.encode('utf-8'))} "
+            f"verdict=delegated body_bytes={len(raw_md.encode('utf-8'))} "
             f"truncated={truncated} landed_seq={seq} agent_exit={result.exit_code}",
             level="info",
         )
@@ -288,13 +292,13 @@ def _do_present_and_contribute(
         _log(
             f"raced room transition on contribute "
             f"room={room_id} subject={subject_ref} seq={current_sequence} "
-            f"verdict={decision.verdict} code={exc.code}",
+            f"verdict=delegated code={exc.code}",
             level="info",
         )
     except Exception as exc:  # noqa: BLE001
         _log(
             f"contribute failed room={room_id} subject={subject_ref} "
-            f"seq={current_sequence} verdict={decision.verdict}: "
+            f"seq={current_sequence} verdict=delegated: "
             f"{type(exc).__name__}: {exc}",
             level="error",
         )
