@@ -1029,17 +1029,23 @@ export class ContributionValidationError extends Error {
  * synthesis ever sees them.
  */
 export function validateContributionBody(body) {
-    if (typeof body.verdict !== "string") {
-        throw new ContributionValidationError("verdict", body.verdict, "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)");
+    // verdict is optional — when present, must be a valid enum.
+    // When absent, queen synthesis derives verdict from `raw_md` via
+    // forced structured LLM tool-call output (PR 3).
+    if (body.verdict !== undefined) {
+        if (typeof body.verdict !== "string" || !CONTRIBUTION_VERDICTS.has(body.verdict)) {
+            throw new ContributionValidationError("verdict", body.verdict, "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE), or omitted");
+        }
     }
-    if (!CONTRIBUTION_VERDICTS.has(body.verdict)) {
-        throw new ContributionValidationError("verdict", body.verdict, "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)");
-    }
-    if (typeof body.summary !== "string") {
-        throw new ContributionValidationError("summary", body.summary, "string (1-500 chars)");
-    }
-    if (body.summary.length < 1 || body.summary.length > CONTRIBUTION_SUMMARY_MAX_CHARS) {
-        throw new ContributionValidationError("summary", body.summary, `string of 1-${CONTRIBUTION_SUMMARY_MAX_CHARS} chars (got ${body.summary.length})`);
+    // summary is optional — when present, must be a bounded string.
+    // When absent, the contribution's signal is its `raw_md`.
+    if (body.summary !== undefined) {
+        if (typeof body.summary !== "string") {
+            throw new ContributionValidationError("summary", body.summary, "string (1-500 chars) or omitted");
+        }
+        if (body.summary.length < 1 || body.summary.length > CONTRIBUTION_SUMMARY_MAX_CHARS) {
+            throw new ContributionValidationError("summary", body.summary, `string of 1-${CONTRIBUTION_SUMMARY_MAX_CHARS} chars (got ${body.summary.length})`);
+        }
     }
     if (body.findings !== undefined) {
         if (!Array.isArray(body.findings)) {

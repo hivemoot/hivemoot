@@ -1196,16 +1196,22 @@ export interface ContributionFinding {
 }
 
 /**
- * Structured contribution body. Bounded fields, enforced enums, and
- * a hard `verdict` requirement so the queen synthesis can rely on
- * the body being well-formed. Validated at submit time via
+ * Structured contribution body. All fields optional — agents may
+ * submit free-form `raw_md` only and let the queen LLM-derive the
+ * verdict from the contribution prose. When a structured `verdict`
+ * IS provided, the §S2 floor still uses it; when absent, the queen
+ * falls back to LLM-as-judge (defended by forced structured tool-call
+ * output, not free LLM prose). Validated at submit time via
  * `validateContributionBody` — violations throw
  * `ContributionValidationError` BEFORE any storage write.
  */
 export interface ContributionBody {
-  verdict: ContributionVerdict;
-  /** 1-500 chars. */
-  summary: string;
+  /** When present, drives the structural §S2 floor. When absent,
+   * queen synthesis falls back to LLM-derived verdict from `raw_md`. */
+  verdict?: ContributionVerdict;
+  /** 1-500 chars when present. Optional — `raw_md` is the canonical
+   * narrative when no structured summary is provided. */
+  summary?: string;
   /** ≤20 items. */
   findings?: ContributionFinding[];
   severity_counts?: {
@@ -1650,33 +1656,35 @@ export class ContributionValidationError extends Error {
  * synthesis ever sees them.
  */
 export function validateContributionBody(body: ContributionBody): void {
-  if (typeof body.verdict !== "string") {
-    throw new ContributionValidationError(
-      "verdict",
-      body.verdict,
-      "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)",
-    );
+  // verdict is optional — when present, must be a valid enum.
+  // When absent, queen synthesis derives verdict from `raw_md` via
+  // forced structured LLM tool-call output (PR 3).
+  if (body.verdict !== undefined) {
+    if (typeof body.verdict !== "string" || !CONTRIBUTION_VERDICTS.has(body.verdict)) {
+      throw new ContributionValidationError(
+        "verdict",
+        body.verdict,
+        "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE), or omitted",
+      );
+    }
   }
-  if (!CONTRIBUTION_VERDICTS.has(body.verdict)) {
-    throw new ContributionValidationError(
-      "verdict",
-      body.verdict,
-      "one of APPROVE | COMMENT | CONCERNS | REQUEST_CHANGES (UPPERCASE)",
-    );
-  }
-  if (typeof body.summary !== "string") {
-    throw new ContributionValidationError(
-      "summary",
-      body.summary,
-      "string (1-500 chars)",
-    );
-  }
-  if (body.summary.length < 1 || body.summary.length > CONTRIBUTION_SUMMARY_MAX_CHARS) {
-    throw new ContributionValidationError(
-      "summary",
-      body.summary,
-      `string of 1-${CONTRIBUTION_SUMMARY_MAX_CHARS} chars (got ${body.summary.length})`,
-    );
+  // summary is optional — when present, must be a bounded string.
+  // When absent, the contribution's signal is its `raw_md`.
+  if (body.summary !== undefined) {
+    if (typeof body.summary !== "string") {
+      throw new ContributionValidationError(
+        "summary",
+        body.summary,
+        "string (1-500 chars) or omitted",
+      );
+    }
+    if (body.summary.length < 1 || body.summary.length > CONTRIBUTION_SUMMARY_MAX_CHARS) {
+      throw new ContributionValidationError(
+        "summary",
+        body.summary,
+        `string of 1-${CONTRIBUTION_SUMMARY_MAX_CHARS} chars (got ${body.summary.length})`,
+      );
+    }
   }
   if (body.findings !== undefined) {
     if (!Array.isArray(body.findings)) {
