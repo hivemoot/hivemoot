@@ -29,10 +29,12 @@ import {
   QUEEN_SYNTHESIS_SYSTEM_PROMPT,
   aggregateWorkerVerdicts,
   buildSynthesisPrompt,
+  extractContributionVerdict,
   type WorkerVerdict,
 } from "./prompts.js";
 import { StubSynthesizer } from "./synthesizer.js";
 import type { SynthesisInput, SynthesisOutput, Synthesizer } from "./synthesizer.js";
+import { deriveVerdictFromContributions } from "./verdict-deriver.js";
 
 /** Target byte cap for the FULL assembled output (header + verdict +
  * LLM prose + footer). The LLM prose budget is the cap minus the
@@ -70,12 +72,51 @@ export class AiSdkSynthesizer implements Synthesizer {
   }
 
   async synthesize(input: SynthesisInput): Promise<SynthesisOutput> {
-    // Compute the structural verdict floor BEFORE the LLM call —
-    // closes #538 builder R1 (synthesis safety model). The LLM is
-    // told the verdict is fixed; the final output is assembled
-    // deterministically with the verdict in a bot-controlled header.
-    const structuralVerdict = aggregateWorkerVerdicts(input.contributions);
-    const userPrompt = buildSynthesisPrompt(input);
+    // Verdict resolution. Two paths:
+    //
+    //   1. Any contribution carries a structured `body.verdict` →
+    //      use the §S2 downgrade-only floor (cheap, deterministic,
+    //      no LLM cost). This is the legacy verdict-flow path.
+    //
+    //   2. No contribution carries a structured verdict (the new
+    //      agent default — agents submit free-form markdown only) →
+    //      derive the verdict via a `generateObject` LLM call with
+    //      a Zod-enum schema. The schema is the structural defense
+    //      against prompt injection: the SDK rejects any value
+    //      outside the enum, so worker `raw_md` content cannot
+    //      escape the verdict constraint.
+    //
+    // The downgrade-only floor invariant survives in both paths —
+    // the LLM-derive path applies it post-hoc as a safety clamp
+    // (see verdict-deriver.ts).
+    const anyStructured = Object.values(input.contributions).some(
+      (c) => extractContributionVerdict(c) !== null,
+    );
+    // Empty / all-withdrawn rooms route through the structural floor
+    // even with no structured verdicts present — the floor's default
+    // (COMMENT for an empty contribution set) is the correct answer
+    // and avoids spending an LLM call to confirm "nothing to say."
+    const liveCount = countNonWithdrawn(input.contributions);
+    const verdictSource: "structural_floor" | "llm_derived" =
+      anyStructured || liveCount === 0
+        ? "structural_floor"
+        : "llm_derived";
+    const structuralVerdict: WorkerVerdict =
+      verdictSource === "structural_floor"
+        ? aggregateWorkerVerdicts(input.contributions)
+        : await deriveVerdictFromContributions({
+            model: this.model,
+            contributions: input.contributions,
+            subjectRef: input.room.subject_ref,
+            maxOutputTokens: this.maxOutputTokens,
+            perCallTimeoutMs: this.perCallTimeoutMs,
+            logger: this.logger,
+          });
+
+    // Pass the resolved verdict explicitly so the prompt's
+    // "structural verdict" section reflects the value the LLM-derive
+    // path picked (or the §S2 floor on the legacy path).
+    const userPrompt = buildSynthesisPrompt(input, structuralVerdict);
 
     this.logger.info(
       `[queen.synth] start roomId=${input.roomId} throughSequence=${input.throughSequence} participants=${Object.keys(input.participants).length} contributions=${Object.keys(input.contributions).length} verdict=${structuralVerdict}`,
@@ -99,6 +140,7 @@ export class AiSdkSynthesizer implements Synthesizer {
     const assembled = assembleOutput({
       subjectRef: input.room.subject_ref,
       structuralVerdict,
+      verdictSource,
       llmProse: result.text,
       contributionCount: countNonWithdrawn(input.contributions),
       withdrewCount: countWithdrawn(input.contributions),
@@ -127,21 +169,35 @@ export class AiSdkSynthesizer implements Synthesizer {
 function assembleOutput(args: {
   subjectRef: string;
   structuralVerdict: WorkerVerdict;
+  /** Which path produced the verdict — surfaces in header/footer
+   * so the assembled comment doesn't lie about provenance. */
+  verdictSource: "structural_floor" | "llm_derived";
   llmProse: string;
   contributionCount: number;
   withdrewCount: number;
 }): string {
+  // Header derivation note. The aggregated/downgrade-only-floor
+  // language is only honest when contributions carried structured
+  // `body.verdict` enums and `aggregateWorkerVerdicts` ran. On the
+  // LLM-derive path, the verdict came from a `generateObject` call
+  // constrained by the §S2 enum schema (Zod) — say so plainly.
+  const derivationNote =
+    args.verdictSource === "structural_floor"
+      ? `aggregated from ${args.contributionCount} contribution${args.contributionCount === 1 ? "" : "s"}` +
+        (args.withdrewCount > 0 ? `, ${args.withdrewCount} withdrawn` : "") +
+        `, downgrade-only floor per WAR_ROOM_DESIGN.md §S2`
+      : `LLM-derived from ${args.contributionCount} free-form contribution${args.contributionCount === 1 ? "" : "s"}` +
+        (args.withdrewCount > 0 ? `, ${args.withdrewCount} withdrawn` : "") +
+        `, validated against the §S2 enum schema (Zod)`;
+  const footerNote =
+    args.verdictSource === "structural_floor"
+      ? `Verdict computed structurally from validated worker \`body.verdict\` fields; LLM prose summarizes contributions but does not determine the verdict.`
+      : `Verdict derived by LLM from contribution prose, structurally constrained by a Zod-enum schema (prompt-injection resistant); LLM prose summarizes the same contributions.`;
   const header =
     `## Synthesis — ${args.subjectRef}\n\n` +
-    `**Verdict:** \`${args.structuralVerdict}\` ` +
-    `_(aggregated from ${args.contributionCount} contribution${args.contributionCount === 1 ? "" : "s"}` +
-    (args.withdrewCount > 0 ? `, ${args.withdrewCount} withdrawn` : "") +
-    `, downgrade-only floor per WAR_ROOM_DESIGN.md §S2)_\n\n` +
+    `**Verdict:** \`${args.structuralVerdict}\` _(${derivationNote})_\n\n` +
     `---\n\n`;
-  const footer =
-    `\n\n---\n\n` +
-    `_Synthesized by the Hivemoot queen. Verdict computed structurally from validated worker `+
-    `\`body.verdict\` fields; LLM prose summarizes contributions but does not determine the verdict._`;
+  const footer = `\n\n---\n\n_Synthesized by the Hivemoot queen. ${footerNote}_`;
 
   // Budget LLM prose to fit within the byte cap after fixed sections.
   const fixedBytes = byteLength(header) + byteLength(footer);

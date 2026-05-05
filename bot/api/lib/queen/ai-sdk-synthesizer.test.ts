@@ -228,6 +228,67 @@ describe("AiSdkSynthesizer.synthesize — output assembly (R1 #538 safety)", () 
     expect(out.content).toContain("aggregated from 0 contributions");
   });
 
+  it("LLM-derive path uses 'LLM-derived from N contributions' header (not 'aggregated')", async () => {
+    // Closes guard's review concern on PR #611: when verdicts are
+    // LLM-derived, the comment header must NOT lie about provenance.
+    const verdictDeriverMod = await import("./verdict-deriver.js");
+    const deriveSpy = vi
+      .spyOn(verdictDeriverMod, "deriveVerdictFromContributions")
+      .mockResolvedValue("APPROVE" as never);
+    generateTextMock.mockResolvedValueOnce({ text: "ok" });
+    const input: SynthesisInput = {
+      ...SAMPLE_INPUT,
+      contributions: {
+        // No body.verdict — triggers LLM-derive path
+        guard: { body: {}, raw_md: "looks good" },
+      },
+    };
+    const synth = new AiSdkSynthesizer({ model: FAKE_MODEL });
+    const out = await synth.synthesize(input);
+    expect(out.content).toContain("**Verdict:** `APPROVE`");
+    expect(out.content).toContain("LLM-derived from 1 free-form contribution");
+    expect(out.content).toContain("validated against the §S2 enum schema");
+    expect(out.content).not.toContain("aggregated from");
+    expect(out.content).toContain(
+      "Verdict derived by LLM from contribution prose",
+    );
+    deriveSpy.mockRestore();
+  });
+
+  it("structural-floor path keeps the aggregated/§S2 footer language", async () => {
+    generateTextMock.mockResolvedValueOnce({ text: "ok" });
+    const synth = new AiSdkSynthesizer({ model: FAKE_MODEL });
+    const out = await synth.synthesize(SAMPLE_INPUT);
+    expect(out.content).toContain("aggregated from 1 contribution");
+    expect(out.content).toContain("downgrade-only floor per WAR_ROOM_DESIGN.md");
+    expect(out.content).toContain(
+      "Verdict computed structurally from validated worker `body.verdict` fields",
+    );
+    expect(out.content).not.toContain("LLM-derived from");
+  });
+
+  it("empty rooms route through structural floor (no LLM-derive call)", async () => {
+    // Even with no structured verdicts, an empty contributions hash
+    // routes through the floor's COMMENT default rather than spending
+    // an LLM call. Header must reflect that.
+    const verdictDeriverMod = await import("./verdict-deriver.js");
+    const deriveSpy = vi.spyOn(
+      verdictDeriverMod,
+      "deriveVerdictFromContributions",
+    );
+    generateTextMock.mockResolvedValueOnce({ text: "no contributions" });
+    const input: SynthesisInput = {
+      ...SAMPLE_INPUT,
+      contributions: {},
+    };
+    const synth = new AiSdkSynthesizer({ model: FAKE_MODEL });
+    const out = await synth.synthesize(input);
+    expect(deriveSpy).not.toHaveBeenCalled();
+    expect(out.content).toContain("**Verdict:** `COMMENT`");
+    expect(out.content).toContain("aggregated from 0 contributions");
+    deriveSpy.mockRestore();
+  });
+
   it("counts contributions and withdrawn separately in the verdict header", async () => {
     generateTextMock.mockResolvedValueOnce({ text: "ok" });
     const input: SynthesisInput = {
