@@ -163,12 +163,40 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  // Reject GitHub logins that collide with system-actor sentinels.
+  // Closes guard's concern on the prefix-removal review (PR #608):
+  // the room_opened event uses `actor_role="system"` + `actor_id=manager`,
+  // so an operator with login "watchdog" or "vercel-cron" would emit
+  // events indistinguishable from real watchdog / cron actions in the
+  // audit log. Block at the boundary; explicit rejection beats audit
+  // ambiguity.
+  //
+  // Source of truth: WAR_ROOM_DESIGN.md §System-actor exception
+  // (shared/war-room/src/war-room.ts:312-322) + the explicit sentinel
+  // exports in web/src/server/queen-tick.ts.
+  const RESERVED_MANAGER_IDS: ReadonlySet<string> = new Set([
+    "watchdog",       // recovery + timeout actor
+    "vercel-cron",    // expire-on-cron actor
+    "hivemoot-bot",   // default manager for bot-created rooms
+  ]);
+  if (RESERVED_MANAGER_IDS.has(auth.session.userLogin)) {
+    return NextResponse.json(
+      {
+        code: "username_reserved",
+        message: `GitHub login "${auth.session.userLogin}" collides with a system actor sentinel; manual room creation is blocked for this account.`,
+      },
+      { status: 403 },
+    );
+  }
+
   const roomId = crypto.randomUUID();
   // Manager string surfaces on the room as `manager` and on the
   // room_opened event's actor_id. We use the operator's GitHub
   // login directly — the `general` subject_type already signals
   // "operator-created, not bot-created", so an extra prefix would
-  // just clutter the dashboard's manager field.
+  // just clutter the dashboard's manager field. The
+  // RESERVED_MANAGER_IDS gate above prevents the audit-impersonation
+  // collision guard flagged.
   const manager = auth.session.userLogin;
 
   try {
