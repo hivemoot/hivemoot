@@ -3083,6 +3083,39 @@ describe("D.1.a-ii R2 / B4 — validateContributionBody", () => {
     ).not.toThrow();
   });
 
+  it("accepts an empty body (verdict-less, summary-less — agents may submit raw_md only)", () => {
+    // Closes the agent-simplification path: agents always submit
+    // free-form `raw_md` and let the queen LLM-derive the verdict.
+    // See PR follow-ups for the agent + queen sides.
+    expect(() => validateContributionBody({})).not.toThrow();
+  });
+
+  it("accepts a body with only verdict (no summary)", () => {
+    expect(() =>
+      validateContributionBody({ verdict: "APPROVE" }),
+    ).not.toThrow();
+  });
+
+  it("accepts a body with only summary (no verdict — queen LLM-derives)", () => {
+    expect(() =>
+      validateContributionBody({ summary: "looks fine to me" }),
+    ).not.toThrow();
+  });
+
+  it("still rejects an invalid verdict when one IS provided", () => {
+    expect(() =>
+      validateContributionBody({
+        verdict: "APPROVES" as unknown as "APPROVE",
+      }),
+    ).toThrow(ContributionValidationError);
+  });
+
+  it("still rejects an empty summary when one IS provided", () => {
+    expect(() =>
+      validateContributionBody({ summary: "" }),
+    ).toThrow(ContributionValidationError);
+  });
+
   it("accepts all four UPPERCASE verdict values", () => {
     for (const v of ["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"] as const) {
       expect(() =>
