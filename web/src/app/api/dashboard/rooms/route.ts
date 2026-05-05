@@ -165,10 +165,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const roomId = crypto.randomUUID();
   // Manager string surfaces on the room as `manager` and on the
-  // room_opened event's actor_id. `operator-{login}` lets dashboard
-  // viewers see who created an ad-hoc room without joining a
-  // separate user table.
-  const manager = `operator-${auth.session.userLogin}`;
+  // room_opened event's actor_id. We use the operator's GitHub
+  // login directly — the `general` subject_type already signals
+  // "operator-created, not bot-created", so an extra prefix would
+  // just clutter the dashboard's manager field.
+  const manager = auth.session.userLogin;
 
   try {
     const room = await createRoom({

@@ -234,7 +234,7 @@ describe("POST /api/dashboard/rooms — operator-driven create", () => {
   it("happy path: creates a general room and returns 201 with roomId + room", async () => {
     mockedAuth.mockResolvedValue(makeAuth("12345"));
     mockedCreate.mockResolvedValue({
-      manager: "operator-queen",
+      manager: "queen",
       subject_type: "general",
       subject_ref: "Plan the release",
       status: "awaiting_contributions",
@@ -256,10 +256,12 @@ describe("POST /api/dashboard/rooms — operator-driven create", () => {
     );
     expect(body.room.subject_type).toBe("general");
     expect(body.room.subject_ref).toBe("Plan the release");
+    // Manager is the operator's GitHub login (no "operator-" prefix)
+    // — the `general` subject_type already signals "operator-created".
     expect(mockedCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         installationId: "12345",
-        manager: "operator-queen",
+        manager: "queen",
         subject: { type: "general", ref: "Plan the release" },
       }),
     );
