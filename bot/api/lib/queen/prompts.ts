@@ -127,8 +127,19 @@ Empty room (zero contributions): output a one-line synthesis stating that no con
  *      participant layer with no contribution entry).
  *   6. Final marker telling the LLM what to produce.
  */
-export function buildSynthesisPrompt(input: SynthesisInput): string {
-  const aggregate = aggregateWorkerVerdicts(input.contributions);
+/**
+ * Build the prose-synthesis user prompt. When `verdict` is supplied,
+ * the caller has already resolved it (e.g. via the LLM verdict
+ * deriver in `verdict-deriver.ts` for verdict-less contributions);
+ * otherwise we fall back to the §S2 floor over `body.verdict`
+ * fields. Either way the LLM is told the verdict is fixed and
+ * cannot be changed by what it writes.
+ */
+export function buildSynthesisPrompt(
+  input: SynthesisInput,
+  verdict?: WorkerVerdict,
+): string {
+  const aggregate = verdict ?? aggregateWorkerVerdicts(input.contributions);
   const lines: string[] = [];
   lines.push(`# Synthesis request`);
   lines.push("");
