@@ -885,6 +885,51 @@ describe("validateSubjectRef", () => {
 });
 
 // ---------------------------------------------------------------------------
+// general subject type — operator-created free-form rooms
+// ---------------------------------------------------------------------------
+
+describe("validateSubjectRef — general subject type", () => {
+  it("accepts a plain title", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "Plan the Q3 release" }),
+    ).not.toThrow();
+  });
+
+  it("accepts unicode + emoji + punctuation", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "Café crawl 🌃 — 2026!" }),
+    ).not.toThrow();
+  });
+
+  it("accepts the maximum length (200 chars)", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "x".repeat(200) }),
+    ).not.toThrow();
+  });
+
+  it("rejects empty string", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "" }),
+    ).toThrow(RoomSubjectRefError);
+  });
+
+  it("rejects > 200 chars", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "x".repeat(201) }),
+    ).toThrow(RoomSubjectRefError);
+  });
+
+  it("rejects newlines / tabs / control chars", () => {
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "title\nwith\nnewlines" }),
+    ).toThrow(RoomSubjectRefError);
+    expect(() =>
+      validateSubjectRef({ type: "general", ref: "title\twith\ttabs" }),
+    ).toThrow(RoomSubjectRefError);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // repoFromSubjectRef
 // ---------------------------------------------------------------------------
 
@@ -1036,6 +1081,63 @@ describe("createRoom", () => {
         expect(err.subjectType).toBe("pr_review");
       }
     }
+  });
+
+  it("general subject type: two rooms with the SAME title can both create (no uniqueness)", async () => {
+    // Operator-created free-form rooms shouldn't collide on title.
+    // The subject-lock key is per-roomId for `general`, so the
+    // existing Lua subject_taken check passes degenerately.
+    const a = await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "operator-dmitry",
+      subject: { type: "general", ref: "Plan the Q3 release" },
+      redis,
+    });
+    const b = await createRoom({
+      installationId: "12345",
+      roomId: RID_B,
+      manager: "operator-dmitry",
+      subject: { type: "general", ref: "Plan the Q3 release" },
+      redis,
+    });
+    expect(a.subject_type).toBe("general");
+    expect(b.subject_type).toBe("general");
+    expect(a.subject_ref).toBe("Plan the Q3 release");
+    expect(b.subject_ref).toBe("Plan the Q3 release");
+    // Both indexed in the installation set
+    const indexed = redis._sortedSets.get(installationIndexKey("12345"));
+    expect(indexed?.length).toBe(2);
+  });
+
+  it("general rooms land in the shared `_general` repo bucket (no per-repo split)", async () => {
+    // Repo-anchored rooms split by `{owner}/{repo}`; general rooms
+    // have no repo. Single shared bucket avoids special-casing the
+    // close/terminate Lua scripts.
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "operator-dmitry",
+      subject: { type: "general", ref: "Plan the Q3 release" },
+      redis,
+    });
+    const repoSet = redis._sets.get(repoIndexKey("12345", "_general"));
+    expect(repoSet?.has(RID_A)).toBe(true);
+  });
+
+  it("general room's subject-lock key is per-roomId, not per-title", async () => {
+    // Defensive pin: if the lock-key derivation drifts (e.g., someone
+    // hard-codes per-title), the no-uniqueness invariant breaks.
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "operator-dmitry",
+      subject: { type: "general", ref: "shared title" },
+      redis,
+    });
+    // The subject-lock for general MUST embed the roomId, not the title.
+    const expectedKey = `hive:v1:idx:room:subject:12345:general:${RID_A}`;
+    expect(redis._store.get(expectedKey)).toBe(RID_A);
   });
 
   it("roomId-uniqueness: same roomId twice in same installation → RoomIdTakenError (G3)", async () => {

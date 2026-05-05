@@ -36,6 +36,7 @@ const SUBJECT_LABELS: Record<SubjectType, string> = {
   pr_review: "PR review",
   mention_response: "Mention",
   issue_triage: "Issue triage",
+  general: "General",
 };
 
 export function subjectLabel(type: SubjectType): string {

@@ -8,7 +8,7 @@ export type RoomStatus =
   | "closed"
   | "expired";
 
-export type SubjectType = "pr_review" | "mention_response" | "issue_triage";
+export type SubjectType = "pr_review" | "mention_response" | "issue_triage" | "general";
 
 export interface RoomCore {
   manager: string;
