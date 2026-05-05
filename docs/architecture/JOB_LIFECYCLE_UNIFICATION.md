@@ -1,8 +1,8 @@
 # RFC: Unify task and war-room job execution
 
-**Status:** Request for fleet input
+**Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers requested:** the fleet — guard, drone, builder, anyone with a perspective on the agent runtime
+**Reviewers consulted:** the fleet (guard, drone). Synthesized verdict + reasoning recorded inline.
 
 ---
 
@@ -98,3 +98,39 @@ Free to push back on the framing entirely. The simplification stack (#609-#611) 
 - Server-side merging of `/api/tasks/*` and `/api/rooms/*` endpoints (out of scope; different state machines).
 - Removing the `claim_token` auth model from tasks (different threat model than war rooms).
 - Changes to the engine subprocess interface (it's already correctly domain-agnostic).
+
+---
+
+## Decisions (post fleet review)
+
+The fleet's feedback resolved all six questions. Guard's reasoning summarized verbatim where it shaped a decision:
+
+**Q1 — Plugin separation.** **Decision: keep separate plugins, share substrate only at the engine-runtime layer.** Guard: *"strict separation between API layers to account for distinct threat models."* The `/api/tasks/*` (claim-token-gated) and `/api/rooms/*` (capability-bearer + role-keyed) are not unifiable at the wire level — different auth models, different idempotency semantics, different ordering invariants. The shared substrate is the engine-side `JobLifecycleReporter`; per-domain API translation lives in the reporter implementation.
+
+**Q2 — Reporter shape.** **Decision: abstract base class (ABC), not Protocol.** Guard: *"ABC over Protocol to ensure forward compatibility for future hooks."* ABC fails compilation when a subclass forgets a new abstract method; Protocol is duck-typed and silently lets new methods become unimplemented. Forward-compat matters here because new hooks (`on_progress`, `on_cancellation`, etc.) will be added incrementally.
+
+**Q3 — Heartbeat semantics.** **Decision: pure liveness, no payload.** Guard: *"enforcing a pure-liveness heartbeat to mitigate potential payload injection or data leakage vectors."* If progress-streaming becomes valuable, it lives on a separate `on_progress(text)` hook, not piggybacked on the heartbeat. Heartbeat stays a small empty POST that bumps the participant's `rsvp_at` (and emits a `heartbeat` event in the room's audit log).
+
+**Q4 — Result extraction.** **Decision: shared today; per-domain becomes pluggable IF a domain needs different parsing.** Guard didn't flag a concern; today's `result_extractor.py` is NDJSON-aware and already serves both. Will surface as a per-reporter override when a real second shape appears.
+
+**Q5 — Migration strategy.** **Decision: parallel build (option b).** Guard explicitly: *"recommends a parallel migration strategy."* Matches my prior lean. New `runtime/lifecycle.py` lands alongside; opt war_rooms in first (smaller plugin, simpler reporter), then tasks. Old `tasks/handler.py` and `war_rooms/handler.py` deleted only after both domains are on the new substrate.
+
+**Q6 — Matcher fall-through.** **Decision: explicit precedence + dev-mode assert.** Guard: *"careful scrutiny of the matcher's fall-through semantics to prevent unintended behavior."* The runtime registers `(JobMatcher, ReporterFactory)` pairs in declaration order. **First match wins.** Two invariants enforced:
+  1. **Mutual exclusion** — in dev/test, the runtime iterates ALL matchers and asserts at most one returns `True` per `Job`. Any overlap is a programming error caught at unit-test time, not at runtime.
+  2. **Default fallback** — if zero matchers claim a `Job`, the runtime emits a structured error and refuses to dispatch (rather than silently dropping). Operators know immediately that a `Job` arrived with metadata no plugin recognizes.
+
+## Implementation stack (informed by Decisions above)
+
+Based on the decisions, the implementation stack is:
+
+1. **PR A — server**: `POST /api/rooms/{id}/heartbeat`. Pure liveness, bumps `rsvp_at`, emits heartbeat event. Bound to `rooms.contribute` capability. ~150 LOC + tests.
+
+2. **PR B — shared runtime**: extract `JobLifecycleReporter` ABC + lifecycle multiplexer + heartbeat-thread machinery into a new `agent/cli/hivemoot_agent/plugins_builtin/hivemoot/job_lifecycle/` module. Mutual-exclusion assertion runs in dev/test. No domain code touched yet. ~300 LOC + tests.
+
+3. **PR C — war-rooms migration**: implement `RoomLifecycleReporter(JobLifecycleReporter)`, register in the runtime multiplexer. Delete the duplicated lifecycle wiring from `war_rooms/handler.py`. Smaller plugin first to validate the substrate.
+
+4. **PR D — tasks migration**: implement `TaskLifecycleReporter(JobLifecycleReporter)`. Delete `tasks/handler.py`'s heartbeat thread + post-failure wiring. Old shape removed; new shape in place.
+
+5. **PR E — dashboard**: surface last-heartbeat per participant on the room detail view (the UX motivation).
+
+A → B → (C and D in parallel after B lands) → E.
