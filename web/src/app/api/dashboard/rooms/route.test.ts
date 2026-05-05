@@ -234,7 +234,7 @@ describe("POST /api/dashboard/rooms — operator-driven create", () => {
   it("happy path: creates a general room and returns 201 with roomId + room", async () => {
     mockedAuth.mockResolvedValue(makeAuth("12345"));
     mockedCreate.mockResolvedValue({
-      manager: "operator-queen",
+      manager: "queen",
       subject_type: "general",
       subject_ref: "Plan the release",
       status: "awaiting_contributions",
@@ -256,10 +256,12 @@ describe("POST /api/dashboard/rooms — operator-driven create", () => {
     );
     expect(body.room.subject_type).toBe("general");
     expect(body.room.subject_ref).toBe("Plan the release");
+    // Manager is the operator's GitHub login (no "operator-" prefix)
+    // — the `general` subject_type already signals "operator-created".
     expect(mockedCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         installationId: "12345",
-        manager: "operator-queen",
+        manager: "queen",
         subject: { type: "general", ref: "Plan the release" },
       }),
     );
@@ -305,6 +307,31 @@ describe("POST /api/dashboard/rooms — operator-driven create", () => {
     expect(body.code).toBe("subject_already_open");
     expect(body.existingRoomId).toBe("01234567-89ab-4cde-9012-3456789abcde");
   });
+
+  it.each(["watchdog", "vercel-cron", "hivemoot-bot"])(
+    "rejects user login %s as collision with system actor sentinel (audit-impersonation guard)",
+    async (login) => {
+      // Closes guard's concern on PR #608: the room_opened event uses
+      // actor_role="system" + actor_id=manager. A GitHub user with
+      // login "watchdog" / "vercel-cron" / "hivemoot-bot" would emit
+      // an event indistinguishable from a real system actor in the
+      // audit log. Reject at the route boundary.
+      mockedAuth.mockResolvedValue({
+        ok: true,
+        session: { installationId: "12345", userId: 999, userLogin: login },
+        redis: {} as never,
+        keyring: new Map(),
+        activeKeyVersion: "v1",
+      });
+      const res = await POST(makePostRequest({
+        subject_type: "general",
+        subject_ref: "Plan the release",
+      }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe("username_reserved");
+      expect(mockedCreate).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns 500 on unexpected storage failure", async () => {
     mockedAuth.mockResolvedValue(makeAuth("12345"));
