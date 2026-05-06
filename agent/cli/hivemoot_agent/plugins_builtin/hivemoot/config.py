@@ -327,6 +327,17 @@ class HivemootWarRoomsConfig(StrictPluginConfig):
             "1000 covers ~weeks of room activity at typical Hive scale."
         ),
     )
+    heartbeat_interval_secs: int = Field(
+        default=45,
+        ge=0,
+        description=(
+            "Seconds between per-room heartbeat posts (PR A endpoint). "
+            "Pure liveness — no payload. 0 disables the heartbeat "
+            "thread (rooms then auto-close on max-age once review "
+            "exceeds the watchdog window). 45s matches the tasks "
+            "default and the queen-tick cadence."
+        ),
+    )
 
 
 class HivemootConfig(StrictPluginConfig):

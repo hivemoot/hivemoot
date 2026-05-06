@@ -159,6 +159,14 @@ class HivemootPlugin:
         # disabled OR triggers() hasn't been called yet.
         self._war_room_trigger: Any = None
 
+        # ── Engine-side lifecycle substrate (PR C of the
+        #    JOB_LIFECYCLE_UNIFICATION RFC) ────────────────────────
+        # LifecycleMultiplexer instance for this plugin run. None
+        # when no domain has registered a reporter (e.g. war_rooms
+        # disabled). Registered in `triggers()` once the typed
+        # config is finalized.
+        self._lifecycle_mux: Any = None
+
         # Apiarist auth subscriber, populated in setup_lifecycle() when
         # cfg.apiarist.enabled is true. Cached for diagnostics and
         # tests; runtime path goes through engine.lifecycle directly.
@@ -459,8 +467,15 @@ class HivemootPlugin:
             from hivemoot_agent.plugins_builtin.hivemoot.auth import (
                 resolve_agent_token,
             )
+            from hivemoot_agent.plugins_builtin.hivemoot.job_lifecycle import (
+                LifecycleMultiplexer,
+            )
             from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
                 WarRoomWatcherTrigger,
+            )
+            from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.lifecycle import (
+                build_room_reporter,
+                is_war_room_job_for_lifecycle,
             )
             token_path = str(cfg.token_file) if cfg.token_file else ""
             self._war_room_trigger = WarRoomWatcherTrigger(
@@ -470,6 +485,26 @@ class HivemootPlugin:
                 seen_cache_max=cfg.war_rooms.seen_cache_max,
             )
             triggers.append(self._war_room_trigger)  # type: ignore[arg-type]
+
+            # Multiplexer owns the heartbeat thread + per-domain
+            # reporter dispatch (PR B substrate). Tasks remain on the
+            # legacy heartbeat path for now; PR D migrates them.
+            # dev_mode stays False — production fast path. The
+            # mutual-exclusion assertion is exercised by the
+            # substrate's unit tests rather than here.
+            mux = LifecycleMultiplexer(
+                heartbeat_interval=cfg.war_rooms.heartbeat_interval_secs,
+            )
+            mux.register(
+                is_war_room_job_for_lifecycle,
+                lambda job, _base=cfg.war_rooms.base_url,
+                _token=token_path: build_room_reporter(
+                    job,
+                    base_url=_base,
+                    bearer_factory=lambda: resolve_agent_token(_token),
+                ),
+            )
+            self._lifecycle_mux = mux
 
         return triggers
 
@@ -533,6 +568,25 @@ class HivemootPlugin:
                     file=sys.stderr, flush=True,
                 )
 
+        # War-rooms early-/present + heartbeat thread (PR C). Wraps
+        # independently from tasks/health — one feature failing must
+        # not skip the others. The multiplexer may be None when
+        # war_rooms is disabled or triggers() hasn't run yet.
+        if cfg.war_rooms.enabled and self._lifecycle_mux is not None:
+            from hivemoot_agent.plugins_builtin.hivemoot.war_rooms.lifecycle import (
+                is_war_room_job_for_lifecycle,
+            )
+            if is_war_room_job_for_lifecycle(job):
+                try:
+                    self._lifecycle_mux.on_job_start(job)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-war-rooms] lifecycle on_job_start "
+                        f"raised room={job.metadata.get('room_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+
     def on_job_finished(
         self, job: Job, result: AgentResult, config: PluginConfig,
     ) -> None:
@@ -581,6 +635,22 @@ class HivemootPlugin:
                 is_war_room_job,
             )
             if is_war_room_job(job):
+                # Stop the heartbeat thread BEFORE handler.py's post
+                # sequence runs, so a heartbeat can't land after the
+                # /contribute or /withdraw terminal post. The
+                # reporter's on_finish is a no-op (handler.py still
+                # owns the post sequence), but mux.on_job_finish is
+                # what actually joins the heartbeat thread cleanly.
+                if self._lifecycle_mux is not None:
+                    try:
+                        self._lifecycle_mux.on_job_finish(job, result)
+                    except Exception as exc:
+                        print(
+                            f"[hivemoot-war-rooms] lifecycle on_job_finish "
+                            f"raised room={job.metadata.get('room_id')}: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
                 try:
                     self._war_room_on_job_finished(job, result, config)
                 except Exception as exc:

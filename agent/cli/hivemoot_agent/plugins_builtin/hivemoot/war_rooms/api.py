@@ -28,6 +28,7 @@ from hivemoot_agent.plugins_builtin.hivemoot.http import (
 __all__ = (
     "RoomStateRaceError",
     "WatchingRoom",
+    "heartbeat_room_participant",
     "list_watching_rooms",
     "present_to_room",
     "submit_contribution",
@@ -281,6 +282,86 @@ def submit_contribution(
             f"contributions response missing/invalid `sequence`: {str(parsed)[:200]}"
         )
     return seq
+
+
+def heartbeat_room_participant(
+    base_url: str,
+    room_id: str,
+    bearer: str,
+    *,
+    agent_id: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> str | None:
+    """POST `{base_url}/api/rooms/{room_id}/heartbeat`.
+
+    Pure-liveness ping that bumps the participant's ``rsvp_at`` so
+    the watchdog ``drop_threshold_secs`` timeout doesn't fire on a
+    worker still doing genuine work. Per the JOB_LIFECYCLE_UNIFICATION
+    RFC's Q3 decision: **no payload**. The optional ``agent_id`` is
+    the per-runner identity for the first-wins gate (#522) — when
+    omitted the server falls back to the bearer's ``name``.
+
+    Returns:
+        ISO-8601 timestamp string when the heartbeat applied. The
+        caller can log it to confirm the slot is healthy.
+        ``None`` when the server reports a benign no-op
+        (``skipped: "non_pending"``) — the participant has already
+        withdrawn / resolved / timed_out and the lifecycle should
+        stop heartbeating. Caller MUST NOT treat this as an error.
+
+    Raises:
+        RoomStateRaceError: 409 with ``status_precondition_failed``
+            (room left ``awaiting_contributions``) or ``owner_conflict``
+            (a different runner holds this role's slot — subscriber-
+            mode collision). Caller stops heartbeating; the next
+            tick's reporter will rebuild state.
+        RuntimeError: any other non-2xx / malformed body. Caller
+            logs and keeps trying — a transient network blip is
+            recoverable on the next tick.
+    """
+    url = f"{base_url.rstrip('/')}/api/rooms/{room_id}/heartbeat"
+    body: dict[str, Any] = {}
+    if agent_id is not None:
+        body["agentId"] = agent_id
+
+    status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
+
+    # Race conditions surface as 409s the caller wants to distinguish
+    # from generic 5xx — owner_conflict (subscriber-mode collision) is
+    # also a 409 the storage layer can return. Add it here so the
+    # caller's race handling covers both heartbeat-specific 409s.
+    if status == 409 and isinstance(parsed, dict):
+        code = parsed.get("code")
+        if code in ("status_precondition_failed", "owner_conflict"):
+            raise RoomStateRaceError(
+                op="heartbeat",
+                code=str(code),
+                body_excerpt=raw.decode(errors="replace")[:200],
+            )
+
+    if status != 200:
+        raise RuntimeError(
+            f"heartbeat returned status {status}: "
+            f"{raw.decode(errors='replace')[:200]}"
+        )
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("heartbeat response was not a JSON object")
+
+    # Benign no-op — slot already withdrew/resolved/timed_out. The
+    # storage-layer Lua script returns null upstream → the route
+    # returns `{ skipped: "non_pending" }`. Stop heartbeating; the
+    # caller's `_presented` flag (or equivalent) should track this.
+    if parsed.get("skipped") == "non_pending":
+        return None
+
+    rsvp_at = parsed.get("rsvpAt")
+    if not isinstance(rsvp_at, str):
+        raise RuntimeError(
+            f"heartbeat response missing/invalid `rsvpAt`: "
+            f"{str(parsed)[:200]}"
+        )
+    return rsvp_at
 
 
 def withdraw_participant(
