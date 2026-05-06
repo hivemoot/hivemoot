@@ -228,6 +228,136 @@ class TriggersTests(unittest.TestCase):
         self.assertEqual(plugin.triggers(), [])
 
 
+# ── Lifecycle multiplexer composition ─────────────────────────────
+
+
+class LifecycleMuxCompositionTests(unittest.TestCase):
+    """Defensive-coexistence regression tests for the
+    ``self._lifecycle_mux is None`` guard in ``triggers()``.
+
+    Closes guard's PR #616 review point about composition asymmetry:
+    when PR D's tasks branch and this branch's war-rooms branch
+    both run in ``triggers()``, the second one MUST attach its
+    reporter to the existing multiplexer instead of replacing it
+    and silently dropping the first registration.
+
+    These tests simulate the composition without depending on PR
+    D's code being in the branch — they pre-populate
+    ``self._lifecycle_mux`` with a sentinel multiplexer (acting
+    as a stand-in for whatever the OTHER branch would have built)
+    and verify the war-rooms registration attaches on top rather
+    than overwriting.
+    """
+
+    def setUp(self) -> None:
+        self._saved_agent_id = os.environ.get("AGENT_ID")
+        os.environ["AGENT_ID"] = "builder"
+
+    def tearDown(self) -> None:
+        if self._saved_agent_id is None:
+            os.environ.pop("AGENT_ID", None)
+        else:
+            os.environ["AGENT_ID"] = self._saved_agent_id
+
+    def _war_rooms_only_cfg(self):
+        from hivemoot_agent.plugins_builtin.hivemoot.config import (
+            HivemootWarRoomsConfig,
+        )
+        cfg = _mk_plugin_config()
+        cfg.typed.war_rooms = HivemootWarRoomsConfig(
+            enabled=True,
+            base_url="https://api/x",
+            heartbeat_interval_secs=45,
+        )
+        return cfg
+
+    def test_war_rooms_registration_attaches_to_existing_mux(self) -> None:
+        # Simulate PR D's tasks branch having already created the
+        # multiplexer and registered the task reporter. This branch
+        # MUST attach the war-rooms registration to the existing
+        # mux instead of replacing it.
+        from hivemoot_agent.plugins_builtin.hivemoot.job_lifecycle import (
+            LifecycleMultiplexer,
+        )
+
+        plugin = HivemootPlugin()
+        plugin._cfg = self._war_rooms_only_cfg().typed
+
+        # Pre-existing mux with one registration (the "tasks branch
+        # already ran" simulation). The matcher returns False so
+        # this never matches — it's a sentinel, not a real reporter.
+        sentinel_mux = LifecycleMultiplexer(heartbeat_interval=45)
+        sentinel_mux.register(lambda j: False, lambda j: None)
+        plugin._lifecycle_mux = sentinel_mux
+
+        plugin.triggers()
+
+        # Same mux instance — defensive guard preserved it.
+        self.assertIs(
+            plugin._lifecycle_mux, sentinel_mux,
+            "war-rooms branch overwrote the existing multiplexer; "
+            "the defensive `if self._lifecycle_mux is None` guard "
+            "is missing or broken.",
+        )
+        # Two registrations: the sentinel (pre-existing) + war_rooms.
+        self.assertEqual(
+            len(plugin._lifecycle_mux._registrations), 2,
+            "war-rooms registration should have been appended to "
+            "the existing mux's registrations.",
+        )
+
+    def test_war_rooms_creates_mux_when_none_exists(self) -> None:
+        # Sanity: when no other branch has created the mux, the
+        # war-rooms branch creates one with the configured interval.
+        plugin = HivemootPlugin()
+        plugin._cfg = self._war_rooms_only_cfg().typed
+        self.assertIsNone(plugin._lifecycle_mux)
+
+        plugin.triggers()
+
+        self.assertIsNotNone(plugin._lifecycle_mux)
+        self.assertEqual(
+            plugin._lifecycle_mux.heartbeat_interval, 45,
+            "Mux should pick up cfg.war_rooms.heartbeat_interval_secs "
+            "when only war_rooms is enabled.",
+        )
+        self.assertEqual(len(plugin._lifecycle_mux._registrations), 1)
+
+    def test_mux_interval_is_min_of_both_domain_settings(self) -> None:
+        # When BOTH tasks AND war_rooms are enabled, the multiplexer
+        # interval is min(tasks, war_rooms) so neither domain's
+        # liveness expectation gets stretched. Slower-tuned domains
+        # see more-frequent heartbeats (cheap waste); faster-tuned
+        # domains never miss liveness. This test exercises the
+        # min() codepath in the war-rooms branch's mux init.
+        from hivemoot_agent.plugins_builtin.hivemoot.config import (
+            HivemootWarRoomsConfig,
+        )
+        cfg = _mk_plugin_config(
+            tasks=HivemootTasksConfig(
+                enabled=True,
+                claim_url="https://api/x",
+                execute_base_url="https://api/y",
+                heartbeat_interval_secs=90,  # slower
+            ),
+        )
+        cfg.typed.war_rooms = HivemootWarRoomsConfig(
+            enabled=True,
+            base_url="https://api/x",
+            heartbeat_interval_secs=30,  # faster
+        )
+        plugin = HivemootPlugin()
+        plugin._cfg = cfg.typed
+        plugin.triggers()
+        self.assertIsNotNone(plugin._lifecycle_mux)
+        self.assertEqual(
+            plugin._lifecycle_mux.heartbeat_interval, 30,
+            "Mux should pick min(tasks, war_rooms) interval when "
+            "both domains are enabled — neither domain should see "
+            "stretched liveness expectations.",
+        )
+
+
 # ── System prompt composition ─────────────────────────────────────
 
 

@@ -487,15 +487,31 @@ class HivemootPlugin:
             triggers.append(self._war_room_trigger)  # type: ignore[arg-type]
 
             # Multiplexer owns the heartbeat thread + per-domain
-            # reporter dispatch (PR B substrate). Tasks remain on the
-            # legacy heartbeat path for now; PR D migrates them.
+            # reporter dispatch (PR B substrate). Tasks remain on
+            # the legacy heartbeat path for now; PR D migrates them.
             # dev_mode stays False — production fast path. The
             # mutual-exclusion assertion is exercised by the
             # substrate's unit tests rather than here.
-            mux = LifecycleMultiplexer(
-                heartbeat_interval=cfg.war_rooms.heartbeat_interval_secs,
-            )
-            mux.register(
+            #
+            # Defensive ``if mux is None`` so this branch composes
+            # with the tasks branch in PR D (which uses the same
+            # pattern). Whichever runs first creates the mux; the
+            # second branch attaches its reporter on top instead of
+            # silently dropping the previous registration. The
+            # multiplexer's interval is capped to the smaller of any
+            # pair of enabled features so neither domain's
+            # liveness expectation gets stretched. Closes guard's
+            # PR #616 review point about composition asymmetry.
+            if self._lifecycle_mux is None:
+                interval = cfg.war_rooms.heartbeat_interval_secs
+                if cfg.tasks.enabled and cfg.tasks.claim_url:
+                    interval = min(
+                        interval, cfg.tasks.heartbeat_interval_secs or interval,
+                    )
+                self._lifecycle_mux = LifecycleMultiplexer(
+                    heartbeat_interval=interval,
+                )
+            self._lifecycle_mux.register(
                 is_war_room_job_for_lifecycle,
                 lambda job, _base=cfg.war_rooms.base_url,
                 _token=token_path: build_room_reporter(
@@ -504,7 +520,6 @@ class HivemootPlugin:
                     bearer_factory=lambda: resolve_agent_token(_token),
                 ),
             )
-            self._lifecycle_mux = mux
 
         return triggers
 
