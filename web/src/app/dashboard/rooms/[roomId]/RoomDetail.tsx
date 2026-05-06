@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { MarkdownContent } from "../../MarkdownContent";
 import {
   heartbeatFreshnessDotClass,
   heartbeatFreshnessTitle,
@@ -277,57 +278,101 @@ function ParticipantsTable({
   );
 }
 
+/**
+ * Pick a deterministic Tailwind color class for a role's avatar
+ * circle. Same role always gets the same hue across refreshes so
+ * an operator can scan a long thread and recognize "the green one
+ * is guard" without re-reading every label.
+ */
+function roleAccentClass(role: string): string {
+  // Cheap hash → palette index. The palette is hand-picked to
+  // stay legible against the zinc-950 page background while
+  // keeping enough contrast between adjacent hues.
+  const palette = [
+    "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30",
+    "bg-sky-500/20 text-sky-300 ring-sky-500/30",
+    "bg-amber-500/20 text-amber-300 ring-amber-500/30",
+    "bg-rose-500/20 text-rose-300 ring-rose-500/30",
+    "bg-violet-500/20 text-violet-300 ring-violet-500/30",
+    "bg-teal-500/20 text-teal-300 ring-teal-500/30",
+  ];
+  let hash = 0;
+  for (let i = 0; i < role.length; i++) {
+    hash = (hash * 31 + role.charCodeAt(i)) >>> 0;
+  }
+  return palette[hash % palette.length];
+}
+
 function ContributionsList({
   contributions,
 }: {
   contributions: Record<string, RoomContribution>;
 }) {
   return (
-    <ul className="space-y-3">
+    <ol className="space-y-4">
       {Object.entries(contributions)
         .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([role, c]) => (
-          <li
-            key={role}
-            className="rounded-lg border border-white/5 bg-zinc-900/50 p-3"
-          >
-            <div className="mb-1 flex items-center gap-2 text-xs">
-              <span className="font-medium text-zinc-200">{role}</span>
-              {c.withdrawn ? (
-                <span className="rounded-full bg-zinc-700/30 px-2 py-0.5 text-zinc-400">
-                  withdrawn
-                </span>
-              ) : (
-                c.body?.verdict !== undefined && (
-                  <span className="rounded-full bg-honey-500/10 px-2 py-0.5 text-honey-400">
-                    {String(c.body.verdict)}
-                  </span>
-                )
-              )}
-              {c.contributed_at && (
-                <span className="text-zinc-500">
-                  · {relativeTime(c.contributed_at)}
-                </span>
-              )}
-            </div>
-            {!c.withdrawn && c.body?.summary !== undefined && (
-              <p className="text-sm text-zinc-300">
-                {String(c.body.summary)}
-              </p>
-            )}
-            {!c.withdrawn && c.raw_md && (
-              <details className="mt-2">
-                <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-400">
-                  Show review body ({c.raw_md.length} chars)
-                </summary>
-                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-black/30 p-2 text-xs text-zinc-300">
-                  {c.raw_md}
-                </pre>
-              </details>
-            )}
-          </li>
-        ))}
-    </ul>
+        .map(([role, c]) => {
+          const initial = role.charAt(0).toUpperCase() || "?";
+          return (
+            <li key={role} className="flex gap-3">
+              {/* Avatar — role initial, deterministic accent color
+                  per role. Operators can pattern-match on color
+                  across a long thread without re-reading labels. */}
+              <div
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ring-1 ${roleAccentClass(role)}`}
+                aria-hidden="true"
+              >
+                {initial}
+              </div>
+              <div className="min-w-0 flex-1 rounded-2xl border border-white/5 bg-zinc-900/60 px-4 py-3">
+                {/* Header: role · verdict · timestamp. Time pushed
+                    to the right via ml-auto so the visual rhythm
+                    is consistent with chat clients (sender top-left,
+                    timestamp top-right). */}
+                <header className="mb-2 flex items-center gap-2 text-xs">
+                  <span className="font-medium text-zinc-200">{role}</span>
+                  {c.withdrawn ? (
+                    <span className="rounded-full bg-zinc-700/30 px-2 py-0.5 text-zinc-400">
+                      withdrawn
+                    </span>
+                  ) : (
+                    c.body?.verdict !== undefined && (
+                      <span className="rounded-full bg-honey-500/10 px-2 py-0.5 font-medium text-honey-400 ring-1 ring-honey-500/20">
+                        {String(c.body.verdict)}
+                      </span>
+                    )
+                  )}
+                  {c.contributed_at && (
+                    <span className="ml-auto text-zinc-500">
+                      {relativeTime(c.contributed_at)}
+                    </span>
+                  )}
+                </header>
+                {c.withdrawn ? (
+                  // Muted body for withdrawals — keep the slot but
+                  // don't render the (typically empty) raw_md as a
+                  // chat message; it's not a real contribution.
+                  <p className="text-xs italic text-zinc-500">
+                    Withdrew without contributing.
+                  </p>
+                ) : (
+                  <>
+                    {c.body?.summary !== undefined && (
+                      <p className="mb-2 text-sm font-medium text-zinc-200">
+                        {String(c.body.summary)}
+                      </p>
+                    )}
+                    {c.raw_md && (
+                      <MarkdownContent>{c.raw_md}</MarkdownContent>
+                    )}
+                  </>
+                )}
+              </div>
+            </li>
+          );
+        })}
+    </ol>
   );
 }
 
@@ -337,17 +382,18 @@ function DecisionBlock({
   decision: NonNullable<RoomDetailResponse["core"]["decision"]>;
 }) {
   return (
-    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-      <div className="mb-2 flex items-center gap-3 text-xs text-zinc-500">
-        <span>synthesized {relativeTime(decision.synthesized_at)}</span>
+    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3">
+      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+        <span>
+          <span className="text-emerald-400">●</span> synthesized{" "}
+          {relativeTime(decision.synthesized_at)}
+        </span>
         <span>·</span>
         <span className="font-mono">{decision.synthesis_runner}</span>
         <span>·</span>
         <span>through seq {decision.sequence_closed}</span>
       </div>
-      <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-sm text-zinc-200">
-        {decision.content}
-      </pre>
+      <MarkdownContent>{decision.content}</MarkdownContent>
     </div>
   );
 }
