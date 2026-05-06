@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_STATUSES,
   countRoomsByFilter,
+  extractDecisionVerdict,
   hasDiffDriftedPostVerdict,
   heartbeatFreshnessDotClass,
   heartbeatFreshnessTitle,
@@ -20,6 +21,8 @@ import {
   stucknessRatio,
   subjectGithubUrl,
   subjectLabel,
+  timeUntilDeadline,
+  verdictPillClass,
 } from "./room-helpers";
 import type { RoomCoreWithId, RoomParticipant, RoomStatus } from "./types";
 
@@ -709,5 +712,116 @@ describe("heartbeatFreshnessTitle", () => {
       // understands WHY the dot is that color.
       expect(title.toLowerCase()).toMatch(/heartbeat|pending/);
     }
+  });
+});
+
+
+// ── timeUntilDeadline + extractDecisionVerdict + verdictPillClass
+//    (rooms-list richer signals) ─────────────────────────────────────
+
+describe("timeUntilDeadline", () => {
+  const NOW = Date.parse("2026-04-28T12:00:00Z");
+
+  it("returns null for terminal statuses", () => {
+    expect(
+      timeUntilDeadline("2026-04-28T11:00:00Z", "closed",
+        { max_age_secs: 3600 }, NOW),
+    ).toBeNull();
+    expect(
+      timeUntilDeadline("2026-04-28T11:00:00Z", "expired",
+        { max_age_secs: 3600 }, NOW),
+    ).toBeNull();
+  });
+
+  it("returns null when timing_config is missing or has no max_age", () => {
+    expect(
+      timeUntilDeadline("2026-04-28T11:00:00Z",
+        "awaiting_contributions", undefined, NOW),
+    ).toBeNull();
+    expect(
+      timeUntilDeadline("2026-04-28T11:00:00Z",
+        "awaiting_contributions", { quiet_period_secs: 60 }, NOW),
+    ).toBeNull();
+  });
+
+  it("formats remaining seconds correctly across thresholds", () => {
+    // 30 min elapsed of a 60 min deadline → 30 min left
+    expect(
+      timeUntilDeadline("2026-04-28T11:30:00Z",
+        "awaiting_contributions", { max_age_secs: 3600 }, NOW),
+    ).toBe("30m left");
+    // 50 min elapsed of a 1h deadline → 10 min left
+    expect(
+      timeUntilDeadline("2026-04-28T11:10:00Z",
+        "awaiting_contributions", { max_age_secs: 3600 }, NOW),
+    ).toBe("10m left");
+    // 5 hours of a 24h deadline → 19h left
+    expect(
+      timeUntilDeadline("2026-04-28T07:00:00Z",
+        "awaiting_contributions", { max_age_secs: 24 * 3600 }, NOW),
+    ).toBe("19h left");
+  });
+
+  it("returns \"expired\" for rooms past their deadline", () => {
+    // 2h elapsed, 1h deadline — overdue. The watchdog has not yet
+    // swept; the marker is the bridge state.
+    expect(
+      timeUntilDeadline("2026-04-28T10:00:00Z",
+        "awaiting_contributions", { max_age_secs: 3600 }, NOW),
+    ).toBe("expired");
+  });
+
+  it("returns null on unparseable opened_at (defensive)", () => {
+    expect(
+      timeUntilDeadline("not-a-date", "awaiting_contributions",
+        { max_age_secs: 3600 }, NOW),
+    ).toBeNull();
+  });
+});
+
+describe("extractDecisionVerdict", () => {
+  it("extracts the verdict from the standard synthesis template", () => {
+    const content =
+      "## Synthesis — owner/repo#42\n\n" +
+      "**Verdict:** `APPROVE` _(LLM-derived from 2 contributions)_\n";
+    expect(extractDecisionVerdict(content)).toBe("APPROVE");
+  });
+
+  it("handles all four enum values", () => {
+    for (const v of ["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"] as const) {
+      expect(
+        extractDecisionVerdict("**Verdict:** `" + v + "` etc"),
+      ).toBe(v);
+    }
+  });
+
+  it("tolerates missing backticks (looser synth output)", () => {
+    expect(extractDecisionVerdict("**Verdict:** APPROVE")).toBe("APPROVE");
+  });
+
+  it("returns null for content without the template", () => {
+    expect(extractDecisionVerdict("plain old prose")).toBeNull();
+    expect(extractDecisionVerdict("")).toBeNull();
+  });
+
+  it("returns null for unrecognized verdict values (avoid garbage pills)", () => {
+    // Custom synthesizer might emit something off-enum — caller
+    // falls back to a plain "decided" badge instead of rendering
+    // the unknown string as a pill.
+    expect(
+      extractDecisionVerdict("**Verdict:** `MAYBE_LATER`"),
+    ).toBeNull();
+  });
+});
+
+describe("verdictPillClass", () => {
+  it("returns a distinct color class per verdict", () => {
+    // The four verdicts must map to four visually distinct hues.
+    // Pin the exact classes so a Tailwind upgrade or typo cant
+    // silently fall through to a default.
+    expect(verdictPillClass("APPROVE")).toContain("emerald");
+    expect(verdictPillClass("COMMENT")).toContain("zinc");
+    expect(verdictPillClass("CONCERNS")).toContain("amber");
+    expect(verdictPillClass("REQUEST_CHANGES")).toContain("rose");
   });
 });
