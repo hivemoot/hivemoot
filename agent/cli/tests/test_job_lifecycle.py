@@ -289,22 +289,57 @@ class LifecycleOrderingTests(unittest.TestCase):
         self.assertIsNot(second_event, first_event)
         mux.on_job_finish(_job("j2"), AgentResult(0, ""))
 
-    def test_heartbeat_loop_bails_if_reporter_cleared_mid_tick(self):
-        # If on_job_finish clears self._reporter while the loop is
-        # between ticks, the loop must notice and return without
-        # firing a stale heartbeat.
+    def test_heartbeat_loop_inner_guard_terminates_thread_when_reporter_cleared(self):
+        # Specifically exercises the `if reporter is None: return`
+        # guard INSIDE the loop body, distinct from the outer
+        # `while not stop_event.wait(...)` exit.
+        #
+        # Guard-feedback fix (#614): an earlier version of this test
+        # checked `len(reporter.heartbeats)` after clearing
+        # _reporter. That assertion held regardless of the inner
+        # guard — when the loop reads `self._reporter` into a fresh
+        # local on each tick, both paths (guard or no guard) end up
+        # with `reporter = None` and the original FakeReporter never
+        # gets called. So the test couldn't fail.
+        #
+        # The actual observable difference is **thread liveness**:
+        # WITH the guard, the loop sees `reporter is None` and
+        # returns, terminating the thread.
+        # WITHOUT the guard, the loop calls `None.on_heartbeat(job)`,
+        # the except clause logs AttributeError, and the loop spins
+        # forever (until stop_event is set). So we assert the thread
+        # has terminated WITHOUT setting stop_event.
         reporter = FakeReporter()
-        mux = LifecycleMultiplexer(heartbeat_interval=10)  # long
+        mux = LifecycleMultiplexer(heartbeat_interval=0.02)
         mux.register(lambda j: True, lambda j: reporter)
         mux.on_job_start(_job())
-        # Manually clear the reporter (simulating a race) and signal
-        # stop. The thread should observe the clear (or stop signal)
-        # and exit cleanly without firing on_heartbeat.
+        thread = mux._thread
+        self.assertIsNotNone(thread)
+        time.sleep(0.06)  # ~3 ticks; proves the loop is iterating
+        self.assertGreater(
+            len(reporter.heartbeats), 0,
+            "loop never ticked — test setup broken",
+        )
+        self.assertTrue(thread.is_alive())
+
+        # Clear the reporter ref. Crucially, do NOT set stop_event —
+        # the only way the thread can terminate is via the inner
+        # guard's `return`.
         mux._reporter = None
-        mux._stop_event.set() if mux._stop_event else None
-        if mux._thread is not None:
-            mux._thread.join(timeout=2)
-        self.assertEqual(len(reporter.heartbeats), 0)
+        time.sleep(0.15)  # several intervals — guard has had time to fire
+
+        # If the inner guard worked, the thread is dead AND
+        # stop_event was never set.
+        self.assertFalse(
+            thread.is_alive(),
+            "thread is still spinning after _reporter cleared — "
+            "inner guard did not fire",
+        )
+        self.assertFalse(
+            mux._stop_event.is_set() if mux._stop_event else False,
+            "stop_event was set — test would have passed even "
+            "without the inner guard via the outer while-condition",
+        )
 
 
 # ── Smoke test exercising both reporters at once (the realistic
