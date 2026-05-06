@@ -1420,6 +1420,68 @@ end
 return {seq}
 `;
 /**
+ * ROOM_PARTICIPANT_HEARTBEAT_SCRIPT — bump a participant's `rsvp_at`
+ * without bumping the sequence or appending an event.
+ *
+ * Per the JOB_LIFECYCLE_UNIFICATION RFC: heartbeats are pure
+ * liveness. They MUST NOT incur sequence increments (which would
+ * trigger the watcher's seen-cache + cause re-dispatch storms at
+ * 45-second intervals) or write to the events log (1h-room × N-
+ * agents × heartbeat-interval = unbounded audit-log inflation).
+ *
+ * Semantics:
+ *   - Room must be in `awaiting_contributions`. Heartbeats while
+ *     `deciding`/`closed`/`expired` are rejected — the agent's work
+ *     is either consumed by the queen or no longer relevant; the
+ *     plugin layer is expected to stop heartbeating on rejection.
+ *   - Participant slot must exist with matching `agent_id`. Defends
+ *     against subscriber-mode-collision (#522) the same way
+ *     /present + /contribute do.
+ *   - Participant status must be `pending`. Heartbeats on
+ *     resolved/withdrew/timed_out participants are no-ops (the
+ *     work is already done or the slot is closed). Returns a
+ *     benign skip code so the plugin can stop heartbeating.
+ *   - On success: HSET on the participant hash with the new
+ *     `rsvp_at` ISO timestamp. No seq, no event, no idempotency
+ *     key.
+ *
+ * KEYS:
+ *   [1] roomKey                  — room hash (status check)
+ *   [2] participantsKey          — participants hash (read + HSET)
+ *
+ * ARGV:
+ *   [1] role                     — participant slot key
+ *   [2] expectedAgentId          — owner-check (#522)
+ *   [3] nowIso                   — new rsvp_at value
+ *
+ * Returns:
+ *   {1, nowIso}                                   success
+ *   {0, "skipped_non_pending", actualPStatus}     benign no-op (already withdrew/resolved/timed_out)
+ *   {-1, "room_not_found"}                        room hash missing
+ *   {-2, currStatus}                              room not in awaiting_contributions
+ *   {-3, "no_participant"}                        participant slot missing
+ *   {-4, "owner_conflict", actualAgentId}         agent_id mismatch
+ */
+export const ROOM_PARTICIPANT_HEARTBEAT_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus ~= "awaiting_contributions" then
+  return {-2, currStatus}
+end
+local existingP = redis.call("hget", KEYS[2], ARGV[1])
+if not existingP then return {-3, "no_participant"} end
+local p = cjson.decode(existingP)
+if p.agent_id ~= ARGV[2] then
+  return {-4, "owner_conflict", p.agent_id}
+end
+if p.status ~= "pending" then
+  return {0, "skipped_non_pending", p.status}
+end
+p.rsvp_at = ARGV[3]
+redis.call("hset", KEYS[2], ARGV[1], cjson.encode(p))
+return {1, ARGV[3]}
+`;
+/**
  * ROOM_DECIDE_CLAIM_SCRIPT — atomic synthesis claim acquisition.
  *
  * Per WAR_ROOM_DESIGN.md §"Storage layout" + §"Manager loop", a
@@ -2019,6 +2081,62 @@ export async function presentParticipant(args) {
         idemTtlSecs: idemTtlSecs(args.roomMaxAgeSecs ?? DEFAULT_MAX_AGE_SECS),
         redis: args.redis,
     });
+}
+/**
+ * Worker heartbeat — bumps `rsvp_at` on the participant slot to
+ * indicate "still actively working on this room." Pure liveness:
+ * does NOT bump the sequence and does NOT append to the events log
+ * (per RFC, JOB_LIFECYCLE_UNIFICATION).
+ *
+ * Allowed status: `awaiting_contributions` only. Heartbeats while
+ * the room is `deciding`/`closed`/`expired` are rejected with
+ * `RoomTransitionInvalidStatusError`; the agent's plugin layer is
+ * expected to stop heartbeating on rejection.
+ *
+ * Idempotency: not required at the storage layer. Multiple
+ * heartbeats just keep bumping `rsvp_at`. The Lua script is
+ * atomic, so concurrent heartbeats from the same role + agent_id
+ * cannot leave the participant in a half-written state.
+ *
+ * Returns the new `rsvp_at` ISO string on success, or `null` when
+ * the heartbeat was a benign no-op (participant already
+ * withdrew/resolved/timed_out — caller should stop heartbeating).
+ *
+ * Throws:
+ *   - `RoomNotFoundError` — room hash missing (TTL'd or never existed)
+ *   - `RoomTransitionInvalidStatusError` — room not in `awaiting_contributions`
+ *   - `RoomParticipantNotFoundError` — participant slot missing for this role
+ *   - `RoomParticipantOwnerConflictError` — participant exists but for a different `agent_id`
+ */
+export async function heartbeatParticipant(args) {
+    assertRoleFormat(args.role);
+    validateRoomId(args.roomId);
+    const nowIso = new Date(args.nowMs ?? Date.now()).toISOString();
+    const result = dispatchScriptResult(await args.redis.eval(ROOM_PARTICIPANT_HEARTBEAT_SCRIPT, [
+        roomKey(args.installationId, args.roomId),
+        participantsKey(args.roomId),
+    ], [args.role, args.agentId, nowIso]));
+    if (result.ok === 1 && typeof result.tag1 === "string") {
+        return result.tag1;
+    }
+    if (result.ok === 0 && result.tag1 === "skipped_non_pending") {
+        return null;
+    }
+    if (result.ok === -1 && result.tag1 === "room_not_found") {
+        throw new RoomNotFoundError(args.installationId, args.roomId);
+    }
+    if (result.ok === -2 && typeof result.tag1 === "string") {
+        throw new RoomTransitionInvalidStatusError(args.roomId, "heartbeat", ["awaiting_contributions"], result.tag1);
+    }
+    if (result.ok === -3 && result.tag1 === "no_participant") {
+        throw new RoomParticipantNotFoundError(args.roomId, args.role);
+    }
+    if (result.ok === -4 &&
+        typeof result.tag1 === "string" &&
+        typeof result.tag2 === "string") {
+        throw new RoomParticipantOwnerConflictError(args.roomId, args.role, result.tag2, args.agentId);
+    }
+    throw new Error(`ROOM_PARTICIPANT_HEARTBEAT_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
 }
 /**
  * Worker withdraws their RSVP. Uses `transitionRoomParticipant` so
