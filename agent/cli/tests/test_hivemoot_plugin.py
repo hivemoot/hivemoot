@@ -434,6 +434,11 @@ class TaskLifecycleTests(unittest.TestCase):
     def _primed_plugin(self) -> HivemootPlugin:
         plugin = HivemootPlugin()
         plugin._cfg = self.config.typed
+        # PR D: heartbeat thread + initial progress post are now
+        # owned by the lifecycle substrate registered in triggers().
+        # Initialize it so on_job_started has a multiplexer to
+        # dispatch through.
+        plugin.triggers()
         return plugin
 
     def test_on_job_started_posts_progress_and_starts_heartbeat(self) -> None:
@@ -442,9 +447,13 @@ class TaskLifecycleTests(unittest.TestCase):
                 patch.object(task_api, "post_heartbeat") as heartbeat_mock:
             plugin.on_job_started(self._job(), self.config)
             time.sleep(1.5)
-            plugin._task_heartbeat_stop.set()
-            if plugin._task_heartbeat_thread:
-                plugin._task_heartbeat_thread.join(timeout=2)
+            # Stop the substrate's heartbeat thread by signalling
+            # on_job_finish with a placeholder result; the test
+            # would normally let on_job_finished call this.
+            plugin._lifecycle_mux.on_job_finish(
+                self._job(),
+                AgentResult(exit_code=0, response=""),
+            )
 
         progress_mock.assert_called_once()
         args, _kw = progress_mock.call_args
@@ -452,7 +461,6 @@ class TaskLifecycleTests(unittest.TestCase):
         self.assertGreaterEqual(heartbeat_mock.call_count, 1)
 
     def test_on_job_started_noop_without_execute_base(self) -> None:
-        plugin = self._primed_plugin()
         bare = _mk_plugin_config(
             tasks=HivemootTasksConfig(
                 enabled=True,
@@ -461,11 +469,27 @@ class TaskLifecycleTests(unittest.TestCase):
             ),
             settings={"AGENT_PROVIDER": "claude"},
         )
+        plugin = HivemootPlugin()
         plugin._cfg = bare.typed
-        with patch.object(task_api, "post_progress") as progress_mock:
+        plugin.triggers()  # wire substrate
+        with patch.object(task_api, "post_progress") as progress_mock, \
+                patch.object(task_api, "post_heartbeat") as heartbeat_mock:
             plugin.on_job_started(self._job(), bare)
+            # The substrate's heartbeat thread may have spawned (it
+            # only inspects interval, not metadata), but the
+            # reporter's on_start guards on empty execute_base and
+            # returns without posting progress.
+            time.sleep(0.2)
+            if plugin._lifecycle_mux is not None:
+                plugin._lifecycle_mux.on_job_finish(
+                    self._job(),
+                    AgentResult(exit_code=0, response=""),
+                )
         progress_mock.assert_not_called()
-        self.assertIsNone(plugin._task_heartbeat_thread)
+        # post_heartbeat was guarded by the same empty-metadata
+        # check inside the reporter, so no actual heartbeat fired
+        # despite the thread existing.
+        heartbeat_mock.assert_not_called()
 
     def test_on_job_finished_posts_complete(self) -> None:
         plugin = self._primed_plugin()
@@ -557,11 +581,15 @@ class TaskLifecycleTests(unittest.TestCase):
         )
         plugin = HivemootPlugin()
         plugin._cfg = zero_config.typed
+        plugin.triggers()  # wire the substrate (with interval=0)
         with patch.object(task_api, "post_progress", return_value=True), \
                 patch.object(task_api, "post_heartbeat") as hb:
             plugin.on_job_started(self._job(), zero_config)
-        self.assertIsNone(plugin._task_heartbeat_thread)
-        self.assertIsNone(plugin._task_heartbeat_stop)
+            # interval=0 in the substrate's _spawn_heartbeat skips
+            # thread startup entirely. Pin the same opt-out
+            # semantics the legacy code had.
+            self.assertIsNone(plugin._lifecycle_mux._thread)
+            self.assertIsNone(plugin._lifecycle_mux._stop_event)
         time.sleep(0.2)
         hb.assert_not_called()
 
@@ -584,6 +612,12 @@ class TaskLifecycleTests(unittest.TestCase):
         self.assertIn("FAILED to post complete", stderr.getvalue())
 
     def test_orphan_heartbeat_does_not_revive_into_next_job(self) -> None:
+        # Per-job stop_event isolation invariant — a slow shutdown
+        # of job A's heartbeat thread cannot bleed into job B.
+        # Substrate guarantees this via fresh threading.Event per
+        # _spawn_heartbeat (pinned by the substrate's own
+        # test_per_job_stop_event_isolation); this test exercises
+        # the contract through the plugin's full lifecycle.
         plugin = self._primed_plugin()
 
         def _job(tid: str) -> Job:
@@ -598,7 +632,7 @@ class TaskLifecycleTests(unittest.TestCase):
         with patch.object(task_api, "post_progress", return_value=True), \
                 patch.object(task_api, "post_heartbeat", return_value=True):
             plugin.on_job_started(_job("task-A"), self.config)
-            stop_a = plugin._task_heartbeat_stop
+            stop_a = plugin._lifecycle_mux._stop_event
             self.assertIsNotNone(stop_a)
 
         log_dir = os.path.join(self.workspace, "runs", "current")
@@ -612,20 +646,27 @@ class TaskLifecycleTests(unittest.TestCase):
                 AgentResult(exit_code=0, response=""),
                 self.config,
             )
-        self.assertIsNone(plugin._task_heartbeat_stop)
-        self.assertIsNone(plugin._task_heartbeat_thread)
+        # After on_job_finished, the substrate clears its per-job
+        # state — both _stop_event and _thread back to None.
+        self.assertIsNone(plugin._lifecycle_mux._stop_event)
+        self.assertIsNone(plugin._lifecycle_mux._thread)
 
         with patch.object(task_api, "post_progress", return_value=True), \
                 patch.object(task_api, "post_heartbeat", return_value=True):
             plugin.on_job_started(_job("task-B"), self.config)
-            stop_b = plugin._task_heartbeat_stop
+            stop_b = plugin._lifecycle_mux._stop_event
         self.assertIsNotNone(stop_b)
+        # Fresh event per job — and the previous job's event was
+        # signalled on its on_job_finish (so any orphan thread sees
+        # the stop signal).
         self.assertIsNot(stop_a, stop_b)
         self.assertTrue(stop_a.is_set())
 
-        plugin._task_heartbeat_stop.set()
-        if plugin._task_heartbeat_thread:
-            plugin._task_heartbeat_thread.join(timeout=2)
+        # Tear down job B's thread to avoid leaking.
+        plugin._lifecycle_mux.on_job_finish(
+            _job("task-B"),
+            AgentResult(exit_code=0, response=""),
+        )
 
 
 # ── Health-subsystem lifecycle ────────────────────────────────────

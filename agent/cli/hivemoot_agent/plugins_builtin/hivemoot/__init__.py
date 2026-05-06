@@ -112,12 +112,13 @@ class HivemootPlugin:
 
     def __init__(self) -> None:
         # ── Task subsystem state ─────────────────────────────────
-        # Per-job heartbeat state — overwritten on each on_job_started
-        # so an orphan thread from a slow shutdown cannot be revived by
-        # the next job (its closure-captured task_id would post for the
-        # wrong task otherwise).
-        self._task_heartbeat_stop: threading.Event | None = None
-        self._task_heartbeat_thread: threading.Thread | None = None
+        # Per-job heartbeat thread is now owned by the
+        # ``LifecycleMultiplexer`` instance below (PR D of the
+        # JOB_LIFECYCLE_UNIFICATION RFC). Previously the plugin had
+        # its own ``_task_heartbeat_stop`` + ``_task_heartbeat_thread``
+        # — the substrate's per-job stop_event provides the same
+        # orphan-prevention guarantee plus mutex-asserted matcher
+        # dispatch across tasks + war-rooms.
         # Codex sidecar path resolved at job-start, consumed at finish.
         self._codex_sidecar_path: str = ""
         # In-flight gate for the async dispatcher.  The engine's
@@ -159,12 +160,14 @@ class HivemootPlugin:
         # disabled OR triggers() hasn't been called yet.
         self._war_room_trigger: Any = None
 
-        # ── Engine-side lifecycle substrate (PR C of the
+        # ── Engine-side lifecycle substrate (PRs C+D of the
         #    JOB_LIFECYCLE_UNIFICATION RFC) ────────────────────────
-        # LifecycleMultiplexer instance for this plugin run. None
-        # when no domain has registered a reporter (e.g. war_rooms
-        # disabled). Registered in `triggers()` once the typed
-        # config is finalized.
+        # LifecycleMultiplexer instance that drives the heartbeat
+        # thread + per-domain reporter dispatch (war_rooms +
+        # tasks). None when no domain has registered a reporter;
+        # created lazily in ``triggers()`` once the typed config is
+        # finalized. Both branches use a defensive ``if mux is
+        # None`` guard so registration order doesn't matter.
         self._lifecycle_mux: Any = None
 
         # Apiarist auth subscriber, populated in setup_lifecycle() when
@@ -457,6 +460,50 @@ class HivemootPlugin:
             )
             triggers.append(HivemootTaskTrigger(self))  # type: ignore[arg-type]
 
+            # Wire tasks onto the engine-side lifecycle substrate
+            # (PR D of the JOB_LIFECYCLE_UNIFICATION RFC). The
+            # multiplexer's heartbeat thread now owns what the
+            # plugin's ``_task_heartbeat_loop`` did before — same
+            # per-job stop_event semantics, same 5s join, same
+            # bearer re-resolve per tick. Defensive ``if mux is
+            # None`` so this branch composes with PR C's war-rooms
+            # registration without conflict — whichever runs first
+            # creates the mux with min(tasks, war_rooms) interval
+            # so neither domain's liveness expectation gets stretched.
+            if self._lifecycle_mux is None:
+                from hivemoot_agent.plugins_builtin.hivemoot.job_lifecycle import (
+                    LifecycleMultiplexer,
+                )
+                interval = cfg.tasks.heartbeat_interval_secs
+                if cfg.war_rooms.enabled:
+                    interval = min(
+                        interval,
+                        cfg.war_rooms.heartbeat_interval_secs or interval,
+                    )
+                self._lifecycle_mux = LifecycleMultiplexer(
+                    heartbeat_interval=interval,
+                )
+            from hivemoot_agent.plugins_builtin.hivemoot.auth import (
+                resolve_agent_token,
+            )
+            from hivemoot_agent.plugins_builtin.hivemoot.tasks.lifecycle import (
+                build_task_reporter,
+                is_task_job_for_lifecycle,
+            )
+            task_token_path = (
+                str(cfg.token_file) if cfg.token_file else ""
+            )
+            task_execute_base = cfg.tasks.execute_base_url
+            self._lifecycle_mux.register(
+                is_task_job_for_lifecycle,
+                lambda job, _base=task_execute_base,
+                _token=task_token_path: build_task_reporter(
+                    job,
+                    execute_base=_base,
+                    bearer_factory=lambda: resolve_agent_token(_token),
+                ),
+            )
+
         if cfg.health.enabled:
             from hivemoot_agent.plugins_builtin.hivemoot.health.trigger import (
                 HealthHeartbeatTrigger,
@@ -583,6 +630,23 @@ class HivemootPlugin:
                     file=sys.stderr, flush=True,
                 )
 
+            # Drive the lifecycle substrate (PR D). Codex sidecar
+            # setup ran above, so providers/codex.py will see
+            # CODEX_ANSWER_FILE before the agent subprocess starts.
+            # mux.on_job_start picks the task reporter via the
+            # matcher, posts the initial progress + spawns the
+            # heartbeat thread.
+            if self._lifecycle_mux is not None:
+                try:
+                    self._lifecycle_mux.on_job_start(job)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-tasks] lifecycle on_job_start raised "
+                        f"for {job.metadata.get('task_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+
         # War-rooms early-/present + heartbeat thread (PR C). Wraps
         # independently from tasks/health — one feature failing must
         # not skip the others. The multiplexer may be None when
@@ -614,6 +678,20 @@ class HivemootPlugin:
         # catches up.  Both wrapped independently — one failing must
         # not skip the other.
         if cfg.tasks.enabled and _is_task_job(job):
+            # Stop the substrate's heartbeat thread BEFORE the
+            # terminal post, so a heartbeat can't race the
+            # post_complete/fail/timeout (PR D, mirrors the legacy
+            # in-line stop_event.set + join 5s).
+            if self._lifecycle_mux is not None:
+                try:
+                    self._lifecycle_mux.on_job_finish(job, result)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-tasks] lifecycle on_job_finish raised "
+                        f"for {job.metadata.get('task_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
             try:
                 self._task_on_job_finished(job, result, config)
             except Exception as exc:
@@ -924,11 +1002,6 @@ class HivemootPlugin:
     # ── Private: task subsystem ───────────────────────────────────
 
     def _task_on_job_started(self, job: Job, config: PluginConfig) -> None:
-        from hivemoot_agent.plugins_builtin.hivemoot.auth import (
-            resolve_agent_token,
-        )
-        from hivemoot_agent.plugins_builtin.hivemoot.tasks import api
-
         cfg = self._cfg
         task_id = str(job.metadata.get("task_id") or "")
         claim_token = str(job.metadata.get("claim_token") or "")
@@ -938,16 +1011,17 @@ class HivemootPlugin:
             self._codex_sidecar_path = ""
             return
 
-        bearer = resolve_agent_token(
-            str(cfg.token_file) if cfg and cfg.token_file else "",
-        )
-        interval = cfg.tasks.heartbeat_interval_secs if cfg else 45
-
         # Codex writes its final markdown to a sidecar when invoked
         # with --output-last-message; remember the path so finish can
         # pick it up, and export CODEX_ANSWER_FILE so providers/codex.py
         # wires the flag.  AGENT_PROVIDER is engine-level, not plugin
         # config — read from settings (env) rather than the typed schema.
+        #
+        # Initial progress post + heartbeat thread were here in
+        # the legacy code; PR D moved them to
+        # ``TaskLifecycleReporter.on_start`` and the substrate's
+        # multiplexer respectively. ``on_job_started`` calls
+        # ``mux.on_job_start(job)`` after this method returns.
         provider = config.get("AGENT_PROVIDER", "claude")
         if provider == "codex":
             workspace = str(cfg.tasks.workspace) if cfg else "/workspace"
@@ -962,39 +1036,6 @@ class HivemootPlugin:
             self._codex_sidecar_path = ""
             os.environ.pop("CODEX_ANSWER_FILE", None)
 
-        if not api.post_progress(
-            execute_base, task_id, bearer, claim_token,
-            f"Task {task_id} claimed. Starting execution.",
-        ):
-            print(
-                f"[hivemoot-tasks] failed to post initial progress for "
-                f"task {task_id}",
-                file=sys.stderr, flush=True,
-            )
-
-        # interval=0 disables heartbeats; skip thread startup entirely
-        # to avoid a tight Event.wait(0) busy loop.
-        if interval <= 0:
-            self._task_heartbeat_stop = None
-            self._task_heartbeat_thread = None
-            return
-
-        # Per-job stop event so an orphaned thread from a slow shutdown
-        # cannot post heartbeats for a stale task_id once the next job
-        # starts.  Pass the token *file*, not the resolved bearer, so
-        # the heartbeat loop re-resolves per tick — an operator
-        # rotating HIVEMOOT_AGENT_TOKEN{,_FILE} takes effect within
-        # one interval instead of waiting for process restart.
-        token_file = str(cfg.token_file) if cfg and cfg.token_file else ""
-        stop_event = threading.Event()
-        self._task_heartbeat_stop = stop_event
-        self._task_heartbeat_thread = threading.Thread(
-            target=self._task_heartbeat_loop,
-            args=(execute_base, task_id, token_file, claim_token, interval, stop_event),
-            daemon=True,
-        )
-        self._task_heartbeat_thread.start()
-
     def _task_on_job_finished(
         self, job: Job, result: AgentResult, config: PluginConfig,
     ) -> None:
@@ -1007,15 +1048,11 @@ class HivemootPlugin:
             result_extractor,
         )
 
-        # Stop the heartbeat first so it can't race with the final post.
-        stop_event = self._task_heartbeat_stop
-        thread = self._task_heartbeat_thread
-        self._task_heartbeat_stop = None
-        self._task_heartbeat_thread = None
-        if stop_event is not None:
-            stop_event.set()
-        if thread is not None:
-            thread.join(timeout=5)
+        # Heartbeat thread is stopped by the multiplexer's
+        # ``on_job_finish`` (called from ``on_job_finished`` BEFORE
+        # this method runs). The substrate's _stop_heartbeat
+        # already enforces the same 5s join + race-prevention
+        # invariant the legacy in-line code had.
 
         cfg = self._cfg
         task_id = str(job.metadata.get("task_id") or "")
@@ -1125,28 +1162,12 @@ class HivemootPlugin:
                 file=sys.stderr, flush=True,
             )
 
-    def _task_heartbeat_loop(
-        self, execute_base: str, task_id: str, token_file: str,
-        claim_token: str, interval: int, stop_event: threading.Event,
-    ) -> None:
-        from hivemoot_agent.plugins_builtin.hivemoot.auth import (
-            resolve_agent_token,
-        )
-        from hivemoot_agent.plugins_builtin.hivemoot.tasks import api
-
-        while not stop_event.wait(interval):
-            try:
-                # Re-resolve the bearer every tick so token rotation
-                # takes effect within one interval rather than
-                # waiting for process restart.
-                bearer = resolve_agent_token(token_file)
-                api.post_heartbeat(execute_base, task_id, bearer, claim_token)
-            except Exception as exc:
-                print(
-                    f"[hivemoot-tasks] heartbeat error for {task_id}: "
-                    f"{type(exc).__name__}",
-                    file=sys.stderr, flush=True,
-                )
+    # _task_heartbeat_loop was deleted in PR D — superseded by
+    # ``TaskLifecycleReporter.on_heartbeat`` driven by the
+    # substrate's ``LifecycleMultiplexer._heartbeat_loop``. Same
+    # body shape (re-resolve bearer per tick + post_heartbeat in
+    # try/except), but the substrate now owns the thread + interval
+    # + stop-event + 5s join.
 
     def _resolve_provider_log_path(self, config: PluginConfig) -> str:
         explicit = config.get("AGENT_LAST_RUN_LOG", "")
