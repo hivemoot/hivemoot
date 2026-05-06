@@ -143,11 +143,18 @@ class RoomLifecycleReporter(JobLifecycleReporter):
             )
             return
         try:
+            # Pass agent_id so /present and /heartbeat carry the
+            # same identity for the subscriber-mode first-wins gate.
+            # Closes guard's PR #615 review point about asymmetry —
+            # without this, runner A's /present creates the slot at
+            # agent_id=bearer.name, then /heartbeat with body.agentId
+            # mismatch hits owner_conflict.
             seq = wr_api.present_to_room(
                 base_url=self._base_url,
                 room_id=self._room_id,
                 sequence_observed_by_client=self._current_sequence,
                 bearer=self._bearer_factory(),
+                agent_id=self._agent_id,
             )
             self._presented = True
             self._log(

@@ -58,14 +58,29 @@ class RoomStateRaceError(RuntimeError):
         self.body_excerpt = body_excerpt
 
 
-# API error codes the storage layer returns on a status-precondition
-# 409.  Listed here so the api module can distinguish them from
-# other 409s (e.g. `participant_already_present` is also 409 but
-# means "you already RSVP'd, harmless replay" — handled separately
-# by the handler's continue-to-contribute path).
-_RACE_409_CODES: frozenset[str] = frozenset(
-    {"status_precondition_failed"},
-)
+# API error codes the storage layer returns to indicate a benign
+# race rather than a transient failure. Mapped to RoomStateRaceError
+# so the caller stops retrying — the next dispatch tick rebuilds
+# state instead. Indexed by HTTP status so each code only fires for
+# the response shape that actually carries it.
+#
+# 409s:
+#   * status_precondition_failed — room left ``awaiting_contributions``
+#     (closed / deciding / expired). Affects every op kind.
+#   * owner_conflict — first-wins gate lost; another runner already
+#     holds this role's slot in subscriber-mode. Surfaced by /present
+#     and /heartbeat.
+#
+# 404s (added per guard's PR #615 review feedback so heartbeats stop
+# instead of spinning forever):
+#   * room_not_found — operator deleted the room mid-flight, or the
+#     ``roomId`` metadata was stale. Terminal — nothing to retry.
+#   * participant_not_found — slot was withdrawn or never created.
+#     Also terminal; the lifecycle is over.
+_RACE_CODES_BY_STATUS: dict[int, frozenset[str]] = {
+    409: frozenset({"status_precondition_failed", "owner_conflict"}),
+    404: frozenset({"room_not_found", "participant_not_found"}),
+}
 
 
 def _maybe_raise_race(
@@ -75,19 +90,24 @@ def _maybe_raise_race(
     parsed: Any,
     raw: bytes,
 ) -> None:
-    """Raise `RoomStateRaceError` when the response is a 409 with a
-    known room-state-race code.  No-op for 2xx, 4xx with unknown
-    code, or any other status — caller still wraps those as a
-    generic `RuntimeError` so the failure-mode signal isn't lost.
+    """Raise `RoomStateRaceError` when the response is one of the
+    known race-class statuses (4xx with a code we recognize as a
+    benign state shift). No-op for 2xx or any other status —
+    callers still wrap those as generic ``RuntimeError`` so the
+    failure-mode signal isn't lost.
+
+    Single source of race-detection truth used by every war_rooms.api
+    helper. Closes guard's PR #615 review point about duplicate race
+    detection logic between heartbeat_room_participant and the
+    legacy /present, /contribute, /withdraw helpers.
     """
-    if status != 409:
+    codes = _RACE_CODES_BY_STATUS.get(status)
+    if codes is None:
         return
     if not isinstance(parsed, dict):
         return
     code = parsed.get("code")
-    if not isinstance(code, str):
-        return
-    if code not in _RACE_409_CODES:
+    if not isinstance(code, str) or code not in codes:
         return
     raise RoomStateRaceError(
         op=op,
@@ -198,21 +218,32 @@ def present_to_room(
     bearer: str,
     *,
     intent_hint: str | None = None,
+    agent_id: str | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECS,
 ) -> int:
     """POST `{base_url}/api/rooms/{room_id}/present`.
 
-    The role + agent_id are server-derived from the bearer envelope —
-    the client doesn't pass them in the body. Sequence is the
-    `current_sequence` the worker observed on `/watching` (used for
-    idempotency).
+    The role is server-derived from the bearer envelope; ``agent_id``
+    is the per-runner identity for the subscriber-mode first-wins
+    gate (#522). When omitted the server falls back to the bearer's
+    ``name`` — single-runner deployments don't need to set it.
+    Sequence is the ``current_sequence`` the worker observed on
+    ``/watching`` (used for idempotency).
+
+    Closes guard's PR #615 review point about subscriber-mode
+    asymmetry: ``/heartbeat`` carries ``agent_id`` for the gate;
+    ``/present`` MUST carry the same identity so both calls hit
+    the same slot. Without this, runner-A's /present creates a
+    slot at agent_id=bearer.name, then runner-A's /heartbeat with
+    body.agentId="runner-A" hits the owner_conflict path.
 
     Returns the sequence the `participant_presented` event landed at.
 
     Raises:
-        RuntimeError on non-2xx / malformed body. Caller branches
-        on error message to detect benign races (e.g., status
-        moved, owner conflict from a sibling runner).
+        RoomStateRaceError on the known benign-race codes
+        (status_precondition_failed, owner_conflict, room_not_found,
+        participant_not_found).
+        RuntimeError on any other non-2xx / malformed body.
     """
     url = f"{base_url.rstrip('/')}/api/rooms/{room_id}/present"
     body: dict[str, Any] = {
@@ -220,6 +251,8 @@ def present_to_room(
     }
     if intent_hint is not None:
         body["intentHint"] = intent_hint
+    if agent_id is not None:
+        body["agentId"] = agent_id
 
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
@@ -310,11 +343,16 @@ def heartbeat_room_participant(
         stop heartbeating. Caller MUST NOT treat this as an error.
 
     Raises:
-        RoomStateRaceError: 409 with ``status_precondition_failed``
-            (room left ``awaiting_contributions``) or ``owner_conflict``
-            (a different runner holds this role's slot — subscriber-
-            mode collision). Caller stops heartbeating; the next
-            tick's reporter will rebuild state.
+        RoomStateRaceError: any of the known race codes:
+            * 409 ``status_precondition_failed`` — room left
+              awaiting_contributions.
+            * 409 ``owner_conflict`` — different runner holds the
+              slot (subscriber-mode collision).
+            * 404 ``room_not_found`` — room is gone.
+            * 404 ``participant_not_found`` — slot was never created
+              (caller never /presented) or has been removed.
+            All four indicate the lifecycle should stop heartbeating
+            for this Job — the next dispatch tick rebuilds state.
         RuntimeError: any other non-2xx / malformed body. Caller
             logs and keeps trying — a transient network blip is
             recoverable on the next tick.
@@ -326,18 +364,11 @@ def heartbeat_room_participant(
 
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
-    # Race conditions surface as 409s the caller wants to distinguish
-    # from generic 5xx — owner_conflict (subscriber-mode collision) is
-    # also a 409 the storage layer can return. Add it here so the
-    # caller's race handling covers both heartbeat-specific 409s.
-    if status == 409 and isinstance(parsed, dict):
-        code = parsed.get("code")
-        if code in ("status_precondition_failed", "owner_conflict"):
-            raise RoomStateRaceError(
-                op="heartbeat",
-                code=str(code),
-                body_excerpt=raw.decode(errors="replace")[:200],
-            )
+    # Race-class codes (4xx with a known code) — single helper covers
+    # all of them so heartbeat shares the same race detection used by
+    # /present, /contribute, /withdraw. Closes guard's PR #615 review
+    # point about duplicate logic.
+    _maybe_raise_race(op="heartbeat", status=status, parsed=parsed, raw=raw)
 
     if status != 200:
         raise RuntimeError(

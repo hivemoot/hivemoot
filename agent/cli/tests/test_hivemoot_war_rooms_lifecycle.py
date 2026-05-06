@@ -122,6 +122,34 @@ class HeartbeatRoomParticipantTests(unittest.TestCase):
                 )
         self.assertEqual(ctx.exception.code, "owner_conflict")
 
+    def test_404_room_not_found_maps_to_race(self):
+        # Closes guard's PR #615 review feedback: 404 must be
+        # terminal so the substrate's loop stops spinning. Without
+        # this mapping a deleted room would log a transient error
+        # and retry every interval forever.
+        with self._patch_post(404, {"code": "room_not_found"}):
+            with self.assertRaises(wr_api.RoomStateRaceError) as ctx:
+                wr_api.heartbeat_room_participant(
+                    base_url="https://www.hivemoot.dev",
+                    room_id="room-A",
+                    bearer="hmt_test",
+                )
+        self.assertEqual(ctx.exception.code, "room_not_found")
+
+    def test_404_participant_not_found_maps_to_race(self):
+        # Slot was withdrawn / never created — also terminal. Same
+        # rationale as room_not_found: there's nothing to keep
+        # alive on the server side, so the substrate's loop should
+        # stop instead of retrying indefinitely.
+        with self._patch_post(404, {"code": "participant_not_found"}):
+            with self.assertRaises(wr_api.RoomStateRaceError) as ctx:
+                wr_api.heartbeat_room_participant(
+                    base_url="https://www.hivemoot.dev",
+                    room_id="room-A",
+                    bearer="hmt_test",
+                )
+        self.assertEqual(ctx.exception.code, "participant_not_found")
+
     def test_500_raises_runtime_error(self):
         # Generic transient — caller logs and retries on next tick.
         with self._patch_post(500, {"message": "kaboom"}):
@@ -213,6 +241,7 @@ class RoomLifecycleReporterStartTests(unittest.TestCase):
                 _job(),
                 base_url="https://www.hivemoot.dev",
                 bearer_factory=bearer,
+                agent_id="drone-host42",
             )
             r.on_start(_job())
             self.assertTrue(r._presented)
@@ -221,7 +250,32 @@ class RoomLifecycleReporterStartTests(unittest.TestCase):
                 room_id="room-A",
                 sequence_observed_by_client=7,
                 bearer="hmt_test_call_1",
+                agent_id="drone-host42",
             )
+
+    def test_on_start_passes_agent_id_for_subscriber_mode_parity(self):
+        # Closes guard's PR #615 review point: /present and
+        # /heartbeat must carry the same agent_id so the
+        # subscriber-mode first-wins gate sees consistent identity
+        # on both calls. Without this, runner A's /present would
+        # create the slot at agent_id=bearer.name and runner A's
+        # /heartbeat with body.agentId="A" would hit owner_conflict.
+        bearer = _FakeBearerFactory()
+        captured: dict = {}
+
+        def fake_present(**kwargs):
+            captured.update(kwargs)
+            return 8
+
+        with patch.object(wr_api, "present_to_room", side_effect=fake_present):
+            r = RoomLifecycleReporter(
+                _job(),
+                base_url="x",
+                bearer_factory=bearer,
+                agent_id="drone-runner-host42",
+            )
+            r.on_start(_job())
+        self.assertEqual(captured.get("agent_id"), "drone-runner-host42")
 
     def test_on_start_race_keeps_presented_false(self):
         # Room moved on between /watching and dispatch — the small
