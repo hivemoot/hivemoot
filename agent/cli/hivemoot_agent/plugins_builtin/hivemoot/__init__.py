@@ -801,12 +801,22 @@ class HivemootPlugin:
             else None
         )
 
+        # Thread the AGENT_ID through so handler.py's /present matches
+        # the lifecycle reporter's earlier /present (which already
+        # passed agent_id from the same env var). Without this, the
+        # second /present hits owner_conflict — server falls back
+        # to bearer.name when body.agentId is missing — and the
+        # handler treats the (now-classified-as-race) error as a
+        # benign skip, silently dropping the contribution.
+        agent_id_env = self.resolved_agent_id() or None
+
         handle_war_room_job_finished(
             job,
             result,
             base_url=cfg.war_rooms.base_url,
             bearer=bearer,
             extracted_markdown=markdown,
+            agent_id=agent_id_env,
             on_post_failure=evict,
         )
 
