@@ -292,6 +292,7 @@ def _do_present_and_contribute(
             contribution_body=body,
             raw_md=raw_md,
             bearer=bearer,
+            agent_id=agent_id,
         )
         _log(
             f"contributed room={room_id} subject={subject_ref} "
@@ -388,6 +389,7 @@ def _do_present_then_withdraw(
             sequence_observed_by_client=current_sequence,
             bearer=bearer,
             reason=decision.reason,
+            agent_id=agent_id,
         )
         level = "warn" if decision.parse_error else "info"
         _log(

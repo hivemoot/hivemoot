@@ -281,6 +281,8 @@ def submit_contribution(
     contribution_body: dict[str, Any],
     raw_md: str,
     bearer: str,
+    *,
+    agent_id: str | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECS,
 ) -> int:
     """POST `{base_url}/api/rooms/{room_id}/contributions`.
@@ -289,14 +291,24 @@ def submit_contribution(
     plus the worker's raw markdown analysis. Both bounded server-
     side (body schema + 32 KiB raw_md cap).
 
+    ``agent_id`` follows the same subscriber-mode-parity contract as
+    ``/present`` and ``/heartbeat`` — the storage layer's per-(room,
+    role) gate compares it to the slot's existing ``agent_id``, so
+    the value MUST match what was passed on the slot's first
+    ``/present``. When omitted the server falls back to ``bearer.name``;
+    that fallback was the regression PR #618 partially fixed (only
+    on /present) — /contribute had the same hole, captured here.
+
     Returns the sequence the `contribution_submitted` event landed at.
     """
     url = f"{base_url.rstrip('/')}/api/rooms/{room_id}/contributions"
-    body = {
+    body: dict[str, Any] = {
         "sequenceObservedByClient": sequence_observed_by_client,
         "body": contribution_body,
         "rawMd": raw_md,
     }
+    if agent_id is not None:
+        body["agentId"] = agent_id
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
     _maybe_raise_race(op="contributions", status=status, parsed=parsed, raw=raw)
@@ -402,6 +414,7 @@ def withdraw_participant(
     bearer: str,
     *,
     reason: str | None = None,
+    agent_id: str | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECS,
 ) -> int:
     """POST `{base_url}/api/rooms/{room_id}/withdraw`.
@@ -411,6 +424,11 @@ def withdraw_participant(
     of scope, etc.). Distinct from `submit_contribution` (a
     contribution that opts out via `verdict: COMMENT`).
 
+    ``agent_id`` follows the same subscriber-mode-parity contract
+    as ``/present``, ``/contribute``, and ``/heartbeat`` — must
+    match the slot's existing ``agent_id`` or the storage layer's
+    first-wins gate raises owner_conflict.
+
     Returns the sequence the `participant_withdrawn` event landed at.
     """
     url = f"{base_url.rstrip('/')}/api/rooms/{room_id}/withdraw"
@@ -419,6 +437,8 @@ def withdraw_participant(
     }
     if reason is not None:
         body["reason"] = reason
+    if agent_id is not None:
+        body["agentId"] = agent_id
 
     status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
 
