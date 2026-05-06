@@ -228,6 +228,45 @@ function makeMockRedis() {
         return [seq];
       }
 
+      // ROOM_PARTICIPANT_HEARTBEAT_SCRIPT — 2 keys, 3 args. Bumps
+      // rsvp_at without seq/event side effects. Closes JOB_LIFECYCLE
+      // _UNIFICATION RFC.
+      if (
+        keys.length === 2 &&
+        argv.length === 3 &&
+        script.includes("skipped_non_pending")
+      ) {
+        const [roomK, participantsK] = keys;
+        const [role, expectedAgentId, nowIso] = argv;
+
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus !== "awaiting_contributions") {
+          return [-2, currStatus];
+        }
+        const existingP = hashes.get(participantsK)?.get(role) as
+          | string
+          | undefined;
+        if (existingP === undefined) return [-3, "no_participant"];
+        const p = JSON.parse(existingP) as {
+          agent_id: string;
+          status: string;
+          rsvp_at: string;
+          role: string;
+        };
+        if (p.agent_id !== expectedAgentId) {
+          return [-4, "owner_conflict", p.agent_id];
+        }
+        if (p.status !== "pending") {
+          return [0, "skipped_non_pending", p.status];
+        }
+        const updated = { ...p, rsvp_at: nowIso };
+        getHash(participantsK).set(role, JSON.stringify(updated));
+        return [1, nowIso];
+      }
+
       // ROOM_APPEND_EVENT_SCRIPT R2 — 9 keys, 15 args (D.1.a-ii R2)
       if (
         keys.length === 9 &&
@@ -1710,6 +1749,7 @@ import {
   validateContributionBody,
   appendRoomEvent,
   presentParticipant,
+  heartbeatParticipant,
   withdrawParticipant,
   submitContribution,
   withdrawContribution,
@@ -4928,5 +4968,253 @@ describe("recordPostCloseDrift", () => {
     expect(rooms).toHaveLength(1);
     expect(rooms[0].last_post_close_drift_at).toBe(ATTEMPT_ISO);
     expect(rooms[0].last_post_close_drift_head_sha).toBe(HEAD_SHA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// heartbeatParticipant — closes JOB_LIFECYCLE_UNIFICATION RFC, PR A
+// ---------------------------------------------------------------------------
+
+describe("heartbeatParticipant", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  const NOW_MS = Date.parse("2026-05-05T15:00:00.000Z");
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  async function seedRoomWithRsvp(
+    role: string,
+    agentId: string,
+    nowMs = NOW_MS - 60_000,
+  ): Promise<void> {
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role,
+      agentId,
+      sequenceObservedByClient: 1,
+      redis,
+      nowMs,
+    });
+  }
+
+  it("bumps rsvp_at on a pending participant + returns the new ISO", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    const newIso = await heartbeatParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      redis,
+      nowMs: NOW_MS,
+    });
+    expect(newIso).toBe(new Date(NOW_MS).toISOString());
+
+    const guardJson = (await redis.hget(
+      participantsKey(RID_A),
+      "guard",
+    )) as string;
+    const guard = JSON.parse(guardJson);
+    expect(guard.rsvp_at).toBe(new Date(NOW_MS).toISOString());
+    expect(guard.status).toBe("pending");
+  });
+
+  it("does NOT bump the sequence (heartbeats are pure liveness)", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    // Sequence should be 2 after createRoom (room_opened, seq=1) +
+    // presentParticipant (participant_presented, seq=2).
+    const seqBefore = (redis._store.get(seqKey(RID_A)) as number | undefined) ?? 0;
+    expect(seqBefore).toBe(2);
+
+    await heartbeatParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      redis,
+      nowMs: NOW_MS,
+    });
+
+    const seqAfter = (redis._store.get(seqKey(RID_A)) as number | undefined) ?? 0;
+    expect(seqAfter).toBe(2);
+  });
+
+  it("does NOT append an event to the events log", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    const eventsBefore = redis._sortedSets.get(eventsKey(RID_A))?.length ?? 0;
+
+    await heartbeatParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      redis,
+      nowMs: NOW_MS,
+    });
+
+    const eventsAfter = redis._sortedSets.get(eventsKey(RID_A))?.length ?? 0;
+    expect(eventsAfter).toBe(eventsBefore);
+  });
+
+  it("returns null (benign no-op) when participant already withdrew", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    await withdrawParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      sequenceObservedByClient: 2,
+      redis,
+    });
+
+    const result = await heartbeatParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      redis,
+      nowMs: NOW_MS,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when participant already resolved (post-contribute)", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      sequenceObservedByClient: 2,
+      body: { verdict: "APPROVE", summary: "ok" },
+      rawMd: "ok",
+      redis,
+    });
+
+    const result = await heartbeatParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "guard",
+      agentId: "guard-1",
+      redis,
+      nowMs: NOW_MS,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("throws RoomNotFoundError when the room hash is absent", async () => {
+    await expect(
+      heartbeatParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "guard",
+        agentId: "guard-1",
+        redis,
+        nowMs: NOW_MS,
+      }),
+    ).rejects.toThrow(RoomNotFoundError);
+  });
+
+  it("throws RoomTransitionInvalidStatusError when room is `deciding` (not awaiting_contributions)", async () => {
+    await seedRoomWithRsvp("guard", "guard-1");
+    // Force room into deciding via direct hash write — simulates
+    // the queen having claimed.
+    await redis.hset(roomKey("12345", RID_A), { status: "deciding" });
+
+    try {
+      await heartbeatParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "guard",
+        agentId: "guard-1",
+        redis,
+        nowMs: NOW_MS,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomTransitionInvalidStatusError);
+      if (err instanceof RoomTransitionInvalidStatusError) {
+        expect(err.actualStatus).toBe("deciding");
+        expect(err.expectedStatuses).toEqual(["awaiting_contributions"]);
+      }
+    }
+  });
+
+  it("throws RoomParticipantNotFoundError when the role has no slot", async () => {
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    // No /present call — slot doesn't exist.
+
+    await expect(
+      heartbeatParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "guard",
+        agentId: "guard-1",
+        redis,
+        nowMs: NOW_MS,
+      }),
+    ).rejects.toThrow(RoomParticipantNotFoundError);
+  });
+
+  it("throws RoomParticipantOwnerConflictError when agent_id mismatches", async () => {
+    await seedRoomWithRsvp("guard", "guard-runner-A");
+    // Different agent_id (e.g. subscriber-mode runner B) tries to heartbeat
+    try {
+      await heartbeatParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "guard",
+        agentId: "guard-runner-B",
+        redis,
+        nowMs: NOW_MS,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomParticipantOwnerConflictError);
+      if (err instanceof RoomParticipantOwnerConflictError) {
+        expect(err.existingAgentId).toBe("guard-runner-A");
+        expect(err.attemptedAgentId).toBe("guard-runner-B");
+      }
+    }
+  });
+
+  it("rejects malformed roomId at the boundary", async () => {
+    await expect(
+      heartbeatParticipant({
+        installationId: "12345",
+        roomId: "not-a-uuid",
+        role: "guard",
+        agentId: "guard-1",
+        redis,
+        nowMs: NOW_MS,
+      }),
+    ).rejects.toThrow(RoomIdFormatError);
+  });
+
+  it("rejects malformed role at the boundary", async () => {
+    await expect(
+      heartbeatParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "Guard With Spaces",
+        agentId: "guard-1",
+        redis,
+        nowMs: NOW_MS,
+      }),
+    ).rejects.toThrow();
   });
 });

@@ -1070,6 +1070,50 @@ export declare const ROOM_APPEND_EVENT_SCRIPT = "\nif ARGV[2] ~= \"\" then\n  lo
  */
 export declare const ROOM_PARTICIPANT_TRANSITION_SCRIPT = "\nif ARGV[2] ~= \"\" then\n  local existing = redis.call(\"get\", KEYS[3])\n  if existing then return {-1, tonumber(existing)} end\nend\nlocal currStatus = redis.call(\"hget\", KEYS[4], \"status\")\nif not currStatus then return {-3, \"room_not_found\"} end\nif ARGV[7] ~= \"\" then\n  local found = false\n  for s in string.gmatch(ARGV[7], \"[^,]+\") do\n    if s == currStatus then found = true; break end\n  end\n  if not found then return {-2, currStatus} end\nend\nlocal existingP = redis.call(\"hget\", KEYS[5], ARGV[4])\nif not existingP then return {-5, \"no_participant\"} end\nlocal p = cjson.decode(existingP)\nif ARGV[5] == \"1\" and p.agent_id ~= ARGV[6] then\n  return {-4, \"owner_conflict\", p.agent_id}\nend\n-- Participant-state precondition (closes #510 builder R3): each\n-- transition is gated on the participant's current status so a\n-- stale watchdog scan can't run timeout against an already-resolved\n-- slot, and submitContribution can't reach into withdrew/timed_out\n-- slots without a fresh /present.\nif ARGV[13] ~= \"\" then\n  local found = false\n  for s in string.gmatch(ARGV[13], \"[^,]+\") do\n    if s == p.status then found = true; break end\n  end\n  if not found then\n    return {-6, \"participant_state_precondition\", p.status}\n  end\nend\nlocal seq = redis.call(\"incr\", KEYS[1])\nlocal eventJson = string.gsub(ARGV[1], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[2], seq, eventJson)\nif ARGV[2] ~= \"\" then\n  redis.call(\"set\", KEYS[3], tostring(seq), \"EX\", tonumber(ARGV[9]))\nend\nlocal transform = ARGV[10]\nif transform == \"resolve\" then\n  p.status = \"resolved\"\n  p.resolved_at = ARGV[11]\n  p.withdrew_at_sequence = nil\n  redis.call(\"hset\", KEYS[5], ARGV[4], cjson.encode(p))\nelseif transform == \"withdraw\" then\n  p.status = \"withdrew\"\n  p.resolved_at = ARGV[11]\n  p.withdrew_at_sequence = seq\n  redis.call(\"hset\", KEYS[5], ARGV[4], cjson.encode(p))\nelseif transform == \"timeout\" then\n  p.status = \"timed_out\"\n  p.resolved_at = ARGV[11]\n  redis.call(\"hset\", KEYS[5], ARGV[4], cjson.encode(p))\nend\nif ARGV[12] ~= \"\" then\n  redis.call(\"hset\", KEYS[6], ARGV[4], ARGV[12])\nend\nreturn {seq}\n";
 /**
+ * ROOM_PARTICIPANT_HEARTBEAT_SCRIPT — bump a participant's `rsvp_at`
+ * without bumping the sequence or appending an event.
+ *
+ * Per the JOB_LIFECYCLE_UNIFICATION RFC: heartbeats are pure
+ * liveness. They MUST NOT incur sequence increments (which would
+ * trigger the watcher's seen-cache + cause re-dispatch storms at
+ * 45-second intervals) or write to the events log (1h-room × N-
+ * agents × heartbeat-interval = unbounded audit-log inflation).
+ *
+ * Semantics:
+ *   - Room must be in `awaiting_contributions`. Heartbeats while
+ *     `deciding`/`closed`/`expired` are rejected — the agent's work
+ *     is either consumed by the queen or no longer relevant; the
+ *     plugin layer is expected to stop heartbeating on rejection.
+ *   - Participant slot must exist with matching `agent_id`. Defends
+ *     against subscriber-mode-collision (#522) the same way
+ *     /present + /contribute do.
+ *   - Participant status must be `pending`. Heartbeats on
+ *     resolved/withdrew/timed_out participants are no-ops (the
+ *     work is already done or the slot is closed). Returns a
+ *     benign skip code so the plugin can stop heartbeating.
+ *   - On success: HSET on the participant hash with the new
+ *     `rsvp_at` ISO timestamp. No seq, no event, no idempotency
+ *     key.
+ *
+ * KEYS:
+ *   [1] roomKey                  — room hash (status check)
+ *   [2] participantsKey          — participants hash (read + HSET)
+ *
+ * ARGV:
+ *   [1] role                     — participant slot key
+ *   [2] expectedAgentId          — owner-check (#522)
+ *   [3] nowIso                   — new rsvp_at value
+ *
+ * Returns:
+ *   {1, nowIso}                                   success
+ *   {0, "skipped_non_pending", actualPStatus}     benign no-op (already withdrew/resolved/timed_out)
+ *   {-1, "room_not_found"}                        room hash missing
+ *   {-2, currStatus}                              room not in awaiting_contributions
+ *   {-3, "no_participant"}                        participant slot missing
+ *   {-4, "owner_conflict", actualAgentId}         agent_id mismatch
+ */
+export declare const ROOM_PARTICIPANT_HEARTBEAT_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus ~= \"awaiting_contributions\" then\n  return {-2, currStatus}\nend\nlocal existingP = redis.call(\"hget\", KEYS[2], ARGV[1])\nif not existingP then return {-3, \"no_participant\"} end\nlocal p = cjson.decode(existingP)\nif p.agent_id ~= ARGV[2] then\n  return {-4, \"owner_conflict\", p.agent_id}\nend\nif p.status ~= \"pending\" then\n  return {0, \"skipped_non_pending\", p.status}\nend\np.rsvp_at = ARGV[3]\nredis.call(\"hset\", KEYS[2], ARGV[1], cjson.encode(p))\nreturn {1, ARGV[3]}\n";
+/**
  * ROOM_DECIDE_CLAIM_SCRIPT — atomic synthesis claim acquisition.
  *
  * Per WAR_ROOM_DESIGN.md §"Storage layout" + §"Manager loop", a
@@ -1488,6 +1532,40 @@ interface RSVPCommonArgs {
 export declare function presentParticipant(args: RSVPCommonArgs & {
     intentHint?: string;
 }): Promise<number>;
+/**
+ * Worker heartbeat — bumps `rsvp_at` on the participant slot to
+ * indicate "still actively working on this room." Pure liveness:
+ * does NOT bump the sequence and does NOT append to the events log
+ * (per RFC, JOB_LIFECYCLE_UNIFICATION).
+ *
+ * Allowed status: `awaiting_contributions` only. Heartbeats while
+ * the room is `deciding`/`closed`/`expired` are rejected with
+ * `RoomTransitionInvalidStatusError`; the agent's plugin layer is
+ * expected to stop heartbeating on rejection.
+ *
+ * Idempotency: not required at the storage layer. Multiple
+ * heartbeats just keep bumping `rsvp_at`. The Lua script is
+ * atomic, so concurrent heartbeats from the same role + agent_id
+ * cannot leave the participant in a half-written state.
+ *
+ * Returns the new `rsvp_at` ISO string on success, or `null` when
+ * the heartbeat was a benign no-op (participant already
+ * withdrew/resolved/timed_out — caller should stop heartbeating).
+ *
+ * Throws:
+ *   - `RoomNotFoundError` — room hash missing (TTL'd or never existed)
+ *   - `RoomTransitionInvalidStatusError` — room not in `awaiting_contributions`
+ *   - `RoomParticipantNotFoundError` — participant slot missing for this role
+ *   - `RoomParticipantOwnerConflictError` — participant exists but for a different `agent_id`
+ */
+export declare function heartbeatParticipant(args: {
+    installationId: string;
+    roomId: string;
+    role: string;
+    agentId: string;
+    redis: Redis;
+    nowMs?: number;
+}): Promise<string | null>;
 /**
  * Worker withdraws their RSVP. Uses `transitionRoomParticipant` so
  * the existing slot's `agent_id` + `rsvp_at` are preserved and the
