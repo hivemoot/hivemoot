@@ -3,8 +3,11 @@ import {
   ACTIVE_STATUSES,
   countRoomsByFilter,
   hasDiffDriftedPostVerdict,
+  heartbeatFreshnessDotClass,
+  heartbeatFreshnessTitle,
   isActiveStatus,
   isRoomStuck,
+  participantHeartbeatFreshness,
   participantStatusCounts,
   relativeTime,
   relevantDeadlineSecs,
@@ -587,4 +590,124 @@ describe("hasDiffDriftedPostVerdict", () => {
       ).toBe(false);
     },
   );
+});
+
+// ── participantHeartbeatFreshness (PR E of the
+//    JOB_LIFECYCLE_UNIFICATION RFC) ──────────────────────────────────
+
+describe("participantHeartbeatFreshness", () => {
+  // Anchor: pretend it's exactly noon UTC so the boundary tests
+  // produce stable, readable timestamps. The function is pure on
+  // (rsvp_at, status, nowMs) so tests don't need time mocking.
+  const NOW = Date.parse("2026-05-06T12:00:00.000Z");
+
+  function rsvpAt(secondsAgo: number): string {
+    return new Date(NOW - secondsAgo * 1000).toISOString();
+  }
+
+  it("returns inactive for any non-pending status", () => {
+    // Resolved / withdrew / timed_out: heartbeats no longer fire
+    // and rsvp_at is frozen — no liveness signal to derive.
+    for (const status of ["resolved", "withdrew", "timed_out"]) {
+      expect(
+        participantHeartbeatFreshness(
+          { status, rsvp_at: rsvpAt(1) },
+          NOW,
+        ),
+      ).toBe("inactive");
+    }
+  });
+
+  it("returns fresh for pending participant within 90s", () => {
+    // 45s is the default heartbeat interval; just-bumped is fresh.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(10) },
+        NOW,
+      ),
+    ).toBe("fresh");
+    // Right under the 90s threshold.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(89) },
+        NOW,
+      ),
+    ).toBe("fresh");
+  });
+
+  it("returns stale at the 90s boundary", () => {
+    // 90s is "missed at most one heartbeat" — flips to stale.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(90) },
+        NOW,
+      ),
+    ).toBe("stale");
+    // Right under the 5min dead threshold.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(299) },
+        NOW,
+      ),
+    ).toBe("stale");
+  });
+
+  it("returns dead at and beyond the 5min boundary", () => {
+    // 5min: several missed heartbeats. The watchdog times out
+    // around this window too; the dot turning red is meant to
+    // pre-warn an operator before the slot itself goes terminal.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(300) },
+        NOW,
+      ),
+    ).toBe("dead");
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: rsvpAt(3600) },
+        NOW,
+      ),
+    ).toBe("dead");
+  });
+
+  it("returns dead for unparseable rsvp_at on a pending participant", () => {
+    // Defensive: malformed timestamps shouldn't render as
+    // "fresh" by accident. Surface as dead so an operator
+    // notices the data corruption.
+    expect(
+      participantHeartbeatFreshness(
+        { status: "pending", rsvp_at: "not-a-date" },
+        NOW,
+      ),
+    ).toBe("dead");
+  });
+});
+
+describe("heartbeatFreshnessDotClass", () => {
+  it("returns a distinct Tailwind color class per freshness level", () => {
+    // The dot is the at-a-glance liveness signal — the four levels
+    // must map to four visually distinct colors. Exact classes
+    // pinned so a Tailwind upgrade or a typo can't silently fall
+    // through to a default.
+    expect(heartbeatFreshnessDotClass("fresh")).toBe("bg-emerald-400");
+    expect(heartbeatFreshnessDotClass("stale")).toBe("bg-amber-400");
+    expect(heartbeatFreshnessDotClass("dead")).toBe("bg-rose-500");
+    expect(heartbeatFreshnessDotClass("inactive")).toBe("bg-zinc-600");
+  });
+});
+
+describe("heartbeatFreshnessTitle", () => {
+  it("returns a non-empty actionable description for each level", () => {
+    // The title attribute is the operator's tooltip. Empty
+    // strings would render no tooltip at all — pin that every
+    // level has user-facing text.
+    for (const level of ["fresh", "stale", "dead", "inactive"] as const) {
+      const title = heartbeatFreshnessTitle(level);
+      expect(title.length).toBeGreaterThan(10);
+      // Sanity: each tooltip references the underlying mechanism
+      // ("heartbeat" or non-pending status) so the operator
+      // understands WHY the dot is that color.
+      expect(title.toLowerCase()).toMatch(/heartbeat|pending/);
+    }
+  });
 });
