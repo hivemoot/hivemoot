@@ -193,15 +193,24 @@ class PresentToRoomTests(unittest.TestCase):
         self.assertNotIn("intentHint", sent)
 
     def test_raises_on_409_owner_conflict(self) -> None:
+        # PR C of JOB_LIFECYCLE_UNIFICATION reclassifies owner_conflict
+        # as a race (it was previously a generic 409 RuntimeError).
+        # The runtime semantics are correct: a different runner won
+        # the first-wins gate, so retry won't help — the slot isn't
+        # ours and the lifecycle should bail. Same treatment that
+        # heartbeat_room_participant uses, now applied to /present
+        # for parity (closes guard's PR #615 review point about
+        # subscriber-mode asymmetry).
         body = json.dumps({"code": "owner_conflict"}).encode()
         with patch.object(
             hm_http._OPENER, "open", return_value=_fake_response(409, body),
         ):
-            with self.assertRaises(RuntimeError) as cm:
+            with self.assertRaises(wr_api.RoomStateRaceError) as cm:
                 wr_api.present_to_room(
                     "https://api.example", self.ROOM_ID, 1, "tok",
                 )
-        self.assertIn("status 409", str(cm.exception))
+        self.assertEqual(cm.exception.op, "present")
+        self.assertEqual(cm.exception.code, "owner_conflict")
 
     def test_raises_on_response_missing_sequence(self) -> None:
         body = json.dumps({}).encode()
@@ -370,11 +379,13 @@ class RoomStateRaceErrorTests(unittest.TestCase):
                 )
         self.assertEqual(cm.exception.op, "withdraw")
 
-    def test_other_409_codes_still_raise_generic_RuntimeError(self) -> None:
-        # owner_conflict, participant_already_present, etc. are
-        # distinct race classes that the handler treats differently.
-        # They MUST NOT collapse into RoomStateRaceError.
-        body = json.dumps({"code": "owner_conflict"}).encode()
+    def test_unknown_409_code_still_raises_generic_RuntimeError(self) -> None:
+        # Codes the api module doesn't recognize as race-class still
+        # surface as generic RuntimeError so the failure-mode signal
+        # isn't lost. (PR C added owner_conflict to the race set;
+        # this test ensures we don't over-collapse — anything outside
+        # the explicit allowlist remains a generic 409.)
+        body = json.dumps({"code": "participant_already_present"}).encode()
         with patch.object(
             hm_http._OPENER, "open", return_value=_fake_response(409, body),
         ):
