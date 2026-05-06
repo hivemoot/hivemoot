@@ -149,6 +149,7 @@ def handle_war_room_job_finished(
     base_url: str,
     bearer: str,
     extracted_markdown: str,
+    agent_id: Optional[str] = None,
     on_post_failure: Optional[PostFailureCallback] = None,
 ) -> TriageDecision:
     """Parse the agent's response and act on it.
@@ -158,7 +159,18 @@ def handle_war_room_job_finished(
     war-room API. All API failures swallowed-and-logged; this
     function never raises.
 
-    `on_post_failure`, when supplied, is invoked exactly once per
+    ``agent_id`` (added in the PR-E hotfix): the per-runner identity
+    threaded through to ``/present`` so it matches the lifecycle
+    reporter's earlier ``/present`` call. Without this, the lifecycle
+    reporter created the slot at ``agent_id=AGENT_ID`` but this
+    handler's ``/present`` POSTed without ``body.agentId`` — the
+    server fell back to ``bearer.name`` and saw an owner mismatch,
+    raising owner_conflict. Per PR-C's race classification, the
+    handler then treated it as a benign race and silently skipped
+    ``/contribute``. The fix is to pass the same ``agent_id`` to
+    both call sites.
+
+    ``on_post_failure``, when supplied, is invoked exactly once per
     call when the post sequence terminates without successfully
     transitioning participant state — i.e. RSVP failed (and
     therefore the follow-on contribute/withdraw was skipped).
@@ -180,6 +192,7 @@ def handle_war_room_job_finished(
             subject_ref=subject_ref,
             decision=decision,
             result=result,
+            agent_id=agent_id,
             on_post_failure=on_post_failure,
         )
     else:
@@ -190,6 +203,7 @@ def handle_war_room_job_finished(
             current_sequence=current_sequence,
             subject_ref=subject_ref,
             decision=decision,
+            agent_id=agent_id,
             on_post_failure=on_post_failure,
         )
 
@@ -205,6 +219,7 @@ def _do_present_and_contribute(
     subject_ref: str,
     decision: TriageDecision,
     result: AgentResult,
+    agent_id: Optional[str],
     on_post_failure: Optional[PostFailureCallback],
 ) -> None:
     """RSVP via /present, then submit the contribution.
@@ -234,6 +249,7 @@ def _do_present_and_contribute(
             sequence_observed_by_client=current_sequence,
             bearer=bearer,
             intent_hint=decision.summary,
+            agent_id=agent_id,
         )
     except wr_api.RoomStateRaceError as exc:
         # Room moved on between watching → triage → present.  No
@@ -318,6 +334,7 @@ def _do_present_then_withdraw(
     current_sequence: int,
     subject_ref: str,
     decision: TriageDecision,
+    agent_id: Optional[str],
     on_post_failure: Optional[PostFailureCallback],
 ) -> None:
     """RSVP via /present, then withdraw via /withdraw.
@@ -343,6 +360,7 @@ def _do_present_then_withdraw(
             sequence_observed_by_client=current_sequence,
             bearer=bearer,
             intent_hint=decision.reason,
+            agent_id=agent_id,
         )
     except wr_api.RoomStateRaceError as exc:
         # See `_do_present_and_contribute` for the rationale: the
