@@ -152,7 +152,12 @@ function RoomDetailContent({
             <span className="font-mono">{core.subject_ref}</span>
           )}
         </h1>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-500">
+        {/* `grid-cols-[auto_1fr]` keeps the label column at its
+            content width so values sit right next to their labels
+            instead of being pushed to the far right of the page
+            (which `grid-cols-2`'s 50/50 split caused on wide
+            viewports). */}
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-zinc-500">
           <dt>Room ID</dt>
           <dd className="font-mono text-zinc-400">{roomId}</dd>
           <dt>Manager</dt>
