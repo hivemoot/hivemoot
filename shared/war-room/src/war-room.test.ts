@@ -39,6 +39,7 @@ import {
   RoomIdFormatError,
   RoomIdTakenError,
   recordPostCloseDrift,
+  terminateRoom,
   type RoomCore,
   type RoomCoreData,
 } from "./war-room";
@@ -529,12 +530,13 @@ function makeMockRedis() {
         getSet(statusAwaitingRsvpK).delete(roomId);
         getSet(statusAwaitingContribK).delete(roomId);
         getSet(statusDecidingK).delete(roomId);
-        // installation index is a sorted set — emulate ZREM
-        const installSet = sortedSets.get(installK);
-        if (installSet) {
-          const idx = installSet.findIndex((e) => e.member === roomId);
-          if (idx !== -1) installSet.splice(idx, 1);
-        }
+        // installation index is intentionally NOT pruned here.
+        // Closed rooms remain in the installation index for the
+        // dashboard's "Active and past" listing; listRooms's
+        // orphan-cleanup ZREMs the entry once the hash TTL expires.
+        // Mirrors the production Lua script (which omits the ZREM
+        // for the same reason).
+        void installK;
         getSet(repoK).delete(roomId);
         // EXPIRE intentionally ignored — TTL not simulated
         void retentionSecs;
@@ -622,11 +624,9 @@ function makeMockRedis() {
         store.delete(claimK);
         store.delete(subjectIdxK);
         getSet(statusFromK).delete(roomId);
-        const installSet = sortedSets.get(installK);
-        if (installSet) {
-          const idx = installSet.findIndex((e) => e.member === roomId);
-          if (idx !== -1) installSet.splice(idx, 1);
-        }
+        // installation index intentionally NOT pruned — same
+        // dashboard-listability rationale as ROOM_TERMINATE_SCRIPT.
+        void installK;
         getSet(repoK).delete(roomId);
         void retentionSecs;
         return [1, closedSeq];
@@ -1594,6 +1594,91 @@ describe("listRooms", () => {
     expect(rooms12345).toHaveLength(1);
     expect(rooms67890).toHaveLength(1);
     expect(rooms12345[0].manager).toBe("bot-queen");
+  });
+
+  it("closed/expired rooms remain listable until hash TTL expires", async () => {
+    // The dashboard surfaces "Active and past governance synthesis
+    // rooms"; a previous version of ROOM_TERMINATE_SCRIPT ZREM'd
+    // closed rooms from the installation index, making the "past"
+    // half of that promise unfulfilled — operators saw an empty
+    // list even when they had recently-decided rooms. This test
+    // pins the contract: a terminated room stays in listRooms
+    // output (with status="closed") so the dashboard can render it.
+    let now = Date.now();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#1" },
+      redis,
+      nowMs: now,
+    });
+    now += 1000;
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_B,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#2" },
+      redis,
+      nowMs: now,
+    });
+
+    // Terminate room A (e.g. expired by the watchdog). Hash + index
+    // remain — only the secondary status / subject / repo indexes
+    // get cleaned. Room B stays active.
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "expired",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#1" },
+      actorRole: "system",
+      actorId: "watchdog",
+      redis,
+    });
+
+    const rooms = await listRooms({ installationId: "12345", redis });
+    // BOTH rooms appear — the previously-listable behaviour for the
+    // active one PLUS the dashboard-listability fix for the closed one.
+    expect(rooms).toHaveLength(2);
+    const rA = rooms.find((r) => r.roomId === RID_A);
+    const rB = rooms.find((r) => r.roomId === RID_B);
+    expect(rA?.status).toBe("closed");
+    expect(rA?.closed_reason).toBe("expired");
+    expect(rB?.status).toBe("awaiting_contributions");
+  });
+
+  it("orphan-cleanup still GCs entries after the hash TTL expires", async () => {
+    // Counterpart to the test above: keeping closed rooms in the
+    // index doesn't mean the index grows forever. Once the room
+    // hash itself expires (retentionSecs), listRooms's existing
+    // self-heal pass ZREMs the now-stale entry on the next read.
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#1" },
+      redis,
+    });
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "expired",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#1" },
+      actorRole: "system",
+      actorId: "watchdog",
+      redis,
+    });
+    // Simulate the post-retention TTL sweep — the room hash is gone
+    // but the index entry survives that step.
+    await redis.del(roomKey("12345", RID_A));
+    const indexedBefore = redis._sortedSets.get(installationIndexKey("12345"));
+    expect(indexedBefore?.length).toBe(1);
+
+    const rooms = await listRooms({ installationId: "12345", redis });
+    expect(rooms).toEqual([]);
+    // Lazy GC fired on the next read.
+    const indexedAfter = redis._sortedSets.get(installationIndexKey("12345"));
+    expect(indexedAfter).toEqual([]);
   });
 });
 
@@ -4064,7 +4149,7 @@ import {
   ROOM_TERMINATE_SCRIPT,
   ROOM_CLOSE_SCRIPT,
   validateRunnerFormat,
-  terminateRoom,
+  // terminateRoom is imported in the top-level block (line ~43).
   closeRoomWithDecision,
   RoomAlreadyClosedError,
   RoomCloseClaimLostError,
@@ -4089,8 +4174,13 @@ describe("D.1.a-iii.c ROOM_TERMINATE_SCRIPT source", () => {
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[3], ARGV[1])');
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[4], ARGV[1])');
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[5], ARGV[1])');
-    // ZREM from installation index (closes Queen R2 #2)
-    expect(ROOM_TERMINATE_SCRIPT).toContain("zrem");
+    // The installation index entry is INTENTIONALLY NOT ZREM'd on
+    // terminate — closed rooms remain listable for the dashboard's
+    // "Active and past governance synthesis rooms" surface. The
+    // orphan-cleanup in listRooms ZREMs stale entries lazily once
+    // the room hash TTL expires (~30 days). Pin the absence so a
+    // future revert can't silently re-introduce the bug.
+    expect(ROOM_TERMINATE_SCRIPT).not.toContain("zrem");
     // Sibling TTL (closes Queen R2 #1)
     expect(ROOM_TERMINATE_SCRIPT).toContain("expire");
     // First-match gsub (closes #510 guard B1)
@@ -4112,6 +4202,11 @@ describe("D.1.a-iii.c ROOM_CLOSE_SCRIPT source", () => {
     expect(ROOM_CLOSE_SCRIPT).toContain(", 1)");
     // Sibling TTL on close
     expect(ROOM_CLOSE_SCRIPT).toContain("expire");
+    // Same dashboard-listability invariant as ROOM_TERMINATE_SCRIPT:
+    // installation index entry is NOT ZREM'd on close. listRooms's
+    // orphan-cleanup collects stale entries lazily once the hash
+    // TTL expires.
+    expect(ROOM_CLOSE_SCRIPT).not.toContain("zrem");
   });
 });
 

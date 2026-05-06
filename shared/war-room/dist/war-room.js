@@ -45,9 +45,14 @@ const IDEM_PREFIX = ":idem:";
 export const DEFAULT_MAX_AGE_SECS = 3600;
 /**
  * Retention window after a room closes. The room hash + sibling keys
- * are TTL'd to this; secondary indexes are explicitly cleaned (see
- * Queen R2 #2 — closed rooms must be ZREM'd from the installation
- * index, not just removed from the status set).
+ * are TTL'd to this; status-set / per-repo / subject-lock secondary
+ * indexes are explicitly cleaned on close. The **installation
+ * index** is intentionally NOT cleaned on close — closed rooms
+ * remain listable for the duration of this retention window so
+ * the dashboard's "Active and past governance synthesis rooms"
+ * surface can show recently-decided work. Once the room hash
+ * expires, ``listRooms``'s built-in orphan-cleanup ZREMs the
+ * stale index entry on the next read.
  */
 export const ROOM_RETENTION_AFTER_CLOSE_SECS = 30 * 24 * 60 * 60;
 // ---------------------------------------------------------------------------
@@ -1628,8 +1633,12 @@ return {1, seq}
  *   6. SREM from ALL non-terminal status sets idempotently (closes
  *      #515 builder R1: a stale caller-supplied `currentStatus` could
  *      race a concurrent `claimSynthesis` and SREM the wrong set,
- *      leaving phantom membership in the live status set). ZREM/SREM
- *      from installation + per-repo indexes (closes Queen R2 #2 / M3).
+ *      leaving phantom membership in the live status set). SREM
+ *      from per-repo index. The installation index entry stays —
+ *      closed rooms must remain listable for the dashboard's
+ *      "Active and past governance synthesis rooms" surface; the
+ *      orphan cleanup in listRooms ZREMs the entry lazily once
+ *      the hash TTL expires.
  *   7. EXPIRE all sibling keys at retentionSecs (closes Queen R2 #1
  *      — TTL leak)
  *
@@ -1675,7 +1684,14 @@ redis.call("del", KEYS[2])
 redis.call("srem", KEYS[3], ARGV[1])
 redis.call("srem", KEYS[4], ARGV[1])
 redis.call("srem", KEYS[5], ARGV[1])
-redis.call("zrem", KEYS[6], ARGV[1])
+-- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.
+-- Closed rooms remain in the installation index so the dashboard's
+-- "Active and past governance synthesis rooms" surface can list them
+-- for the retention window (30 days). The room hash itself TTL's via
+-- KEYS[1] expire below; once that fires, listRooms's built-in
+-- orphan-cleanup pass ZREMs the now-stale index entry on the next
+-- read. /watching filters by status server-side, so closed rooms
+-- still don't surface to agent dispatch.
 redis.call("srem", KEYS[7], ARGV[1])
 local retention = tonumber(ARGV[4])
 redis.call("expire", KEYS[1], retention)
@@ -1712,7 +1728,10 @@ return {1, seq}
  *   - ZADD the closed event at the new sequence
  *   - SET seq counter to new sequence (so post-close reads are stable)
  *   - DEL claim, subject index
- *   - SREM/ZREM/SREM from deciding-status, installation, repo indexes
+ *   - SREM from deciding-status + per-repo indexes (the
+ *     installation index entry stays for dashboard listability;
+ *     listRooms's orphan-cleanup collects it lazily once the hash
+ *     TTL expires — same convention as ROOM_TERMINATE_SCRIPT).
  *   - EXPIRE all siblings at retentionSecs
  *
  * KEYS:
@@ -1777,7 +1796,11 @@ redis.call("set", KEYS[3], tostring(closedSeq))
 redis.call("del", KEYS[2])
 redis.call("del", KEYS[6])
 redis.call("srem", KEYS[4], ARGV[1])
-redis.call("zrem", KEYS[10], ARGV[1])
+-- KEYS[10] (installationIndexKey) is intentionally NOT ZREM'd here.
+-- Same rationale as ROOM_TERMINATE_SCRIPT: closed rooms stay in the
+-- installation index for the retention window so the dashboard
+-- can list past synthesis rooms. listRooms's orphan-cleanup
+-- collects stale entries lazily after the hash TTL expires.
 redis.call("srem", KEYS[11], ARGV[1])
 local retention = tonumber(ARGV[6])
 redis.call("expire", KEYS[1], retention)

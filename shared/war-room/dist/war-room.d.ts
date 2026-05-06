@@ -31,9 +31,14 @@ export declare const ROOM_PREFIX = "hive:v1:room:";
 export declare const DEFAULT_MAX_AGE_SECS = 3600;
 /**
  * Retention window after a room closes. The room hash + sibling keys
- * are TTL'd to this; secondary indexes are explicitly cleaned (see
- * Queen R2 #2 — closed rooms must be ZREM'd from the installation
- * index, not just removed from the status set).
+ * are TTL'd to this; status-set / per-repo / subject-lock secondary
+ * indexes are explicitly cleaned on close. The **installation
+ * index** is intentionally NOT cleaned on close — closed rooms
+ * remain listable for the duration of this retention window so
+ * the dashboard's "Active and past governance synthesis rooms"
+ * surface can show recently-decided work. Once the room hash
+ * expires, ``listRooms``'s built-in orphan-cleanup ZREMs the
+ * stale index entry on the next read.
  */
 export declare const ROOM_RETENTION_AFTER_CLOSE_SECS: number;
 export declare function roomKey(installationId: string, roomId: string): string;
@@ -1223,8 +1228,12 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   6. SREM from ALL non-terminal status sets idempotently (closes
  *      #515 builder R1: a stale caller-supplied `currentStatus` could
  *      race a concurrent `claimSynthesis` and SREM the wrong set,
- *      leaving phantom membership in the live status set). ZREM/SREM
- *      from installation + per-repo indexes (closes Queen R2 #2 / M3).
+ *      leaving phantom membership in the live status set). SREM
+ *      from per-repo index. The installation index entry stays —
+ *      closed rooms must remain listable for the dashboard's
+ *      "Active and past governance synthesis rooms" surface; the
+ *      orphan cleanup in listRooms ZREMs the entry lazily once
+ *      the hash TTL expires.
  *   7. EXPIRE all sibling keys at retentionSecs (closes Queen R2 #1
  *      — TTL leak)
  *
@@ -1253,7 +1262,7 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   {1, sequence}             terminated cleanly
  *   {-1, currentStatus}       already closed (no-op for operator double-tap)
  */
-export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[12])\nlocal seq = redis.call(\"incr\", KEYS[8])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[9], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\nredis.call(\"zrem\", KEYS[6], ARGV[1])\nredis.call(\"srem\", KEYS[7], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nreturn {1, seq}\n";
+export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[12])\nlocal seq = redis.call(\"incr\", KEYS[8])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[9], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\n-- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Closed rooms remain in the installation index so the dashboard's\n-- \"Active and past governance synthesis rooms\" surface can list them\n-- for the retention window (30 days). The room hash itself TTL's via\n-- KEYS[1] expire below; once that fires, listRooms's built-in\n-- orphan-cleanup pass ZREMs the now-stale index entry on the next\n-- read. /watching filters by status server-side, so closed rooms\n-- still don't surface to agent dispatch.\nredis.call(\"srem\", KEYS[7], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nreturn {1, seq}\n";
 /**
  * ROOM_CLOSE_SCRIPT — queen happy-path close with sequence-consistency.
  *
@@ -1281,7 +1290,10 @@ export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"
  *   - ZADD the closed event at the new sequence
  *   - SET seq counter to new sequence (so post-close reads are stable)
  *   - DEL claim, subject index
- *   - SREM/ZREM/SREM from deciding-status, installation, repo indexes
+ *   - SREM from deciding-status + per-repo indexes (the
+ *     installation index entry stays for dashboard listability;
+ *     listRooms's orphan-cleanup collects it lazily once the hash
+ *     TTL expires — same convention as ROOM_TERMINATE_SCRIPT).
  *   - EXPIRE all siblings at retentionSecs
  *
  * KEYS:
@@ -1313,7 +1325,7 @@ export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"
  *                                                    different runner re-claimed
  *   {-3, "decode_error"}                             claim payload corruption
  */
-export declare const ROOM_CLOSE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  -- Drift: new events arrived during synthesis. Revert atomically\n  -- (closes design B2: prior implementation orphaned rooms from\n  -- both deciding and awaiting_contributions sets, making them\n  -- invisible to subsequent ticks).\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[7], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[3], tostring(closedSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"del\", KEYS[6])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"zrem\", KEYS[10], ARGV[1])\nredis.call(\"srem\", KEYS[11], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[3], retention)\nredis.call(\"expire\", KEYS[7], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nreturn {1, closedSeq}\n";
+export declare const ROOM_CLOSE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  -- Drift: new events arrived during synthesis. Revert atomically\n  -- (closes design B2: prior implementation orphaned rooms from\n  -- both deciding and awaiting_contributions sets, making them\n  -- invisible to subsequent ticks).\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[7], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[3], tostring(closedSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"del\", KEYS[6])\nredis.call(\"srem\", KEYS[4], ARGV[1])\n-- KEYS[10] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Same rationale as ROOM_TERMINATE_SCRIPT: closed rooms stay in the\n-- installation index for the retention window so the dashboard\n-- can list past synthesis rooms. listRooms's orphan-cleanup\n-- collects stale entries lazily after the hash TTL expires.\nredis.call(\"srem\", KEYS[11], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[3], retention)\nredis.call(\"expire\", KEYS[7], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nreturn {1, closedSeq}\n";
 /**
  * Validate role at the BODY boundary. Distinct from the internal
  * `assertRoleFormat` — this version is for caller-supplied role
