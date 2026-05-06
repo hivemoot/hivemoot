@@ -212,6 +212,91 @@ export function stucknessRatio(
   return ageSecs / deadline;
 }
 
+/**
+ * Human-friendly "expires in 57m" string for an active room. Pure
+ * function so the rooms-list view can render without time mocking.
+ *
+ * Returns ``null`` when no deadline applies (terminal status, no
+ * timing_config, etc.) so callers can omit the indicator instead
+ * of rendering empty/garbage strings. Returns "expired" for rooms
+ * past their deadline (the watchdog typically sweeps these within
+ * one tick; the marker is the bridge state).
+ */
+export function timeUntilDeadline(
+  openedAtIso: string,
+  status: RoomStatus,
+  timingConfig?: StuckTimingConfig,
+  nowMs: number = Date.now(),
+): string | null {
+  const deadlineSecs = relevantDeadlineSecs(status, timingConfig);
+  if (deadlineSecs === null || deadlineSecs <= 0) return null;
+  const openedMs = Date.parse(openedAtIso);
+  if (!Number.isFinite(openedMs)) return null;
+  const remainingSecs =
+    deadlineSecs - Math.max(0, (nowMs - openedMs) / 1000);
+  if (remainingSecs <= 0) return "expired";
+  if (remainingSecs < 60) return `${Math.floor(remainingSecs)}s left`;
+  const mins = Math.floor(remainingSecs / 60);
+  if (mins < 60) return `${mins}m left`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h left`;
+  const days = Math.floor(hours / 24);
+  return `${days}d left`;
+}
+
+/** Recognized verdict strings the queen can synthesize. Mirrors the
+ * Zod enum on the synthesizer side so the dashboard's pill colors
+ * stay in sync with the structural enum. */
+export type Verdict =
+  | "APPROVE"
+  | "COMMENT"
+  | "CONCERNS"
+  | "REQUEST_CHANGES";
+
+const _VERDICT_VALUES: ReadonlySet<string> = new Set([
+  "APPROVE",
+  "COMMENT",
+  "CONCERNS",
+  "REQUEST_CHANGES",
+]);
+
+/**
+ * Extract the verdict from a decision's markdown body. The queen's
+ * synthesizer template starts each comment with the line
+ * ``**Verdict:** `<VERDICT>`'' followed by parenthesized provenance
+ * — a single regex captures the value without needing to parse
+ * the rest.
+ *
+ * Returns ``null`` when the content doesn't match the template
+ * (older rooms, custom synthesizers, etc.) so the caller can fall
+ * back to a generic "decided" pill instead of rendering garbage.
+ */
+export function extractDecisionVerdict(content: string): Verdict | null {
+  const match = /\*\*Verdict:\*\*\s*`?([A-Z_]+)`?/i.exec(content);
+  if (!match) return null;
+  const candidate = match[1].toUpperCase();
+  return _VERDICT_VALUES.has(candidate) ? (candidate as Verdict) : null;
+}
+
+/**
+ * Tailwind class fragment for a verdict pill. Centralized so the
+ * rooms-list and the room-detail synthesis surfaces stay visually
+ * consistent. Matches the dashboard's status-pill vocabulary —
+ * emerald for approve, amber for caution, rose for blocking.
+ */
+export function verdictPillClass(verdict: Verdict): string {
+  switch (verdict) {
+    case "APPROVE":
+      return "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/20";
+    case "COMMENT":
+      return "bg-zinc-500/10 text-zinc-300 ring-1 ring-zinc-500/20";
+    case "CONCERNS":
+      return "bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/20";
+    case "REQUEST_CHANGES":
+      return "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/20";
+  }
+}
+
 /** Per WAR_ROOM_DESIGN.md L1248: red highlight when past 80% of
  * the relevant deadline. */
 export const STUCK_THRESHOLD = 0.8;

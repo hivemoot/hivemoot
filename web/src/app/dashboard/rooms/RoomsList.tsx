@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   countRoomsByFilter,
+  extractDecisionVerdict,
   hasDiffDriftedPostVerdict,
   isRoomStuck,
   relativeTime,
@@ -14,6 +15,8 @@ import {
   statusLabel,
   statusPillClass,
   subjectLabel,
+  timeUntilDeadline,
+  verdictPillClass,
   type RoomStatusFilter,
 } from "./room-helpers";
 import type { RoomCoreWithId } from "./types";
@@ -320,6 +323,21 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
         ? ` (head ${room.last_post_close_drift_head_sha.slice(0, 7)})`
         : "")
     : undefined;
+  // Verdict pill for decided rooms — extracted from the queen's
+  // synthesis content. Falls back to ``null`` when the decision
+  // doesn't match the synthesizer template; we render a plain
+  // "closed" badge in that case rather than guessing.
+  const verdict = room.decision
+    ? extractDecisionVerdict(room.decision.content)
+    : null;
+  // Countdown for active rooms — gives operators a sense of urgency
+  // before the "near deadline" red badge kicks in. Null for terminal
+  // statuses (no deadline applies once a room is closed/expired).
+  const timeLeft = timeUntilDeadline(
+    room.opened_at,
+    room.status,
+    room.timing_config,
+  );
   return (
     <li className={stuckHighlight}>
       <Link
@@ -333,6 +351,14 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
             >
               {statusLabel(room.status)}
             </span>
+            {verdict && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${verdictPillClass(verdict)}`}
+                title="Verdict from the queen's synthesis"
+              >
+                {verdict}
+              </span>
+            )}
             {stuck && (
               <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-300 ring-1 ring-red-500/30">
                 near deadline
@@ -355,6 +381,16 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
           </div>
           <span className="text-xs text-zinc-500">
             opened {relativeTime(room.opened_at)}
+            {timeLeft && (
+              // Subtle visual cue: green when there's plenty of time,
+              // red once we cross into stuck territory. Operators
+              // already have the "near deadline" pill but the
+              // countdown gives the WHEN, not just the IF.
+              <span className={stuck ? "text-red-400" : "text-zinc-400"}>
+                {" · "}
+                {timeLeft}
+              </span>
+            )}
             {room.closed_at && ` · closed ${relativeTime(room.closed_at)}`}
           </span>
         </div>
