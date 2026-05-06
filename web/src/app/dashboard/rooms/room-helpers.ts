@@ -295,6 +295,91 @@ export function sortRoomsByStuckness<
 }
 
 /**
+ * Liveness classification for a participant's last-seen timestamp,
+ * driven by the heartbeat endpoint that bumps ``rsvp_at`` every
+ * ``heartbeat_interval`` seconds (PRs A + C of the
+ * JOB_LIFECYCLE_UNIFICATION RFC).
+ *
+ * * ``fresh`` — pending participant with rsvp_at within ~2 heartbeat
+ *   intervals (90s). Agent is actively heartbeating.
+ * * ``stale`` — pending participant with rsvp_at 90s–5min old.
+ *   Possibly slow agent; one or two missed heartbeats.
+ * * ``dead`` — pending participant with rsvp_at >5min old. Several
+ *   missed heartbeats; agent is likely stalled. The watchdog will
+ *   typically time the slot out around the same threshold.
+ * * ``inactive`` — non-pending statuses (resolved / withdrew /
+ *   timed_out). Heartbeats no longer fire; rsvp_at is frozen at
+ *   the last update. No freshness signal needed.
+ */
+export type ParticipantHeartbeatFreshness =
+  | "fresh"
+  | "stale"
+  | "dead"
+  | "inactive";
+
+const FRESH_THRESHOLD_MS = 90 * 1000;     // 2× the 45s default interval
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5min — beyond this, agent is gone
+
+/**
+ * Classify a participant's heartbeat liveness. Pure function so the
+ * test suite can pin the boundaries without time mocking. Default
+ * ``nowMs`` mirrors ``relativeTime`` for ergonomics.
+ */
+export function participantHeartbeatFreshness(
+  participant: { rsvp_at: string; status: string },
+  nowMs: number = Date.now(),
+): ParticipantHeartbeatFreshness {
+  if (participant.status !== "pending") return "inactive";
+  const t = Date.parse(participant.rsvp_at);
+  if (!Number.isFinite(t)) return "dead";
+  const ageMs = nowMs - t;
+  if (ageMs < FRESH_THRESHOLD_MS) return "fresh";
+  if (ageMs < STALE_THRESHOLD_MS) return "stale";
+  return "dead";
+}
+
+/**
+ * Tailwind classes for the heartbeat-freshness indicator dot.
+ * Centralized so the room detail view + any future surfacings (the
+ * rooms list, etc.) render consistent colors.
+ */
+export function heartbeatFreshnessDotClass(
+  freshness: ParticipantHeartbeatFreshness,
+): string {
+  switch (freshness) {
+    case "fresh":
+      return "bg-emerald-400";
+    case "stale":
+      return "bg-amber-400";
+    case "dead":
+      return "bg-rose-500";
+    case "inactive":
+      return "bg-zinc-600";
+  }
+}
+
+/**
+ * Human-readable tooltip text for a freshness classification.
+ * Surfaces the rationale ("agent is actively heartbeating", etc.)
+ * so operators understand what the colored dot means without
+ * leaving the page.
+ */
+export function heartbeatFreshnessTitle(
+  freshness: ParticipantHeartbeatFreshness,
+): string {
+  switch (freshness) {
+    case "fresh":
+      return "Agent is actively heartbeating (≤90s since last ping)";
+    case "stale":
+      return "Agent's last heartbeat was 90s–5min ago — possibly slow";
+    case "dead":
+      return "No heartbeat in >5min — agent is likely stalled";
+    case "inactive":
+      return "Participant is not pending — heartbeats no longer fire";
+  }
+}
+
+/**
  * Format an ISO 8601 timestamp as a human-readable relative time
  * ("3m ago", "2h ago"). Returns absolute date for >7d ago.
  */

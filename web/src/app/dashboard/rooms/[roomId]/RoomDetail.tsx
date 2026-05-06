@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
+  heartbeatFreshnessDotClass,
+  heartbeatFreshnessTitle,
+  participantHeartbeatFreshness,
   participantStatusCounts,
   relativeTime,
   statusLabel,
@@ -232,22 +235,38 @@ function ParticipantsTable({
           <th className="py-1 pr-4">Role</th>
           <th className="py-1 pr-4">Agent</th>
           <th className="py-1 pr-4">Status</th>
-          <th className="py-1">RSVP&apos;d</th>
+          {/* Renamed from "RSVP'd" — heartbeats now bump rsvp_at every
+              ~45s for pending participants (PRs A + C of the
+              JOB_LIFECYCLE_UNIFICATION RFC), so the column reflects
+              ongoing liveness, not just the initial RSVP. */}
+          <th className="py-1">Heartbeat</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-white/5">
-        {rows.map(([role, p]) => (
-          <tr key={role}>
-            <td className="py-1.5 pr-4 font-medium text-zinc-200">{role}</td>
-            <td className="py-1.5 pr-4 font-mono text-xs text-zinc-400">
-              {p.agent_id}
-            </td>
-            <td className="py-1.5 pr-4 text-zinc-300">{p.status}</td>
-            <td className="py-1.5 text-xs text-zinc-500">
-              {relativeTime(p.rsvp_at)}
-            </td>
-          </tr>
-        ))}
+        {rows.map(([role, p]) => {
+          const freshness = participantHeartbeatFreshness(p);
+          return (
+            <tr key={role}>
+              <td className="py-1.5 pr-4 font-medium text-zinc-200">{role}</td>
+              <td className="py-1.5 pr-4 font-mono text-xs text-zinc-400">
+                {p.agent_id}
+              </td>
+              <td className="py-1.5 pr-4 text-zinc-300">{p.status}</td>
+              <td className="py-1.5 text-xs text-zinc-500">
+                <span
+                  className="inline-flex items-center gap-1.5"
+                  title={heartbeatFreshnessTitle(freshness)}
+                >
+                  <span
+                    aria-label={`heartbeat ${freshness}`}
+                    className={`inline-block h-2 w-2 rounded-full ${heartbeatFreshnessDotClass(freshness)}`}
+                  />
+                  {relativeTime(p.rsvp_at)}
+                </span>
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
