@@ -67,18 +67,18 @@ Out of scope for v1: `request_changes`, `dismiss_review`, label management, bran
 
 > **Per D2/D3: the prompt produces structured outputs validated by Zod schemas. The 3-layer verdict stack runs unchanged. Codex's text output is for prose only.**
 
-The hive queen makes **two** `generateObject` calls in sequence:
+The hive queen makes **one** server call for the verdict, then **one** local `generateObject` for action recommendation. Verdict ownership stays server-side (G1: single source of truth); only action recommendation is local LLM work.
 
 ```
-1. Verdict derivation (D3 — preserves existing 3-layer stack)
-   model.generateObject({
-     schema: DerivedVerdictSchema,   // existing — z.enum APPROVE/COMMENT/CONCERNS/REQUEST_CHANGES
-     system: <verdict-derivation system prompt — same as cloud>,
-     prompt: <room contributions wrapped in <untrusted-content> delimiters>
-   })
-   → { verdict: "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES" }
+1. Verdict derivation (D3 — server endpoint owns the 3-layer stack)
+   POST /api/rooms/:id/derive-verdict
+     → { verdict: "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES",
+         source: "structural_floor" | "llm_derived" }
+   The endpoint runs the existing aggregateWorkerVerdicts →
+   deriveVerdictFromContributions pipeline. The local agent does NOT
+   make a generateObject call for the verdict.
 
-2. Action recommendation (D2 — new schema, advisory only)
+2. Action recommendation (D2 — local generateObject, advisory only)
    model.generateObject({
      schema: RecommendedActionSchema,   // new — z.enum comment/squash-merge
      system: <action-recommendation system prompt with judgment guidelines>,
@@ -291,11 +291,11 @@ Same `messaging-telegram` agent (or a separate `hivemoot-queen` apiary service) 
 
 ### D6 boundary: server-side dispatcher, not literal code sharing
 
-D6's "shared module callable from both" was imprecise — TypeScript bot/web code is not directly callable from the Python agent runtime (separate processes, different language). The actual boundary is the new `POST /api/rooms/:id/resolve-action` + `POST /api/rooms/:id/seal-decision` endpoint pair (server-side TypeScript): both modes hit them. Together they own:
+D6's "shared module callable from both" was imprecise — TypeScript bot/web code is not directly callable from the Python agent runtime (separate processes, different language). The actual boundary is the new `POST /api/rooms/:id/resolve-action` + `POST /api/rooms/:id/seal-decision` endpoint pair (server-side TypeScript). **Only the local-mode path hits this pair**; cloud queen continues on its existing `decide` + `close-with-decision` route per G18. The pair owns:
 
 - D1's invariant check (server reads label/CI/SHA/drift fresh from GitHub at decision time)
 - D6's failure ordering branch (`comment` follows today's flow; `squash-merge` is rejected at this endpoint if invariants fail — the agent then independently runs `gh pr merge`)
-- D7's audit event write (single source of truth for action records)
+- D7's audit event write (single source of truth for action records on the local-mode path)
 - G2's `queen.action_downgrade` event when `chosen_action != permitted_action`
 
 **The two modes use different endpoints with different capabilities, by design (D14, G18):**
@@ -382,7 +382,7 @@ This split — `resolve-action` returns the permitted action, then `seal-decisio
 | 1 | Settings storage: `hive:v1:installation:<id>:queen-settings` Redis hash (the BYOK envelope at `hive:byok:{installationId}` is unchanged; this RFC explicitly does not relocate it), operator-session GET/POST endpoints, Probot 60s TTL cache (D15 + G7 default-to-cloud on Redis-down) | Yes — no reader yet |
 | 2 | Cloud-side mode skip: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run D8's observer pass (read-only `listRooms`, emit "rooms-stuck-older-than-N-min" metric per G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
 | 3 | New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `derive-verdict`, `resolve-action`, `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` + `rooms.watch` from other presets, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). D1 invariant check + G2 `queen.action_downgrade` audit event in `resolve-action`. D6 failure-ordering split: `resolve-action` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. Rate caps on `rooms.create` (D11). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
-| 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two structured `generateObject` calls (D2: action via Zod schema, D3: verdict via cloud endpoint). Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
+| 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). HTTP call to `derive-verdict` (D3, server owns verdict) + one local `generateObject` for action recommendation (D2, Zod-validated). Calls `resolve-action` + `seal-decision` (D6) for invariant enforcement and state transitions. Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
 | 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured override config UI (D12). Confirmation step on mode-flip surfaces D9 + G6's blocking conditions. | Depends on PR 1 |
 | 6 | Move BYOK UI from `/credentials` to `/settings/byok` (cosmetic; redirect old path). **Storage key NOT relocated** — only the dashboard route moves. | Independent |
 
@@ -436,11 +436,7 @@ If any fail, the endpoint returns `permitted_action: "comment"` AND writes a str
 **Asymmetry to lock down (G18):** D1's invariant check lives only at `resolve-action`. Cloud queen's existing flow (using `decide` + `close-with-decision` capabilities for the historical comment-only path) does NOT invoke `resolve-action` and therefore does NOT inherit D1. This is safe today because **cloud queen's action surface is comment-only — no merge, no irreversible actions**. Pinned as an invariant: any irreversible action (squash-merge, label management, branch deletion, etc.) MUST go through `resolve-action` regardless of which mode is requesting it. Cloud queen cannot evolve to support merge without first routing through the new endpoint pair. A future RFC that touches this should re-open D1 explicitly.
 
 **D2 — Action enum is Zod-validated `generateObject`, not parsed from prose.**
-Drone: *"the action enum should get the same structural treatment as the verdict enum."* The hive queen makes two `generateObject` calls in sequence:
-1. Verdict via existing `DerivedVerdictSchema` (`z.enum(["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"])`)
-2. Action via new `RecommendedActionSchema` (`z.enum(["comment", "squash-merge"])`)
-
-Action is then validated against D1's invariants by the dispatcher. No action verb is ever parsed from text output.
+Drone: *"the action enum should get the same structural treatment as the verdict enum."* The hive queen runs **one** local `generateObject` call for action recommendation, validated by the new `RecommendedActionSchema` (`z.enum(["comment", "squash-merge"])`). Verdict derivation is owned by the server-side `derive-verdict` endpoint per D3/G1, so the existing `DerivedVerdictSchema` (`z.enum(["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"])`) is enforced inside the cloud, not re-run locally. The recommendation is then validated against D1's invariants by `resolve-action`. No action verb is ever parsed from text output.
 
 **D3 — Verdict stack preserved.**
 Drone: *"the local queen doesn't have to throw away the verdict stack."* The 3-layer pipeline (`aggregateWorkerVerdicts` → `deriveVerdictFromContributions` → prose synthesis) runs in local mode the same way it runs in cloud mode. The Python agent calls the cloud-side verdict-derivation endpoints rather than reimplementing them — preserves a single source of truth for the verdict logic and keeps schema changes from drifting between modes.
@@ -541,13 +537,13 @@ Future work (out of scope for v1): a degraded mode where cloud retains webhook-d
 
 The 6-PR stack reshapes:
 
-1. **PR 1 — settings storage**: per-installation `queen_mode` Redis hash + GET/POST endpoints. Rate cap on `rooms.create` (D11). Probot 60s TTL cache for `queen_mode` (D15).
+1. **PR 1 — settings storage**: per-installation `queen_mode` Redis hash + GET/POST endpoints. Probot 60s TTL cache for `queen_mode` (D15). (Rate caps on `rooms.create` ship in PR 3 alongside the new endpoints they protect.)
 
 2. **PR 2 — cloud-side mode skip + observer**: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run the D8 observer pass (read-only `listRooms`, emit stuck-room metric). Mode-flip endpoint blocks on in-flight rooms (D9).
 
 3. **PR 3 — endpoints + capabilities**: New `resolve-action` + `seal-decision` endpoint pair with **D1's server-side invariant check** at `resolve-action` + **D6's failure-ordering enforcement** (verified comment_url precondition at `seal-decision`) + **D7's audit event writes** (separate at each step). New `rooms.synthesize` capability + new `local_queen` preset (additive per D14, distinct from existing `queen` per builder pass-2). Token policy fields wired (D10). New room state `decided_pending_action` (D4).
 
-4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two `generateObject` calls (D2: verdict + action). Two-phase commit state machine (D4). Calls D6's shared dispatch module. Loads structured override config (D12).
+4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). One HTTP call to `derive-verdict` (D3) + one local `generateObject` for action recommendation (D2). Two-phase commit state machine (D4). Calls the `resolve-action` + `seal-decision` endpoint pair (D6) for invariant enforcement and state transitions. Loads structured override config (D12).
 
 5. **PR 5 — `/dashboard/settings`**: Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured-config UI for override (D12). Confirmation step on mode-flip surfaces D9's blocking conditions.
 
