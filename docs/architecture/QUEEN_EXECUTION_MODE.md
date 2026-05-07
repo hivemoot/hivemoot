@@ -12,7 +12,7 @@ Today the war-room queen has exactly one shape: a Vercel cron at `/api/internal/
 
 This works. But the operator already has a powerful agent on the hive (`messaging-telegram`, queen-class, codex provider) running on a flat Codex subscription — and that agent has shell access, gh CLI, the war-room API, and Codex's reasoning. From the operator's perspective, **the queen-tick is doing a less-capable job using a more-expensive billing model than the hive queen could**.
 
-The proposal: let the operator opt the war-room queen into running on the hive (using the same agent that handles Telegram chat), with the cloud doing nothing for that installation. The decision of *what* to do (comment, squash-merge, etc.) is split: Codex *recommends* the action via a structured Zod-validated call, and a server-side dispatcher *enforces* deterministic invariants before any irreversible action runs. **The prompt is advisory; deterministic policy code is authoritative.**
+The proposal: let the operator opt the war-room queen into running on the hive (using the same agent that handles Telegram chat), with the cloud no longer claiming/synthesizing/posting/merging for that installation but still running D8's observer pass (read-only `listRooms` per tick, emitting a stuck-room metric so the dashboard heartbeat alarms when the local queen falls behind). The decision of *what* to do (comment, squash-merge, etc.) is split: Codex *recommends* the action via a structured Zod-validated call, and a server-side dispatcher *enforces* deterministic invariants before any irreversible action runs. **The prompt is advisory; deterministic policy code is authoritative.**
 
 ## What's already shared between the two modes
 
@@ -260,7 +260,7 @@ Replaces `/dashboard/credentials` as the umbrella config surface.
 └── Agent tokens    (today's /credentials content)
 ```
 
-Mode-toggle confirmation step: "Switching to local — cloud will stop processing PRs for this installation. The hive queen must be running. Proceed?" Once flipped, the dashboard polls a heartbeat endpoint to surface the indicator.
+Mode-toggle confirmation step: "Switching to local — the cloud will stop claiming, synthesizing, posting, and merging for this installation. The hive queen becomes responsible for those steps. The cloud will still run a read-only observer pass and alarm if rooms pile up unsynthesized, but no fallback synthesis happens. Make sure your hive queen has uptime monitoring before flipping. Proceed?" Once flipped, the dashboard surfaces both the agent's self-reported heartbeat AND the cloud's observer-side stuck-room metric — the two together are the alarm signal.
 
 ## Hive queen plugin shape
 
@@ -506,7 +506,7 @@ Bounded surface; rendered into the prompt's "Repo conventions" section. Free-for
 Both reviewers + RFC lean (a). The action enum is `{ comment, squash-merge }` in v1, expanded only via code change + capability review. Each new verb gets its own dispatcher-side invariant check before merging.
 
 **D14 — `rooms.synthesize` is additive to existing `rooms.decide` + `rooms.close`.**
-Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `rooms.synthesize` capability gates the new `resolve-action` + `seal-decision` endpoints. Atomicity is per-step (each call is its own atomic transaction; the multi-step flow's safety comes from `seal-decision`'s precondition check on `comment_url`, not from atomicity across calls). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. The new `local_queen` preset bundle includes `rooms.synthesize` + `rooms.watch` (moved from worker) + `installation_token.mint` (moved from apiarist) — see "Capability bundle" section for the full list and rationale.
+Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `rooms.synthesize` capability gates the new `resolve-action` + `seal-decision` endpoints. Atomicity is per-step (each call is its own atomic transaction; the multi-step flow's safety comes from `seal-decision`'s precondition check on `comment_url`, not from atomicity across calls). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. The new `local_queen` preset bundle includes `rooms.synthesize` + `rooms.watch` (shared with worker — worker keeps it) + `installation_token.mint` (shared with apiarist — apiarist keeps it) — see "Capability bundle" section for the full list and rationale.
 
 **D15 — Webhook `queen_mode` cached in Probot with 60s TTL.**
 Drone follow-up minor: cloud-side webhook handlers and the queen-tick read `queen_mode` via a process-local cache with a 60-second TTL on hit, falling back to Redis on miss/expiry. Avoids hot-path Redis roundtrip on every webhook event for local-mode installations. Mode changes propagate within ≤60s after the operator toggles.
