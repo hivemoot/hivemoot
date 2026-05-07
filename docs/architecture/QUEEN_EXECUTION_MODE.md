@@ -2,7 +2,7 @@
 
 **Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Nine review passes total: drone × 6 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit), guard × 2 (security audit + post-Decisions APPROVE), builder × 4 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references → cloud-does-nothing-vs-observer reconciliation + capability "moved" wording). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2; `rooms.watch` and `installation_token.mint` are SHARED with worker/apiarist per builder pass-4, not "moved"), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Ten review passes total: drone × 6 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit), guard × 3 (security audit + post-Decisions APPROVE + comprehensive carry-forward audit pinning G11–G18), builder × 4 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references → cloud-does-nothing-vs-observer reconciliation + capability "moved" wording). All reviewer feedback baked into D1–D16, the carry-forward G1–G18 (with G14/G15 reserved for future expansion without renumbering), the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2; `rooms.watch` and `installation_token.mint` are SHARED with worker/apiarist per builder pass-4, not "moved"), G17's load-bearing four-check `comment_url` verification at `seal-decision`, G18's pinned invariant ("irreversible actions only through `resolve-action`"), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
 
 ---
 
@@ -148,14 +148,35 @@ POST /api/rooms/:id/resolve-action
 POST /api/rooms/:id/seal-decision
    → completes the transaction. Body must include either:
        { comment_url, final_state: "decided" | "decided_pending_action" }
-       (use comment_url returned from the GitHub API as the precondition)
-     OR:
+       OR:
        { final_state: "decided", downgrade_reason: "intended_action_post_failed" }
-       (when the intended-action comment failed to post — degrades to comment-only,
-       can never enter decided_pending_action)
+
+   When `comment_url` is supplied, the server applies FOUR checks before
+   accepting the seal (per G17 — "comment_url is the load-bearing precondition,
+   not just a logged input"):
+
+   1. URL must point to the same `subject_ref` PR carried on the room
+      (e.g. https://github.com/owner/repo/pull/N where owner/repo#N matches
+      the room's subject_ref). Mismatch → 400 invalid_seal_precondition.
+   2. Comment author must equal the bot identity behind the installation
+      token (not just any user with comment access). The server fetches
+      the comment via the bot's installation token and rejects if
+      author.login != bot.login. → 400 invalid_seal_precondition.
+   3. Comment body must contain the canonical header
+      `<!-- hivemoot:queen-action:<verb>:<audit_id> -->` where `audit_id`
+      matches the `resolve-action` call this seal claims to follow.
+      The audit_id binding prevents replay (a static header can't be
+      reused across calls). → 400 invalid_seal_precondition.
+   4. Comment `created_at` must be later than the `resolve-action` audit
+      event's timestamp. → 400 invalid_seal_precondition.
+
+   Without these, a leaked bearer could skip the comment post entirely
+   and seal with a fabricated URL — defeating D14's "no public window
+   means no merge eligibility" invariant.
+
    The seal step is what actually transitions the room. Per builder's pass-2:
-   no public override window means no merge eligibility — this is enforced
-   structurally rather than by hoping the post succeeded.
+   no public override window means no merge eligibility — enforced
+   structurally via the four checks above, not by hoping the post succeeded.
 
 # EXISTING — already in production, listed here so PR 4's plan is correct
 GET  /api/rooms/:id
@@ -406,6 +427,8 @@ Guard §1 (rephrased to current endpoint names): *"the merge decision MUST NOT b
 
 If any fail, the endpoint returns `permitted_action: "comment"` AND writes a structured `queen.action_downgrade` audit event (G2) capturing the divergence between `recommended_action` and `permitted_action`. The verdict prose surfaces the downgrade reason; the audit event surfaces the security signal to operators on a separate dashboard channel. **The prompt picks the verb; the API enforces the invariant; the divergence is loud, not silent.**
 
+**Asymmetry to lock down (G18):** D1's invariant check lives only at `resolve-action`. Cloud queen's existing flow (using `decide` + `close-with-decision` capabilities for the historical comment-only path) does NOT invoke `resolve-action` and therefore does NOT inherit D1. This is safe today because **cloud queen's action surface is comment-only — no merge, no irreversible actions**. Pinned as an invariant: any irreversible action (squash-merge, label management, branch deletion, etc.) MUST go through `resolve-action` regardless of which mode is requesting it. Cloud queen cannot evolve to support merge without first routing through the new endpoint pair. A future RFC that touches this should re-open D1 explicitly.
+
 **D2 — Action enum is Zod-validated `generateObject`, not parsed from prose.**
 Drone: *"the action enum should get the same structural treatment as the verdict enum."* The hive queen makes two `generateObject` calls in sequence:
 1. Verdict via existing `DerivedVerdictSchema` (`z.enum(["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"])`)
@@ -565,3 +588,25 @@ PR 3's token-policy tests assert that the queen-mode bearer's GitHub installatio
 - `gh pr merge --squash <pr>`
 
 against a private repo. If any field requires `contents:read`, the test fails and PR 3 doesn't merge until the policy is corrected.
+
+**G11 — Rate caps on `resolve-action` and `seal-decision`, not just `rooms.create`.**
+D11 caps `rooms.create` per bearer/installation. Per guard pass-3, the new endpoint pair has its own DOS surface: spam `resolve-action` to fabricate audit events, or spam `seal-decision` to attempt fast-track merges. Both endpoints get the same rate-cap pattern (per-bearer-per-minute + per-installation-per-minute) with structured-warn telemetry on near-limit hits. Different attack vectors: `resolve-action` floods write the audit log; `seal-decision` floods attempt to brute-force the comment_url verification (G17).
+
+**G12 — Mode-flip endpoint must be a single atomic transaction (MULTI/EXEC or per-installation flip-lock).**
+D9 says mode-flip refuses if any room is in `deciding` with non-expired claim or in `decided_pending_action`. Naively that's a read (in-flight set) → write (`mode=local`). Cloud queen-tick can claim a room between the read and the write. PR 1 implements either: (a) a Redis MULTI/EXEC wrapping the in-flight check + mode write, or (b) a per-installation flip-lock taken before both. Either way, the read and write must be atomic; the lock TTLs out so a crashed flip doesn't strand the installation.
+
+**G13 — D4's "operator override" trigger at tick N+1 must be label-only, not free-form text scanning.**
+D4 lists `hivemoot:hold` label, operator reply, head SHA, CI status, label set. "Operator reply" is free-form comment-text scanning — a PR author can fake clearing strings ("`hivemoot:not-actually-hold` :)"). For v1, the override trigger is: presence of the `hivemoot:hold` label + the GitHub-side invariants (head SHA stable, CI green, labels present). Drop free-form text scanning; revisit if a real use case appears.
+
+**G14 — (placeholder; reserved for future carry-forward without renumbering)**
+
+**G15 — (placeholder; reserved for future carry-forward without renumbering)**
+
+**G16 — `installation_token.mint` in `local_queen` is a documented departure from the apiarist-broker pattern.**
+The existing `agent-token-capabilities.ts:259-263` comment scopes `installation_token.mint` as apiarist-only, with apiarist running on the host UDS broker and other agents requesting tokens through it. `local_queen` getting `installation_token.mint` directly bypasses this layer — D10's `allowed_repos` + `allowed_permissions` policy bound the blast radius, but the architectural departure should be explicit. Document in PR 3's capability tests + add a comment on the `local_queen` preset definition referencing this G16 trade-off so the next reviewer of the preset bundle understands why.
+
+**G17 — Server-side verification of `comment_url` precondition at `seal-decision`.**
+Per the endpoint spec under "New surface area" — the four checks (URL points to subject_ref PR, comment author is bot identity, body contains `<!-- hivemoot:queen-action:<verb>:<audit_id> -->` header binding to the resolve-action call, `created_at` later than the audit event timestamp) are the load-bearing safety mechanism for D14's "no public window means no merge eligibility." Without server-side verification, a leaked bearer can forge the URL and merge with no override window ever published. Implementation note: PR 3 must include negative tests for each of the four checks (URL pointing to wrong PR, comment by wrong user, missing audit_id, timestamp before resolve-action) — one passing test per failure mode is the only way to verify the contract.
+
+**G18 — Cloud queen action surface is comment-only; irreversible actions go through `resolve-action`.**
+Per D1's "Asymmetry to lock down" paragraph — cloud queen does not invoke `resolve-action` and therefore does not inherit D1's server-side invariant check. Today safe (cloud is comment-only). Pinned invariant: future RFCs that add irreversible actions to cloud queen MUST first route them through `resolve-action`. PR 3's endpoint code includes a comment on the existing `decide`/`close` routes pointing at this carry-forward.
