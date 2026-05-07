@@ -2,7 +2,7 @@
 
 **Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers consulted:** the fleet (hive-guard + hive-drone, with drone contributing a follow-up code review). Synthesized verdict + reasoning recorded inline.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Three review passes from drone (initial verdict-stack analysis + trigger-loop follow-up + war-room contribution on failure-model inversion), two passes from guard (initial security audit + post-Decisions APPROVE), one pass from builder (CHANGES_REQUESTED on doc coherence + 6 implementation-shape issues). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, and the body sections (rewritten to match the Decisions model rather than carrying the original prompt-driven proposal as active guidance).
 
 ---
 
@@ -43,105 +43,153 @@ The proposal: let the operator opt the war-room queen into running on the hive (
 ## Per-installation toggle
 
 ```
-installation:<id>:settings  hash
+hive:v1:installation:<id>:queen-settings   hash
   queen_mode: "cloud" | "local"   (default: "cloud")
+  queen_prompt_override: <yaml-encoded blob, optional>  # see D12
 ```
 
-Read by every cloud-side handler (queen-tick + webhook routes) on entry. If `local`: log + early-return.
+Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the Probot 60s TTL cache (D15). If `local`: log + early-return. The BYOK envelope keeps its existing key (`hive:v1:installation:<id>:byok-envelope`) — relocating it is **out of scope** for this RFC and would need a separate migration plan with key-rotation handling.
 
 ## Action surface for local queen (v1)
 
-Two actions, picked by the prompt:
+> **Per D2/D6: actions are Zod-validated structurally, not parsed from prose. The dispatcher is authoritative.**
 
-1. **comment** — `gh pr comment <pr> -b "<synthesized verdict + prose>"` (default for any non-trivial review or non-PR room)
-2. **squash-merge** — `gh pr merge --squash <pr>` (only when judgment guidelines line up, see prompt design below)
+Two actions, structurally validated by the API at decision time:
 
-Out of scope for v1: `request_changes`, `dismiss_review`, label management, branch deletion. File as future work; v1 ships with the two highest-value actions.
+1. **comment** — synthesis prose posted via the bot's existing `GitHubDecisionPoster` (today's path). Idempotent-retryable; failure does NOT undo room close.
+2. **squash-merge** — gated by D1's server-side invariant check (label, approvals, CI, head SHA stable, no drift). Irreversible; **D6 inverts the failure ordering vs comment** — `close-with-decision` succeeds first, THEN merge runs. If close-with-decision fails, no merge.
 
-## Prompt design (load-bearing)
+Both follow the two-phase commit state machine (D4): tick N posts the synthesis with the chosen action header → room enters `decided` (for comment) or `decided_pending_action` (for squash-merge) → for `squash-merge`, tick N+1 (≥60s later, ≤15min TTL per G4) re-validates `throughSequence` (G3) + GitHub-side invariants → executes or downgrades.
 
-The decision logic lives in the prompt, not in code. Branches in TypeScript would force every governance evolution into a code change; a prompt with judgment guidelines lets repos tune their conventions in their own data layer.
+Out of scope for v1: `request_changes`, `dismiss_review`, label management, branch deletion. File as future work via code change + capability review per D13.
+
+## Prompt design
+
+> **Per D2/D3: the prompt produces structured outputs validated by Zod schemas. The 3-layer verdict stack runs unchanged. Codex's text output is for prose only.**
+
+The hive queen makes **two** `generateObject` calls in sequence:
+
+```
+1. Verdict derivation (D3 — preserves existing 3-layer stack)
+   model.generateObject({
+     schema: DerivedVerdictSchema,   // existing — z.enum APPROVE/COMMENT/CONCERNS/REQUEST_CHANGES
+     system: <verdict-derivation system prompt — same as cloud>,
+     prompt: <room contributions wrapped in <untrusted-content> delimiters>
+   })
+   → { verdict: "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES" }
+
+2. Action recommendation (D2 — new schema, advisory only)
+   model.generateObject({
+     schema: RecommendedActionSchema,   // new — z.enum comment/squash-merge
+     system: <action-recommendation system prompt with judgment guidelines>,
+     prompt: <verdict + room state + PR metadata + override config (D12)>
+   })
+   → { recommendation: "comment" | "squash-merge", reasoning: <short prose> }
+
+3. Prose synthesis (existing — generateText)
+   <bot-controlled verdict header> + <Codex prose> + <bot-controlled action footer>
+```
+
+The `recommendation` field is **advisory input** to the dispatcher's deterministic invariant check (D1). The dispatcher ignores `recommendation` whenever D1's invariants don't permit it and emits a `queen.action_downgrade` audit event (G2).
+
+System prompt for action recommendation, anchored on D12's structured override:
 
 ```
 ROLE
-You are the Hivemoot Queen. You synthesize war-room contributions
-into a single governance action and execute it.
+You are the Hivemoot Queen. Recommend the action that best fits the
+contributions and PR state. The server enforces merge invariants
+independently — your recommendation is advisory.
 
-CONTEXT (rendered at runtime)
+CONTEXT (rendered into prompt at runtime)
   - Room: {room_id} subject={subject_ref}
-  - Participants: {role list with provider tags}
-  - Contributions: {each reviewer's prose, role-tagged}
-  - PR metadata (when subject_type=pr_review):
-      - head_sha, base_branch, mergeable, ci_status
-      - labels (e.g. hivemoot:automerge)
-      - drift_marker_present: bool
-  - Repo conventions: <CONTRIBUTING.md excerpt or per-installation override>
+  - Verdict (already derived): {verdict}
+  - Participants: {role list}
+  - Contributions: {each reviewer's prose, role-tagged, wrapped in <untrusted-content>}
+  - PR metadata: head_sha, base_branch, ci_status, labels, drift_marker_present
+  - Per-installation override (structured, D12):
+      merge_conventions: "..."         # operator policy in prose
+      additional_blockers: ["..."]     # extra patterns to block on
 
-JUDGMENT GUIDELINES (what to weigh, not when to fire)
-  - All reviewers approve, CI green, no drift, label `hivemoot:automerge` → squash-merge is reasonable
-  - Any concerns / request-changes from any reviewer → post a synthesis comment
-  - Mixed signal → post synthesis comment with the consensus + open questions
-  - Drift marker present → comment, never merge
-  - Non-PR rooms (general / mention) → comment-only
+JUDGMENT GUIDELINES (advisory)
+  - All reviewers approved, CI green, no drift, hivemoot:automerge label, no override blocker matched → recommend squash-merge
+  - Any concerns / request_changes / drift / blocker match → recommend comment
+  - Non-PR rooms (general / mention) → recommend comment
 
-TOOLS YOU HAVE
-  - gh pr view / pr comment / pr merge --squash
-  - mint installation token via /api/installation_tokens
-  - close-with-decision via /api/rooms/:id/close-with-decision
-  - war-room read/write via standard endpoints
-
-OUTPUT (always)
-  - Pick exactly one action: comment | squash-merge
-  - Synthesize the verdict + supporting prose
-  - Execute the chosen action via gh CLI
-  - Call /api/rooms/:id/close-with-decision to seal the verdict
+OUTPUT (Zod-validated)
+  { recommendation: "comment" | "squash-merge", reasoning: string }
 ```
+
+The override surface (`merge_conventions`, `additional_blockers`) is operator-rendered text per D12 — **not a trust boundary** (G8). D1's server-side check is the only line of defense; the override can only misalign the recommendation prose, never bypass the invariant.
 
 ## New surface area
 
 ### HTTP endpoints
 
+All bearer-gated endpoints follow the existing capability convention. Note: `derive-verdict` and `room-state` are listed here so D3's "call the cloud-side endpoint" path is concrete (per G1) and so the trigger loop doesn't reach for the operator-session-gated dashboard route from a bearer context.
+
 ```
+# Bearer-gated (capability: rooms.synthesize) — new
 GET  /api/rooms/synthesis-ready
-   → list rooms ready for synthesis, gated by rooms.synthesize capability
+   → list rooms in awaiting_contributions/deciding ready for synthesis
 
 POST /api/rooms/:id/claim-synthesis
-   → TTL'd lease (15min default), gated by rooms.synthesize
+   → TTL'd lease (15min default; G4 also caps decided_pending_action at 15min)
+
+POST /api/rooms/:id/derive-verdict
+   → invokes existing aggregateWorkerVerdicts + deriveVerdictFromContributions
+     (G1: single source of truth — the verdict-derivation library at
+     bot/api/lib/queen/verdict-deriver.ts becomes a route, callable from Python)
+   → returns { verdict, source: "structural_floor" | "llm_derived" }
 
 POST /api/rooms/:id/close-with-decision
-   → close + verdict + content, gated by rooms.synthesize
+   → atomic: applies D1's server-side invariant check, transitions room to
+     `decided` or `decided_pending_action`, writes D7's audit event
+     (including G2's queen.action_downgrade when chosen != permitted)
 
-GET  /api/installations/:id/settings
-   → operator-session-gated, returns { queen_mode, byok_status, … }
+# Bearer-gated (capability: rooms.read_all) — new bearer-friendly variant
+GET  /api/rooms/:id
+   → room core + participants + contributions + events, same shape the
+     dashboard's composite route returns. Avoids reaching for the
+     operator-session-gated /api/dashboard/rooms/:id from a bearer context.
 
-POST /api/installations/:id/settings
-   → operator-session-gated, atomic update with audit event
+# Operator-session-gated — new
+GET  /api/installations/:id/queen-settings
+   → returns { queen_mode, queen_prompt_override }
+
+POST /api/installations/:id/queen-settings
+   → atomic update with audit event (D9 blocks on in-flight rooms;
+     G6 force-expire-claims path requires confirmation modal + audit event)
 ```
 
 ### Capability bundle: new `queen` preset
 
 ```yaml
 queen:
-  - rooms.create              # NEW (today only operator-session UI has this)
-  - rooms.synthesize          # NEW
+  - rooms.create              # existing on queen preset; G3 already enforces subject-type allowlist
+  - rooms.synthesize          # NEW (additive per D14 — does not replace rooms.decide / rooms.close)
+  - rooms.read_all            # NEW (gates the new bearer-friendly room-read endpoint)
   - rooms.watch               # existing
   - installation_token.mint   # existing
 ```
 
-The hive queen's bearer gets the `queen` preset. Existing reviewer presets (`drone`, `guard`, etc.) don't change.
+Per D14, the new `rooms.synthesize` capability gates the new `close-with-decision` endpoint (which combines claim+synth+close+audit). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. **Two paths, two capability sets, no migration.**
 
 ### Storage
 
-A single per-installation config hash supersedes ad-hoc storage. BYOK envelope already lives in Redis; this folds queen_mode + future settings under one key.
+```
+hive:v1:installation:<id>:queen-settings   hash
+  queen_mode             "cloud" | "local"           # D15 caches with 60s TTL
+  queen_prompt_override  <yaml-encoded structured config — D12>
 
+hive:v1:installation:<id>:byok-envelope    hash    # existing, unchanged
+  provider, model, key_encrypted, ...
+
+hive:v1:rate-limit:rooms-create:<bearer>:<minute>  string (counter)
+hive:v1:rate-limit:rooms-create:<inst>:<minute>    string (counter)
+                                                    # both per D11 — TTL 60s
 ```
-installation:<id>:settings
-  queen_mode             "cloud" | "local"
-  byok_provider          (existing)
-  byok_model             (existing)
-  byok_key_encrypted     (existing, moved here)
-  queen_prompt_override  (new, optional — see Q1 below)
-```
+
+BYOK relocation is **explicitly out of scope** for this RFC. The current envelope key stays where it is; PR 6 covers UI relocation only (the dashboard route moves; the storage key does not).
 
 ### UI: `/dashboard/settings`
 
@@ -164,53 +212,102 @@ Mode-toggle confirmation step: "Switching to local — cloud will stop processin
 
 ## Hive queen plugin shape
 
-Same `messaging-telegram` agent gains a new built-in plugin trigger. Same container, same Codex subscription:
+Per ADR-002, the agent runtime uses a consolidated `plugins.hivemoot` block with feature toggles (`health`, `tasks`, `github_workflows`, `apiarist`, `war_rooms`). The queen functionality fits that pattern as a new feature block, not a standalone plugin:
 
 ```yaml
 plugins:
-  - messaging       (existing — Telegram chat)
-  - hivemoot-queen  (new — PR discovery + war-room creation + synthesis + action)
+  hivemoot:
+    health:           { enabled: true, ... }     # existing
+    tasks:            { enabled: false, ... }    # existing
+    war_rooms:        { enabled: true, ... }     # existing — reviewer-side
+    github_workflows: { enabled: false, ... }    # existing
+    apiarist:         { enabled: true, ... }     # existing — token broker
+
+    queen:                                       # NEW — feature block
+      enabled: true
+      poll_interval_secs: 60
+      base_url: https://www.hivemoot.dev
+      installation_id: 107212709
+      watched_repos:
+        - hivemoot/hivemoot
+
+  messaging:
+    telegram:         { enabled: true, ... }     # existing — Telegram chat
 ```
 
-Plugin config:
+Same `messaging-telegram` agent (or a separate `hivemoot-queen` apiary service) loads this consolidated config. The queen feature only activates when `queen.enabled=true` AND the bearer has `rooms.synthesize`. Disabled by default; opting an installation into local mode flips this on per-agent.
 
-```yaml
-plugins.hivemoot-queen:
-  enabled: true
-  poll_interval_secs: 60
-  base_url: https://www.hivemoot.dev
-  installation_id: 107212709    # which installation this queen serves
-  watched_repos:
-    - hivemoot/hivemoot
+### D6 boundary: server-side dispatcher, not literal code sharing
+
+D6's "shared module callable from both" was imprecise — TypeScript bot/web code is not directly callable from the Python agent runtime (separate processes, different language). The actual boundary is the new `POST /api/rooms/:id/close-with-decision` endpoint (server-side TypeScript): both modes hit it. The endpoint owns:
+
+- D1's invariant check (server reads label/CI/SHA/drift fresh from GitHub at decision time)
+- D6's failure ordering branch (`comment` follows today's flow; `squash-merge` is rejected at this endpoint if invariants fail — the agent then independently runs `gh pr merge`)
+- D7's audit event write (single source of truth for action records)
+- G2's `queen.action_downgrade` event when `chosen_action != permitted_action`
+
+Cloud queen's `GitHubDecisionPoster` (TypeScript) and hive queen's plugin (Python via gh CLI) call the same endpoint. The endpoint enforces. The dispatcher logic on each side just builds the request and executes the GitHub action AFTER the endpoint has approved it.
+
+### Trigger loop body (per Decisions D1–D6, G1, G3, G4)
+
 ```
+every poll_interval_secs:
+  # Discovery (G3 anchors this on throughSequence stability)
+  1. gh pr list --state open --json … across watched_repos
+  2. For each PR with no war room:
+       POST /api/rooms { subject_type: "pr_review", subject_ref }
+       (rate-limited per D11; subject-type allowlist enforced server-side)
 
-Trigger loop body:
+  # Synthesis loop with D5's race mitigations replicated from manager-loop.ts
+  3. GET /api/rooms/synthesis-ready
+  4. For each ready room:
+       a. Quiet-period gate (D5): skip if last_transition_at + quiet_period_secs > now
+       b. POST /api/rooms/:id/claim-synthesis (15min TTL)
+          handle 5 distinct benign-409 codes per D5: claim_already_held,
+          invalid_status_for_claim, sequence_drift, claim_lost,
+          claim_through_seq_mismatch
+       c. GET /api/rooms/:id (bearer-gated, gates rooms.read_all per surface area)
+       d. Post-claim re-validation (D5): re-check participants for re-RSVP
+          / non-final-withdrawal races since claim
+       e. Withdraw-finality check (D5): compare withdrew_at_sequence vs
+          throughSequence; skip if not final
 
-```
-1. gh pr list --state open across watched_repos        # discover
-2. For each PR: if no war room exists → POST /api/rooms (create)
-3. GET /api/rooms/synthesis-ready
-4. For each ready room:
-     a. POST /api/rooms/:id/claim-synthesis            # lease
-     b. Read room state via /api/dashboard/rooms/:id
-     c. Render queen prompt with room state + PR metadata
-     d. Invoke Codex (via existing CLI infra) with the prompt
-     e. Parse Codex output: { action, verdict, prose }
-     f. Mint installation token via /api/installation_tokens
-     g. Execute action: gh pr comment OR gh pr merge --squash
-     h. POST /api/rooms/:id/close-with-decision { verdict, content }
+       # Two structured calls (D2, D3) — verdict via cloud endpoint, action local
+       f. POST /api/rooms/:id/derive-verdict → { verdict, source }
+       g. Codex.generateObject(RecommendedActionSchema) → { recommendation, reasoning }
+
+       # D1's invariant check + D6's failure ordering — DURABLE BEFORE IRREVERSIBLE
+       h. POST /api/rooms/:id/close-with-decision {
+            verdict, content, recommended_action,
+            sealed_through_sequence: <claim's throughSequence>
+          }
+          → server applies D1; returns permitted_action and writes D7 audit;
+            transitions room to `decided` (for comment) or
+            `decided_pending_action` (for squash-merge);
+            emits G2 queen.action_downgrade if recommendation != permitted
+
+       # Action execution AFTER durable close
+       i. Mint installation token via /api/installation_tokens
+          (D10 policy: pull_requests:write, issues:write, metadata:read,
+           allowed_repos = watched_repos)
+       j. If permitted_action == "comment": gh pr comment <pr> -b <prose>
+       k. If permitted_action == "squash-merge": this is tick N; comment
+          posted with intended-action header; tick N+1 (≥60s, ≤15min per
+          G4 TTL on decided_pending_action) re-validates throughSequence (G3)
+          + GitHub-side invariants, then runs gh pr merge --squash;
+          downgrades to comment if anything changed since tick N
 ```
 
 ## Implementation slicing
 
 | PR | Scope | Independence |
 |---|---|---|
-| 1 | Settings storage: per-installation `queen_mode` Redis hash, GET/POST endpoints | Yes — no reader yet |
-| 2 | Cloud-side skip-flag: queen-tick + webhook handlers early-return when `mode=local` | Yes — defaults to cloud, no observable change |
-| 3 | New HTTP endpoints + `rooms.synthesize` / `rooms.create` capabilities + `queen` preset | Yes — no caller yet |
-| 4 | Hive queen plugin: `hivemoot-queen-pull-loop` trigger, prompt scaffolding, action dispatcher | Depends on PR 1, 3 |
-| 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator | Depends on PR 1 |
-| 6 | Move BYOK from `/credentials` to `/settings/byok` (cosmetic; redirect old path) | Independent |
+| 1 | Settings storage: `hive:v1:installation:<id>:queen-settings` Redis hash, operator-session GET/POST endpoints, Probot 60s TTL cache (D15 + G7 default-to-cloud on Redis-down) | Yes — no reader yet |
+| 2 | Cloud-side skip-flag: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8 with G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
+| 3 | New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `derive-verdict`, `close-with-decision`, bearer `/api/rooms/:id`). `rooms.synthesize` + `rooms.read_all` capabilities. New `queen` preset bundle (additive per D14). Token policy with `contents:read` drop verified by test (G9). D1 invariant check + D6 failure-ordering branch + D7 audit event + G2 `queen.action_downgrade` event in `close-with-decision`. Rate caps on `rooms.create` (D11). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
+| 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two structured `generateObject` calls (D2: action via Zod schema, D3: verdict via cloud endpoint). Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
+| 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured override config UI (D12). Confirmation step on mode-flip surfaces D9 + G6's blocking conditions. | Depends on PR 1 |
+| 6 | Move BYOK UI from `/credentials` to `/settings/byok` (cosmetic; redirect old path). **Storage key NOT relocated** — only the dashboard route moves. | Independent |
 
 ## Open questions for the fleet
 
@@ -406,7 +503,7 @@ The 6-PR stack reshapes:
 
 6. **PR 6 — BYOK relocation**: cosmetic; redirect old `/credentials` path.
 
-PR 1 → PR 2 + PR 3 in parallel → PR 4 (depends on PR 3) → PR 5 (depends on PR 1) → PR 6 (independent).
+PR 1 → (PR 2 + PR 3) in parallel → PR 4 (depends on PR 3) + PR 5 (depends on PR 1) → PR 6 (independent of all).
 
 ### Carried-forward implementation notes (PR-blockers, not RFC-blockers)
 
