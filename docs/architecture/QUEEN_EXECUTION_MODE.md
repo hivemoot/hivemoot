@@ -1,8 +1,8 @@
 # RFC: Queen execution mode (cloud vs local)
 
-**Status:** Open — fleet review requested.
+**Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers requested:** the fleet (guard, drone, builder). Particularly interested in guard's read on capability scope + merge safety, drone's read on prompt-driven decisioning vs hard rules, builder's read on the operator UX.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone, with drone contributing a follow-up code review). Synthesized verdict + reasoning recorded inline.
 
 ---
 
@@ -271,6 +271,124 @@ Free to push back on the framing entirely. Last RFC (`JOB_LIFECYCLE_UNIFICATION.
 
 ---
 
-## Decisions
+## Decisions (post fleet review)
 
-(To be filled in after fleet review.)
+The fleet's two-pass review (guard's security read + drone's verdict-stack analysis + drone's follow-up on the trigger-loop code paths) reshaped the RFC materially. The biggest finding: the v1-as-drafted version put **prompt injection on the merge path** (guard §1) and discarded the existing **3-layer verdict stack** (drone) that was carefully engineered to be injection-resistant. Both reviewers concluded the mode toggle framing is right but the action-dispatch trust model needs to be inverted: the prompt is *advisory*, deterministic code is *authoritative*. All 15 decisions below carry that single thread.
+
+Where guard's reasoning shaped a decision verbatim, it's quoted.
+
+### Architectural (load-bearing)
+
+**D1 — Server-side merge invariants enforced at `close-with-decision`.**
+Guard §1: *"the merge decision MUST NOT be a string Codex emits. It must be a server-side invariant the close-with-decision endpoint re-validates after receiving the verdict."* The endpoint re-reads from GitHub at decision-time:
+
+- `hivemoot:automerge` label present
+- All required reviewers (CODEOWNERS or room participant set) posted contributions with verdict `approve`
+- CI status green per GraphQL `commit.statusCheckRollup`
+- Head SHA at synthesis-start === head SHA at merge-time (drift guard)
+- `last_post_close_drift_*` unset
+
+If any fail, downgrade silently to `comment` and surface the downgrade in the verdict prose. **The prompt picks the verb; the API enforces the invariant.**
+
+**D2 — Action enum is Zod-validated `generateObject`, not parsed from prose.**
+Drone: *"the action enum should get the same structural treatment as the verdict enum."* The hive queen makes two `generateObject` calls in sequence:
+1. Verdict via existing `DerivedVerdictSchema` (`z.enum(["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"])`)
+2. Action via new `RecommendedActionSchema` (`z.enum(["comment", "squash-merge"])`)
+
+Action is then validated against D1's invariants by the dispatcher. No action verb is ever parsed from text output.
+
+**D3 — Verdict stack preserved.**
+Drone: *"the local queen doesn't have to throw away the verdict stack."* The 3-layer pipeline (`aggregateWorkerVerdicts` → `deriveVerdictFromContributions` → prose synthesis) runs in local mode the same way it runs in cloud mode. The Python agent calls the cloud-side verdict-derivation endpoints rather than reimplementing them — preserves a single source of truth for the verdict logic and keeps schema changes from drifting between modes.
+
+**D4 — Two-phase commit state machine for merge.**
+Guard §4 + drone: drop the opt-out flag; the `require_dry_run_for_merge` second-tick flow is mandatory in v1. New room state `decided_pending_action`:
+
+- **Tick N (synthesis):** verdict + action derived → if action=`squash-merge` and D1 invariants pass, comment posted with "intended action: squash-merge" header → room enters `decided_pending_action`.
+- **Tick N+1 (≥60s later):** queen re-reads room → if no operator override comment (`hivemoot:hold` label, operator reply, etc.), head SHA unchanged, CI still green, labels still present → execute merge. Any change → downgrade to comment with "merge skipped because [reason]," room transitions to `decided`.
+
+**D5 — Race-condition mitigations replicated in the local queen.**
+Drone follow-up §1: *"the local queen will hit the same races — it's calling the same API."* The hive queen plugin replicates the four mitigations the cloud manager loop already has:
+
+- Quiet-period gate (`quiet_period_secs` after last participant transition)
+- Post-claim re-validation (re-read participants for re-RSVP / non-final-withdrawal races)
+- Withdraw-finality check (`withdrew_at_sequence` vs `throughSequence`)
+- Benign-conflict handling for the 5 distinct 409 codes (`claim_already_held`, `invalid_status_for_claim`, `sequence_drift`, `claim_lost`, `claim_through_seq_mismatch`)
+
+Cloud and local share equivalent concurrency safety. The cloud manager loop becomes the reference implementation; PR 4 ports the gates to Python.
+
+**D6 — Shared dispatch module with defenses + canonical failure ordering.**
+Drone follow-up §3: the local queen's action dispatcher must apply the same defenses as `GitHubDecisionPoster`:
+
+- `parseSubjectRef` regex defense (anchored, no shell-meta passthrough)
+- `POSTABLE` subject-type gate (`pr_review | mention_response | issue_triage` only)
+- Failure ordering: **`close-with-decision` before `gh pr merge --squash`**. Merge is irreversible; it's the LAST operation, after the room is sealed. If merge then fails, the room is correctly recorded as decided + an audit event captures the dispatch failure.
+
+Implementation: a shared module callable from both the cloud `GitHubDecisionPoster` and the hive queen plugin. New defenses go in once, both modes pick them up.
+
+### Mechanism / policy
+
+**D7 — Dispatcher writes audit events, not Codex's self-report.**
+Guard §5: *"don't trust Codex to self-report the action it took."* The action dispatcher (the `gh pr X` subprocess wrapper) emits the audit event with: `{actor: queen-runner-id, decision-prompt-hash, override-hash, action-attempted, action-actual, exit-code, room_id}`. Server-side `close-with-decision` records the canonical action it observed in the request, separate from any prose self-description.
+
+**D8 — Cloud observes via metrics in local mode (not failover, alarm).**
+Guard §6 + drone agreement: cloud-side queen-tick reads the room list when `queen_mode=local`, **doesn't claim or synthesize**, but emits one metric per installation: "rooms ready for synthesis older than N minutes." The dashboard heartbeat surfaces both the agent's self-reported heartbeat AND the cloud's view. If the agent self-reports healthy but the cloud sees rooms piling up, the dashboard alarms. *"The self-reported heartbeat from a hung process is famously unreliable"* — guard.
+
+**D9 — Mode-flip blocks on in-flight rooms.**
+Guard §7 + drone: the mode-flip endpoint refuses if any room is in `deciding` state with a non-expired claim, OR in `decided_pending_action` (the second-tick window). Operator must wait for in-flight work to settle or explicitly force-expire claims. Avoids the ambiguous-ownership state where cloud thought it was synthesizing but local takes over mid-flight.
+
+**D10 — Queen-mode token policy: minimum permissions + per-repo allowlist.**
+Guard §8: when the dashboard mints the queen-mode bearer's GitHub installation token, it sets `policy.allowed_permissions = { pull_requests: "write", issues: "write", metadata: "read" }` (drop `contents: "read"` — the queen doesn't read repo files; that's the reviewer agents' job). `policy.allowed_repos` is exactly the `watched_repos` config list. Both enforced at token-mint time.
+
+**D11 — `rooms.create` rate-capped per bearer + per installation.**
+Guard §2: the existing subject-type allowlist is already in place at `web/src/app/api/rooms/route.ts:35-39`; the gap is the rate cap. Add per-bearer-per-minute and per-installation-per-minute caps on the `rooms.create` route. Structured-warn telemetry on near-limit hits. Don't tie to subject_type — the storage cost is the same regardless.
+
+**D12 — Prompt override is structured YAML config, not free-form text.**
+Drone: *"free-form prompt override is a loaded gun pointed at the merge gate."* The override schema (stored in `installation:<id>:settings.queen_prompt_override`):
+
+```yaml
+queen_prompt_override:
+  merge_conventions: "this org never auto-merges PRs touching infra/"
+  additional_blockers:
+    - "changes to .github/workflows/"
+    - "PRs that touch shared/war-room/"
+```
+
+Bounded surface; rendered into the prompt's "Repo conventions" section. Free-form prompt tuning is rejected. Combined with D1's server-side invariants, the override surface can't undermine merge safety even if compromised — the worst it can do is misalign the prose.
+
+**D13 — Hard-coded action enum (no operator-configurable verbs in v1).**
+Both reviewers + RFC lean (a). The action enum is `{ comment, squash-merge }` in v1, expanded only via code change + capability review. Each new verb gets its own dispatcher-side invariant check before merging.
+
+**D14 — `rooms.synthesize` is additive to existing `rooms.decide` + `rooms.close`.**
+Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `rooms.synthesize` capability gates the new `close-with-decision` endpoint (which combines claim + synthesize + close + audit-event-write into one atomic transaction). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. The new `queen` preset bundle adds `rooms.synthesize` + `rooms.create` (already there) + `installation_token.mint` (already there) without removing anything.
+
+**D15 — Webhook `queen_mode` cached in Probot with 60s TTL.**
+Drone follow-up minor: cloud-side webhook handlers and the queen-tick read `queen_mode` via a process-local cache with a 60-second TTL on hit, falling back to Redis on miss/expiry. Avoids hot-path Redis roundtrip on every webhook event for local-mode installations. Mode changes propagate within ≤60s after the operator toggles.
+
+### Open-question resolution map
+
+| Question | Decision |
+|---|---|
+| Q1 — Prompt location | (c) base + structured override (D12) |
+| Q2 — Drift-marker handling | Post comment, never auto re-merge (D1's drift-guard makes this enforce-able) |
+| Q3 — `rooms.create` capability gating | Subject-type allowlist already in place; add rate cap (D11) |
+| Q4 — Action surface evolution | Hard-coded enum for v1 (D13) |
+| Q5 — Multi-installation per hive | Keep one-per-installation |
+| Q6 — Misbehaving-queen safety | Server-side invariants (D1) + two-phase commit (D4) + dispatcher audit (D7) — three layers |
+
+### Implementation stack (informed by decisions above)
+
+The 6-PR stack reshapes:
+
+1. **PR 1 — settings storage**: per-installation `queen_mode` Redis hash + GET/POST endpoints. Rate cap on `rooms.create` (D11). Probot 60s TTL cache for `queen_mode` (D15).
+
+2. **PR 2 — cloud-side skip-flag**: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8). Mode-flip endpoint blocks on in-flight rooms (D9).
+
+3. **PR 3 — endpoints + capabilities**: New `close-with-decision` endpoint with **D1's server-side invariant check** + **D6's shared dispatch module** + **D7's audit event write**. New `rooms.synthesize` capability (additive per D14). Token policy fields wired (D10). New room state `decided_pending_action` (D4).
+
+4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two `generateObject` calls (D2: verdict + action). Two-phase commit state machine (D4). Calls D6's shared dispatch module. Loads structured override config (D12).
+
+5. **PR 5 — `/dashboard/settings`**: Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured-config UI for override (D12). Confirmation step on mode-flip surfaces D9's blocking conditions.
+
+6. **PR 6 — BYOK relocation**: cosmetic; redirect old `/credentials` path.
+
+PR 1 → PR 2 + PR 3 in parallel → PR 4 (depends on PR 3) → PR 5 (depends on PR 1) → PR 6 (independent).
