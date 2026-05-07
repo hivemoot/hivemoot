@@ -28,7 +28,7 @@
     "@hivemoot/war-room": "file:../shared/war-room",
     "@openrouter/ai-sdk-provider": "^2.3.0",
     "@upstash/redis": "1.37.0",
-    "ai": "^6.0.97",
+    "ai": "^6.0.175",
     "js-yaml": "^4.1.1",
     "minimatch": "10.2.4",
     "octokit": "^5.0.5",
