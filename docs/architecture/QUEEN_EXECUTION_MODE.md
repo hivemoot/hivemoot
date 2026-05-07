@@ -2,7 +2,7 @@
 
 **Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Thirty-one review passes total: drone × 17 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit + four further consistency-and-coverage sweeps + builder pass-6 verification + builder pass-7 verification + APPROVE + four post-approval war-room verifications + builder-pass-8 final verification), guard × 7 (security audit + post-Decisions APPROVE + comprehensive carry-forward audit pinning G11–G18 + NEW-G19 + post-pass-7 honesty audit pinning G19–G21 + post-046c6f2 implementation-contract audit naming `applyDowngradeOnlyFloor` + pinning G22–G24 + APPROVE + post-f8699b6 verification carrying APPROVE through three subsequent commits), builder × 8 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references → cloud-does-nothing-vs-observer reconciliation + capability "moved" wording → endpoint path mixing + D4 label-only + route name → verdict ownership unification + D6 preface + slicing dedup → cost/boundary fix (LLM calls fully local) + D1 invariant cleanup + webhook ownership pinned + minimal `local_queen` capabilities → package boundary (move verdict primitives to `@hivemoot/war-room`) + D16 reconciliation + drop `pr.reopened` from RFC scope + close route name + `approvals` term). All reviewer feedback baked into D1–D16, the carry-forward G1–G18 (with G14/G15 reserved for future expansion without renumbering), the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2; `installation_token.mint` is SHARED with apiarist per builder pass-4, not "moved"; `rooms.watch` was dropped per builder pass-7 since the local queen polls `synthesis-ready` rather than `/watching`), G17's load-bearing four-check `comment_url` verification at `seal-decision`, G18's pinned invariant ("irreversible actions only through `resolve-action`"), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Thirty-two review passes total: drone × 17 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit + four further consistency-and-coverage sweeps + builder pass-6 verification + builder pass-7 verification + APPROVE + four post-approval war-room verifications + builder-pass-8 final verification), guard × 7 (security audit + post-Decisions APPROVE + comprehensive carry-forward audit pinning G11–G18 + NEW-G19 + post-pass-7 honesty audit pinning G19–G21 + post-046c6f2 implementation-contract audit naming `applyDowngradeOnlyFloor` + pinning G22–G24 + APPROVE + post-f8699b6 verification carrying APPROVE through three subsequent commits), builder × 9 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references → cloud-does-nothing-vs-observer reconciliation + capability "moved" wording → endpoint path mixing + D4 label-only + route name → verdict ownership unification + D6 preface + slicing dedup → cost/boundary fix (LLM calls fully local) + D1 invariant cleanup + webhook ownership pinned + minimal `local_queen` capabilities → package boundary (move verdict primitives to `@hivemoot/war-room`) + D16 reconciliation + drop `pr.reopened` from RFC scope + close route name + `approvals` term → state-machine pin (`closed` for comment paths, only `decided_pending_action` is new) + `claim-synthesis` returns composite + `reviewed_head_sha` contract). All reviewer feedback baked into D1–D16, the carry-forward G1–G18 (with G14/G15 reserved for future expansion without renumbering), the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2; `installation_token.mint` is SHARED with apiarist per builder pass-4, not "moved"; `rooms.watch` was dropped per builder pass-7 since the local queen polls `synthesis-ready` rather than `/watching`), G17's load-bearing four-check `comment_url` verification at `seal-decision`, G18's pinned invariant ("irreversible actions only through `resolve-action`"), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
 
 ---
 
@@ -57,10 +57,10 @@ Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the
 
 Two actions, structurally validated by the API at decision time:
 
-1. **comment** — in cloud mode, synthesis prose is posted via the bot's existing `GitHubDecisionPoster` against `decide` + `close`; failure to post does NOT undo room close (today's pattern: room state is source of truth, post is best-effort). In local mode, the hive queen posts via `gh pr comment`, then calls `seal-decision` with the verified comment URL → room transitions to `decided`. If `gh pr comment` fails, the queen calls `seal-decision` with `downgrade_reason: intended_action_post_failed` → room still transitions to `decided`, just without merge eligibility. **In both modes the room ultimately transitions to `decided`; the difference is that local mode's transition is a separate `seal-decision` call gated on the comment-post outcome (see D6 + G17).**
+1. **comment** — in cloud mode, synthesis prose is posted via the bot's existing `GitHubDecisionPoster` against `decide` + `close`; failure to post does NOT undo room close (today's pattern: room state is source of truth, post is best-effort). In local mode, the hive queen posts via `gh pr comment`, then calls `seal-decision` with the verified comment URL → room transitions to existing `closed` status (with the decision recorded in audit). If `gh pr comment` fails, the queen calls `seal-decision` with `downgrade_reason: intended_action_post_failed` → room still transitions to `closed`, just without merge eligibility. **In both modes the room ultimately transitions to the existing `closed` status; the difference is that local mode's transition is a separate `seal-decision` call gated on the comment-post outcome (see D6 + G17).** No new `RoomStatus` value is needed for the comment path — only `decided_pending_action` is added (D4).
 2. **squash-merge** — gated by D1's server-side invariant check (room-level derived verdict == `APPROVE`, `hivemoot:automerge` label, CI green, head SHA stable, no drift). Reviewer-requirement enforcement (CODEOWNERS, required reviews) is deferred to GitHub branch protection at `gh pr merge --squash` time — D1 is additive. Irreversible; **D6 inverts the failure ordering vs comment** — `resolve-action` returns the permitted action first, then the agent posts the intended-action comment, then `seal-decision` requires the verified comment URL to enter `decided_pending_action`, then tick N+1 runs the merge. If any step fails, no merge.
 
-Both follow the two-phase commit state machine (D4): tick N posts the synthesis with the chosen action header → room enters `decided` (for comment) or `decided_pending_action` (for squash-merge) → for `squash-merge`, tick N+1 (≥60s later, ≤15min TTL per G4) re-validates `throughSequence` (G3) + GitHub-side invariants → executes or downgrades.
+Both follow the two-phase commit state machine (D4): tick N posts the synthesis with the chosen action header → room enters existing `closed` (for comment) or new `decided_pending_action` (for squash-merge) → for `squash-merge`, tick N+1 (≥60s later, ≤15min TTL per G4) re-validates `throughSequence` (G3) + GitHub-side invariants → executes (and transitions to `closed` with merge_completed close_reason) or downgrades (transitions to `closed` with merge_downgraded close_reason).
 
 Out of scope for v1: `request_changes`, `dismiss_review`, label management, branch deletion. File as future work via code change + capability review per D13.
 
@@ -134,18 +134,40 @@ GET  /api/rooms/synthesis-ready
 
 POST /api/rooms/:id/claim-synthesis
    → TTL'd lease (15min default; G4 also caps decided_pending_action at 15min)
+   → returns a composite the local queen needs for the prompt:
+       {
+         claim: { claim_id, sealed_through_sequence, ttl_secs },
+         room: <RoomCore — subject_ref, opened_at, status, ...>,
+         participants: <list of {actor_id, role, state, ...}>,
+         contributions: <list of {actor_id, body, raw_md, withdrawn, ...}>
+       }
+   The composite avoids a 3-roundtrip pattern (claim → /participants →
+   /contributions) and removes ambiguity about what the local queen
+   sends to the LLM (builder pass-9 §2). All four sub-resources are
+   already gated by the bearer's existing capabilities; the composite
+   route just bundles them server-side under a single auth check.
 
 # NEW — bearer-gated (capability: rooms.synthesize). Two-step transaction:
 POST /api/rooms/:id/resolve-action
-   → applies D1's invariant check, returns { permitted_action, audit_id },
-     writes D7 audit event (including G2 queen.action_downgrade when
-     recommendation != permitted_action). Room state UNCHANGED yet.
+   Body: {
+     verdict, content, recommended_action,
+     sealed_through_sequence,
+     reviewed_head_sha    # required (builder pass-9 §3) — captured by
+                          # local queen via fresh `gh pr view` after claim,
+                          # server re-reads GitHub head SHA and rejects with
+                          # permitted_action="comment" + queen.action_downgrade(
+                          # reason: head_sha_drift) on mismatch
+   }
+   → applies D1's invariant check (incl. head-SHA drift guard), returns
+     { permitted_action, audit_id }; writes D7 audit event (including
+     G2 queen.action_downgrade when recommendation != permitted_action).
+     Room state UNCHANGED yet.
 
 POST /api/rooms/:id/seal-decision
    → completes the transaction. Body must include either:
-       { comment_url, final_state: "decided" | "decided_pending_action" }
+       { comment_url, final_state: "closed" | "decided_pending_action" }
        OR:
-       { final_state: "decided", downgrade_reason: "intended_action_post_failed" }
+       { final_state: "closed", downgrade_reason: "intended_action_post_failed" }
 
    When `comment_url` is supplied, the server applies FOUR checks before
    accepting the seal (per G17 — "comment_url is the load-bearing precondition,
@@ -317,15 +339,17 @@ every poll_interval_secs:
   3. GET /api/rooms/synthesis-ready
   4. For each ready room:
        a. Quiet-period gate (D5): skip if last_transition_at + quiet_period_secs > now
-       b. POST /api/rooms/:id/claim-synthesis (15min TTL)
-          handle 5 distinct benign-409 codes per D5: claim_already_held,
-          invalid_status_for_claim, sequence_drift, claim_lost,
-          claim_through_seq_mismatch
-       c. GET /api/rooms/:id (bearer-gated, gates rooms.read_all per surface area)
-       d. Post-claim re-validation (D5): re-check participants for re-RSVP
+       b. POST /api/rooms/:id/claim-synthesis (15min TTL) — returns the
+          claim + room + participants + contributions composite (builder
+          pass-9 §2). Handle 5 distinct benign-409 codes per D5:
+          claim_already_held, invalid_status_for_claim, sequence_drift,
+          claim_lost, claim_through_seq_mismatch.
+       c. Post-claim re-validation (D5): re-check participants for re-RSVP
           / non-final-withdrawal races since claim
-       e. Withdraw-finality check (D5): compare withdrew_at_sequence vs
+       d. Withdraw-finality check (D5): compare withdrew_at_sequence vs
           throughSequence; skip if not final
+       e. Fetch fresh head_sha from GitHub (G21 client-side safety net):
+          gh pr view <pr> --json headRefOid → reviewed_head_sha
 
        # Two local generateObject calls (D2, D3) — both run on Codex (flat cost)
        f. Codex.generateObject(DerivedVerdictSchema) → { verdict }
@@ -334,7 +358,8 @@ every poll_interval_secs:
        # D1's invariant check + structural-floor check + D7 audit
        h. POST /api/rooms/:id/resolve-action {
             verdict, content, recommended_action,
-            sealed_through_sequence: <claim's throughSequence>
+            sealed_through_sequence: <claim's throughSequence>,
+            reviewed_head_sha: <SHA captured in step e>
           }
           → server runs aggregateWorkerVerdicts (structural floor); if the
             floor disagrees with the submitted verdict, server overrides and
@@ -353,12 +378,12 @@ every poll_interval_secs:
             gh pr comment <pr> -b <prose>
             → POST /api/rooms/:id/seal-decision {
                 comment_url: <gh response url>,
-                final_state: "decided"
+                final_state: "closed"
               }
        k. If permitted_action == "squash-merge":
             gh pr comment <pr> -b <prose-with-intended-action-header>
             → if comment fails: POST /api/rooms/:id/seal-decision {
-                final_state: "decided",
+                final_state: "closed",
                 downgrade_reason: "intended_action_post_failed"
               }
               # downgraded to comment-only because the operator-override
@@ -382,8 +407,8 @@ This split — `resolve-action` returns the permitted action, then `seal-decisio
 |---|---|---|
 | 1 | Settings storage: `hive:v1:installation:<id>:queen-settings` Redis hash (the BYOK envelope at `hive:byok:{installationId}` is unchanged; this RFC explicitly does not relocate it), operator-session GET/POST endpoints, Probot 60s TTL cache (D15 + G7 default-to-cloud on Redis-down). Mode-flip endpoint atomic per G12 (Redis MULTI/EXEC or per-installation flip-lock so cloud queen-tick can't claim between the in-flight check and the mode write) | Yes — no reader yet |
 | 2 | Cloud-side mode skip: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run D8's observer pass (read-only `listRooms`, emit "rooms-stuck-older-than-N-min" metric per G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
-| 3 | **Prep step**: move verdict primitives (`applyDowngradeOnlyFloor`, `aggregateWorkerVerdicts`, `mostConservative`, `extractContributionVerdict`, `DerivedVerdictSchema`) from `bot/api/lib/queen/verdict-deriver.ts` into `@hivemoot/war-room` (per builder pass-8 — web doesn't import bot; both bot and web import the shared package). New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `resolve-action`, `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` from apiarist, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). Inside `resolve-action`: structural-floor check via `applyDowngradeOnlyFloor` (G1, downgrade-only-when-structured-verdicts-present) → D1 invariant check using final verdict → G2 `queen.action_downgrade` audit event (and G1 `queen.verdict_floor_override` audit when the floor overrides the submitted verdict). D6 failure-ordering split: `resolve-action` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. Rate caps on `rooms.create` (D11) AND on `resolve-action` + `seal-decision` (G11; per-bearer + per-installation, with structured-warn telemetry). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
-| 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two local `generateObject` calls (D2: verdict via `DerivedVerdictSchema`, action via `RecommendedActionSchema`) — both run on Codex (flat cost). Submits both to `resolve-action`; server applies structural floor + D1 invariants and returns `permitted_action`. Calls `seal-decision` (D6) with verified comment URL for state transition. Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
+| 3 | **Prep step**: move verdict primitives (`applyDowngradeOnlyFloor`, `aggregateWorkerVerdicts`, `mostConservative`, `extractContributionVerdict`, `DerivedVerdictSchema`) from `bot/api/lib/queen/verdict-deriver.ts` into `@hivemoot/war-room` (per builder pass-8 — web doesn't import bot; both bot and web import the shared package). New HTTP endpoints (`synthesis-ready`; `claim-synthesis` returning the room+participants+contributions composite per builder pass-9 §2; `resolve-action`; `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` from apiarist, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). Inside `resolve-action`: structural-floor check via `applyDowngradeOnlyFloor` (G1) → head-SHA drift guard re-reading GitHub (D1 + builder pass-9 §3, fields `reviewed_head_sha` on the request body, server-side comparison at decision time) → D1 invariant check using final verdict → G2 `queen.action_downgrade` audit event (incl. `head_sha_drift` reason) + G1 `queen.verdict_floor_override` audit. D6 failure-ordering split: `resolve-action` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. State machine: `seal-decision` writes `final_state: "closed"` for comment + downgrade-comment paths (existing `RoomStatus`), `"decided_pending_action"` for squash-merge intent (the only NEW `RoomStatus` — per builder pass-9 §1, comment paths reuse `closed` rather than introducing a new `decided` state). Rate caps on `rooms.create` (D11) AND on `resolve-action` + `seal-decision` (G11). `decided_pending_action` carries `reviewed_head_sha` for tick-N+1 re-comparison. | Depends on PR 1's storage |
+| 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Captures `reviewed_head_sha` via fresh `gh pr view --json headRefOid` after `claim-synthesis` and before LLM (builder pass-9 §3 + G21 client-side safety net). Two local `generateObject` calls (D2: verdict via `DerivedVerdictSchema`, action via `RecommendedActionSchema`) — both run on Codex (flat cost). Submits verdict + action + `reviewed_head_sha` to `resolve-action`; server applies structural floor + head-SHA drift guard + D1 invariants and returns `permitted_action`. Calls `seal-decision` (D6) with verified comment URL for state transition. Two-phase commit state machine (D4) anchored on `throughSequence` (G3); at tick N+1 re-fetches head SHA from GitHub independent of webhook delivery. | Depends on PR 3 |
 | 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured override config UI (D12). Confirmation step on mode-flip surfaces D9 + G6's blocking conditions. | Depends on PR 1 |
 | 6 | Move BYOK UI from `/credentials` to `/settings/byok` (cosmetic; redirect old path). **Storage key NOT relocated** — only the dashboard route moves. | Independent |
 
@@ -429,7 +454,7 @@ Guard §1 (rephrased to current endpoint names): *"the merge decision MUST NOT b
 - **Room-level derived verdict == `APPROVE`** (taken from the structural floor `aggregateWorkerVerdicts` server-side; if the floor is non-decisive — which is the modern default per D3's honesty note — the local-queen-submitted LLM verdict is used after Zod validation. See D3 + G1).
 - `hivemoot:automerge` label present
 - CI status green per GraphQL `commit.statusCheckRollup`
-- Head SHA at synthesis-start === head SHA at merge-time (drift guard)
+- **Head SHA drift guard** (builder pass-9 §3): the local queen captures `reviewed_head_sha` from a fresh `gh pr view --json headRefOid` call AFTER `claim-synthesis` and BEFORE running the LLM, then submits it as a required field on `resolve-action`'s body. `resolve-action` re-reads head SHA from GitHub server-side at decision time and rejects with `permitted_action: "comment"` + `queen.action_downgrade(reason: head_sha_drift)` if `reviewed_head_sha != current_github_head`. For squash-merge, `seal-decision` stores `reviewed_head_sha` on the room (new field on `RoomCoreData` or audit row); at tick N+1, the local queen re-fetches head SHA from GitHub and compares against `reviewed_head_sha` BEFORE `gh pr merge --squash` — any mismatch downgrades to comment with `merge_downgraded(reason: head_sha_drift_at_tick_n1)`. **The reviewed SHA never comes from `throughSequence` or webhook state** — webhook delivery is the load-bearing dependency G21 covers, and using webhook-derived state for the drift guard would mean G21 failures could bypass the guard. The reviewed SHA always comes from a fresh GitHub read.
 - `last_post_close_drift_*` unset
 
 **Reviewer-requirement enforcement is deferred to GitHub** (guard pass-5): D1's invariants do NOT include "all required reviewers approved" because today's worker contributions store all review text in `raw_md` with `body = {}` (`agent/cli/hivemoot_agent/plugins_builtin/hivemoot/war_rooms/handler.py:277-284`); per-reviewer verdicts aren't deterministically extractable. CODEOWNERS, required reviews, and any other reviewer-side gates are enforced by GitHub branch protection at `gh pr merge --squash` time — D1's invariants are **additive guards on top of branch protection, not a replacement**. Operators on permissive branch-protection settings should pin their reviewer requirements at the GitHub side; the local queen will respect whatever the GitHub merge endpoint allows.
@@ -556,9 +581,9 @@ The 6-PR stack reshapes:
 
 2. **PR 2 — cloud-side mode skip + observer**: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run the D8 observer pass (read-only `listRooms`, emit stuck-room metric). Mode-flip endpoint blocks on in-flight rooms (D9).
 
-3. **PR 3 — endpoints + capabilities**: **Prep step**: move verdict primitives (`applyDowngradeOnlyFloor` + supporting helpers + `DerivedVerdictSchema`) from `bot/api/lib/queen/verdict-deriver.ts` into `@hivemoot/war-room` (builder pass-8). New `resolve-action` + `seal-decision` endpoint pair with **D1's server-side invariant check** at `resolve-action` + **D6's failure-ordering enforcement** (verified comment_url precondition at `seal-decision`) + **D7's audit event writes** (separate at each step). New `rooms.synthesize` capability + new `local_queen` preset (additive per D14, distinct from existing `queen` per builder pass-2). Token policy fields wired (D10). Rate caps on `rooms.create` (D11) AND on `resolve-action` + `seal-decision` (G11). New room state `decided_pending_action` (D4).
+3. **PR 3 — endpoints + capabilities**: **Prep step**: move verdict primitives (`applyDowngradeOnlyFloor` + supporting helpers + `DerivedVerdictSchema`) from `bot/api/lib/queen/verdict-deriver.ts` into `@hivemoot/war-room` (builder pass-8). New `claim-synthesis` (returns room+participants+contributions composite per builder pass-9 §2) + `resolve-action` (accepts `reviewed_head_sha` and runs head-SHA drift guard server-side, builder pass-9 §3) + `seal-decision` endpoint pair with **D1's server-side invariant check** at `resolve-action` + **D6's failure-ordering enforcement** (verified comment_url precondition at `seal-decision`) + **D7's audit event writes** (separate at each step). New `rooms.synthesize` capability + new `local_queen` preset (additive per D14, distinct from existing `queen` per builder pass-2). Token policy fields wired (D10). Rate caps on `rooms.create` (D11) AND on `resolve-action` + `seal-decision` (G11). State-machine: new `decided_pending_action` is the ONLY new `RoomStatus`; comment + downgrade-comment paths reuse existing `closed` (per builder pass-9 §1).
 
-4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two local `generateObject` calls — verdict (D3) + action (D2) — both on Codex (flat cost). Submits both to `resolve-action`; server applies structural floor + D1 invariants. Two-phase commit state machine (D4). Calls the `resolve-action` + `seal-decision` endpoint pair (D6) for invariant enforcement and state transitions. Loads structured override config (D12).
+4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Captures `reviewed_head_sha` via fresh `gh pr view --json headRefOid` after `claim-synthesis` and before LLM (builder pass-9 §3 + G21). Two local `generateObject` calls — verdict (D3) + action (D2) — both on Codex (flat cost). Submits verdict + action + `reviewed_head_sha` to `resolve-action`; server applies structural floor + head-SHA drift guard + D1 invariants. Two-phase commit state machine (D4); at tick N+1 re-fetches head SHA from GitHub independent of webhook delivery, downgrades to comment if mismatched. Calls the `resolve-action` + `seal-decision` endpoint pair (D6) for invariant enforcement and state transitions. Loads structured override config (D12).
 
 5. **PR 5 — `/dashboard/settings`**: Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured-config UI for override (D12). Confirmation step on mode-flip surfaces D9's blocking conditions.
 
@@ -635,7 +660,7 @@ Guard pass-3/pass-4 NEW-G19: PR 4 has the local queen execute `gh pr merge --squ
 Guard pass-4 NEW-G28: when `seal-decision` is called with `downgrade_reason: intended_action_post_failed` (the `gh pr comment` failure path in D6's failure-ordering branch), PR 3 must emit a structured `queen.intended_action_post_failed` audit event capturing `{room_id, recommended_action, intended_action, audit_id_from_resolve_action, error_class, retry_count}`. Distinct from G2's `queen.action_downgrade` (which fires when the server downgrades because invariants didn't permit) — G20 fires when the **dispatcher** downgrades because the comment leg failed. Both are operator-visible signals that mean different things; conflating them obscures whether the queen is misbehaving (G2) vs GitHub is unhealthy (G20).
 
 **G21 — Cloud webhook-delivery health is a load-bearing dependency surface for local mode.**
-Guard pass-5 NEW-G29: D8's pass-7 webhook-ownership pinning makes cloud webhook handlers the canonical writer for `throughSequence` bumps. If cloud webhooks silently fail for an installation (signature verification regression, GitHub-side delivery issue, App-installation revoked, etc.), the local queen sees no sequence bumps and can merge against a stale claim while the PR is actively changing. The hive queen's `gh pr list` poll backstops missed `pr.opened` but does NOT backstop missed `pr.synchronize` (head SHA changes between claim and `seal-decision`). Mitigations carried forward to PR 5: (a) cloud webhook receipt health surfaced as a per-installation dashboard signal alongside the queen-tick observer metric — if cloud has stopped firing webhooks for an installation, that's a distinct alarm from "rooms-stuck-older-than-N-min"; (b) the local queen's post-claim re-validation (D5) MUST re-fetch head SHA from GitHub and compare to the room's snapshot, providing a client-side safety net independent of webhook delivery. Out of v1 scope: full webhook delivery audit log on the dashboard. In v1 scope: per-installation webhook health signal + the head-SHA re-fetch in PR 4.
+Guard pass-5 NEW-G29: D8's pass-7 webhook-ownership pinning makes cloud webhook handlers the canonical writer for `throughSequence` bumps. If cloud webhooks silently fail for an installation (signature verification regression, GitHub-side delivery issue, App-installation revoked, etc.), the local queen sees no sequence bumps and can merge against a stale claim while the PR is actively changing. The hive queen's `gh pr list` poll backstops missed `pr.opened` but does NOT backstop missed `pr.synchronize` (head SHA changes between claim and `seal-decision`). **Builder pass-9 §3 — the head-SHA contract is the structural mitigation**: D1's drift guard uses a `reviewed_head_sha` captured from a fresh GitHub read (`gh pr view --json headRefOid` after `claim-synthesis`, before LLM), submitted on `resolve-action` body, re-checked server-side at `resolve-action`, stored on the room for squash-merge intents, and re-fetched + compared at tick N+1 before `gh pr merge --squash`. Webhook-derived `throughSequence` is NEVER the basis for the drift check — the reviewed SHA is always a fresh GitHub read so webhook delivery failures cannot bypass the guard. Mitigations carried forward to PR 5: (a) cloud webhook receipt health surfaced as a per-installation dashboard signal alongside the queen-tick observer metric — if cloud has stopped firing webhooks for an installation, that's a distinct alarm from "rooms-stuck-older-than-N-min". Out of v1 scope: full webhook delivery audit log on the dashboard. In v1 scope: the head-SHA contract above (PR 3 + PR 4) + per-installation webhook health signal (PR 5).
 
 **G22 — `seal-decision` must be idempotent on retry, bounded by a 15min window.**
 Guard pass-6: the local queen calls `seal-decision` after `gh pr comment` returns. A transient network failure between `gh pr comment` succeeding and the queen's HTTP call to `seal-decision` will cause a retry with the same `comment_url` + `audit_id`. The endpoint MUST be idempotent: a second call with the same `audit_id` returns the same `final_state` (or 409 conflict if the first call already transitioned and the second is racing). Naively writing the state transition twice would double-emit the audit event. **Drone pass-16 refinement**: the idempotency window has an upper bound — `audit_id` is accepted at `seal-decision` only if the originating `resolve-action` audit row is ≤15 min old (matching G4's `decided_pending_action` TTL); older `audit_id`s are rejected to prevent stale replay attacks. PR 3 includes negative tests: (a) call `seal-decision` twice with same `audit_id` → second call returns same response, single audit event in the log; (b) `audit_id` whose `resolve-action` row is >15min old → seal returns 410 Gone.
