@@ -56,7 +56,7 @@ Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the
 
 Two actions, structurally validated by the API at decision time:
 
-1. **comment** — synthesis prose posted via the bot's existing `GitHubDecisionPoster` (today's path). Idempotent-retryable; failure does NOT undo room close.
+1. **comment** — in cloud mode, synthesis prose is posted via the bot's existing `GitHubDecisionPoster` against `decide` + `close-with-decision`. In local mode, the hive queen posts via `gh pr comment` after going through `resolve-action` + `seal-decision`. Both flows are idempotent-retryable on the comment leg; failure does NOT undo room close in either flow.
 2. **squash-merge** — gated by D1's server-side invariant check (label, approvals, CI, head SHA stable, no drift). Irreversible; **D6 inverts the failure ordering vs comment** — `resolve-action` returns the permitted action first, then the agent posts the intended-action comment, then `seal-decision` requires the verified comment URL to enter `decided_pending_action`, then tick N+1 runs the merge. If any step fails, no merge.
 
 Both follow the two-phase commit state machine (D4): tick N posts the synthesis with the chosen action header → room enters `decided` (for comment) or `decided_pending_action` (for squash-merge) → for `squash-merge`, tick N+1 (≥60s later, ≤15min TTL per G4) re-validates `throughSequence` (G3) + GitHub-side invariants → executes or downgrades.
@@ -298,7 +298,13 @@ D6's "shared module callable from both" was imprecise — TypeScript bot/web cod
 - D7's audit event write (single source of truth for action records)
 - G2's `queen.action_downgrade` event when `chosen_action != permitted_action`
 
-Cloud queen's `GitHubDecisionPoster` (TypeScript) and hive queen's plugin (Python via gh CLI) call the same endpoint. The endpoint enforces. The dispatcher logic on each side just builds the request and executes the GitHub action AFTER the endpoint has approved it.
+**The two modes use different endpoints with different capabilities, by design (D14, G18):**
+
+- **Cloud queen** — continues using existing `decide` (synthesis claim, gated by `rooms.decide`) + `close-with-decision` (gated by `rooms.close`) routes, action surface is **comment-only** via the existing `GitHubDecisionPoster`. Does NOT invoke `resolve-action` and does NOT inherit D1's invariant check. Safe today because cloud has no irreversible actions; pinned invariant per G18 is that any future irreversible cloud action MUST first route through `resolve-action`.
+
+- **Local queen** — uses the new `resolve-action` + `seal-decision` endpoint pair (gated by `rooms.synthesize`), action surface is **comment OR squash-merge**, posts via `gh pr comment` and `gh pr merge --squash` from inside the hive container. D1's server-side invariant check, the four-check `comment_url` verification, the two-phase commit state machine all live on this path.
+
+Both modes hit the same Redis storage; only the dispatcher endpoints differ. Cloud and local will never compete for the same room in v1 because the per-installation `queen_mode` toggle directs each installation to exactly one path.
 
 ### Trigger loop body (per Decisions D1–D6, G1, G3, G4)
 
@@ -339,7 +345,7 @@ every poll_interval_secs:
 
        # Mint token + post intended-action comment FIRST — comment URL
        # becomes the precondition for the state transition
-       i. Mint installation token via /api/installation_tokens
+       i. Mint installation token via /api/github/installation-tokens
           (D10 policy: pull_requests:write, issues:write, metadata:read,
            allowed_repos = watched_repos)
        j. If permitted_action == "comment":
@@ -443,7 +449,7 @@ Drone: *"the local queen doesn't have to throw away the verdict stack."* The 3-l
 Guard §4 + drone: drop the opt-out flag; the `require_dry_run_for_merge` second-tick flow is mandatory in v1. New room state `decided_pending_action`:
 
 - **Tick N (synthesis):** verdict + action derived → if action=`squash-merge` and D1 invariants pass, comment posted with "intended action: squash-merge" header → room enters `decided_pending_action`.
-- **Tick N+1 (≥60s later):** queen re-reads room → if no operator override comment (`hivemoot:hold` label, operator reply, etc.), head SHA unchanged, CI still green, labels still present → execute merge. Any change → downgrade to comment with "merge skipped because [reason]," room transitions to `decided`.
+- **Tick N+1 (≥60s later):** queen re-reads room → re-validates `throughSequence` (G3: any room-state change since tick N bumps the sequence and reopens the question) AND the GitHub-side invariants: `hivemoot:hold` label NOT present (per G13: label-only override for v1, no free-form text scanning), head SHA unchanged, CI still green, expected labels still present, `last_post_close_drift_*` still unset → execute merge. Any of those failing → downgrade to comment with "merge skipped because [reason]," room transitions to `decided`.
 
 **D5 — Race-condition mitigations replicated in the local queen.**
 Drone follow-up §1: *"the local queen will hit the same races — it's calling the same API."* The hive queen plugin replicates the four mitigations the cloud manager loop already has:
@@ -470,7 +476,7 @@ Local queen flow (new): `resolve-action` (server-side invariant check + audit, n
 
 **Expected behavior — agent crash between `resolve-action` and `seal-decision`:** if the queen agent crashes after `resolve-action` succeeds but before `seal-decision` is called, the room remains in `awaiting_contributions` or `deciding` (no state transition happened). The `resolve-action` audit event becomes a harmless historical record. The next tick's `synthesis-ready` query surfaces the room again and the queen re-claims and re-derives. **This is expected, not a bug** — `resolve-action` is intentionally idempotent at the audit-log level (multiple entries are fine) but transitionless until `seal-decision` arrives.
 
-Implementation: the **server-side `resolve-action` + `seal-decision` endpoints** are the shared enforcement point. TypeScript bot/web isn't directly callable from the Python agent runtime (separate processes, different language) — the actual single source of truth is the network boundary. Both modes hit the same endpoints; the endpoints own invariant-check + failure-ordering branch + audit-event write. Cloud's `GitHubDecisionPoster` and the hive queen's Python plugin each build their own request and execute the GitHub action only after the endpoint approves it, but the policy decision is server-side and uniform.
+Implementation: the **server-side `resolve-action` + `seal-decision` endpoints** are the shared enforcement point **for the local-mode path specifically**. TypeScript bot/web isn't directly callable from the Python agent runtime (separate processes, different language) — the actual single source of truth is the network boundary. The hive queen's Python plugin builds its own request and executes the GitHub action only after the endpoint approves it; the policy decision (D1's invariant check, G17's `comment_url` verification, G2's downgrade audit) is server-side and uniform per the endpoint contract. Cloud queen continues using its existing `GitHubDecisionPoster` against `decide`/`close-with-decision` per G18 — D6's failure-ordering inversion only applies to the local-mode `squash-merge` action, since cloud has no merge surface.
 
 ### Mechanism / policy
 
