@@ -2,7 +2,7 @@
 
 **Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Six review passes total: drone × 5 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification), guard × 2 (security audit + post-Decisions APPROVE), builder × 2 (CHANGES_REQUESTED on doc coherence then a second CHANGES_REQUESTED on the dry-run-comment-failure window + capability preset shape). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, the two-step `decide` → `seal-decision` endpoint split (builder pass-2 §1), the distinct `local_queen` preset (builder pass-2 §2), and the body sections rewritten to match the Decisions model rather than carrying the original prompt-driven proposal as active guidance.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Eight review passes total: drone × 6 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit), guard × 2 (security audit + post-Decisions APPROVE), builder × 3 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
 
 ---
 
@@ -57,7 +57,7 @@ Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the
 Two actions, structurally validated by the API at decision time:
 
 1. **comment** — synthesis prose posted via the bot's existing `GitHubDecisionPoster` (today's path). Idempotent-retryable; failure does NOT undo room close.
-2. **squash-merge** — gated by D1's server-side invariant check (label, approvals, CI, head SHA stable, no drift). Irreversible; **D6 inverts the failure ordering vs comment** — `close-with-decision` succeeds first, THEN merge runs. If close-with-decision fails, no merge.
+2. **squash-merge** — gated by D1's server-side invariant check (label, approvals, CI, head SHA stable, no drift). Irreversible; **D6 inverts the failure ordering vs comment** — `resolve-action` returns the permitted action first, then the agent posts the intended-action comment, then `seal-decision` requires the verified comment URL to enter `decided_pending_action`, then tick N+1 runs the merge. If any step fails, no merge.
 
 Both follow the two-phase commit state machine (D4): tick N posts the synthesis with the chosen action header → room enters `decided` (for comment) or `decided_pending_action` (for squash-merge) → for `squash-merge`, tick N+1 (≥60s later, ≤15min TTL per G4) re-validates `throughSequence` (G3) + GitHub-side invariants → executes or downgrades.
 
@@ -140,7 +140,7 @@ POST /api/rooms/:id/derive-verdict
    → returns { verdict, source: "structural_floor" | "llm_derived" }
 
 # NEW — bearer-gated (capability: rooms.synthesize). Two-step transaction:
-POST /api/rooms/:id/decide
+POST /api/rooms/:id/resolve-action
    → applies D1's invariant check, returns { permitted_action, audit_id },
      writes D7 audit event (including G2 queen.action_downgrade when
      recommendation != permitted_action). Room state UNCHANGED yet.
@@ -196,14 +196,14 @@ local_queen:
   - rooms.close
 
   # New for local mode:
-  - rooms.synthesize          # NEW — additive per D14, gates close-with-decision endpoint
+  - rooms.synthesize          # NEW — additive per D14, gates the new decide + seal-decision endpoints
   - rooms.watch               # MOVED from worker preset — local queen polls /watching for synthesis-ready
   - installation_token.mint   # MOVED from apiarist preset — gated by D10 token policy (allowed_repos + allowed_permissions)
 ```
 
 The cloud queen keeps using the existing `queen` preset (no change). Local-mode bearers use `local_queen`. **Three paths in total: existing reviewer presets (drone/guard/etc.), existing `queen` preset (cloud queen), new `local_queen` preset (hive queen). No silent expansion of any existing preset.**
 
-Per D14, the new `rooms.synthesize` capability gates the new `close-with-decision` endpoint (which combines claim+synth+close+audit). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use.
+Per D14, the new `rooms.synthesize` capability gates the new `resolve-action` + `seal-decision` endpoint pair. Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use.
 
 ### Storage
 
@@ -270,7 +270,7 @@ Same `messaging-telegram` agent (or a separate `hivemoot-queen` apiary service) 
 
 ### D6 boundary: server-side dispatcher, not literal code sharing
 
-D6's "shared module callable from both" was imprecise — TypeScript bot/web code is not directly callable from the Python agent runtime (separate processes, different language). The actual boundary is the new `POST /api/rooms/:id/close-with-decision` endpoint (server-side TypeScript): both modes hit it. The endpoint owns:
+D6's "shared module callable from both" was imprecise — TypeScript bot/web code is not directly callable from the Python agent runtime (separate processes, different language). The actual boundary is the new `POST /api/rooms/:id/resolve-action` + `POST /api/rooms/:id/seal-decision` endpoint pair (server-side TypeScript): both modes hit them. Together they own:
 
 - D1's invariant check (server reads label/CI/SHA/drift fresh from GitHub at decision time)
 - D6's failure ordering branch (`comment` follows today's flow; `squash-merge` is rejected at this endpoint if invariants fail — the agent then independently runs `gh pr merge`)
@@ -308,7 +308,7 @@ every poll_interval_secs:
        g. Codex.generateObject(RecommendedActionSchema) → { recommendation, reasoning }
 
        # D1's invariant check + D7 audit — server determines permitted_action
-       h. POST /api/rooms/:id/decide {
+       h. POST /api/rooms/:id/resolve-action {
             verdict, content, recommended_action,
             sealed_through_sequence: <claim's throughSequence>
           }
@@ -346,7 +346,7 @@ every poll_interval_secs:
               # downgrades to comment if anything changed since tick N
 ```
 
-This split — `decide` returns the permitted action, then `seal-decision` records the verified comment URL and transitions state — is the architectural fix for builder's pass-2 §1: a failed intended-action comment can never leave a room in `decided_pending_action`. No public override window means no merge eligibility.
+This split — `resolve-action` returns the permitted action, then `seal-decision` records the verified comment URL and transitions state — is the architectural fix for builder's pass-2 §1: a failed intended-action comment can never leave a room in `decided_pending_action`. No public override window means no merge eligibility.
 
 ## Implementation slicing
 
@@ -354,7 +354,7 @@ This split — `decide` returns the permitted action, then `seal-decision` recor
 |---|---|---|
 | 1 | Settings storage: `hive:v1:installation:<id>:queen-settings` Redis hash (the BYOK envelope at `hive:byok:{installationId}` is unchanged; this RFC explicitly does not relocate it), operator-session GET/POST endpoints, Probot 60s TTL cache (D15 + G7 default-to-cloud on Redis-down) | Yes — no reader yet |
 | 2 | Cloud-side skip-flag: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8 with G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
-| 3 | New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `derive-verdict`, `decide`, `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` + `rooms.watch` from other presets, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). D1 invariant check + G2 `queen.action_downgrade` audit event in `decide`. D6 failure-ordering split: `decide` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. Rate caps on `rooms.create` (D11). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
+| 3 | New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `derive-verdict`, `resolve-action`, `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` + `rooms.watch` from other presets, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). D1 invariant check + G2 `queen.action_downgrade` audit event in `resolve-action`. D6 failure-ordering split: `resolve-action` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. Rate caps on `rooms.create` (D11). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
 | 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two structured `generateObject` calls (D2: action via Zod schema, D3: verdict via cloud endpoint). Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
 | 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured override config UI (D12). Confirmation step on mode-flip surfaces D9 + G6's blocking conditions. | Depends on PR 1 |
 | 6 | Move BYOK UI from `/credentials` to `/settings/byok` (cosmetic; redirect old path). **Storage key NOT relocated** — only the dashboard route moves. | Independent |
@@ -395,8 +395,8 @@ Where guard's reasoning shaped a decision verbatim, it's quoted.
 
 ### Architectural (load-bearing)
 
-**D1 — Server-side merge invariants enforced at `decide` (per the two-step decide → seal-decision split).**
-Guard §1: *"the merge decision MUST NOT be a string Codex emits. It must be a server-side invariant the close-with-decision endpoint re-validates after receiving the verdict."* The `decide` endpoint re-reads from GitHub at decision-time:
+**D1 — Server-side merge invariants enforced at `resolve-action` (per the two-step resolve-action → seal-decision split).**
+Guard §1 (rephrased to current endpoint names): *"the merge decision MUST NOT be a string Codex emits. It must be a server-side invariant the dispatcher endpoint re-validates after receiving the verdict."* The new `resolve-action` endpoint re-reads from GitHub at decision-time:
 
 - `hivemoot:automerge` label present
 - All required reviewers (CODEOWNERS or room participant set) posted contributions with verdict `approve`
@@ -437,20 +437,22 @@ Drone follow-up §3 + war-room contribution: the local queen's action dispatcher
 
 - `parseSubjectRef` regex defense (anchored, no shell-meta passthrough)
 - `POSTABLE` subject-type gate (`pr_review | mention_response | issue_triage` only)
-- **Failure ordering: `close-with-decision` BEFORE `gh pr merge --squash`. This is the inverse of today's `GitHubDecisionPoster` pattern.**
+- **Failure ordering: server-side `resolve-action` (durable) → comment post (verified URL) → server-side `seal-decision` (state transition) → tick N+1 → `gh pr merge --squash` (irreversible). This is the inverse of today's `GitHubDecisionPoster` pattern.**
 
 Drone: *"The current `GitHubDecisionPoster` enforces: failure to post to GitHub does NOT undo the room close. The decision is durable; the post is best-effort. For squash-merge, this model inverts. `gh pr merge --squash` is irreversible."*
 
 Today's flow (cloud): close room → post comment. Comment-post failure is recoverable; room-state is source of truth.
 
-Local queen flow (new): close-with-decision (durable, recoverable via watchdog) → mint installation token → `gh pr merge --squash` (irreversible). If close-with-decision fails, no merge happens. If merge fails after close, the room is correctly recorded + an audit event captures the dispatch failure.
+Local queen flow (new): `resolve-action` (server-side invariant check + audit, no state transition) → mint installation token → post intended-action comment via `gh pr comment` → `seal-decision` (transitions to `decided` or `decided_pending_action` based on whether comment_url was verified) → tick N+1 (≥60s, ≤15min G4 TTL): re-validate throughSequence + GitHub-side invariants → `gh pr merge --squash` (irreversible). If `resolve-action` fails, no merge. If comment fails between `resolve-action` and `seal-decision`, `seal-decision` is called with `downgrade_reason: intended_action_post_failed` and the room transitions to `decided` with no merge eligibility. If merge fails at tick N+1, the room is correctly recorded + an audit event captures the dispatch failure.
 
-Implementation: the **server-side `decide` + `seal-decision` endpoints** are the shared enforcement point. TypeScript bot/web isn't directly callable from the Python agent runtime (separate processes, different language) — the actual single source of truth is the network boundary. Both modes hit the same endpoints; the endpoints own invariant-check + failure-ordering branch + audit-event write. Cloud's `GitHubDecisionPoster` and the hive queen's Python plugin each build their own request and execute the GitHub action only after the endpoint approves it, but the policy decision is server-side and uniform.
+**Expected behavior — agent crash between `resolve-action` and `seal-decision`:** if the queen agent crashes after `resolve-action` succeeds but before `seal-decision` is called, the room remains in `awaiting_contributions` or `deciding` (no state transition happened). The `resolve-action` audit event becomes a harmless historical record. The next tick's `synthesis-ready` query surfaces the room again and the queen re-claims and re-derives. **This is expected, not a bug** — `resolve-action` is intentionally idempotent at the audit-log level (multiple entries are fine) but transitionless until `seal-decision` arrives.
+
+Implementation: the **server-side `resolve-action` + `seal-decision` endpoints** are the shared enforcement point. TypeScript bot/web isn't directly callable from the Python agent runtime (separate processes, different language) — the actual single source of truth is the network boundary. Both modes hit the same endpoints; the endpoints own invariant-check + failure-ordering branch + audit-event write. Cloud's `GitHubDecisionPoster` and the hive queen's Python plugin each build their own request and execute the GitHub action only after the endpoint approves it, but the policy decision is server-side and uniform.
 
 ### Mechanism / policy
 
 **D7 — Dispatcher writes audit events, not Codex's self-report.**
-Guard §5: *"don't trust Codex to self-report the action it took."* The action dispatcher (the `gh pr X` subprocess wrapper) emits the audit event with: `{actor: queen-runner-id, decision-prompt-hash, override-hash, action-attempted, action-actual, exit-code, room_id}`. Server-side `close-with-decision` records the canonical action it observed in the request, separate from any prose self-description.
+Guard §5: *"don't trust Codex to self-report the action it took."* The action dispatcher (the `gh pr X` subprocess wrapper) emits the audit event with: `{actor: queen-runner-id, decision-prompt-hash, override-hash, action-attempted, action-actual, exit-code, room_id}`. Server-side `resolve-action` records the canonical permitted_action it returned, and `seal-decision` records the verified comment_url (or downgrade_reason). Both are separate from any prose self-description.
 
 **D8 — Cloud observes via metrics in local mode (not failover, alarm).**
 Guard §6 + drone agreement: cloud-side queen-tick reads the room list when `queen_mode=local`, **doesn't claim or synthesize**, but emits one metric per installation: "rooms ready for synthesis older than N minutes." The dashboard heartbeat surfaces both the agent's self-reported heartbeat AND the cloud's view. If the agent self-reports healthy but the cloud sees rooms piling up, the dashboard alarms. *"The self-reported heartbeat from a hung process is famously unreliable"* — guard.
@@ -465,7 +467,7 @@ Guard §8: when the dashboard mints the queen-mode bearer's GitHub installation 
 Guard §2: the existing subject-type allowlist is already in place at `web/src/app/api/rooms/route.ts:35-39`; the gap is the rate cap. Add per-bearer-per-minute and per-installation-per-minute caps on the `rooms.create` route. Structured-warn telemetry on near-limit hits. Don't tie to subject_type — the storage cost is the same regardless.
 
 **D12 — Prompt override is structured YAML config, not free-form text.**
-Drone: *"free-form prompt override is a loaded gun pointed at the merge gate."* The override schema (stored in `installation:<id>:settings.queen_prompt_override`):
+Drone: *"free-form prompt override is a loaded gun pointed at the merge gate."* The override schema (stored as the `queen_prompt_override` field of `hive:v1:installation:<id>:queen-settings`):
 
 ```yaml
 queen_prompt_override:
@@ -481,7 +483,7 @@ Bounded surface; rendered into the prompt's "Repo conventions" section. Free-for
 Both reviewers + RFC lean (a). The action enum is `{ comment, squash-merge }` in v1, expanded only via code change + capability review. Each new verb gets its own dispatcher-side invariant check before merging.
 
 **D14 — `rooms.synthesize` is additive to existing `rooms.decide` + `rooms.close`.**
-Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `rooms.synthesize` capability gates the new `close-with-decision` endpoint (which combines claim + synthesize + close + audit-event-write into one atomic transaction). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. The new `queen` preset bundle adds `rooms.synthesize` + `rooms.create` (already there) + `installation_token.mint` (already there) without removing anything.
+Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `rooms.synthesize` capability gates the new `resolve-action` + `seal-decision` endpoints. Atomicity is per-step (each call is its own atomic transaction; the multi-step flow's safety comes from `seal-decision`'s precondition check on `comment_url`, not from atomicity across calls). Existing `rooms.decide` and `rooms.close` capabilities continue to gate the existing endpoints, which the cloud queen continues to use. The new `local_queen` preset bundle includes `rooms.synthesize` + `rooms.watch` (moved from worker) + `installation_token.mint` (moved from apiarist) — see "Capability bundle" section for the full list and rationale.
 
 **D15 — Webhook `queen_mode` cached in Probot with 60s TTL.**
 Drone follow-up minor: cloud-side webhook handlers and the queen-tick read `queen_mode` via a process-local cache with a 60-second TTL on hit, falling back to Redis on miss/expiry. Avoids hot-path Redis roundtrip on every webhook event for local-mode installations. Mode changes propagate within ≤60s after the operator toggles.
@@ -514,7 +516,7 @@ The 6-PR stack reshapes:
 
 2. **PR 2 — cloud-side skip-flag**: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8). Mode-flip endpoint blocks on in-flight rooms (D9).
 
-3. **PR 3 — endpoints + capabilities**: New `close-with-decision` endpoint with **D1's server-side invariant check** + **D6's shared dispatch module** + **D7's audit event write**. New `rooms.synthesize` capability (additive per D14). Token policy fields wired (D10). New room state `decided_pending_action` (D4).
+3. **PR 3 — endpoints + capabilities**: New `resolve-action` + `seal-decision` endpoint pair with **D1's server-side invariant check** at `resolve-action` + **D6's failure-ordering enforcement** (verified comment_url precondition at `seal-decision`) + **D7's audit event writes** (separate at each step). New `rooms.synthesize` capability + new `local_queen` preset (additive per D14, distinct from existing `queen` per builder pass-2). Token policy fields wired (D10). New room state `decided_pending_action` (D4).
 
 4. **PR 4 — hive queen plugin**: trigger loop with **D5's race mitigations** (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two `generateObject` calls (D2: verdict + action). Two-phase commit state machine (D4). Calls D6's shared dispatch module. Loads structured override config (D12).
 
@@ -532,7 +534,7 @@ Guard's post-Decisions APPROVE review identified 9 implementation details the De
 D3 says the local agent "can either call the cloud-side verdict-derivation endpoints or replicate the logic in Python." But the verdict-derivation logic lives at `bot/api/lib/queen/verdict-deriver.ts` as a library, not a route. PR 3 must expose `POST /api/rooms/:id/derive-verdict` gated by `rooms.synthesize`, returning `{ verdict, source: "structural_floor" | "llm_derived" }`. Without this, D3 collapses to "Python reimplements the stack" and the single-source-of-truth invariant is lost.
 
 **G2 — D1's silent downgrade should emit a structured audit event, not just verdict prose.**
-A divergence between Codex's chosen action (`squash-merge`) and what the server permits (`comment` only) is a security signal, not just a UX detail. PR 3's `close-with-decision` endpoint emits a separate `queen.action_downgrade` audit event whenever `chosen_action != permitted_action`, surfaced on the dashboard alongside the per-room timeline. If Codex consistently picks merge when invariants fail, that's a sign of prompt drift, prompt injection, or compromised override — operators need to see it.
+A divergence between Codex's chosen action (`squash-merge`) and what the server permits (`comment` only) is a security signal, not just a UX detail. PR 3's `resolve-action` endpoint emits a separate `queen.action_downgrade` audit event whenever `recommended_action != permitted_action`, surfaced on the dashboard alongside the per-room timeline. If Codex consistently picks merge when invariants fail, that's a sign of prompt drift, prompt injection, or compromised override — operators need to see it.
 
 **G3 — D4's tick N+1 re-validation anchors on `throughSequence`, not enumerated conditions.**
 The Decisions text lists specific N+1 invariants (`hivemoot:hold` label, head SHA, CI status, label set). Cleaner: the room's `throughSequence` at tick N+1 must equal the value sealed at tick N. Any room-state change (new participant, contribution edit, withdrawal) bumps the sequence and reopens the question. PR 4 implements this as the primary guard, with the GitHub-side checks (label / CI / SHA / drift) as secondary.
