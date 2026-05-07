@@ -407,3 +407,43 @@ The 6-PR stack reshapes:
 6. **PR 6 — BYOK relocation**: cosmetic; redirect old `/credentials` path.
 
 PR 1 → PR 2 + PR 3 in parallel → PR 4 (depends on PR 3) → PR 5 (depends on PR 1) → PR 6 (independent).
+
+### Carried-forward implementation notes (PR-blockers, not RFC-blockers)
+
+Guard's post-Decisions APPROVE review identified 9 implementation details the Decisions section leaves under-specified. They aren't architectural — the trust model and ordering are settled. They're concrete things each PR's review must confirm before code lands. Captured here so they're not re-debated when the implementation lands.
+
+**G1 — D3 needs a new HTTP endpoint, not just library access.**
+D3 says the local agent "can either call the cloud-side verdict-derivation endpoints or replicate the logic in Python." But the verdict-derivation logic lives at `bot/api/lib/queen/verdict-deriver.ts` as a library, not a route. PR 3 must expose `POST /api/rooms/:id/derive-verdict` gated by `rooms.synthesize`, returning `{ verdict, source: "structural_floor" | "llm_derived" }`. Without this, D3 collapses to "Python reimplements the stack" and the single-source-of-truth invariant is lost.
+
+**G2 — D1's silent downgrade should emit a structured audit event, not just verdict prose.**
+A divergence between Codex's chosen action (`squash-merge`) and what the server permits (`comment` only) is a security signal, not just a UX detail. PR 3's `close-with-decision` endpoint emits a separate `queen.action_downgrade` audit event whenever `chosen_action != permitted_action`, surfaced on the dashboard alongside the per-room timeline. If Codex consistently picks merge when invariants fail, that's a sign of prompt drift, prompt injection, or compromised override — operators need to see it.
+
+**G3 — D4's tick N+1 re-validation anchors on `throughSequence`, not enumerated conditions.**
+The Decisions text lists specific N+1 invariants (`hivemoot:hold` label, head SHA, CI status, label set). Cleaner: the room's `throughSequence` at tick N+1 must equal the value sealed at tick N. Any room-state change (new participant, contribution edit, withdrawal) bumps the sequence and reopens the question. PR 4 implements this as the primary guard, with the GitHub-side checks (label / CI / SHA / drift) as secondary.
+
+**G4 — `decided_pending_action` needs an explicit TTL.**
+D4's two-phase commit waits "≥60s" for tick N+1 but doesn't bound how long a room can sit pending. Default: 15 min max age in `decided_pending_action`. After that, the watchdog (cloud queen-tick in cloud mode, hive plugin's own watchdog in local mode) re-claims and either re-validates-and-merges or downgrades-to-comment. PR 4 implements this; D8's "rooms-ready-older-than-N" metric (PR 5 dashboard) extends to count `decided_pending_action` past TTL.
+
+**G5 — D8's alarm threshold + channel pinned.**
+N is 5 min for "synthesis-ready but not claimed" and 15 min for "decided_pending_action stuck." Channels: dashboard banner for steady-state visibility, plus a configurable webhook for alerting (PagerDuty / Slack / etc.) on threshold breach. PR 5 ships the dashboard threshold; the webhook surface is post-v1.
+
+**G6 — D9's force-expire escape hatch requires auth + confirmation + audit.**
+Force-expiring an active synthesis claim is a footgun. PR 5's UI:
+- Operator-session-only (no capability-bearer access).
+- Confirmation modal listing affected rooms.
+- Emits `queen.claim_force_expired` audit event with `{operator, room_id, original_claimed_by, reason}`.
+- Surfaces in the room's events log.
+
+**G7 — D15's Redis-down behavior: default-to-cloud-processing + structured alarm.**
+On Redis read failure during webhook handling, the cloud bot defaults to **processing the webhook normally** (cloud-mode behavior). Justification: D5's claim contention bounds cloud double-processing if local is also active; cloud-skipping is observable but silent (rooms pile up before D8's metric fires). Emits `queen.mode_resolution_failed` structured alarm. PR 1 documents this in the cache-fallback path.
+
+**G8 — D12's override surface is not a trust boundary.**
+Explicit note for future contributors: the structured prompt override (`merge_conventions`, `additional_blockers`) is operator-rendered text that flows into Codex's prompt context. With D1's server-side invariants in place, a malicious override can only misalign the verdict prose — it cannot bypass merge invariants. **Future code touching the override surface MUST NOT relax this assumption** (e.g., don't add an override key that influences the dispatcher's policy resolution; the dispatcher's policy is code, not config).
+
+**G9 — D10's `contents:read` drop verified by token-policy test.**
+PR 3's token-policy tests assert that the queen-mode bearer's GitHub installation token, minted with `policy.allowed_permissions = { pull_requests: "write", issues: "write", metadata: "read" }`, can successfully:
+- `gh pr view --json title,headRefName,headRefOid,mergeable,statusCheckRollup,labels` (no contents:read needed)
+- `gh pr comment <pr> -b "..."`
+- `gh pr merge --squash <pr>`
+
+against a private repo. If any field requires `contents:read`, the test fails and PR 3 doesn't merge until the policy is corrected.
