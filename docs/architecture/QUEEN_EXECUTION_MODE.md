@@ -2,7 +2,7 @@
 
 **Status:** Decisions reached — see "Decisions" section below.
 **Author:** dkjazz (via this PR)
-**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Eight review passes total: drone × 6 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit), guard × 2 (security audit + post-Decisions APPROVE), builder × 3 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
+**Reviewers consulted:** the fleet (hive-guard + hive-drone + hive-builder). Nine review passes total: drone × 6 (verdict-stack analysis + trigger-loop code paths + failure-model inversion + capability annotation audit + repeat verification + post-rewrite stale-name audit), guard × 2 (security audit + post-Decisions APPROVE), builder × 4 (doc coherence → dry-run-comment-failure window + capability preset shape → endpoint name collision + Decisions-prose stale references → cloud-does-nothing-vs-observer reconciliation + capability "moved" wording). All reviewer feedback baked into D1–D16, the carry-forward G1–G9, the two-step `resolve-action` → `seal-decision` endpoint split (builder pass-2 §1; renamed from `decide` per builder pass-3 to avoid colliding with the existing `/api/rooms/:id/decide` claim route), the distinct `local_queen` preset (builder pass-2 §2; `rooms.watch` and `installation_token.mint` are SHARED with worker/apiarist per builder pass-4, not "moved"), and the body + Decisions sections rewritten to match the chosen model rather than carrying the original prompt-driven proposal as active guidance.
 
 ---
 
@@ -25,7 +25,7 @@ The proposal: let the operator opt the war-room queen into running on the hive (
 
 * Reviewer agents — drone, guard, builder, etc. still discover rooms via `/watching`, /present, /contribute exactly as today.
 * Storage shape — same room hash, same events log, same participants/contributions sub-keys.
-* Webhook subscription — the cloud bot still receives every webhook GitHub sends; we can't unsubscribe per-installation. The new behavior is "cloud reads the installation's `queen_mode` and early-returns when local."
+* Webhook subscription — the cloud bot still receives every webhook GitHub sends; we can't unsubscribe per-installation. The new behavior is "cloud reads the installation's `queen_mode` and skips claim/synthesize/post when local — but still emits D8's stuck-room metric on every queen-tick so the dashboard heartbeat works."
 * BYOK envelope — still operator-provided, still encrypted at rest. Just becomes irrelevant when `queen_mode=local`.
 
 ## Two modes
@@ -37,7 +37,7 @@ The proposal: let the operator opt the war-room queen into running on the hive (
 | **Action** | Post comment to PR | Post comment OR squash-merge OR (future) request-changes |
 | **GitHub auth** | Bot's installation token | Queen mints installation token via capability |
 | **Cost** | BYOK per-token | Codex subscription (flat) |
-| **Cloud's role when local is on** | — | **Nothing for this installation** |
+| **Cloud's role when local is on** | — | **No claim/synthesize/post/merge.** Still observes (D8: emits "rooms-stuck-older-than-N-min" metric for the dashboard heartbeat). |
 | **Failover** | Vercel watchdog + max-age expiration | None — opt-in commits to hive uptime |
 
 ## Per-installation toggle
@@ -48,7 +48,7 @@ hive:v1:installation:<id>:queen-settings   hash
   queen_prompt_override: <yaml-encoded blob, optional>  # see D12
 ```
 
-Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the Probot 60s TTL cache (D15). If `local`: log + early-return. The BYOK envelope keeps its existing key (`hive:byok:{installationId}`) — relocating it is **out of scope** for this RFC and would need a separate migration plan with key-rotation handling.
+Read by every cloud-side handler (queen-tick + webhook routes) on entry, via the Probot 60s TTL cache (D15). If `local`: skip the claim/synthesize/post path **but still run D8's observer pass** (read-only `listRooms` per tick to emit the stuck-room metric — see PR 2 in the implementation slicing). The BYOK envelope keeps its existing key (`hive:byok:{installationId}`) — relocating it is **out of scope** for this RFC and would need a separate migration plan with key-rotation handling.
 
 ## Action surface for local queen (v1)
 
@@ -196,9 +196,9 @@ local_queen:
   - rooms.close
 
   # New for local mode:
-  - rooms.synthesize          # NEW — additive per D14, gates the new decide + seal-decision endpoints
-  - rooms.watch               # MOVED from worker preset — local queen polls /watching for synthesis-ready
-  - installation_token.mint   # MOVED from apiarist preset — gated by D10 token policy (allowed_repos + allowed_permissions)
+  - rooms.synthesize          # NEW — additive per D14, gates the new resolve-action + seal-decision endpoints
+  - rooms.watch               # SHARED with worker — worker keeps it; local_queen ALSO gets it (polls /watching for synthesis-ready)
+  - installation_token.mint   # SHARED with apiarist — apiarist keeps it; local_queen ALSO gets it, gated by D10 token policy (allowed_repos + allowed_permissions)
 ```
 
 The cloud queen keeps using the existing `queen` preset (no change). Local-mode bearers use `local_queen`. **Three paths in total: existing reviewer presets (drone/guard/etc.), existing `queen` preset (cloud queen), new `local_queen` preset (hive queen). No silent expansion of any existing preset.**
@@ -212,8 +212,8 @@ hive:v1:installation:<id>:queen-settings   hash
   queen_mode             "cloud" | "local"           # D15 caches with 60s TTL
   queen_prompt_override  <yaml-encoded structured config — D12>
 
-hive:v1:installation:<id>:byok-envelope    hash    # existing, unchanged
-  provider, model, key_encrypted, ...
+hive:byok:{installationId}                 hash    # existing — see byok-store.ts:11; out of scope for this RFC
+  provider, model, key_encrypted, ...                # NOT relocated; see PR 6 scope note
 
 hive:v1:rate-limit:rooms-create:<bearer>:<minute>  string (counter)
 hive:v1:rate-limit:rooms-create:<inst>:<minute>    string (counter)
@@ -353,7 +353,7 @@ This split — `resolve-action` returns the permitted action, then `seal-decisio
 | PR | Scope | Independence |
 |---|---|---|
 | 1 | Settings storage: `hive:v1:installation:<id>:queen-settings` Redis hash (the BYOK envelope at `hive:byok:{installationId}` is unchanged; this RFC explicitly does not relocate it), operator-session GET/POST endpoints, Probot 60s TTL cache (D15 + G7 default-to-cloud on Redis-down) | Yes — no reader yet |
-| 2 | Cloud-side skip-flag: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8 with G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
+| 2 | Cloud-side mode skip: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run D8's observer pass (read-only `listRooms`, emit "rooms-stuck-older-than-N-min" metric per G5 thresholds). Mode-flip blocks on in-flight rooms (D9), force-expire requires confirmation modal + audit event (G6) | Yes — defaults to cloud, no observable change |
 | 3 | New HTTP endpoints (`synthesis-ready`, `claim-synthesis`, `derive-verdict`, `resolve-action`, `seal-decision`). New `rooms.synthesize` capability. New **`local_queen` preset** (distinct from existing `queen` per builder pass-2; explicitly includes `installation_token.mint` + `rooms.watch` from other presets, names the elevated privilege). Token policy with `contents:read` drop verified by test (G9). D1 invariant check + G2 `queen.action_downgrade` audit event in `resolve-action`. D6 failure-ordering split: `resolve-action` returns `permitted_action`; `seal-decision` requires verified comment URL or downgrade reason. Rate caps on `rooms.create` (D11). New room state `decided_pending_action` with 15min TTL (D4 + G4). | Depends on PR 1's storage |
 | 4 | Hive queen feature block under `plugins.hivemoot.queen`. Trigger loop with D5's race mitigations (quiet-period + post-claim re-val + withdraw-finality + benign-409 handling). Two structured `generateObject` calls (D2: action via Zod schema, D3: verdict via cloud endpoint). Two-phase commit state machine (D4) anchored on `throughSequence` (G3). | Depends on PR 3 |
 | 5 | `/dashboard/settings` page with Queen mode toggle + heartbeat indicator (combining agent self-report and D8's cloud-observer metric). Structured override config UI (D12). Confirmation step on mode-flip surfaces D9 + G6's blocking conditions. | Depends on PR 1 |
@@ -514,7 +514,7 @@ The 6-PR stack reshapes:
 
 1. **PR 1 — settings storage**: per-installation `queen_mode` Redis hash + GET/POST endpoints. Rate cap on `rooms.create` (D11). Probot 60s TTL cache for `queen_mode` (D15).
 
-2. **PR 2 — cloud-side skip-flag**: queen-tick + webhook handlers early-return when `mode=local`. Cloud-as-observer metric emission (D8). Mode-flip endpoint blocks on in-flight rooms (D9).
+2. **PR 2 — cloud-side mode skip + observer**: queen-tick + webhook handlers SKIP claim/synthesize/post when `mode=local` BUT still run the D8 observer pass (read-only `listRooms`, emit stuck-room metric). Mode-flip endpoint blocks on in-flight rooms (D9).
 
 3. **PR 3 — endpoints + capabilities**: New `resolve-action` + `seal-decision` endpoint pair with **D1's server-side invariant check** at `resolve-action` + **D6's failure-ordering enforcement** (verified comment_url precondition at `seal-decision`) + **D7's audit event writes** (separate at each step). New `rooms.synthesize` capability + new `local_queen` preset (additive per D14, distinct from existing `queen` per builder pass-2). Token policy fields wired (D10). New room state `decided_pending_action` (D4).
 
