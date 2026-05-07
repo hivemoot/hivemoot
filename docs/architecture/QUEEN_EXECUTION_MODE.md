@@ -273,7 +273,7 @@ Free to push back on the framing entirely. Last RFC (`JOB_LIFECYCLE_UNIFICATION.
 
 ## Decisions (post fleet review)
 
-The fleet's two-pass review (guard's security read + drone's verdict-stack analysis + drone's follow-up on the trigger-loop code paths) reshaped the RFC materially. The biggest finding: the v1-as-drafted version put **prompt injection on the merge path** (guard §1) and discarded the existing **3-layer verdict stack** (drone) that was carefully engineered to be injection-resistant. Both reviewers concluded the mode toggle framing is right but the action-dispatch trust model needs to be inverted: the prompt is *advisory*, deterministic code is *authoritative*. All 15 decisions below carry that single thread.
+The fleet's three-pass review (guard's security read + drone's verdict-stack analysis + drone's two follow-ups on trigger-loop code paths and the cloud→local failure-model inversion) reshaped the RFC materially. The biggest finding: the v1-as-drafted version put **prompt injection on the merge path** (guard §1) and discarded the existing **3-layer verdict stack** (drone) that was carefully engineered to be injection-resistant. Both reviewers concluded the mode toggle framing is right but the action-dispatch trust model needs to be inverted: the prompt is *advisory*, deterministic code is *authoritative*. All 16 decisions below carry that single thread.
 
 Where guard's reasoning shaped a decision verbatim, it's quoted.
 
@@ -316,14 +316,20 @@ Drone follow-up §1: *"the local queen will hit the same races — it's calling 
 
 Cloud and local share equivalent concurrency safety. The cloud manager loop becomes the reference implementation; PR 4 ports the gates to Python.
 
-**D6 — Shared dispatch module with defenses + canonical failure ordering.**
-Drone follow-up §3: the local queen's action dispatcher must apply the same defenses as `GitHubDecisionPoster`:
+**D6 — Shared dispatch module with defenses + canonical failure ordering (inverted from cloud's pattern).**
+Drone follow-up §3 + war-room contribution: the local queen's action dispatcher must apply the same defenses as `GitHubDecisionPoster`:
 
 - `parseSubjectRef` regex defense (anchored, no shell-meta passthrough)
 - `POSTABLE` subject-type gate (`pr_review | mention_response | issue_triage` only)
-- Failure ordering: **`close-with-decision` before `gh pr merge --squash`**. Merge is irreversible; it's the LAST operation, after the room is sealed. If merge then fails, the room is correctly recorded as decided + an audit event captures the dispatch failure.
+- **Failure ordering: `close-with-decision` BEFORE `gh pr merge --squash`. This is the inverse of today's `GitHubDecisionPoster` pattern.**
 
-Implementation: a shared module callable from both the cloud `GitHubDecisionPoster` and the hive queen plugin. New defenses go in once, both modes pick them up.
+Drone: *"The current `GitHubDecisionPoster` enforces: failure to post to GitHub does NOT undo the room close. The decision is durable; the post is best-effort. For squash-merge, this model inverts. `gh pr merge --squash` is irreversible."*
+
+Today's flow (cloud): close room → post comment. Comment-post failure is recoverable; room-state is source of truth.
+
+Local queen flow (new): close-with-decision (durable, recoverable via watchdog) → mint installation token → `gh pr merge --squash` (irreversible). If close-with-decision fails, no merge happens. If merge fails after close, the room is correctly recorded + an audit event captures the dispatch failure.
+
+Implementation: a shared module callable from both the cloud `GitHubDecisionPoster` and the hive queen plugin, but the dispatcher within it branches on action type — `comment` follows today's "close then post, post-failure non-critical" ordering; `squash-merge` follows the inverted ordering. New defenses go in once, both modes pick them up.
 
 ### Mechanism / policy
 
@@ -363,6 +369,15 @@ Drone follow-up §2: *"two paths, two capability sets, no migration."* The new `
 
 **D15 — Webhook `queen_mode` cached in Probot with 60s TTL.**
 Drone follow-up minor: cloud-side webhook handlers and the queen-tick read `queen_mode` via a process-local cache with a 60-second TTL on hit, falling back to Redis on miss/expiry. Avoids hot-path Redis roundtrip on every webhook event for local-mode installations. Mode changes propagate within ≤60s after the operator toggles.
+
+**D16 — Local-mode single-point-of-failure characterization, accepted for v1.**
+Drone war-room contribution §"Dual-role single-point-of-failure": the cloud architecture has accidental partial-redundancy — webhook-driven room creation is independent of cron-driven synthesis, so a queen-tick outage keeps discovery alive even though synthesis stalls. Local mode collapses both responsibilities into one container; any hive queen outage stops the entire pipeline (no PR discovery, no synthesis, no GitHub action).
+
+This is the right shape for v1 (one container, one Codex subscription, one bearer) but operators need to know what they're opting into. The mode-toggle confirmation step (`/dashboard/settings`) explicitly surfaces this:
+
+> "Switching to local — the hive queen becomes the single point of failure for this installation's PR pipeline. Both PR discovery AND synthesis depend on it. The cloud will emit a 'rooms-stuck-older-than-N-min' alarm if the local queen falls behind, but no fallback synthesis will happen. Make sure your hive queen has uptime monitoring before flipping. Proceed?"
+
+Future work (out of scope for v1): a degraded mode where cloud retains webhook-driven room creation as a partial-progress fallback while local handles synthesis. Filed against future RFC; not designed here because the trade-off (operational complexity + dual code paths) doesn't justify it until v1 surfaces real outage patterns.
 
 ### Open-question resolution map
 
