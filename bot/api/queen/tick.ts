@@ -56,10 +56,12 @@ import { App } from "octokit";
 import { getAppConfig } from "../lib/env-validation.js";
 import { logger } from "../lib/logger.js";
 import { runQueenManagerLoop } from "../lib/queen/manager-loop.js";
+import { runQueenObserverPass } from "../lib/queen/observer.js";
 import { createSynthesizer } from "../lib/queen/ai-sdk-synthesizer.js";
 import { GitHubDecisionPoster } from "../lib/queen/decision-poster.js";
 import { WarRoomStore } from "../lib/war-room-store.js";
 import { getRedisClient } from "../lib/redis.js";
+import { getQueenModeCached } from "../lib/queen-mode.js";
 
 /** Numeric-only check — defense-in-depth on the optional
  * `?installationId=X` override. Mirrors the watchdog's
@@ -199,11 +201,39 @@ async function runOneTickForInstallation(args: {
   }
 
   try {
+    // Check the operator's queen_mode BEFORE wiring the synthesizer.
+    // In `local` mode the cloud queen-tick stops claiming, doesn't
+    // call the LLM, and skips GitHub posting entirely (D8). The
+    // observer pass (G5) takes its place: read-only listRooms +
+    // structured stuck-room metric so the dashboard can detect a
+    // hung hive queen via "agent says healthy but rooms piling up".
+    //
+    // G7 fail-closed: queen-mode helper returns "cloud" on any
+    // Redis error so an unrelated blip never silently halts the
+    // synthesis path.
+    const redis = getRedisClient();
+    const mode = await getQueenModeCached(installationId, redis);
+
+    if (mode === "local") {
+      const store = new WarRoomStore({ installationId, redis });
+      const rooms = await store.listRooms({ limit: parseMaxRoomsPerTick() ?? 100 });
+      const observerResult = runQueenObserverPass({
+        installationId,
+        rooms,
+        log: makeManagerLoopLogAdapter(),
+      });
+      // Map observer result back into the manager-loop result shape
+      // so the route's per-installation summary stays uniform across
+      // modes (G35: PR 5 dashboard renders one signal regardless of
+      // which mode each installation is in).
+      return { result: managerLoopResultFromObserver(observerResult) };
+    }
+
     const octokit = await app.getInstallationOctokit(Number(installationId));
 
     const store = new WarRoomStore({
       installationId,
-      redis: getRedisClient(),
+      redis,
     });
     const synthesizer = await createSynthesizer({
       installationId: Number(installationId),
@@ -223,6 +253,37 @@ async function runOneTickForInstallation(args: {
   } finally {
     await releaseTickLock(installationId, runnerId);
   }
+}
+
+/**
+ * Adapt the observer's compact result into the manager-loop's
+ * counter shape so the cron-route response is mode-agnostic.
+ *
+ * The observer doesn't claim/synthesize/post by design (D8), so
+ * `claimed`, `closed`, `postsSucceeded`, `postsFailed`,
+ * `staleClaimsAbandoned`, `quietPeriodHeld`, `eligible`,
+ * `conflicts`, and `errors` are all zero. `totalRoomsScanned`
+ * mirrors the observer's open-room count; the alarm-channel
+ * stuck-room signal is logged separately and surfaces via the
+ * dashboard query (G35).
+ */
+function managerLoopResultFromObserver(
+  observer: ReturnType<typeof runQueenObserverPass>,
+): Awaited<ReturnType<typeof runQueenManagerLoop>> {
+  return {
+    totalRoomsScanned: observer.totalOpen,
+    scannedAwaitingContributions: observer.totalOpen,
+    eligible: 0,
+    quietPeriodHeld: 0,
+    claimed: 0,
+    closed: 0,
+    conflicts: 0,
+    staleClaimsAbandoned: 0,
+    postsSucceeded: 0,
+    postsFailed: 0,
+    postsSkipped: 0,
+    errors: 0,
+  };
 }
 
 function emptyManagerLoopResult(): Awaited<

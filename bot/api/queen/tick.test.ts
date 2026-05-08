@@ -13,12 +13,18 @@ const {
   getAppConfigMock,
   getInstallationOctokitMock,
   AppCtorMock,
+  getQueenModeCachedMock,
+  runQueenObserverPassMock,
+  warRoomStoreListRoomsMock,
 } = vi.hoisted(() => ({
   runQueenManagerLoopMock: vi.fn(),
   createSynthesizerMock: vi.fn(),
   getAppConfigMock: vi.fn(),
   getInstallationOctokitMock: vi.fn(),
   AppCtorMock: vi.fn(),
+  getQueenModeCachedMock: vi.fn(),
+  runQueenObserverPassMock: vi.fn(),
+  warRoomStoreListRoomsMock: vi.fn(),
 }));
 
 vi.mock("../lib/queen/manager-loop.js", () => ({
@@ -36,6 +42,25 @@ vi.mock("../lib/env-validation.js", () => ({
 vi.mock("octokit", () => ({
   App: AppCtorMock,
 }));
+
+vi.mock("../lib/queen-mode.js", () => ({
+  getQueenModeCached: getQueenModeCachedMock,
+}));
+
+vi.mock("../lib/queen/observer.js", () => ({
+  runQueenObserverPass: runQueenObserverPassMock,
+}));
+
+// We don't mock the WarRoomStore class itself (its constructor is
+// thin and the existing happy-path tests rely on the real class
+// instantiating). The local-mode path's `store.listRooms()` call
+// is intercepted via the shared `listRooms` mock below.
+vi.mock("@hivemoot/war-room", async () => {
+  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
+    "@hivemoot/war-room",
+  );
+  return { ...real, listRooms: warRoomStoreListRoomsMock };
+});
 
 import handler from "./tick.js";
 
@@ -132,6 +157,19 @@ beforeEach(() => {
   delete process.env.HIVEMOOT_BOT_AGENT_TOKEN;
   delete process.env.HIVEMOOT_QUEEN_RUNNER_ID;
   delete process.env.HIVEMOOT_QUEEN_MAX_ROOMS_PER_TICK;
+  // Default queen-mode = cloud so existing tests run the synthesis
+  // path. Tests that exercise the observer path override before
+  // invoking the handler.
+  getQueenModeCachedMock.mockReset().mockResolvedValue("cloud");
+  runQueenObserverPassMock.mockReset().mockReturnValue({
+    totalOpen: 0,
+    stuckWarn: 0,
+    stuckAlarm: 0,
+    oldestOpenedAtMs: null,
+    claimed: 0,
+    postsSucceeded: 0,
+  });
+  warRoomStoreListRoomsMock.mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -702,5 +740,72 @@ describe("GET /api/queen/tick — per-installation lock (R1 #542 builder)", () =
     expect(res._statusCode).toBe(200);
     expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
     fetchSpy.mockRestore();
+  });
+});
+
+describe("GET /api/queen/tick — local mode skip + observer pass (D8)", () => {
+  beforeEach(() => {
+    getQueenModeCachedMock.mockResolvedValue("local");
+    runQueenObserverPassMock.mockReturnValue({
+      totalOpen: 4,
+      stuckWarn: 2,
+      stuckAlarm: 1,
+      oldestOpenedAtMs: Date.parse("2026-05-08T00:00:00Z"),
+      claimed: 0,
+      postsSucceeded: 0,
+    });
+  });
+
+  it("skips manager-loop and runs observer pass when queen_mode=local", async () => {
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    expect(runQueenManagerLoopMock).not.toHaveBeenCalled();
+    expect(runQueenObserverPassMock).toHaveBeenCalledTimes(1);
+    expect(getQueenModeCachedMock).toHaveBeenCalledWith("67890", expect.anything());
+  });
+
+  it("does NOT mint an installation Octokit in local mode (cloud doesn't post)", async () => {
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    // Octokit not minted — local mode never calls GitHub
+    expect(getInstallationOctokitMock).not.toHaveBeenCalled();
+    expect(createSynthesizerMock).not.toHaveBeenCalled();
+  });
+
+  it("returns mode-agnostic result shape (G35: dashboard renders one signal)", async () => {
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    const body = JSON.parse(res._body);
+    expect(body.installations).toHaveLength(1);
+    const result = body.installations[0].result;
+    // Observer's totalOpen maps to manager-loop's totalRoomsScanned
+    expect(result).toMatchObject({
+      totalRoomsScanned: 4,
+      claimed: 0,
+      postsSucceeded: 0,
+    });
+  });
+
+  it("falls back to cloud (manager-loop) when queen-mode helper returns cloud (G7)", async () => {
+    getQueenModeCachedMock.mockResolvedValueOnce("cloud");
+    const res = makeResponse();
+    await handler(
+      makeRequest({ authorization: "Bearer test-secret" }),
+      res,
+    );
+    expect(res._statusCode).toBe(200);
+    expect(runQueenManagerLoopMock).toHaveBeenCalledTimes(1);
+    expect(runQueenObserverPassMock).not.toHaveBeenCalled();
   });
 });
