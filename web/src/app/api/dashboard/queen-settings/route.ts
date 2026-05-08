@@ -38,6 +38,7 @@ import {
   type QueenMode,
   QUEEN_MODE_VALUES,
 } from "@/server/queen-settings-store";
+import { checkInFlightForFlip } from "@/server/queen-mode-flip-precheck";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const auth = await authenticateByokRequest(request);
@@ -186,8 +187,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       installationId: String(installationId),
       redis: auth.redis,
       next: parsed.body,
-      // PR 2 plugs in the D9/G37 in-flight precheck here.
-      precheck: undefined,
+      // D9 + G37 in-flight check. Only enforced when the operator is
+      // actually changing modes — flipping cloud→cloud or local→local
+      // (e.g. updating just the prompt override) doesn't need the
+      // gate. PR 3 extends the precheck to cover decided_pending_action
+      // + stranded-merge state; today only `deciding` blocks.
+      precheck: async (current) => {
+        if (current.queen_mode === parsed.body.queen_mode) return null;
+        return checkInFlightForFlip({
+          installationId: String(installationId),
+          redis: auth.redis,
+        });
+      },
     });
 
     if (!result.ok) {
