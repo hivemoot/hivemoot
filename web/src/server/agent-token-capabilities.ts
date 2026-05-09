@@ -366,3 +366,72 @@ export function resolvePreset(name: string): readonly string[] {
   }
   return PRESETS[name];
 }
+
+// ---------------------------------------------------------------------------
+// Mint-capable issuance gate (PR 645 builder pass-1 B1; RFC D10 + G16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Issue-time policy gate for mint-capable presets and roles.
+ *
+ * Per RFC D10 + G16 and builder pass-1 on PR 645, tokens granting
+ * `installation_token.mint` for the new `local_queen` role must be
+ * issued with a `policy.allowed_repos` list containing ≥1 repo. The
+ * mint endpoint (web/src/app/api/github/installation-tokens) treats
+ * policy-less bearers as legacy-permissive, so without this gate a
+ * leaked policy-less `local_queen` bearer could mint installation
+ * tokens for any repo in the installation grant — strictly worse
+ * blast radius than apiarist (which stays per-installation-only).
+ *
+ * `apiarist` is exempt: the existing host-broker preset predates the
+ * policy model and tightening it would break in-the-wild apiarist
+ * tokens. The next slice (or a follow-up issue against #638) tracks
+ * graduating apiarist into the gate too — until then it stays legacy.
+ *
+ * Used by:
+ *   - POST /api/agent-tokens (operator-bearer issue)
+ *   - POST /api/dashboard/agent-tokens (cookie-auth issue)
+ *   - POST /api/agent-tokens/{name}/set-capabilities (recap; only
+ *     when the operation transitions a token INTO mint-capable shape)
+ */
+export interface MintPolicyGateInput {
+  /** Effective capability list of the resulting/updated token. */
+  capabilities: readonly string[];
+  /** `agent_role` field on the token. Used for the apiarist carve-out. */
+  agentRole: string;
+  /**
+   * Preset name when the issue came from a preset; null for the
+   * explicit-capabilities path. Used for the apiarist carve-out.
+   */
+  presetName?: string | null;
+  /**
+   * The policy that will be persisted with the token (snake_case
+   * storage shape). null when no policy was supplied.
+   */
+  policy?: { allowed_repos?: readonly string[] | null } | null;
+}
+
+export function validateMintPolicyRequirement(
+  args: MintPolicyGateInput,
+): { ok: true } | { ok: false; message: string } {
+  const grantsMint = args.capabilities.includes("installation_token.mint");
+  if (!grantsMint) return { ok: true };
+
+  const isLegacyApiarist =
+    args.presetName === "apiarist" || args.agentRole === "apiarist";
+  if (isLegacyApiarist) return { ok: true };
+
+  const repos = args.policy?.allowed_repos;
+  if (Array.isArray(repos) && repos.length > 0) return { ok: true };
+
+  return {
+    ok: false,
+    message:
+      "Tokens granting installation_token.mint must be issued with " +
+      "policy.allowedRepos (≥1 repo) to bound the mint blast radius " +
+      "(RFC D10 / G16). The local_queen preset is mint-capable; pass " +
+      "policy: { allowedRepos: ['owner/repo', ...] } at issue time. " +
+      "The legacy apiarist preset is exempt and remains issuable " +
+      "without policy.",
+  };
+}

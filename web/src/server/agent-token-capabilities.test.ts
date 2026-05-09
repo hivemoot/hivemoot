@@ -11,6 +11,7 @@ import {
   validateName,
   validateAgentRole,
   validateCapabilityString,
+  validateMintPolicyRequirement,
   NAME_REGEX,
   CAPABILITY_REGEX,
 } from "./agent-token-capabilities";
@@ -420,5 +421,115 @@ describe("cross-invariants", () => {
     // If this fails, the doc section "Total: N capabilities" needs
     // to be updated alongside the addition.
     expect(KNOWN_CAPABILITIES.length).toBe(21);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mint-capable issuance gate (PR 645 builder pass-1 B1)
+// ---------------------------------------------------------------------------
+
+describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-1", () => {
+  it("allows non-mint capabilities through with no policy", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["rooms.read", "tasks.claim"],
+      agentRole: "worker",
+      presetName: "worker",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects local_queen preset issued without a policy", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      agentRole: "local_queen",
+      presetName: "local_queen",
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/installation_token\.mint/);
+      expect(result.message).toMatch(/policy\.allowedRepos/);
+    }
+  });
+
+  it("rejects local_queen issued with policy whose allowed_repos is missing", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      agentRole: "local_queen",
+      presetName: "local_queen",
+      policy: { allowed_repos: null },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects local_queen issued with policy whose allowed_repos is empty array", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      agentRole: "local_queen",
+      presetName: "local_queen",
+      policy: { allowed_repos: [] },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows local_queen with a non-empty allowed_repos policy", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      agentRole: "local_queen",
+      presetName: "local_queen",
+      policy: { allowed_repos: ["hivemoot/colony"] },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects explicit-capabilities path that grants installation_token.mint without policy (no preset)", () => {
+    // The gate is capability-based, not preset-based — an operator
+    // can't sneak past it by passing explicit capabilities including
+    // installation_token.mint with a non-apiarist role.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["rooms.read", "installation_token.mint"],
+      agentRole: "custom_minter",
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("apiarist preset is exempt from the gate (legacy carve-out)", () => {
+    // Apiarist predates the policy model. Tightening it would break
+    // in-the-wild apiarist tokens, so the gate explicitly allows
+    // apiarist to be issued with no policy.
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.apiarist,
+      agentRole: "apiarist",
+      presetName: "apiarist",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("apiarist exemption keys on either presetName OR agentRole (so explicit-caps + role=apiarist also works)", () => {
+    // The CLI / set-capabilities path doesn't always carry a preset
+    // name; the agentRole field is the persistent marker.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint"],
+      agentRole: "apiarist",
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("local_queen tokens issued via explicit capabilities + role still need policy (no apiarist label-laundering)", () => {
+    // Operator tries to bypass the gate by passing explicit
+    // capabilities with role 'local_queen'. Gate still bites.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint", "rooms.synthesize"],
+      agentRole: "local_queen",
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
   });
 });

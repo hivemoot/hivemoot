@@ -31,6 +31,7 @@ import {
   resolvePreset,
   validateName,
   validateAgentRole,
+  validateMintPolicyRequirement,
   CapabilityValidationError,
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
@@ -202,6 +203,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
       policyParse.message,
+      400,
+    );
+  }
+
+  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1) -----
+  // Tokens granting installation_token.mint for the new local_queen
+  // role must ship with policy.allowedRepos. Legacy apiarist is
+  // exempt. See `validateMintPolicyRequirement` rationale.
+  const mintGate = validateMintPolicyRequirement({
+    capabilities,
+    agentRole: agent_role,
+    presetName: typeof body.preset === "string" ? body.preset : null,
+    policy: policyParse.policy ?? null,
+  });
+  if (!mintGate.ok) {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
+      mintGate.message,
       400,
     );
   }

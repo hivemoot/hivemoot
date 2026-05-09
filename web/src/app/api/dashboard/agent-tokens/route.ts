@@ -34,6 +34,7 @@ import {
   validateName,
   validateAgentRole,
   validateCapabilityString,
+  validateMintPolicyRequirement,
   CapabilityValidationError,
   PRESETS,
   KNOWN_CAPABILITIES,
@@ -63,6 +64,24 @@ import {
  * be confused with either of those. Closes #567 builder R1.
  */
 const ADMIN_CLASS_PRESETS: ReadonlySet<string> = new Set(["admin"]);
+
+/**
+ * Presets the dashboard cannot issue because they grant
+ * `installation_token.mint` and the dashboard wrapper has no
+ * `policy` input surface (RFC D10 + G16; PR 645 builder pass-1).
+ * Operators issuing these must go through POST /api/agent-tokens
+ * with an admin bearer + explicit policy.allowedRepos.
+ *
+ * `apiarist` is grandfathered into the issuance gate (legacy
+ * permissive) but the dashboard still hides it — apiarist tokens
+ * are infrastructure-tier and shouldn't be issued from a cookie
+ * session. local_queen is hidden for the same reason + the policy
+ * requirement.
+ */
+const MINT_CAPABLE_PRESETS: ReadonlySet<string> = new Set([
+  "apiarist",
+  "local_queen",
+]);
 
 /**
  * Capabilities disallowed in explicit-capabilities issuance via the
@@ -114,7 +133,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const body: ListResponse = {
       tokens,
       presets: Object.keys(PRESETS).filter(
-        (name) => !ADMIN_CLASS_PRESETS.has(name),
+        (name) => !ADMIN_CLASS_PRESETS.has(name) && !MINT_CAPABLE_PRESETS.has(name),
       ),
       capabilities: KNOWN_CAPABILITIES.filter(
         (cap) => !ADMIN_CLASS_CAPABILITIES.has(cap),
@@ -199,6 +218,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         { field: "preset", value: body.preset },
       );
     }
+    if (MINT_CAPABLE_PRESETS.has(body.preset)) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        `Preset '${body.preset}' is mint-capable (grants installation_token.mint) and cannot be issued from the dashboard — the dashboard wrapper has no policy input surface, and RFC D10 / G16 require policy.allowedRepos for mint-capable tokens. Use POST /api/agent-tokens with an admin bearer + policy: { allowedRepos: ['owner/repo', ...] } instead.`,
+        400,
+        { field: "preset", value: body.preset },
+      );
+    }
     try {
       capabilities = resolvePreset(body.preset);
       agent_role = body.preset;
@@ -278,6 +305,30 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_EXPIRES_IN,
       expiresParse.message,
+      400,
+    );
+  }
+
+  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1) -----
+  // The dashboard wrapper does not accept a `policy` field — the
+  // structured-policy UX is API-path only. Mint-capable presets
+  // (today: local_queen) therefore cannot be issued from the
+  // dashboard; operators must use POST /api/agent-tokens with an
+  // admin bearer + explicit policy.allowedRepos.
+  const dashboardMintGate = validateMintPolicyRequirement({
+    capabilities,
+    agentRole: agent_role,
+    presetName: typeof body.preset === "string" ? body.preset : null,
+    policy: null,
+  });
+  if (!dashboardMintGate.ok) {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
+      "The dashboard cannot issue mint-capable tokens (no policy " +
+        "input surface). Use POST /api/agent-tokens with an admin " +
+        "bearer and policy: { allowedRepos: ['owner/repo', ...] } " +
+        "instead. " +
+        dashboardMintGate.message,
       400,
     );
   }
