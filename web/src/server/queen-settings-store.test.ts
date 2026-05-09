@@ -78,6 +78,42 @@ function makeMockRedis(): Redis & { _state: MockState } {
       }
       return 0;
     }),
+    // Minimal MULTI pipeline mock — chains record ops and run on exec.
+    // Only HDEL + HSET wired since those are the ones the store uses;
+    // any new chained op gets a "not a function" failure rather than
+    // a silently-wrong return.
+    multi: vi.fn(() => {
+      const ops: Array<() => Promise<unknown>> = [];
+      const chain = {
+        hdel: (key: string, ...fields: string[]) => {
+          ops.push(async () => {
+            const h = state.hashes.get(key);
+            if (!h) return 0;
+            let removed = 0;
+            for (const f of fields) {
+              if (h.delete(f)) removed += 1;
+            }
+            return removed;
+          });
+          return chain;
+        },
+        hset: (key: string, f: Record<string, string>) => {
+          ops.push(async () => {
+            const h = state.hashes.get(key) ?? new Map<string, string>();
+            for (const [k, v] of Object.entries(f)) h.set(k, String(v));
+            state.hashes.set(key, h);
+            return 0;
+          });
+          return chain;
+        },
+        exec: async () => {
+          const out: unknown[] = [];
+          for (const op of ops) out.push(await op());
+          return out;
+        },
+      };
+      return chain;
+    }),
     _state: state,
   };
 

@@ -3,13 +3,29 @@
  *
  * Each installation gets one hash at `hive:v1:installation:<id>:queen-settings`
  * with `queen_mode` (`cloud | local`, default `cloud`) and an optional
- * `queen_prompt_override` YAML blob (D12). Reads default to `cloud` on
+ * `queen_prompt_override` blob (D12). Reads default to `cloud` on
  * Redis-down (G7) so a failed Redis never silently flips an installation
  * into local mode.
  *
- * The `setQueenSettings` mutator runs under a per-installation lock (G12)
- * so that PR 2's mode-flip in-flight check + write happens atomically.
- * PR 1 ships the lock primitive; PR 2 plugs the in-flight check in.
+ * # What "G12" means here (precise)
+ *
+ * The `setQueenSettings` mutator runs under a per-installation Redis
+ * lock. The lock serializes **dashboard writers** — concurrent
+ * operator clicks land in order, and PR 2's in-flight precheck reads
+ * the room set while holding the same lock so the check + write is
+ * one critical section.
+ *
+ * The lock does NOT serialize against the cloud queen-tick claim
+ * path — that path doesn't acquire this lock. In-flight isolation
+ * comes from PR 2's precheck (refuses the flip if any room is mid-
+ * claim) plus D15's 60s cache propagation budget. Mode flips are
+ * **eventually consistent within the cache TTL**, not instantly
+ * invisible to mid-flight queens.
+ *
+ * That distinction matters for the operator UX text: the dashboard
+ * says "mode flip blocked by in-flight rooms" when the precheck
+ * fires, not "atomic flip succeeded" — the latter would imply the
+ * stricter invariant we don't actually deliver.
  */
 
 import { type Redis } from "@upstash/redis";
@@ -98,17 +114,26 @@ export type SetQueenSettingsResult =
   | { ok: false; blocked: unknown };
 
 /**
- * Atomically updates queen settings for an installation under a
- * per-installation Redis lock (G12).
+ * Updates queen settings for an installation under a per-installation
+ * Redis lock (G12). Note: the lock serializes **dashboard writers** —
+ * queen-tick claims do NOT acquire this lock. So this is "serialized
+ * writes + bounded propagation via D15's 60s cache" semantics, not
+ * "the mode flip is invisible to mid-flight queen-tick claims".
+ * That stricter invariant is PR 2's `precheck` job — it observes the
+ * in-flight room set under the same lock, and refuses the flip if
+ * any room is mid-claim.
  *
  * The protected critical section is:
  *   1. read current settings
  *   2. run the optional precheck (PR 2 plugs in the in-flight check here)
- *   3. write next settings via `HSET`
+ *   3. write next settings as one atomic Redis MULTI pipeline
  *
- * The lock prevents the cloud queen-tick from claiming a room between
- * the in-flight read and the mode write — without it, a race could
- * leave a room mid-claim under the wrong mode.
+ * Atomic pipeline matters when `queen_prompt_override === null` —
+ * that case needs both an HDEL on the override field AND an HSET on
+ * `queen_mode` to land together. Doing them as separate awaits would
+ * leave a window where a crash between the two writes left
+ * `queen_mode` updated but the stale override still in Redis (B2 in
+ * guard pass-1).
  *
  * Errors from the lock acquisition (`LockTimeoutError`) bubble to the
  * caller; this is intentional so the operator sees a clear timeout
@@ -127,16 +152,30 @@ export async function setQueenSettings(
 
     const fields: Record<string, string> = { queen_mode: args.next.queen_mode };
     const overrideArg = args.next.queen_prompt_override;
+    let willDeleteOverride = false;
     if (overrideArg !== undefined) {
       // Caller wants to update the override; null means "clear it"
       if (overrideArg === null) {
-        await args.redis.hdel(settingsKey(args.installationId), "queen_prompt_override");
+        willDeleteOverride = true;
       } else {
         fields.queen_prompt_override = overrideArg;
       }
     }
 
-    await args.redis.hset(settingsKey(args.installationId), fields);
+    // Atomic write — HDEL (when clearing override) + HSET pipelined
+    // so a crash between can't leave queen_mode updated against a
+    // stale override (B2). Same chained-pipeline pattern used in
+    // web/src/server/task-store.ts.
+    const key = settingsKey(args.installationId);
+    if (willDeleteOverride) {
+      await args.redis
+        .multi()
+        .hdel(key, "queen_prompt_override")
+        .hset(key, fields)
+        .exec();
+    } else {
+      await args.redis.hset(key, fields);
+    }
 
     const current: QueenSettings = {
       queen_mode: args.next.queen_mode,

@@ -143,6 +143,61 @@ describe("POST /api/dashboard/queen-settings", () => {
     expect(await res.json()).toMatchObject({ code: "invalid_body" });
   });
 
+  it("normalizes empty-string override to null (guard B3 — round-trip symmetry)", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    mockedSet.mockResolvedValue({
+      ok: true,
+      previous: { queen_mode: "cloud", queen_prompt_override: null },
+      current: { queen_mode: "cloud", queen_prompt_override: null },
+    });
+    await POST(
+      makePostRequest({ queen_mode: "cloud", queen_prompt_override: "" }),
+    );
+    expect(mockedSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        next: expect.objectContaining({ queen_prompt_override: null }),
+      }),
+    );
+  });
+
+  it("rejects override over 16 KiB cap (guard B1 — bounded storage)", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    const huge = "x".repeat(16 * 1024 + 1);
+    const res = await POST(
+      makePostRequest({ queen_mode: "cloud", queen_prompt_override: huge }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "invalid_body" });
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("counts UTF-8 bytes, not chars (smiley inflation can't sneak past the cap)", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    // each smiley is 4 bytes (surrogate pair); 4097 smileys = 16,388 bytes
+    const blob = "🎉".repeat(4097);
+    const res = await POST(
+      makePostRequest({ queen_mode: "cloud", queen_prompt_override: blob }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("accepts override exactly at the 16 KiB boundary", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    mockedSet.mockResolvedValue({
+      ok: true,
+      previous: { queen_mode: "cloud", queen_prompt_override: null },
+      current: { queen_mode: "cloud", queen_prompt_override: "x".repeat(16 * 1024) },
+    });
+    const res = await POST(
+      makePostRequest({
+        queen_mode: "cloud",
+        queen_prompt_override: "x".repeat(16 * 1024),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   it("writes settings and returns the new state", async () => {
     mockedAuth.mockResolvedValue(makeAuth("42"));
     mockedSet.mockResolvedValue({

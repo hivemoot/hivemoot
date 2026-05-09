@@ -75,6 +75,21 @@ function isQueenMode(value: unknown): value is QueenMode {
   return typeof value === "string" && (QUEEN_MODE_VALUES as readonly string[]).includes(value);
 }
 
+/**
+ * Maximum bytes for `queen_prompt_override` — bounds the storage
+ * write surface (B1 — guard pass-1). 16 KiB is generous for the YAML
+ * config D12 specifies (`merge_conventions`, `additional_blockers`)
+ * and well under any Redis hash-field limit.
+ *
+ * **Schema validation is deferred to PR 4** when the structured-YAML
+ * parser ships. Today the field is plain text — operators using the
+ * dashboard write whatever they want up to this cap. PR 4 will tighten
+ * to a Zod-validated structured config; rejecting non-null overrides
+ * here in v1 was rejected because it strands the dashboard textarea
+ * with no way to populate the field while waiting for PR 4.
+ */
+export const QUEEN_PROMPT_OVERRIDE_MAX_BYTES = 16 * 1024;
+
 function parseBody(raw: unknown): { ok: true; body: PostBody } | { ok: false; message: string } {
   if (raw === null || typeof raw !== "object") {
     return { ok: false, message: "Body must be a JSON object." };
@@ -93,14 +108,40 @@ function parseBody(raw: unknown): { ok: true; body: PostBody } | { ok: false; me
       message: "queen_prompt_override must be a string, null, or omitted.",
     };
   }
+  // Normalize empty string to null (B3 — guard pass-1) so the GET
+  // round-trip is symmetric. Without this normalization, POSTing
+  // `{queen_prompt_override:""}` would write "" to Redis but the
+  // store's reader at `queen-settings-store.ts:69-70` coerces "" to
+  // null — meaning the next GET returns a different value than the
+  // POST submitted. Keep the empty-string-as-no-override invariant
+  // honest at the boundary instead.
+  let override: string | null | undefined;
+  if (obj.queen_prompt_override === undefined) {
+    override = undefined;
+  } else if (obj.queen_prompt_override === null) {
+    override = null;
+  } else {
+    const s = obj.queen_prompt_override as string;
+    if (s.length === 0) {
+      override = null;
+    } else {
+      // UTF-8 byte length, not char count — paranoid about smileys
+      // inflating into Redis storage past the cap.
+      const bytes = new TextEncoder().encode(s).byteLength;
+      if (bytes > QUEEN_PROMPT_OVERRIDE_MAX_BYTES) {
+        return {
+          ok: false,
+          message: `queen_prompt_override must be ≤${QUEEN_PROMPT_OVERRIDE_MAX_BYTES} bytes (got ${bytes}). Schema validation lands in PR 4.`,
+        };
+      }
+      override = s;
+    }
+  }
   return {
     ok: true,
     body: {
       queen_mode: obj.queen_mode,
-      queen_prompt_override:
-        obj.queen_prompt_override === undefined
-          ? undefined
-          : (obj.queen_prompt_override as string | null),
+      queen_prompt_override: override,
     },
   };
 }
