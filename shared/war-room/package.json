@@ -26,6 +26,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@upstash/redis": "1.37.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "zod": "^3.25.76"
   }
 }

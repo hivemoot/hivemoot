@@ -10,3 +10,4 @@
 // from source.
 export * from "./war-room.js";
 export * from "./redis-lock.js";
+export * from "./queen-verdict.js";
