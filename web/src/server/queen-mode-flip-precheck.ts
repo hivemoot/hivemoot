@@ -93,8 +93,15 @@ interface PrecheckArgs {
  *      The earlier `listRooms({limit: 100})` returned newest-first
  *      across ALL statuses, so a sprint-burst of 100+ awaiting rooms
  *      could page out an older deciding room from the precheck. The
- *      status-keyed sorted-set scan returns ONLY `deciding` rooms —
- *      can't be paged out by unrelated activity.
+ *      status-keyed scan returns ONLY `deciding` rooms — can't be
+ *      paged out by unrelated activity.
+ *
+ *      `statusIndexKey` is a Redis **SET** (maintained via `SADD`/
+ *      `SREM` in the war-room Lua scripts), so the read uses
+ *      `SMEMBERS`. An earlier draft used `ZRANGE`; that returns
+ *      `WRONGTYPE` against a real Redis SET. Tests passed because the
+ *      mock didn't enforce key-type semantics. Ordering is irrelevant
+ *      — the precheck only needs `count + bounded sample`.
  *   2. Tick-lock probe (G2 — guard pass-1). Looks up the queen-tick's
  *      per-installation lock; if held, a tick is mid-flight and its
  *      manager-loop won't re-read the mode until the next fire. We
@@ -108,10 +115,11 @@ export async function checkInFlightForFlip(
   const decidingKey = statusIndexKey(args.installationId, "deciding");
   const lockKey = tickLockKey(args.installationId);
 
-  // Parallel: ZRANGE the deciding-status sorted set + EXISTS the
-  // tick lock. Two independent reads, neither blocks the other.
+  // Parallel: SMEMBERS the deciding-status SET + EXISTS the tick
+  // lock. Two independent reads, neither blocks the other.
+  // (statusIndexKey is SADD/SREM-backed, see war-room.ts:2269-2526.)
   const [decidingIds, tickLockHeld] = await Promise.all([
-    args.redis.zrange<string[]>(decidingKey, 0, -1),
+    args.redis.smembers(decidingKey),
     args.redis.exists(lockKey),
   ]);
 
