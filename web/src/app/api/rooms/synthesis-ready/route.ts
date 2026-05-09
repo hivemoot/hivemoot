@@ -60,14 +60,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   try {
     const indexKey = statusIndexKey(auth.installationId, "awaiting_contributions");
-    // Newest-first across the awaiting_contributions index. The
-    // installation's combined index uses ZADD with score=opened_at;
-    // ZRANGE with REV gives newest first. listRooms paginates the
-    // combined index across statuses, which is wrong here — we want
-    // the awaiting subset only.
-    const roomIds = await auth.redis.zrange<string[]>(indexKey, 0, limit - 1, {
-      rev: true,
-    });
+    // `statusIndexKey` is a Redis SET (SADD/SREM in war-room.ts:
+    // 2269-2526). Reading via SMEMBERS is the only key-type-safe
+    // option; ZRANGE returns WRONGTYPE against a SET in real Redis
+    // (guard pass-1 G1). Newest-first ordering is a property of the
+    // *response*, not the index — we sort the hydrated cores by
+    // `opened_at` post-hoc.
+    const roomIds = await auth.redis.smembers(indexKey);
 
     // Hydrate room cores in parallel. A room can transition out of
     // awaiting_contributions between the index read and the core
@@ -91,9 +90,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       }),
     );
 
-    const rooms = cores.filter(
-      (r): r is RoomCoreWithId => r !== null && r.status === "awaiting_contributions",
-    );
+    const rooms = cores
+      .filter(
+        (r): r is RoomCoreWithId =>
+          r !== null && r.status === "awaiting_contributions",
+      )
+      // Newest-first by opened_at (descending). opened_at is an ISO
+      // 8601 string with a consistent timezone, so lex sort gives
+      // chronological order. Stable on ties via roomId.
+      .sort((a, b) => {
+        if (b.opened_at !== a.opened_at) return b.opened_at < a.opened_at ? -1 : 1;
+        return a.roomId < b.roomId ? -1 : 1;
+      })
+      .slice(0, limit);
 
     return NextResponse.json({ rooms, count: rooms.length }, { status: 200 });
   } catch (error) {

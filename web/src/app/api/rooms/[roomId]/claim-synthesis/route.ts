@@ -21,11 +21,23 @@
  *
  * Builder pass-9 §2 specifically called out this fan-out as a
  * latency tax + race surface. claim-synthesis bundles the four
- * reads under a single auth check + the claim's atomic semantics:
- * the participants and contributions snapshot ships at the same
- * `throughSequence` cutoff the claim itself returns, so the local
- * queen's verdict prompt can't accidentally mix a fresh contribution
- * with a stale claim.
+ * reads under a single auth check.
+ *
+ * # The claim-vs-snapshot relationship (G2 — guard pass-1 clarification)
+ *
+ * The participants and contributions returned here are a *current
+ * snapshot* — they are NOT pinned at the claim's `throughSequence`
+ * cutoff. After-claim writes to those hashes are still possible.
+ * What the local queen actually relies on is the seal-decision
+ * endpoint's invariant check (PR 3c slice 2): seal rejects if the
+ * room's `throughSequence` has advanced past the claim's
+ * `throughSequence`. That's the cutoff that prevents a stale
+ * verdict from sealing.
+ *
+ * In practice the awaiting → deciding transition + the claim TTL
+ * make the window where new contributions can arrive narrow, and
+ * the snapshot is good enough as input to the verdict prompt; the
+ * seal-time check is what makes the seal itself safe.
  *
  * Body: `{ queenRunner: string, claimTtlSecs?: number }` — same
  * shape as /decide for stability.
@@ -174,6 +186,16 @@ export async function POST(
   // on the room so it exists), and we swallow into 500 so the
   // caller knows to retry. The claim TTL ensures the held lock
   // releases either way.
+  //
+  // Cross-installation isolation note (G3 — guard pass-1):
+  // `getRoomParticipants` and `getRoomContributions` read keys that
+  // are scoped only by `roomId`, not `installationId`. They're safe
+  // to call here ONLY because `claimSynthesis` above already
+  // enforced installation membership (it would have thrown
+  // RoomNotFoundError if the bearer's installation didn't own this
+  // room). Do NOT lift these reads above the claim — they would
+  // leak cross-installation data if reached without the membership
+  // check.
   try {
     const [room, participants, contributions] = await Promise.all([
       getRoomCore({
