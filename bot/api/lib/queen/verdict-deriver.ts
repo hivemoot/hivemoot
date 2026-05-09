@@ -35,7 +35,6 @@
 
 import { generateObject } from "ai";
 import type { LanguageModel } from "ai";
-import { z } from "zod";
 
 import type { Logger } from "../logger.js";
 import { logger as defaultLogger } from "../logger.js";
@@ -46,7 +45,6 @@ import type { RoomContribution } from "../war-room-store.js";
 // Verdict primitives moved to `@hivemoot/war-room` per RFC PR 3
 // (builder pass-8). See prompts.ts re-export header for rationale.
 import {
-  aggregateWorkerVerdicts,
   applyDowngradeOnlyFloor as sharedApplyDowngradeOnlyFloor,
   DerivedVerdictSchema,
   extractContributionVerdict,

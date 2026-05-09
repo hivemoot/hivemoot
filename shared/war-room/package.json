@@ -3,7 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared war-room storage layer + redis-lock helper. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's `@upstash/redis` install is reused by source-level resolution; this package intentionally declares no @upstash/redis dependency to avoid a dual-package hazard (two installations producing non-assignable Redis types).",
+  "description": "Shared war-room storage layer + redis-lock helper + queen-verdict primitives. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's @upstash/redis and zod installs are reused by source-level resolution; this package declares them as peerDependencies (zod) and devDependencies (@upstash/redis) to avoid a dual-package hazard (two installations producing non-assignable instances).",
+  "peerDependencies": {
+    "zod": "^3.25.0 || ^4.0.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
