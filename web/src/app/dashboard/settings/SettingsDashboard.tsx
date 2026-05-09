@@ -40,6 +40,13 @@ type SaveState =
 
 const SETTINGS_URL = "/api/dashboard/queen-settings";
 
+/** Client-side cap on the override blob (G4 — guard pass-1 hardening
+ * on PR 5). 16 KiB is generous for a YAML config and well under any
+ * Redis hash-field limit. The route handler should match this cap
+ * (PR 1 follow-up); without a server-side cap an authenticated
+ * operator can still POST a larger blob via curl. */
+const OVERRIDE_MAX_CHARS = 16 * 1024;
+
 export default function SettingsDashboard() {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   const [draftMode, setDraftMode] = useState<QueenMode>("cloud");
@@ -72,8 +79,7 @@ export default function SettingsDashboard() {
   }, [fetchSettings]);
 
   const handleSave = useCallback(
-    async (force = false) => {
-      void force;
+    async () => {
       setSave({ kind: "saving" });
       try {
         const body: Record<string, unknown> = {
@@ -165,10 +171,12 @@ export default function SettingsDashboard() {
         </h1>
         <p className="mt-2 text-sm text-zinc-400">
           Per-installation configuration. See also{" "}
-          <Link href="/dashboard/settings/byok" className="text-honey-400 hover:underline">
+          <Link href="/dashboard/credentials" className="text-honey-400 hover:underline">
             BYOK credentials
           </Link>
-          .
+          . (Linking the legacy path so this works whether or not the
+          BYOK relocation PR has merged; the relocation sweep will
+          rewrite this on its end.)
         </p>
       </div>
 
@@ -218,9 +226,19 @@ export default function SettingsDashboard() {
               onChange={(e) => setDraftOverride(e.target.value)}
               rows={6}
               spellCheck={false}
+              maxLength={OVERRIDE_MAX_CHARS}
               className="w-full rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-200 focus:border-honey-500 focus:outline-none"
               placeholder="merge_conventions: |&#10;  Squash-merge only. Require all checks green before merging."
             />
+            <p
+              className={`text-right text-[11px] ${
+                draftOverride.length > OVERRIDE_MAX_CHARS - 1024
+                  ? "text-amber-400"
+                  : "text-zinc-500"
+              }`}
+            >
+              {draftOverride.length.toLocaleString()} / {OVERRIDE_MAX_CHARS.toLocaleString()} chars
+            </p>
           </div>
         </details>
 
@@ -352,7 +370,7 @@ function BlockedRoomsBanner({ blocked }: { blocked: BlockedReason }): React.Reac
           {blocked.sampleRoomIds.map((id, i) => (
             <span key={id}>
               <Link
-                href={`/dashboard/rooms/${id}`}
+                href={`/dashboard/rooms/${encodeURIComponent(id)}`}
                 className="font-mono text-honey-400 hover:underline"
               >
                 {id.slice(0, 8)}
