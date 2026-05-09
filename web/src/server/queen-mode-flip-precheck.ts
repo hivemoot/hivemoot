@@ -33,7 +33,13 @@
  */
 
 import { type Redis } from "@upstash/redis";
-import { listRooms, type RoomCoreWithId } from "@hivemoot/war-room";
+import { statusIndexKey } from "@hivemoot/war-room";
+
+const TICK_LOCK_PREFIX = "hive:v1:lock:queen-tick:";
+
+function tickLockKey(installationId: string): string {
+  return `${TICK_LOCK_PREFIX}${installationId}`;
+}
 
 export interface BlockedReason {
   reason: "rooms_in_flight";
@@ -47,6 +53,14 @@ export interface BlockedReason {
     decided_pending_action: number;
     /** Reserved for PR 3+G37 — stranded-merge rooms. Always 0 today. */
     stranded_merge: number;
+    /**
+     * 1 when a queen-tick is mid-flight (its per-installation lock
+     * is held), 0 otherwise. Guard pass-1 G2 — without this signal,
+     * a tick that started in `cloud` mode and is mid-`listRooms`
+     * keeps running cloud synthesis through the flip because the
+     * manager loop only reads queen-mode once at the top.
+     */
+    tick_running: number;
   };
   /**
    * Up to N representative room IDs per blocking category. Lets
@@ -73,34 +87,39 @@ interface PrecheckArgs {
  * Errors during the room list bubble up — `setQueenSettings` will
  * release the lock and the operator sees a 500 storage_failure
  * (not a silent flip).
+ *
+ * Two checks run in parallel:
+ *   1. Status-keyed scan of the `deciding` index (G1 — guard pass-1).
+ *      The earlier `listRooms({limit: 100})` returned newest-first
+ *      across ALL statuses, so a sprint-burst of 100+ awaiting rooms
+ *      could page out an older deciding room from the precheck. The
+ *      status-keyed sorted-set scan returns ONLY `deciding` rooms —
+ *      can't be paged out by unrelated activity.
+ *   2. Tick-lock probe (G2 — guard pass-1). Looks up the queen-tick's
+ *      per-installation lock; if held, a tick is mid-flight and its
+ *      manager-loop won't re-read the mode until the next fire. We
+ *      surface this as `tick_running: 1` so the dashboard tells the
+ *      operator to wait for the in-flight tick to complete (~30s) —
+ *      otherwise the flip would commit while a synthesis is mid-LLM.
  */
 export async function checkInFlightForFlip(
   args: PrecheckArgs,
 ): Promise<{ blocked: BlockedReason } | null> {
-  const rooms: RoomCoreWithId[] = await listRooms({
-    installationId: args.installationId,
-    redis: args.redis,
-    // 100 mirrors the queen-tick scan cap — in steady state an
-    // installation should have many fewer than this in flight at
-    // once. If an operator somehow has > 100 deciding rooms they
-    // are deeply degraded and shouldn't be flipping mode anyway.
-    limit: 100,
-  });
+  const decidingKey = statusIndexKey(args.installationId, "deciding");
+  const lockKey = tickLockKey(args.installationId);
 
-  let deciding = 0;
-  const sampleRoomIds: string[] = [];
+  // Parallel: ZRANGE the deciding-status sorted set + EXISTS the
+  // tick lock. Two independent reads, neither blocks the other.
+  const [decidingIds, tickLockHeld] = await Promise.all([
+    args.redis.zrange<string[]>(decidingKey, 0, -1),
+    args.redis.exists(lockKey),
+  ]);
 
-  for (const room of rooms) {
-    if (room.status === "deciding") {
-      deciding += 1;
-      if (sampleRoomIds.length < SAMPLE_LIMIT) sampleRoomIds.push(room.roomId);
-    }
-    // PR 3: room.status === "decided_pending_action" → counts.decided_pending_action++
-    // PR 3+G37: room with decision_outcome=merge_approved + github_merge_status=pending →
-    //   counts.stranded_merge++
-  }
+  const deciding = decidingIds.length;
+  const tickRunning = tickLockHeld > 0 ? 1 : 0;
+  const sampleRoomIds = decidingIds.slice(0, SAMPLE_LIMIT);
 
-  if (deciding === 0) return null;
+  if (deciding === 0 && tickRunning === 0) return null;
 
   return {
     blocked: {
@@ -109,6 +128,7 @@ export async function checkInFlightForFlip(
         deciding,
         decided_pending_action: 0,
         stranded_merge: 0,
+        tick_running: tickRunning,
       },
       sampleRoomIds,
     },
