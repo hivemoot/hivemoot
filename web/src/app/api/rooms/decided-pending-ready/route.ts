@@ -23,10 +23,10 @@
  * but better folded into the confirm-merge endpoint's invariant
  * check rather than duplicated in this list endpoint.
  *
- * **Today this endpoint always returns an empty list** because no
- * code path SADDs to the `decided_pending_action` status index yet.
- * The PR-3c slice that ships seal-decision will add the index
- * write. This endpoint exists now to:
+ * **Today this endpoint returns an empty list in steady state**
+ * because no code path SADDs to the `decided_pending_action` status
+ * index until seal-decision lands (PR 3c slice 2). This PR exists
+ * now to:
  *   - establish the route surface area + capability gating
  *   - let PR 4's hive queen plugin compile against the right
  *     interface
@@ -70,9 +70,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   try {
     const indexKey = statusIndexKey(auth.installationId, "decided_pending_action");
-    const roomIds = await auth.redis.zrange<string[]>(indexKey, 0, limit - 1, {
-      rev: true,
-    });
+    // `statusIndexKey` is a Redis SET (SADD/SREM in war-room.ts:
+    // 2269-2526). SMEMBERS is the only key-type-safe read; ZRANGE
+    // returns WRONGTYPE against a SET in real Redis (guard pass-1
+    // G1). Newest-first is applied post-hoc on hydrated cores.
+    const roomIds = await auth.redis.smembers(indexKey);
 
     const cores = await Promise.all(
       roomIds.map(async (roomId) => {
@@ -89,10 +91,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       }),
     );
 
-    const rooms = cores.filter(
-      (r): r is RoomCoreWithId =>
-        r !== null && r.status === "decided_pending_action",
-    );
+    const rooms = cores
+      .filter(
+        (r): r is RoomCoreWithId =>
+          r !== null && r.status === "decided_pending_action",
+      )
+      // Newest-first by opened_at (descending). opened_at is an ISO
+      // 8601 string with a consistent timezone, so lex sort gives
+      // chronological order. Stable on ties via roomId.
+      .sort((a, b) => {
+        if (b.opened_at !== a.opened_at) return b.opened_at < a.opened_at ? -1 : 1;
+        return a.roomId < b.roomId ? -1 : 1;
+      })
+      .slice(0, limit);
 
     return NextResponse.json({ rooms, count: rooms.length }, { status: 200 });
   } catch (error) {

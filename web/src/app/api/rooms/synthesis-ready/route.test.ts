@@ -19,7 +19,15 @@ import { GET } from "./route";
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);
 const mockedCore = vi.mocked(getRoomCore);
 
-function makeAuthOk(overrides?: { redisZrange?: (...args: unknown[]) => Promise<string[]> }) {
+// ---------------------------------------------------------------------------
+// Mock Redis with smembers — guard pass-1 G1: statusIndexKey is a
+// SET in war-room (SADD/SREM in war-room.ts:2269-2526), so the
+// route MUST use SMEMBERS (not ZRANGE). Real Redis returns
+// WRONGTYPE for ZRANGE against a SET. .zrange is intentionally
+// undefined on the mock so a future regression to ZRANGE blows
+// up loudly here.
+// ---------------------------------------------------------------------------
+function makeAuthOk(overrides?: { redisSmembers?: () => Promise<string[]> }) {
   return {
     ok: true as const,
     installationId: "12345",
@@ -27,25 +35,25 @@ function makeAuthOk(overrides?: { redisZrange?: (...args: unknown[]) => Promise<
     agent_role: "local_queen",
     capabilities: ["rooms.synthesize"],
     redis: {
-      zrange: vi.fn(overrides?.redisZrange ?? (async () => [])),
+      smembers: vi.fn(overrides?.redisSmembers ?? (async () => [])),
     } as never,
     envelope: { fingerprint: "fp", expiresAt: null } as never,
   };
 }
 
-function makeRoom(roomId: string, status: string) {
+function makeRoom(roomId: string, status: string, openedAt = "2026-05-09T00:00:00Z") {
   return {
     manager: "bot-queen",
     subject_type: "pr_review" as const,
     subject_ref: `owner/repo#${roomId.slice(0, 4)}`,
-    opened_at: "2026-05-09T00:00:00Z",
+    opened_at: openedAt,
     status: status as "awaiting_contributions",
     timing_config: {
       max_age_secs: 86400,
       drop_threshold_secs: 600,
       quiet_period_secs: 60,
     },
-    last_transition_at: "2026-05-09T00:00:00Z",
+    last_transition_at: openedAt,
     last_post_close_drift_count: 0,
   };
 }
@@ -75,7 +83,7 @@ describe("GET /api/rooms/synthesis-ready", () => {
 
   it("returns rooms in awaiting_contributions only", async () => {
     const auth = makeAuthOk({
-      redisZrange: async () => ["rm-1", "rm-2", "rm-3"],
+      redisSmembers: async () => ["rm-1", "rm-2", "rm-3"],
     });
     mockedAuth.mockResolvedValue(auth);
     mockedCore
@@ -86,12 +94,14 @@ describe("GET /api/rooms/synthesis-ready", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.count).toBe(2);
+    // Both rooms have the same opened_at; the tie-breaker is roomId
+    // ascending — rm-1 before rm-3.
     expect(body.rooms.map((r: { roomId: string }) => r.roomId)).toEqual(["rm-1", "rm-3"]);
   });
 
   it("filters out rooms whose hash has been concurrently deleted", async () => {
     const auth = makeAuthOk({
-      redisZrange: async () => ["rm-1", "rm-stale"],
+      redisSmembers: async () => ["rm-1", "rm-stale"],
     });
     mockedAuth.mockResolvedValue(auth);
     mockedCore
@@ -104,50 +114,83 @@ describe("GET /api/rooms/synthesis-ready", () => {
     expect(body.rooms[0].roomId).toBe("rm-1");
   });
 
-  it("queries the awaiting_contributions status index, not the global one", async () => {
-    const zrangeSpy = vi.fn(async () => []);
-    mockedAuth.mockResolvedValue(makeAuthOk({ redisZrange: zrangeSpy }));
-    await GET(new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready"));
-    expect(zrangeSpy).toHaveBeenCalledWith(
+  it("sorts the response newest-first by opened_at (post-hoc, since SETs are unordered)", async () => {
+    // SMEMBERS is unordered — the test puts the oldest room first
+    // and expects the response to flip to newest-first.
+    const auth = makeAuthOk({
+      redisSmembers: async () => ["rm-old", "rm-new", "rm-mid"],
+    });
+    mockedAuth.mockResolvedValue(auth);
+    mockedCore.mockImplementation(async ({ roomId }) => {
+      if (roomId === "rm-old") return makeRoom(roomId, "awaiting_contributions", "2026-01-01T00:00:00Z");
+      if (roomId === "rm-mid") return makeRoom(roomId, "awaiting_contributions", "2026-03-01T00:00:00Z");
+      if (roomId === "rm-new") return makeRoom(roomId, "awaiting_contributions", "2026-05-01T00:00:00Z");
+      throw new Error(`unexpected ${roomId}`);
+    });
+    const res = await GET(new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.rooms.map((r: { roomId: string }) => r.roomId)).toEqual([
+      "rm-new",
+      "rm-mid",
+      "rm-old",
+    ]);
+  });
+
+  it("uses SMEMBERS (not ZRANGE) against the awaiting_contributions status SET (G1 pin)", async () => {
+    // The mock's `.zrange` is intentionally undefined — if a future
+    // change copies ZRANGE back, this test fails with
+    // "redis.zrange is not a function" inside GET(), pinning the
+    // SMEMBERS contract loudly. statusIndexKey is a SET (SADD/SREM
+    // in war-room.ts:2269-2526), so ZRANGE returns WRONGTYPE in
+    // real Redis.
+    const smembersSpy = vi.fn(async () => []);
+    mockedAuth.mockResolvedValue(makeAuthOk({ redisSmembers: smembersSpy }));
+    const res = await GET(
+      new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready"),
+    );
+    expect(res.status).toBe(200);
+    expect(smembersSpy).toHaveBeenCalledWith(
       "hive:v1:idx:room:status:12345:awaiting_contributions",
-      0,
-      49,
-      { rev: true },
     );
   });
 
-  it("respects the limit query param", async () => {
-    const zrangeSpy = vi.fn(async () => []);
-    mockedAuth.mockResolvedValue(makeAuthOk({ redisZrange: zrangeSpy }));
-    await GET(
-      new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready?limit=10"),
+  it("respects the limit query param (slices post-hoc, since SET has no count cap)", async () => {
+    const auth = makeAuthOk({
+      redisSmembers: async () => ["rm-1", "rm-2", "rm-3"],
+    });
+    mockedAuth.mockResolvedValue(auth);
+    mockedCore.mockImplementation(async ({ roomId }) =>
+      makeRoom(roomId, "awaiting_contributions", `2026-05-0${roomId.slice(-1)}T00:00:00Z`),
     );
-    expect(zrangeSpy).toHaveBeenCalledWith(
-      expect.any(String),
-      0,
-      9,
-      { rev: true },
+    const res = await GET(
+      new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready?limit=2"),
     );
+    const body = await res.json();
+    expect(body.count).toBe(2);
+    // Newest two only.
+    expect(body.rooms.map((r: { roomId: string }) => r.roomId)).toEqual(["rm-3", "rm-2"]);
   });
 
   it("caps limit at 200", async () => {
-    const zrangeSpy = vi.fn(async () => []);
-    mockedAuth.mockResolvedValue(makeAuthOk({ redisZrange: zrangeSpy }));
-    await GET(
+    const auth = makeAuthOk({
+      redisSmembers: async () => Array.from({ length: 250 }, (_, i) => `rm-${i}`),
+    });
+    mockedAuth.mockResolvedValue(auth);
+    mockedCore.mockImplementation(async ({ roomId }) =>
+      makeRoom(roomId, "awaiting_contributions"),
+    );
+    const res = await GET(
       new NextRequest("https://www.hivemoot.dev/api/rooms/synthesis-ready?limit=99999"),
     );
-    expect(zrangeSpy).toHaveBeenCalledWith(
-      expect.any(String),
-      0,
-      199,
-      { rev: true },
-    );
+    const body = await res.json();
+    expect(body.count).toBe(200);
   });
 
   it("returns 500 on storage error", async () => {
     mockedAuth.mockResolvedValue(
       makeAuthOk({
-        redisZrange: async () => {
+        redisSmembers: async () => {
           throw new Error("redis down");
         },
       }),
