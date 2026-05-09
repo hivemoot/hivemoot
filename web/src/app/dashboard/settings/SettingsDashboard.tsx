@@ -17,6 +17,8 @@ interface BlockedReason {
     deciding: number;
     decided_pending_action: number;
     stranded_merge: number;
+    /** PR 2 (#641) guard pass-1 G2: queen-tick is mid-flight. */
+    tick_running: number;
   };
   sampleRoomIds: string[];
 }
@@ -339,15 +341,17 @@ function ModeChoice({
 }
 
 function BlockedRoomsBanner({ blocked }: { blocked: BlockedReason }): React.ReactElement {
-  const total =
+  const roomCount =
     blocked.counts.deciding +
     blocked.counts.decided_pending_action +
     blocked.counts.stranded_merge;
+  const tickRunning = blocked.counts.tick_running > 0;
+  const headline = tickRunning && roomCount === 0
+    ? "Mode flip blocked — queen-tick mid-flight"
+    : `Mode flip blocked — ${roomCount} room${roomCount === 1 ? "" : "s"} in flight`;
   return (
     <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
-      <p className="font-semibold text-amber-200">
-        Mode flip blocked — {total} room{total === 1 ? "" : "s"} in flight
-      </p>
+      <p className="font-semibold text-amber-200">{headline}</p>
       <ul className="mt-2 space-y-1 text-xs text-zinc-400">
         {blocked.counts.deciding > 0 && (
           <li>{blocked.counts.deciding} in <code>deciding</code> (mid-claim)</li>
@@ -361,6 +365,13 @@ function BlockedRoomsBanner({ blocked }: { blocked: BlockedReason }): React.Reac
         {blocked.counts.stranded_merge > 0 && (
           <li>
             {blocked.counts.stranded_merge} stranded merge — check the reconciler
+          </li>
+        )}
+        {tickRunning && (
+          <li>
+            queen-tick is running for this installation — wait ~30s and retry.
+            Without this gate the tick would finish synthesizing in the OLD
+            mode (it reads queen-mode once at the top of its loop).
           </li>
         )}
       </ul>
