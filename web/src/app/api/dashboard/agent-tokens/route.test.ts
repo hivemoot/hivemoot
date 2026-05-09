@@ -124,9 +124,15 @@ describe("GET /api/dashboard/agent-tokens", () => {
     expect(body.tokens[0].name).toBe("queen");
     // Admin filtered out per #567 builder R1 — see the "preset catalog
     // filter" describe block below for the explicit regression.
+    // Mint-capable presets (apiarist, local_queen) also filtered —
+    // PR 645 builder pass-1 B1 (no policy input surface in the
+    // dashboard wrapper).
     expect(body.presets).toEqual(
-      expect.arrayContaining(["queen", "worker", "apiarist"]),
+      expect.arrayContaining(["queen", "worker"]),
     );
+    expect(body.presets).not.toContain("apiarist");
+    expect(body.presets).not.toContain("local_queen");
+    expect(body.presets).not.toContain("admin");
   });
 });
 
@@ -347,6 +353,69 @@ describe("POST /api/dashboard/agent-tokens — admin-class deny list (#567 build
   });
 });
 
+describe("POST /api/dashboard/agent-tokens — mint-capable preset deny list (PR 645 builder pass-1 B1)", () => {
+  // The dashboard wrapper has no `policy` input surface, so it
+  // can't issue mint-capable tokens with the required allowedRepos
+  // bound. Both the named preset and the explicit-capabilities
+  // path are rejected — the latter via the post-resolution gate
+  // since the dashboard never passes a policy.
+
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeByokAuthOk());
+    mockedRequireInstallation.mockReturnValue({
+      ok: true,
+      installationId: "12345",
+    } as never);
+  });
+
+  it("preset 'local_queen' → 400 with mint-capable rejection (preset-name path)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        preset: "local_queen",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/mint-capable/);
+    expect(body.message).toMatch(/POST \/api\/agent-tokens/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("preset 'apiarist' → 400 (also blocked from dashboard)", async () => {
+    // Apiarist is mint-capable too. Even though the issuance gate
+    // exempts it (legacy carve-out), the dashboard still hides /
+    // rejects it because cookie-auth + no-policy issuance of
+    // infrastructure-tier credentials is the wrong UX.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "ap-1",
+        preset: "apiarist",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("explicit capabilities including installation_token.mint → 400 (post-resolution mint gate fires)", async () => {
+    // The explicit-caps path resolved to a non-preset role; the
+    // mint gate at the post-resolution check still fires because
+    // the dashboard route hard-codes `policy: null` to the gate.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "minty",
+        agent_role: "minty",
+        capabilities: ["installation_token.mint", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)", () => {
   beforeEach(() => {
     mockedAuth.mockResolvedValue(makeByokAuthOk());
@@ -362,8 +431,20 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     const body = await res.json();
     expect(body.presets).not.toContain("admin");
     expect(body.presets).toEqual(
-      expect.arrayContaining(["queen", "worker", "apiarist", "monitoring", "dispatcher"]),
+      expect.arrayContaining(["queen", "worker", "monitoring", "dispatcher"]),
     );
+  });
+
+  it("excludes mint-capable presets ('apiarist', 'local_queen') from the presets list (PR 645 builder pass-1 B1)", async () => {
+    // The dashboard wrapper has no `policy` input surface, so it
+    // cannot issue mint-capable tokens with the required
+    // policy.allowedRepos bound (RFC D10 / G16). Hide those
+    // presets from the catalog so the operator never sees them
+    // as an option in the UI.
+    const res = await GET(makeRequest("GET"));
+    const body = await res.json();
+    expect(body.presets).not.toContain("apiarist");
+    expect(body.presets).not.toContain("local_queen");
   });
 
   it("returns the capability vocabulary filtered to non-admin entries", async () => {

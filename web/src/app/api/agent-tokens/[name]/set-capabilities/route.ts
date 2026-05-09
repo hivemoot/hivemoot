@@ -141,6 +141,36 @@ export async function POST(
     }
   }
 
+  // Mint-capable transition gate (PR 645 builder pass-1 B1).
+  //
+  // set-capabilities only changes capabilities, not policy. If the
+  // operation transitions a token INTO a mint-capable shape, we
+  // can't validate the policy without a separate fetch — and even
+  // then there's a race vs concurrent policy edits. The safe
+  // posture here is: refuse to transition to mint-capable via
+  // set-capabilities entirely. Operators must issue a NEW token
+  // with the right policy + revoke the old one.
+  //
+  // The legacy apiarist preset is exempt from this transition
+  // block since the gate at issue time is also exempt — apiarist
+  // tokens predate the policy model.
+  if (capabilities.includes("installation_token.mint")) {
+    const isLegacyApiarist = body.preset === "apiarist";
+    if (!isLegacyApiarist) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        "Refusing to transition a token to a mint-capable shape via " +
+          "set-capabilities — set-capabilities does not accept a " +
+          "policy field, so the resulting token would lack the " +
+          "policy.allowedRepos bound required by RFC D10 / G16. " +
+          "Issue a new token via POST /api/agent-tokens with " +
+          "policy: { allowedRepos: ['owner/repo', ...] } and revoke " +
+          "this one instead.",
+        400,
+      );
+    }
+  }
+
   // Storage builds the audit entry internally with `from` taken
   // from the LOCKED envelope state. Closes #506 builder R1 #3:
   // a previous pattern that pre-read `from` at the route layer
