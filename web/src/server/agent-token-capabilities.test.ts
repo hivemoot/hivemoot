@@ -314,6 +314,25 @@ describe("PRESETS", () => {
     expect(PRESETS.local_queen.includes("rooms.force_close")).toBe(false);
   });
 
+  it("every preset granting rooms.create also grants rooms.read_all (PR 645 guard G3, KNOWN_CAPABILITIES :149-157 invariant)", () => {
+    // The KNOWN_CAPABILITIES note at agent-token-capabilities.ts:149-157
+    // commits to this pairing: rooms.create's 409 subject_already_open
+    // response surfaces existingRoomId, and that disclosure is benign
+    // ONLY because the bearer also has rooms.read_all (so they can
+    // already enumerate rooms anyway). A future preset with rooms.create
+    // but WITHOUT rooms.read_all would turn the 409 into a roomId-
+    // discovery oracle. Guard pass-1 on PR 645 asked for an automated
+    // pin so this invariant doesn't regress silently.
+    for (const [name, caps] of Object.entries(PRESETS)) {
+      if (caps.includes("rooms.create")) {
+        expect(
+          caps.includes("rooms.read_all"),
+          `${name} grants rooms.create but not rooms.read_all`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("admin preset includes both bare * AND agent_tokens.manage explicit (wildcard alone wouldn't cover it)", () => {
     expect(PRESETS.admin.includes("*")).toBe(true);
     expect(PRESETS.admin.includes("agent_tokens.manage")).toBe(true);
