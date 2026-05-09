@@ -42,13 +42,6 @@ type SaveState =
 
 const SETTINGS_URL = "/api/dashboard/queen-settings";
 
-/** Client-side cap on the override blob (G4 — guard pass-1 hardening
- * on PR 5). 16 KiB is generous for a YAML config and well under any
- * Redis hash-field limit. The route handler should match this cap
- * (PR 1 follow-up); without a server-side cap an authenticated
- * operator can still POST a larger blob via curl. */
-const OVERRIDE_MAX_CHARS = 16 * 1024;
-
 export default function SettingsDashboard() {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   const [draftMode, setDraftMode] = useState<QueenMode>("cloud");
@@ -67,6 +60,11 @@ export default function SettingsDashboard() {
       const settings = (await res.json()) as QueenSettings;
       setLoad({ kind: "loaded", settings });
       setDraftMode(settings.queen_mode);
+      // Override editing is disabled until PR 4 ships the D12
+      // structured-YAML schema (merge_conventions /
+      // additional_blockers). The store route rejects any non-null
+      // override today (PR 1 pass-2). We still surface the *current*
+      // value as read-only context for operators.
       setDraftOverride(settings.queen_prompt_override ?? "");
     } catch (err) {
       setLoad({
@@ -84,16 +82,14 @@ export default function SettingsDashboard() {
     async () => {
       setSave({ kind: "saving" });
       try {
+        // PR 1 pass-2 rejects any non-null override; the structured
+        // YAML schema lands in PR 4 (D12). Until then we only ever
+        // send the queen_mode field — the override stays at whatever
+        // the route already has. Once D12 lands, this function gets
+        // a `body.queen_prompt_override = parsedYaml ?? null` line.
         const body: Record<string, unknown> = {
           queen_mode: draftMode,
         };
-        // Send override field only when it changed; null clears, string sets,
-        // omit leaves untouched (matches the route contract from PR 1).
-        const current =
-          load.kind === "loaded" ? load.settings.queen_prompt_override : null;
-        const trimmed = draftOverride.trim();
-        const newVal = trimmed.length > 0 ? trimmed : null;
-        if (newVal !== current) body.queen_prompt_override = newVal;
 
         const res = await fetch(SETTINGS_URL, {
           method: "POST",
@@ -104,12 +100,19 @@ export default function SettingsDashboard() {
         if (res.status === 409) {
           const err = (await res.json()) as PostError;
           if (err.blocked) {
+            // Close the modal before surfacing the blocked banner —
+            // otherwise the modal stays open over the banner and
+            // the operator can't read why their flip was blocked.
+            setConfirmFlip(null);
             setSave({ kind: "blocked", blocked: err.blocked });
             return;
           }
         }
         if (!res.ok) {
           const err = (await res.json().catch(() => ({}))) as PostError;
+          // Same as the 409 path: dismiss the modal so the inline
+          // error message under the Save button is visible.
+          setConfirmFlip(null);
           setSave({
             kind: "error",
             message: err.message || `HTTP ${res.status}`,
@@ -124,13 +127,17 @@ export default function SettingsDashboard() {
         setSave({ kind: "idle" });
         setConfirmFlip(null);
       } catch (err) {
+        // Network / parse failures must also close the modal —
+        // the modal's "Confirm flip" stays in saving state forever
+        // otherwise.
+        setConfirmFlip(null);
         setSave({
           kind: "error",
           message: err instanceof Error ? err.message : "Save failed",
         });
       }
     },
-    [draftMode, draftOverride, load],
+    [draftMode],
   );
 
   if (load.kind === "loading") {
@@ -161,9 +168,10 @@ export default function SettingsDashboard() {
 
   const { settings } = load;
   const modeChanged = draftMode !== settings.queen_mode;
-  const overrideChanged =
-    (draftOverride.trim() || null) !== (settings.queen_prompt_override ?? null);
-  const dirty = modeChanged || overrideChanged;
+  // Override editing is disabled until PR 4 lands the D12 schema —
+  // dirty state tracks mode only. Once the schema editor ships,
+  // this becomes `modeChanged || overrideChanged`.
+  const dirty = modeChanged;
 
   return (
     <>
@@ -176,9 +184,7 @@ export default function SettingsDashboard() {
           <Link href="/dashboard/credentials" className="text-honey-400 hover:underline">
             BYOK credentials
           </Link>
-          . (Linking the legacy path so this works whether or not the
-          BYOK relocation PR has merged; the relocation sweep will
-          rewrite this on its end.)
+          .
         </p>
       </div>
 
@@ -215,32 +221,19 @@ export default function SettingsDashboard() {
 
         <details className="mt-6">
           <summary className="cursor-pointer text-sm font-medium text-zinc-300 hover:text-zinc-100">
-            Structured prompt override (optional)
+            Structured prompt override
           </summary>
           <div className="mt-3 space-y-2">
             <p className="text-xs text-zinc-500">
-              YAML/text passed to the queen as additional judgment guidelines (D12).
-              Leave empty to use defaults. The override is bounded by a schema in PR 3;
-              today it&apos;s stored as a plain string.
+              The structured override (D12 — <code>merge_conventions</code>{" "}
+              and <code>additional_blockers</code>) lands in a follow-up
+              release. Free-form strings are rejected by the API today,
+              so the editor is read-only until then. The current stored
+              value, if any, is shown below.
             </p>
-            <textarea
-              value={draftOverride}
-              onChange={(e) => setDraftOverride(e.target.value)}
-              rows={6}
-              spellCheck={false}
-              maxLength={OVERRIDE_MAX_CHARS}
-              className="w-full rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-200 focus:border-honey-500 focus:outline-none"
-              placeholder="merge_conventions: |&#10;  Squash-merge only. Require all checks green before merging."
-            />
-            <p
-              className={`text-right text-[11px] ${
-                draftOverride.length > OVERRIDE_MAX_CHARS - 1024
-                  ? "text-amber-400"
-                  : "text-zinc-500"
-              }`}
-            >
-              {draftOverride.length.toLocaleString()} / {OVERRIDE_MAX_CHARS.toLocaleString()} chars
-            </p>
+            <pre className="w-full overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-400">
+              {draftOverride.length > 0 ? draftOverride : "(no override set)"}
+            </pre>
           </div>
         </details>
 
