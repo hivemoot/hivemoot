@@ -3,25 +3,34 @@ import { type Redis } from "@upstash/redis";
 import { checkInFlightForFlip } from "./queen-mode-flip-precheck";
 
 // ---------------------------------------------------------------------------
-// Mock Redis with zrange + exists. The precheck does parallel reads:
-//   ZRANGE deciding-status-index 0 -1
-//   EXISTS queen-tick-lock-key
-// No listRooms anymore (guard pass-1 G1 fix).
+// Mock Redis with smembers + exists. The precheck does parallel reads:
+//   SMEMBERS deciding-status-index   (status index is a SET, not ZSET)
+//   EXISTS   queen-tick-lock-key
+//
+// Guard pass-2 G1: an earlier mock implemented .zrange and the
+// implementation called .zrange — but `statusIndexKey` is a Redis SET
+// in real war-room (SADD/SREM in war-room.ts:2269-2526). Real Redis
+// returns WRONGTYPE for ZRANGE against a SET. The tests below pin
+// SMEMBERS as the call so a future copy-paste back to ZRANGE fails
+// loudly here before it ships.
 // ---------------------------------------------------------------------------
 
 interface MockState {
   decidingIds: string[];
   tickLockHeld: boolean;
-  errorOnZrange?: Error;
+  errorOnSmembers?: Error;
   errorOnExists?: Error;
 }
 
 function makeMockRedis(state: MockState): Redis {
   return {
-    zrange: vi.fn(async () => {
-      if (state.errorOnZrange) throw state.errorOnZrange;
+    smembers: vi.fn(async () => {
+      if (state.errorOnSmembers) throw state.errorOnSmembers;
       return state.decidingIds;
     }),
+    // Intentionally NOT defined — if the implementation ever switches
+    // back to ZRANGE, the call throws "redis.zrange is not a function"
+    // and these tests blow up. Real Redis would return WRONGTYPE.
     exists: vi.fn(async () => {
       if (state.errorOnExists) throw state.errorOnExists;
       return state.tickLockHeld ? 1 : 0;
@@ -73,8 +82,8 @@ describe("checkInFlightForFlip", () => {
 
   it("status-keyed scan can't be paged out by unrelated awaiting_contributions burst (G1 regression)", async () => {
     // Even if the installation has 1000+ recent awaiting_contributions
-    // rooms, the deciding-status sorted set only contains deciding
-    // rooms — the precheck sees them all.
+    // rooms, the deciding-status SET only contains deciding rooms —
+    // the precheck sees them all.
     const redis = makeMockRedis({
       decidingIds: ["rm-old-deciding"],
       tickLockHeld: false,
@@ -128,21 +137,25 @@ describe("checkInFlightForFlip", () => {
     const redis = makeMockRedis({
       decidingIds: [],
       tickLockHeld: false,
-      errorOnZrange: new Error("redis down"),
+      errorOnSmembers: new Error("redis down"),
     });
     await expect(
       checkInFlightForFlip({ installationId: "42", redis }),
     ).rejects.toThrow(/redis down/);
   });
 
-  it("uses the right keys (status-index for deciding, tick-lock for installation)", async () => {
+  it("uses SMEMBERS (not ZRANGE) against the status SET (guard pass-2 G1)", async () => {
+    // Pin: the read MUST be SMEMBERS — statusIndexKey is a SET
+    // (SADD/SREM in war-room.ts), and ZRANGE returns WRONGTYPE
+    // against a SET in real Redis. If a future change switches back
+    // to ZRANGE, this test fails loudly at the call boundary.
     const redis = makeMockRedis({ decidingIds: [], tickLockHeld: false });
     await checkInFlightForFlip({ installationId: "42", redis });
-    expect(redis.zrange).toHaveBeenCalledWith(
+    expect(redis.smembers).toHaveBeenCalledWith(
       "hive:v1:idx:room:status:42:deciding",
-      0,
-      -1,
     );
     expect(redis.exists).toHaveBeenCalledWith("hive:v1:lock:queen-tick:42");
+    // Belt-and-suspenders: confirm zrange was never reached.
+    expect((redis as unknown as { zrange?: unknown }).zrange).toBeUndefined();
   });
 });
