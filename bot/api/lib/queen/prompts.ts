@@ -31,66 +31,23 @@ import type { RoomContribution } from "../war-room-store.js";
 import type { SynthesisInput } from "./synthesizer.js";
 
 /**
- * Verdict enum from `WAR_ROOM_DESIGN.md` §S2. Validated at
- * `/contribute` write time (line 1168), so any value reaching the
- * queen has been server-checked. Order matters for aggregation:
- * the most-conservative wins.
+ * Verdict primitives moved to `@hivemoot/war-room` per RFC PR 3
+ * (builder pass-8): web's resolve-action endpoint needs the same
+ * §S2 floor logic, and web doesn't import bot. Re-exporting here
+ * keeps existing internal callers (synthesizer, ai-sdk-synthesizer)
+ * stable while the canonical home is the shared package.
  */
-export type WorkerVerdict = "APPROVE" | "COMMENT" | "CONCERNS" | "REQUEST_CHANGES";
+import {
+  aggregateWorkerVerdicts,
+  extractContributionVerdict,
+  type WorkerVerdict,
+} from "@hivemoot/war-room";
 
-const VALID_VERDICTS: ReadonlySet<string> = new Set([
-  "APPROVE",
-  "COMMENT",
-  "CONCERNS",
-  "REQUEST_CHANGES",
-]);
-
-/**
- * Aggregate structural verdict from a contribution hash. Default
- * `COMMENT` when:
- *   - the contribution hash is empty
- *   - all contributions are tombstones (withdrawn)
- *   - no contribution carries a parseable `body.verdict`
- *
- * The default reflects "we have no usable input"; downstream
- * operators / dashboards can flag default-COMMENT rooms for human
- * triage. Never raises above the most-conservative actually-emitted
- * verdict.
- */
-export function aggregateWorkerVerdicts(
-  contributions: Record<string, RoomContribution>,
-): WorkerVerdict {
-  const verdicts: WorkerVerdict[] = [];
-  for (const c of Object.values(contributions)) {
-    if (c.withdrawn) continue;
-    const v = extractContributionVerdict(c);
-    if (v !== null) verdicts.push(v);
-  }
-  if (verdicts.length === 0) return "COMMENT";
-  if (verdicts.includes("REQUEST_CHANGES")) return "REQUEST_CHANGES";
-  if (verdicts.includes("CONCERNS")) return "CONCERNS";
-  if (verdicts.every((v) => v === "APPROVE")) return "APPROVE";
-  return "COMMENT";
-}
-
-/**
- * Extract a validated `WorkerVerdict` from one contribution's body.
- * Returns null when:
- *   - body is missing entirely (only `raw_md` — legacy / partial write)
- *   - body.verdict is missing or not one of the valid enums
- * Null-returning paths fall through to the COMMENT default in
- * `aggregateWorkerVerdicts`.
- */
-export function extractContributionVerdict(
-  contribution: RoomContribution,
-): WorkerVerdict | null {
-  const body = contribution.body;
-  if (!body || typeof body !== "object") return null;
-  const v = (body as Record<string, unknown>).verdict;
-  if (typeof v !== "string") return null;
-  if (!VALID_VERDICTS.has(v)) return null;
-  return v as WorkerVerdict;
-}
+export {
+  aggregateWorkerVerdicts,
+  extractContributionVerdict,
+  type WorkerVerdict,
+};
 
 export const QUEEN_SYNTHESIS_SYSTEM_PROMPT = `You are the Hivemoot queen — a synthesis agent that produces a prose summary of a war room of automated reviewer agents.
 
