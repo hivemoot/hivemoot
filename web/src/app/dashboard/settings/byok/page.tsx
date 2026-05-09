@@ -23,7 +23,7 @@ export default async function ByokSettingsPage() {
 
   let fresh = false;
   let hasInstallation = true;
-  let reAuthUrl = "/api/auth/github/start-discover?force=1&next=/dashboard/credentials";
+  let reAuthUrl = "/api/auth/github/start-discover?force=1&next=/dashboard/settings/byok";
   if (token) {
     const env = validateEnv();
     if (env.ok && env.config.redisRestUrl && env.config.redisRestToken) {
@@ -38,7 +38,7 @@ export default async function ByokSettingsPage() {
             // callback skips discovery and stays pinned to the current installation.
             // Using start-discover would pick installations[0], silently switching
             // multi-install users to the wrong installation.
-            reAuthUrl = `/api/auth/github/start?installation_id=${encodeURIComponent(session.installationId)}&next=/dashboard/credentials`;
+            reAuthUrl = `/api/auth/github/start?installation_id=${encodeURIComponent(session.installationId)}&next=/dashboard/settings/byok`;
           }
         }
       } catch {
