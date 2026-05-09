@@ -317,7 +317,7 @@ describe("POST /api/dashboard/queen-settings", () => {
     mockedPrecheck.mockResolvedValue({
       blocked: {
         reason: "rooms_in_flight",
-        counts: { deciding: 2, decided_pending_action: 0, stranded_merge: 0 },
+        counts: { deciding: 2, decided_pending_action: 0, stranded_merge: 0, tick_running: 0 },
         sampleRoomIds: ["rm-1", "rm-2"],
       },
     });

@@ -1,32 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { type Redis } from "@upstash/redis";
-
-vi.mock("@hivemoot/war-room", async () => {
-  const real = await vi.importActual<typeof import("@hivemoot/war-room")>(
-    "@hivemoot/war-room",
-  );
-  return { ...real, listRooms: vi.fn() };
-});
-
-import { listRooms } from "@hivemoot/war-room";
 import { checkInFlightForFlip } from "./queen-mode-flip-precheck";
 
-const mockedList = vi.mocked(listRooms);
+// ---------------------------------------------------------------------------
+// Mock Redis with zrange + exists. The precheck does parallel reads:
+//   ZRANGE deciding-status-index 0 -1
+//   EXISTS queen-tick-lock-key
+// No listRooms anymore (guard pass-1 G1 fix).
+// ---------------------------------------------------------------------------
 
-function room(roomId: string, status: string, opened_at = "2026-05-08T00:00:00Z") {
+interface MockState {
+  decidingIds: string[];
+  tickLockHeld: boolean;
+  errorOnZrange?: Error;
+  errorOnExists?: Error;
+}
+
+function makeMockRedis(state: MockState): Redis {
   return {
-    roomId,
-    manager: "bot-queen",
-    subject_type: "pr_review",
-    subject_ref: "owner/repo#1",
-    opened_at,
-    status,
-    timing_config: {
-      max_age_secs: 86400,
-      drop_threshold_secs: 600,
-      quiet_period_secs: 60,
-    },
-  } as never;
+    zrange: vi.fn(async () => {
+      if (state.errorOnZrange) throw state.errorOnZrange;
+      return state.decidingIds;
+    }),
+    exists: vi.fn(async () => {
+      if (state.errorOnExists) throw state.errorOnExists;
+      return state.tickLockHeld ? 1 : 0;
+    }),
+  } as unknown as Redis;
 }
 
 beforeEach(() => {
@@ -34,75 +34,115 @@ beforeEach(() => {
 });
 
 describe("checkInFlightForFlip", () => {
-  it("returns null when no rooms exist", async () => {
-    mockedList.mockResolvedValue([]);
+  it("returns null when no deciding rooms AND no tick lock held", async () => {
+    const redis = makeMockRedis({ decidingIds: [], tickLockHeld: false });
     const result = await checkInFlightForFlip({
       installationId: "42",
-      redis: {} as Redis,
-    });
-    expect(result).toBeNull();
-  });
-
-  it("returns null when all rooms are closed/expired (none in flight)", async () => {
-    mockedList.mockResolvedValue([
-      room("rm-1", "closed"),
-      room("rm-2", "expired"),
-      room("rm-3", "awaiting_contributions"),
-    ]);
-    const result = await checkInFlightForFlip({
-      installationId: "42",
-      redis: {} as Redis,
+      redis,
     });
     expect(result).toBeNull();
   });
 
   it("blocks when at least one room is in deciding", async () => {
-    mockedList.mockResolvedValue([
-      room("rm-1", "awaiting_contributions"),
-      room("rm-2", "deciding"),
-    ]);
+    const redis = makeMockRedis({ decidingIds: ["rm-2"], tickLockHeld: false });
     const result = await checkInFlightForFlip({
       installationId: "42",
-      redis: {} as Redis,
+      redis,
     });
     expect(result).not.toBeNull();
     expect(result?.blocked.reason).toBe("rooms_in_flight");
     expect(result?.blocked.counts.deciding).toBe(1);
     expect(result?.blocked.counts.decided_pending_action).toBe(0);
     expect(result?.blocked.counts.stranded_merge).toBe(0);
+    expect(result?.blocked.counts.tick_running).toBe(0);
     expect(result?.blocked.sampleRoomIds).toEqual(["rm-2"]);
   });
 
-  it("counts multiple deciding rooms correctly", async () => {
-    mockedList.mockResolvedValue([
-      room("rm-a", "deciding"),
-      room("rm-b", "deciding"),
-      room("rm-c", "deciding"),
-    ]);
+  it("counts multiple deciding rooms via the status-keyed scan (guard pass-1 G1)", async () => {
+    const redis = makeMockRedis({
+      decidingIds: ["rm-a", "rm-b", "rm-c"],
+      tickLockHeld: false,
+    });
     const result = await checkInFlightForFlip({
       installationId: "42",
-      redis: {} as Redis,
+      redis,
     });
     expect(result?.blocked.counts.deciding).toBe(3);
     expect(result?.blocked.sampleRoomIds).toEqual(["rm-a", "rm-b", "rm-c"]);
   });
 
-  it("caps sampleRoomIds at 5", async () => {
-    mockedList.mockResolvedValue(
-      Array.from({ length: 8 }, (_, i) => room(`rm-${i}`, "deciding")),
-    );
+  it("status-keyed scan can't be paged out by unrelated awaiting_contributions burst (G1 regression)", async () => {
+    // Even if the installation has 1000+ recent awaiting_contributions
+    // rooms, the deciding-status sorted set only contains deciding
+    // rooms — the precheck sees them all.
+    const redis = makeMockRedis({
+      decidingIds: ["rm-old-deciding"],
+      tickLockHeld: false,
+    });
     const result = await checkInFlightForFlip({
       installationId: "42",
-      redis: {} as Redis,
+      redis,
+    });
+    expect(result?.blocked.counts.deciding).toBe(1);
+    expect(result?.blocked.sampleRoomIds).toEqual(["rm-old-deciding"]);
+  });
+
+  it("caps sampleRoomIds at 5", async () => {
+    const redis = makeMockRedis({
+      decidingIds: Array.from({ length: 8 }, (_, i) => `rm-${i}`),
+      tickLockHeld: false,
+    });
+    const result = await checkInFlightForFlip({
+      installationId: "42",
+      redis,
     });
     expect(result?.blocked.sampleRoomIds).toHaveLength(5);
     expect(result?.blocked.counts.deciding).toBe(8);
   });
 
-  it("propagates listRooms errors (caller surfaces 500)", async () => {
-    mockedList.mockRejectedValue(new Error("redis down"));
+  it("blocks when queen-tick lock is held even with no deciding rooms (guard pass-1 G2)", async () => {
+    const redis = makeMockRedis({ decidingIds: [], tickLockHeld: true });
+    const result = await checkInFlightForFlip({
+      installationId: "42",
+      redis,
+    });
+    expect(result).not.toBeNull();
+    expect(result?.blocked.counts.deciding).toBe(0);
+    expect(result?.blocked.counts.tick_running).toBe(1);
+  });
+
+  it("counts BOTH deciding AND tick_running when both true", async () => {
+    const redis = makeMockRedis({
+      decidingIds: ["rm-1", "rm-2"],
+      tickLockHeld: true,
+    });
+    const result = await checkInFlightForFlip({
+      installationId: "42",
+      redis,
+    });
+    expect(result?.blocked.counts.deciding).toBe(2);
+    expect(result?.blocked.counts.tick_running).toBe(1);
+  });
+
+  it("propagates Redis errors (caller surfaces 500)", async () => {
+    const redis = makeMockRedis({
+      decidingIds: [],
+      tickLockHeld: false,
+      errorOnZrange: new Error("redis down"),
+    });
     await expect(
-      checkInFlightForFlip({ installationId: "42", redis: {} as Redis }),
+      checkInFlightForFlip({ installationId: "42", redis }),
     ).rejects.toThrow(/redis down/);
+  });
+
+  it("uses the right keys (status-index for deciding, tick-lock for installation)", async () => {
+    const redis = makeMockRedis({ decidingIds: [], tickLockHeld: false });
+    await checkInFlightForFlip({ installationId: "42", redis });
+    expect(redis.zrange).toHaveBeenCalledWith(
+      "hive:v1:idx:room:status:42:deciding",
+      0,
+      -1,
+    );
+    expect(redis.exists).toHaveBeenCalledWith("hive:v1:lock:queen-tick:42");
   });
 });
