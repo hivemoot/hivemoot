@@ -91,7 +91,29 @@ export declare function roomLockKey(installationId: string, roomId: string): str
  *
  *     closed | expired (terminal, no further transitions)
  */
-export type RoomStatus = "awaiting_contributions" | "deciding" | "closed" | "expired";
+export type RoomStatus = "awaiting_contributions" | "deciding"
+/**
+ * Squash-merge intent in flight, post-`seal-decision` and pre-
+ * `confirm-merge` (RFC PR 3 + D4 + G4). Reached only via the
+ * local-mode synthesis path — `seal-decision` transitions a
+ * `deciding` claim into `decided_pending_action` when the
+ * permitted action is squash-merge AND the comment-URL precondition
+ * is verified. The room sits here for ≥60s (operator-override
+ * window per G13) and ≤15min (G4 TTL); tick N+1's `confirm-merge`
+ * re-validates GitHub state and either approves merge (transitions
+ * to `closed` with `decision_outcome: merge_approved` audit) or
+ * downgrades (transitions to `closed` with `decision_outcome:
+ * merge_downgraded`). The reconciler (G32) handles stranded rooms
+ * past TTL.
+ *
+ * **Lua-script wiring lands in subsequent PR-3 slices.** This PR
+ * only adds the type so the TypeScript exhaustiveness checks in
+ * downstream switch sites surface the surgery surface — the next
+ * commits/PRs in this stack plug the new state into status
+ * indexes, transition primitives, listRooms filters, and the
+ * watchdog's expire scan.
+ */
+ | "decided_pending_action" | "closed" | "expired";
 /** Subject classes V1 supports. New types require backend
  * regex validation per `subject_ref` shape.
  *
