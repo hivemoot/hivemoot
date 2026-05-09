@@ -1,9 +1,11 @@
 /**
  * GET  /api/dashboard/queen-settings — read the operator's
  *   per-installation queen settings (queen_mode + optional override).
- * POST /api/dashboard/queen-settings — atomically update them under
- *   the per-installation flip-lock (G12). Mutating route: requires
- *   a fresh BYOK session (15-min window).
+ * POST /api/dashboard/queen-settings — update settings under the
+ *   per-installation flip-lock (G12 — serialized writes, NOT
+ *   atomic against in-flight queen-tick claims; see the store
+ *   docblock at queen-settings-store.ts for the precise semantics).
+ *   Mutating route: requires a fresh BYOK session (15-min window).
  *
  * Response shape (both methods):
  *   { queen_mode: "cloud" | "local",
@@ -12,17 +14,19 @@
  *
  * POST body:
  *   { queen_mode: "cloud" | "local",
- *     queen_prompt_override?: string | null }
+ *     queen_prompt_override?: null }   ← non-null rejected in PR 1.
+ *                                         The D12 structured-YAML
+ *                                         schema lands in PR 4.
  *   - omit `queen_prompt_override` to leave the override unchanged
- *   - pass `null` to delete the override
- *   - pass a string to set/replace it
+ *   - pass `null` (or `""`) to delete the override
+ *   - pass a string → 400 invalid_body until PR 4
  *
  * Errors:
- *   - 400 invalid_body — malformed POST input
+ *   - 400 invalid_body — malformed POST input OR non-null override (PR 1 only)
  *   - 401 not_authenticated — missing / expired BYOK session
  *   - 403 fresh_session_required (POST) — session older than 15 min
  *   - 403 no_installation — session has no linked installation
- *   - 409 mode_flip_blocked — PR 2 will surface in-flight rooms here
+ *   - 409 mode_flip_blocked — PR 2 surfaces in-flight rooms / tick lock
  *   - 500 storage_failure
  */
 
@@ -76,17 +80,18 @@ function isQueenMode(value: unknown): value is QueenMode {
 }
 
 /**
- * Maximum bytes for `queen_prompt_override` — bounds the storage
- * write surface (B1 — guard pass-1). 16 KiB is generous for the YAML
- * config D12 specifies (`merge_conventions`, `additional_blockers`)
- * and well under any Redis hash-field limit.
+ * Maximum bytes for `queen_prompt_override`. Kept as a constant
+ * because PR 4 (when the D12 structured-YAML parser lands) will
+ * reuse the same byte cap on the validated payload — bounds the
+ * storage write surface either way.
  *
- * **Schema validation is deferred to PR 4** when the structured-YAML
- * parser ships. Today the field is plain text — operators using the
- * dashboard write whatever they want up to this cap. PR 4 will tighten
- * to a Zod-validated structured config; rejecting non-null overrides
- * here in v1 was rejected because it strands the dashboard textarea
- * with no way to populate the field while waiting for PR 4.
+ * **In PR 1, non-null overrides are rejected outright** (B1 builder
+ * pass-2). D12 is explicit that the override must be a structured
+ * config (`merge_conventions`, `additional_blockers`); shipping a
+ * free-form-string write surface now would lock in the wrong
+ * stored shape and require a migration when PR 4's schema lands.
+ * Until PR 4, only `null` (clear) and `undefined` (leave unchanged)
+ * are accepted on `queen_prompt_override`.
  */
 export const QUEEN_PROMPT_OVERRIDE_MAX_BYTES = 16 * 1024;
 
@@ -108,13 +113,15 @@ function parseBody(raw: unknown): { ok: true; body: PostBody } | { ok: false; me
       message: "queen_prompt_override must be a string, null, or omitted.",
     };
   }
-  // Normalize empty string to null (B3 — guard pass-1) so the GET
-  // round-trip is symmetric. Without this normalization, POSTing
-  // `{queen_prompt_override:""}` would write "" to Redis but the
-  // store's reader at `queen-settings-store.ts:69-70` coerces "" to
-  // null — meaning the next GET returns a different value than the
-  // POST submitted. Keep the empty-string-as-no-override invariant
-  // honest at the boundary instead.
+  // PR 1 only accepts:
+  //   - undefined → leave the existing override untouched
+  //   - null      → delete the override (clear)
+  //   - "" (empty string) → normalize to null (B3 — guard pass-1
+  //     round-trip symmetry; the store's reader coerces "" to null
+  //     anyway, so we honor that contract at the boundary)
+  // Non-empty strings are REJECTED until PR 4's D12 schema parser
+  // ships (B1 — builder pass-2). Locking the stored shape down now
+  // prevents PR 4 from needing a Redis migration.
   let override: string | null | undefined;
   if (obj.queen_prompt_override === undefined) {
     override = undefined;
@@ -125,16 +132,14 @@ function parseBody(raw: unknown): { ok: true; body: PostBody } | { ok: false; me
     if (s.length === 0) {
       override = null;
     } else {
-      // UTF-8 byte length, not char count — paranoid about smileys
-      // inflating into Redis storage past the cap.
-      const bytes = new TextEncoder().encode(s).byteLength;
-      if (bytes > QUEEN_PROMPT_OVERRIDE_MAX_BYTES) {
-        return {
-          ok: false,
-          message: `queen_prompt_override must be ≤${QUEEN_PROMPT_OVERRIDE_MAX_BYTES} bytes (got ${bytes}). Schema validation lands in PR 4.`,
-        };
-      }
-      override = s;
+      return {
+        ok: false,
+        message:
+          "queen_prompt_override must be null or omitted in PR 1. " +
+          "The D12 structured-YAML schema (merge_conventions / " +
+          "additional_blockers) lands in PR 4. Free-form strings " +
+          "are rejected to avoid locking in the wrong stored shape.",
+      };
     }
   }
   return {

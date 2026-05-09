@@ -171,53 +171,69 @@ describe("POST /api/dashboard/queen-settings", () => {
     expect(mockedSet).not.toHaveBeenCalled();
   });
 
-  it("counts UTF-8 bytes, not chars (smiley inflation can't sneak past the cap)", async () => {
+  it("rejects ANY non-null override in PR 1 (B1 builder pass-2 — D12 schema lands in PR 4)", async () => {
     mockedAuth.mockResolvedValue(makeAuth("42"));
-    // each smiley is 4 bytes (surrogate pair); 4097 smileys = 16,388 bytes
-    const blob = "🎉".repeat(4097);
     const res = await POST(
-      makePostRequest({ queen_mode: "cloud", queen_prompt_override: blob }),
+      makePostRequest({
+        queen_mode: "cloud",
+        queen_prompt_override: "merge_conventions: squash-only",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: "invalid_body",
+      message: expect.stringContaining("PR 4"),
+    });
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects even tiny non-null strings (no free-form-string write surface in PR 1)", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    const res = await POST(
+      makePostRequest({ queen_mode: "cloud", queen_prompt_override: "x" }),
     );
     expect(res.status).toBe(400);
     expect(mockedSet).not.toHaveBeenCalled();
   });
 
-  it("accepts override exactly at the 16 KiB boundary", async () => {
+  it("writes mode change with override = null and returns the new state", async () => {
     mockedAuth.mockResolvedValue(makeAuth("42"));
     mockedSet.mockResolvedValue({
       ok: true,
       previous: { queen_mode: "cloud", queen_prompt_override: null },
-      current: { queen_mode: "cloud", queen_prompt_override: "x".repeat(16 * 1024) },
+      current: { queen_mode: "local", queen_prompt_override: null },
     });
     const res = await POST(
-      makePostRequest({
-        queen_mode: "cloud",
-        queen_prompt_override: "x".repeat(16 * 1024),
-      }),
-    );
-    expect(res.status).toBe(200);
-  });
-
-  it("writes settings and returns the new state", async () => {
-    mockedAuth.mockResolvedValue(makeAuth("42"));
-    mockedSet.mockResolvedValue({
-      ok: true,
-      previous: { queen_mode: "cloud", queen_prompt_override: null },
-      current: { queen_mode: "local", queen_prompt_override: "test" },
-    });
-    const res = await POST(
-      makePostRequest({ queen_mode: "local", queen_prompt_override: "test" }),
+      makePostRequest({ queen_mode: "local", queen_prompt_override: null }),
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       installation_id: "42",
       queen_mode: "local",
-      queen_prompt_override: "test",
+      queen_prompt_override: null,
     });
     expect(mockedSet).toHaveBeenCalledWith(
       expect.objectContaining({
         installationId: "42",
-        next: { queen_mode: "local", queen_prompt_override: "test" },
+        next: { queen_mode: "local", queen_prompt_override: null },
+      }),
+    );
+  });
+
+  it("writes mode change with override omitted and leaves existing override untouched", async () => {
+    mockedAuth.mockResolvedValue(makeAuth("42"));
+    mockedSet.mockResolvedValue({
+      ok: true,
+      previous: { queen_mode: "cloud", queen_prompt_override: null },
+      current: { queen_mode: "local", queen_prompt_override: null },
+    });
+    const res = await POST(
+      makePostRequest({ queen_mode: "local" }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockedSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        next: { queen_mode: "local", queen_prompt_override: undefined },
       }),
     );
   });
