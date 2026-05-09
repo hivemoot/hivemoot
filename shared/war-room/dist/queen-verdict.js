@@ -85,16 +85,29 @@ export function extractContributionVerdict(contribution) {
     return v;
 }
 /**
- * Aggregate structural verdict from a contribution hash. Default
- * `COMMENT` when:
+ * Aggregate structural verdict from a contribution hash.
+ *
+ * ⚠️ **DO NOT call this directly from web's resolve-action endpoint
+ * (PR 3b).** Use `applyDowngradeOnlyFloor` instead. This function
+ * returns `COMMENT` whenever no contribution carries a structured
+ * `body.verdict` — the modern free-form-prose default — which a naive
+ * "if floor != llmVerdict, override" path would silently use to clamp
+ * every `APPROVE` merge down to `COMMENT`. That trap is the entire
+ * reason `applyDowngradeOnlyFloor` exists (RFC D3 + G1 "Implementation
+ * primitive" note). Guard pass-1 on PR #642 explicitly flagged this
+ * as a public-surface footgun.
+ *
+ * The function is exported because bot's existing manager-loop
+ * already calls it via the prompts.ts re-export shim that predates
+ * this move; un-exporting would require a follow-up bot refactor.
+ * New external callers should use `applyDowngradeOnlyFloor` only.
+ *
+ * Default `COMMENT` returns when:
  *   - the contribution hash is empty
  *   - all contributions are tombstones (withdrawn)
  *   - no contribution carries a parseable `body.verdict`
  *
- * The default reflects "we have no usable input"; downstream
- * operators / dashboards can flag default-COMMENT rooms for human
- * triage. Never raises above the most-conservative actually-emitted
- * verdict.
+ * Never raises above the most-conservative actually-emitted verdict.
  */
 export function aggregateWorkerVerdicts(contributions) {
     const verdicts = [];
