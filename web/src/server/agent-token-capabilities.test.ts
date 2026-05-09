@@ -283,6 +283,37 @@ describe("PRESETS", () => {
     expect(PRESETS.apiarist).toEqual(["installation_token.mint"]);
   });
 
+  it("rooms.synthesize is a known capability (RFC PR 3 + D14)", () => {
+    expect(KNOWN_CAPABILITIES.includes("rooms.synthesize")).toBe(true);
+  });
+
+  it("rooms.synthesize is NOT in queen preset (no silent expansion — RFC builder pass-2 §2)", () => {
+    expect(PRESETS.queen.includes("rooms.synthesize")).toBe(false);
+    expect(PRESETS.queen.includes("installation_token.mint")).toBe(false);
+  });
+
+  it("local_queen preset has rooms.synthesize + installation_token.mint (RFC PR 3 + G16)", () => {
+    expect(PRESETS.local_queen.includes("rooms.synthesize")).toBe(true);
+    expect(PRESETS.local_queen.includes("installation_token.mint")).toBe(true);
+  });
+
+  it("local_queen preset does NOT include rooms.watch (RFC builder pass-7 §5: queen polls synthesis-ready, not /watching)", () => {
+    expect(PRESETS.local_queen.includes("rooms.watch")).toBe(false);
+  });
+
+  it("local_queen preset has all queen-preset capabilities (additive only — D14)", () => {
+    for (const cap of PRESETS.queen) {
+      expect(
+        PRESETS.local_queen.includes(cap),
+        `local_queen should include queen's ${cap}`,
+      ).toBe(true);
+    }
+  });
+
+  it("local_queen does NOT include rooms.force_close (admin-only escape valve, G6)", () => {
+    expect(PRESETS.local_queen.includes("rooms.force_close")).toBe(false);
+  });
+
   it("admin preset includes both bare * AND agent_tokens.manage explicit (wildcard alone wouldn't cover it)", () => {
     expect(PRESETS.admin.includes("*")).toBe(true);
     expect(PRESETS.admin.includes("agent_tokens.manage")).toBe(true);
@@ -360,13 +391,15 @@ describe("cross-invariants", () => {
     }
   });
 
-  it("KNOWN_CAPABILITIES count matches the design doc claim (20)", () => {
+  it("KNOWN_CAPABILITIES count matches the design doc claim (21)", () => {
     // R2.2 baseline: 19 capabilities.
     // R3 (D.1.b-i): added `rooms.read_all` to differentiate
     // installation-wide listing (queen / monitoring) from worker
     // self-rooms reads (`rooms.read`). +1 → 20.
+    // RFC PR 3 (D14): added `rooms.synthesize` for the local-mode
+    // queen synthesis-path endpoints. +1 → 21.
     // If this fails, the doc section "Total: N capabilities" needs
     // to be updated alongside the addition.
-    expect(KNOWN_CAPABILITIES.length).toBe(20);
+    expect(KNOWN_CAPABILITIES.length).toBe(21);
   });
 });

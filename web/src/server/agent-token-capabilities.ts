@@ -159,6 +159,15 @@ export const KNOWN_CAPABILITIES = [
   "rooms.update",
   "rooms.decide",
   "rooms.close",
+  // War rooms — local-mode queen synthesis path (RFC PR 3 / D14).
+  // Gates GET /api/rooms/synthesis-ready, GET decided-pending-ready,
+  // POST claim-synthesis, POST resolve-action, POST seal-decision,
+  // POST confirm-merge, POST report-merge-result. Additive to the
+  // existing `rooms.decide` + `rooms.close` set so cloud queen
+  // (cloud mode) and hive queen (local mode) can coexist with
+  // distinct capability surfaces — no silent expansion of the
+  // existing `queen` preset.
+  "rooms.synthesize",
   // War rooms — admin.
   "rooms.force_close",
   // Token management (admin only — see ADMIN_CLASS_CAPABILITIES).
@@ -292,6 +301,33 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "rooms.update",
     "rooms.decide",
     "rooms.close",
+  ],
+  // Local-mode queen preset (RFC PR 3 / D14 + builder pass-2 §2 +
+  // builder pass-7 §5). Distinct from `queen` so a leaked existing
+  // queen bearer cannot inherit `rooms.synthesize` or
+  // `installation_token.mint` privileges. Critically does NOT
+  // include `rooms.watch` (used to be a worker-style discovery
+  // channel; the local queen polls `synthesis-ready` instead, which
+  // is gated by `rooms.synthesize`).
+  //
+  // G16 — `installation_token.mint` is normally apiarist-only with
+  // a UDS broker pattern. The local queen needs to mint installation
+  // tokens directly (it runs in-container, can't go through a host
+  // broker). Blast radius is bounded by D10's token policy —
+  // `policy.allowed_repos = watched_repos` + minimal scopes.
+  local_queen: [
+    "agent_health.report",
+    "tasks.create",
+    "tasks.read",
+    "tasks.cancel",
+    "rooms.create",
+    "rooms.read",
+    "rooms.read_all",
+    "rooms.update",
+    "rooms.decide",
+    "rooms.close",
+    "rooms.synthesize",
+    "installation_token.mint",
   ],
   dispatcher: [
     "tasks.create",
