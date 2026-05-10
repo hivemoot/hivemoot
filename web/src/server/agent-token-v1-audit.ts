@@ -80,13 +80,25 @@ export function authStreamKey(installationId: string): string {
 // Entry shapes
 // ---------------------------------------------------------------------------
 
-/** Event classes that emit to the `:audit` (mutations) stream. */
+/**
+ * Event classes that emit to the `:audit` (mutations) stream.
+ *
+ * The `queen.*` prefix is for queen-runtime events emitted by
+ * `resolve-action`, `seal-decision`, `confirm-merge`, etc. — see
+ * `queen-audit.ts` for the typed wrappers + payload schemas. They
+ * reuse the agent-token mutations stream rather than introducing
+ * a new one (same retention math, single grep target for
+ * operators forensic-correlating queen events with token
+ * mutations).
+ */
 export type AuditMutationAction =
   | "issue"
   | "revoke"
   | "set_capabilities"
   | "rotate"
-  | "bootstrap";
+  | "bootstrap"
+  | "queen.verdict_floor_override"
+  | "queen.action_downgrade";
 
 /** Event classes that emit to the `:auth` (auth events) stream. */
 export type AuditAuthAction = "auth.success" | "auth.failure";
@@ -212,6 +224,8 @@ function isMutationAction(action: string): action is AuditMutationAction {
     action === "revoke" ||
     action === "set_capabilities" ||
     action === "rotate" ||
-    action === "bootstrap"
+    action === "bootstrap" ||
+    action === "queen.verdict_floor_override" ||
+    action === "queen.action_downgrade"
   );
 }
