@@ -333,6 +333,28 @@ describe("POST /api/agent-tokens — body validation", () => {
     // circuit the request to 400.
     expect(res.status).toBe(201);
   });
+
+  it("label-laundering — explicit capabilities with agent_role=apiarist → 400 (builder pass-2 fix)", async () => {
+    // Pass-1 carve-out trusted operator-supplied agent_role; an
+    // attacker could submit explicit installation_token.mint caps
+    // with agent_role=apiarist and the gate would return ok with
+    // policy: null. Pass-2: the carve-out keys ONLY on the
+    // server-resolved preset name (null on this path), so the
+    // gate fires regardless of the operator's role label.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "ap-fake",
+        agent_role: "apiarist", // operator-supplied — must NOT grant exemption
+        capabilities: ["installation_token.mint", "rooms.read"],
+        // No preset → presetName is null → exemption does not fire.
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.message).toMatch(/installation_token\.mint/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

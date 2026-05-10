@@ -398,10 +398,14 @@ describe("POST /api/dashboard/agent-tokens — mint-capable preset deny list (PR
     expect(mockedIssue).not.toHaveBeenCalled();
   });
 
-  it("explicit capabilities including installation_token.mint → 400 (post-resolution mint gate fires)", async () => {
-    // The explicit-caps path resolved to a non-preset role; the
-    // mint gate at the post-resolution check still fires because
-    // the dashboard route hard-codes `policy: null` to the gate.
+  it("explicit capabilities including installation_token.mint → 400 (admin-class deny list fires, pass-2 defense-in-depth)", async () => {
+    // PR 645 builder pass-2: installation_token.mint is now in the
+    // dashboard's ADMIN_CLASS_CAPABILITIES deny list, so the
+    // explicit-caps path is rejected during capability validation
+    // BEFORE the post-resolution mint gate gets a chance to fire.
+    // This is the structural fix for the label-laundering bypass:
+    // operators cannot pass `agent_role: 'apiarist'` + caps with
+    // mint, because the cap is denied at validation time.
     const res = await POST(
       makeRequest("POST", {
         name: "minty",
@@ -411,7 +415,26 @@ describe("POST /api/dashboard/agent-tokens — mint-capable preset deny list (PR
     );
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/admin-class/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("label-laundering attempt — explicit caps with role=apiarist → 400 (admin-class deny list, no preset escape)", async () => {
+    // The pass-1 bypass: caller submits explicit caps with
+    // `agent_role: "apiarist"` claiming the legacy-permissive
+    // exemption. With pass-2: the cap is denied BEFORE the
+    // exemption check, AND the post-resolution gate now keys only
+    // on the server-resolved presetName (which is null on the
+    // explicit-caps path). Two redundant defenses — same outcome.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "labelware",
+        agent_role: "apiarist", // operator-supplied — must not grant exemption
+        capabilities: ["installation_token.mint"],
+      }),
+    );
+    expect(res.status).toBe(400);
     expect(mockedIssue).not.toHaveBeenCalled();
   });
 });
@@ -454,11 +477,14 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     // applied to the POST issuance path).
     expect(body.capabilities).not.toContain("agent_tokens.manage");
     expect(body.capabilities).not.toContain("*");
-    // Sanity: every preset's capabilities ARE in the catalog so the
+    // installation_token.mint joined the admin-class deny list in
+    // PR 645 builder pass-2 (defense-in-depth on top of the policy
+    // gate — the dashboard has no policy input surface).
+    expect(body.capabilities).not.toContain("installation_token.mint");
+    // Sanity: non-mint preset capabilities ARE in the catalog so the
     // UI can faithfully render preset → custom transitions.
     expect(body.capabilities).toEqual(
       expect.arrayContaining([
-        "installation_token.mint",
         "agent_health.report",
         "tasks.claim",
         "rooms.create",
@@ -468,14 +494,15 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     );
   });
 
-  it("preserves subsystem-grouping order (installation_token → agent_health → tasks → rooms)", async () => {
+  it("preserves subsystem-grouping order (agent_health → tasks → rooms)", async () => {
     const res = await GET(makeRequest("GET"));
     const body = await res.json();
     const caps = body.capabilities as string[];
     const idxOf = (cap: string) => caps.indexOf(cap);
     // Each subsystem boundary stays ordered relative to the next so
-    // the UI can group by prefix without re-sorting.
-    expect(idxOf("installation_token.mint")).toBeLessThan(idxOf("agent_health.report"));
+    // the UI can group by prefix without re-sorting. installation_token.mint
+    // is no longer in the catalog (admin-class deny list, PR 645 pass-2)
+    // so the order check now starts at agent_health.
     expect(idxOf("agent_health.read")).toBeLessThan(idxOf("tasks.claim"));
     expect(idxOf("tasks.cancel")).toBeLessThan(idxOf("rooms.watch"));
   });
