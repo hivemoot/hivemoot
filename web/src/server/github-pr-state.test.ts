@@ -146,6 +146,31 @@ describe("deriveCiState", () => {
     ).toBe("failure");
   });
 
+  it("legacy status: 'error' is treated as failure (builder pass-1 fix — GitHub's combined-status enum includes 'error', and bot's isCIPassing blocks anything != 'success')", () => {
+    // Pre-fix, the reducer only branched on literal 'failure', so
+    // green check-runs + legacy 'error' fell through to 'success',
+    // letting resolve-action merge a PR with a broken external check.
+    expect(
+      deriveCiState({
+        checkRuns: [{ status: "completed", conclusion: "success" }],
+        truncated: false,
+        status: { state: "error", total_count: 1 },
+      }),
+    ).toBe("failure");
+  });
+
+  it("legacy status: unknown value (defensive against GitHub enum expansion) → failure", () => {
+    // If GitHub ever adds a new state value, we want fail-closed
+    // behavior, not silent merge-eligible.
+    expect(
+      deriveCiState({
+        checkRuns: [{ status: "completed", conclusion: "success" }],
+        truncated: false,
+        status: { state: "neutral_future_value", total_count: 1 },
+      }),
+    ).toBe("failure");
+  });
+
   it("legacy status: 'pending' counts as pending even when check-runs all succeeded", () => {
     expect(
       deriveCiState({

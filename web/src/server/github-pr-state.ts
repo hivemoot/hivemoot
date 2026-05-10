@@ -176,11 +176,26 @@ export function deriveCiState(args: {
     }
   }
 
-  // Legacy status evaluation
+  // Legacy status evaluation. GitHub's combined-status `state` is
+  // one of: success | pending | failure | error. The bot's
+  // isCIPassing treats anything except `success` as blocking when
+  // `total_count > 0`; we mirror that exactly. Builder pass-1 fix:
+  // a prior version handled `failure` + `pending` explicitly but
+  // fell through `error` to the no-failure branch — green
+  // check-runs + legacy `error` would have been reported as
+  // `success`, letting resolve-action merge a PR with a broken
+  // external check.
   const legacyHasStatuses = args.status.total_count > 0;
   if (legacyHasStatuses) {
-    if (args.status.state === "failure") return "failure";
-    if (args.status.state === "pending") anyCheckPending = true;
+    if (args.status.state === "success") {
+      // Pass; fall through to the combined evaluation below.
+    } else if (args.status.state === "pending") {
+      anyCheckPending = true;
+    } else {
+      // `failure`, `error`, or any other non-success non-pending
+      // value (defensive against future GitHub enum expansion).
+      return "failure";
+    }
   }
 
   if (anyCheckPending) return "pending";
