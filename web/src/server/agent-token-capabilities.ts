@@ -397,11 +397,10 @@ export function resolvePreset(name: string): readonly string[] {
 export interface MintPolicyGateInput {
   /** Effective capability list of the resulting/updated token. */
   capabilities: readonly string[];
-  /** `agent_role` field on the token. Used for the apiarist carve-out. */
-  agentRole: string;
   /**
    * Preset name when the issue came from a preset; null for the
-   * explicit-capabilities path. Used for the apiarist carve-out.
+   * explicit-capabilities path. The apiarist carve-out keys ONLY on
+   * this server-resolved preset name — see pass-2 fix below.
    */
   presetName?: string | null;
   /**
@@ -411,14 +410,34 @@ export interface MintPolicyGateInput {
   policy?: { allowed_repos?: readonly string[] | null } | null;
 }
 
+/**
+ * Issue-time policy gate.
+ *
+ * # Pass-2 fix — apiarist carve-out is preset-only (B1, builder pass-2)
+ *
+ * Pass-1 used `presetName === "apiarist" || agentRole === "apiarist"`
+ * as the carve-out condition. `agent_role` is operator-supplied on
+ * the explicit-capabilities path (POST /api/agent-tokens body), so
+ * an attacker could submit `capabilities: ['installation_token.mint',
+ * ...] + agent_role: 'apiarist'` and the gate would return ok with
+ * `policy: null` — reopening the policy-less mint-token path this
+ * gate exists to close.
+ *
+ * The fix branches ONLY on the server-resolved preset name. If the
+ * caller went through the explicit-capabilities path (`presetName ===
+ * null`), the gate fires regardless of what role label they passed.
+ * Apiarist tokens issued via explicit caps are still possible — they
+ * just have to use `preset: "apiarist"` instead of label-laundering.
+ */
 export function validateMintPolicyRequirement(
   args: MintPolicyGateInput,
 ): { ok: true } | { ok: false; message: string } {
   const grantsMint = args.capabilities.includes("installation_token.mint");
   if (!grantsMint) return { ok: true };
 
-  const isLegacyApiarist =
-    args.presetName === "apiarist" || args.agentRole === "apiarist";
+  // Server-resolved preset-name gate ONLY — agent_role is operator-
+  // supplied and cannot be trusted for a security decision.
+  const isLegacyApiarist = args.presetName === "apiarist";
   if (isLegacyApiarist) return { ok: true };
 
   const repos = args.policy?.allowed_repos;
@@ -431,7 +450,9 @@ export function validateMintPolicyRequirement(
       "policy.allowedRepos (≥1 repo) to bound the mint blast radius " +
       "(RFC D10 / G16). The local_queen preset is mint-capable; pass " +
       "policy: { allowedRepos: ['owner/repo', ...] } at issue time. " +
-      "The legacy apiarist preset is exempt and remains issuable " +
-      "without policy.",
+      "The legacy apiarist preset is exempt only via " +
+      "`preset: 'apiarist'` — agent_role labels do not grant the " +
+      "exemption (operator-supplied label-laundering would otherwise " +
+      "bypass the gate).",
   };
 }

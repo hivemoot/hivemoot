@@ -207,13 +207,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1) -----
-  // Tokens granting installation_token.mint for the new local_queen
-  // role must ship with policy.allowedRepos. Legacy apiarist is
-  // exempt. See `validateMintPolicyRequirement` rationale.
+  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1, pass-2 tightened) -----
+  // Tokens granting installation_token.mint must ship with
+  // policy.allowedRepos. The apiarist legacy carve-out keys ONLY on
+  // the server-resolved preset name — agent_role is operator-
+  // supplied and would otherwise allow label-laundering past the
+  // gate (builder pass-2 fix).
   const mintGate = validateMintPolicyRequirement({
     capabilities,
-    agentRole: agent_role,
     presetName: typeof body.preset === "string" ? body.preset : null,
     policy: policyParse.policy ?? null,
   });

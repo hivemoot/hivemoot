@@ -88,10 +88,19 @@ const MINT_CAPABLE_PRESETS: ReadonlySet<string> = new Set([
  * dashboard surface. Same rationale as ADMIN_CLASS_PRESETS — minting
  * `*` (wildcard) or `agent_tokens.manage` from cookie auth with no
  * expiry cap would bypass the bootstrap/chain split.
+ *
+ * `installation_token.mint` is included as a defense-in-depth layer
+ * on top of `validateMintPolicyRequirement` (PR 645 builder pass-2):
+ * the dashboard wrapper has no policy input surface, so any mint-
+ * capable token issued through it would be policy-less. Hard-deny
+ * on the explicit-capabilities path closes the path entirely
+ * regardless of agent_role label-laundering attempts; the policy
+ * gate below is the secondary check.
  */
 const ADMIN_CLASS_CAPABILITIES: ReadonlySet<string> = new Set([
   "*",
   "agent_tokens.manage",
+  "installation_token.mint",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -317,7 +326,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // admin bearer + explicit policy.allowedRepos.
   const dashboardMintGate = validateMintPolicyRequirement({
     capabilities,
-    agentRole: agent_role,
     presetName: typeof body.preset === "string" ? body.preset : null,
     policy: null,
   });
