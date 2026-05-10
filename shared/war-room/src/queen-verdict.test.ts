@@ -2,10 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   aggregateWorkerVerdicts,
   applyDowngradeOnlyFloor,
-  DerivedVerdictSchema,
   extractContributionVerdict,
   mostConservative,
-  type WorkerVerdict,
+  VERDICT_VALUES,
 } from "./queen-verdict.ts";
 import type { RoomContribution } from "./war-room.ts";
 
@@ -181,28 +180,21 @@ describe("applyDowngradeOnlyFloor — RFC D3 + G1 implementation primitive", () 
   });
 });
 
-describe("DerivedVerdictSchema", () => {
-  it("accepts valid verdict + reasoning", () => {
-    const result = DerivedVerdictSchema.safeParse({
-      verdict: "APPROVE",
-      reasoning: "all reviewers approved",
-    });
-    expect(result.success).toBe(true);
+describe("VERDICT_VALUES — canonical enum exported for consumer schemas", () => {
+  it("contains exactly the four §S2 verdicts in conservatism order", () => {
+    expect(VERDICT_VALUES).toEqual([
+      "APPROVE",
+      "COMMENT",
+      "CONCERNS",
+      "REQUEST_CHANGES",
+    ]);
   });
 
-  it("rejects verdict outside enum (prompt-injection defense)", () => {
-    const result = DerivedVerdictSchema.safeParse({
-      verdict: "APPROVE_PLUS",
-      reasoning: "test",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects reasoning over 500 chars", () => {
-    const result = DerivedVerdictSchema.safeParse({
-      verdict: "APPROVE",
-      reasoning: "x".repeat(501),
-    });
-    expect(result.success).toBe(false);
+  it("is the type-level pin for consumer-side z.enum() schemas (pass-4)", () => {
+    // Each consumer (bot synthesizer, web resolve-action) builds its
+    // own zod schema from this constant. The shared package itself
+    // intentionally imports no zod — see queen-verdict.ts header for
+    // the file:-symlink-resolution rationale.
+    expect(VERDICT_VALUES.length).toBe(4);
   });
 });

@@ -35,6 +35,7 @@
 
 import { generateObject } from "ai";
 import type { LanguageModel } from "ai";
+import { z } from "zod";
 
 import type { Logger } from "../logger.js";
 import { logger as defaultLogger } from "../logger.js";
@@ -46,15 +47,41 @@ import type { RoomContribution } from "../war-room-store.js";
 // (builder pass-8). See prompts.ts re-export header for rationale.
 import {
   applyDowngradeOnlyFloor as sharedApplyDowngradeOnlyFloor,
-  DerivedVerdictSchema,
   extractContributionVerdict,
   VERDICT_VALUES,
   type DerivedVerdict,
   type WorkerVerdict,
 } from "@hivemoot/war-room";
 
+/**
+ * Local zod schema for the LLM's structured-output gate. Built from
+ * the canonical `VERDICT_VALUES` enum exported by `@hivemoot/war-room`.
+ *
+ * # Why declared here instead of in `@hivemoot/war-room`
+ *
+ * Builder pass-3 of PR 642 (the verdict-primitives split) found that
+ * exporting a zod schema from the shared package broke a fresh
+ * `web npm ci && npm run build`: web reaches the shared package via
+ * a `file:` symlink, and Next.js's symlink-resolved module lookup
+ * walks the shared package's real-path parents — none of which
+ * contain `zod`. peerDependencies don't help because npm doesn't
+ * install peers into the consumer for `file:` deps. Keeping the
+ * shared package zod-free closes that resolution gap; each consumer
+ * (this file in bot, the eventual `resolve-action` route in web)
+ * builds its own schema from `VERDICT_VALUES`. Two short
+ * declarations vs. fragile package-resolution surgery.
+ */
+export const DerivedVerdictSchema = z.object({
+  verdict: z.enum(VERDICT_VALUES),
+  reasoning: z
+    .string()
+    .max(500)
+    .describe(
+      "1-3 sentence rationale citing which contributions support this verdict. Used for ops audit, not surfaced to users.",
+    ),
+});
+
 export {
-  DerivedVerdictSchema,
   VERDICT_VALUES,
   type DerivedVerdict,
 };
