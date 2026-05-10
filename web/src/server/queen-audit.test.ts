@@ -103,11 +103,16 @@ describe("emitQueenVerdictFloorOverride", () => {
     expect(Number.isFinite(Date.parse(ts))).toBe(true);
   });
 
-  it("does not throw when auditAppend itself rejects (fire-and-forget by design)", async () => {
-    // The underlying auditAppend swallows errors; the wrapper
-    // should also be safe to await without try/catch in the
-    // route handler.
+  it("does not throw when auditAppend rejects (pass-1 fix — wrapper exports stronger 'never throws' contract for resolve-action call sites)", async () => {
+    // Builder pass-1: the module header + emitter docstrings
+    // promise fire-and-forget semantics. The underlying auditAppend
+    // catches internally, but the wrapper now also catches
+    // explicitly so a future change to auditAppend can't surprise
+    // resolve-action call sites — they MUST be able to safely
+    // await these emitters without duplicating audit failure
+    // handling at every call site.
     mockedAuditAppend.mockRejectedValueOnce(new Error("redis down"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(
       emitQueenVerdictFloorOverride({
         ...CALLER,
@@ -119,14 +124,31 @@ describe("emitQueenVerdictFloorOverride", () => {
           clamped_verdict: "COMMENT",
         },
       }),
-    ).rejects.toThrow();
-    // NOTE: the wrapper currently re-throws because we await
-    // auditAppend directly. The CALL SITE in the route handler
-    // is responsible for not propagating audit failures (since
-    // the room state hasn't mutated — emit failure shouldn't
-    // wedge resolve-action). This test pins the current behavior
-    // so a future change "auditAppend never throws" is observed
-    // here too.
+    ).resolves.toBeUndefined();
+    // Failure logged via console.warn for ops visibility.
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("emitQueenActionDowngrade also swallows underlying audit failures (same contract)", async () => {
+    mockedAuditAppend.mockRejectedValueOnce(new Error("redis down"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      emitQueenActionDowngrade({
+        ...CALLER,
+        detail: {
+          room_id: "rm-down",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "squash-merge",
+          permitted_action: "comment",
+          downgrade_reason: "ci_failure",
+          clamped_verdict: "APPROVE",
+          reviewed_head_sha: "deadbeef",
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 
@@ -213,34 +235,42 @@ describe("emitQueenActionDowngrade", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stream routing — queen events go to the :audit (mutations) stream
+// Runtime stream routing — queen events go to the :audit (mutations) stream
 // ---------------------------------------------------------------------------
+//
+// Builder pass-1 follow-up: the prior version was a type-only pin
+// (TypeScript narrowing on the AuditMutationAction union). The
+// stream-routing decision happens at RUNTIME via the
+// `isMutationAction` classifier inside agent-token-v1-audit.ts.
+// We export the classifier and test it directly here — confirms
+// the new queen actions are wired into the runtime branch, not
+// just the type-level union.
 
-describe("queen audit stream routing", () => {
-  it("queen.verdict_floor_override emits an entry that the agent-token audit emitter classifies as a mutation", async () => {
-    // The agent-token emitter inspects the action via
-    // isMutationAction to choose `:audit` vs `:auth` stream.
-    // Pin that the queen action enum extension is wired into
-    // that classifier.
-    const real = await vi.importActual<typeof import("./agent-token-v1-audit")>(
-      "./agent-token-v1-audit",
-    );
-    expect(real.auditStreamKey).toBeDefined();
-    expect(real.authStreamKey).toBeDefined();
-    // The classifier is intentionally not exported (it's a
-    // private helper inside the module); the public surface
-    // pinned here is the AuditMutationAction enum, which queen
-    // events ARE part of post-slice 2c-a.
-    type _Check = "queen.verdict_floor_override" extends import("./agent-token-v1-audit").AuditMutationAction
-      ? true
-      : false;
-    const isMutationActionType: _Check = true;
-    expect(isMutationActionType).toBe(true);
+import { isMutationAction } from "./agent-token-v1-audit";
 
-    type _Check2 = "queen.action_downgrade" extends import("./agent-token-v1-audit").AuditMutationAction
-      ? true
-      : false;
-    const isMutationActionType2: _Check2 = true;
-    expect(isMutationActionType2).toBe(true);
+describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () => {
+  it("accepts queen.verdict_floor_override → routes to :audit (mutations) stream", () => {
+    expect(isMutationAction("queen.verdict_floor_override")).toBe(true);
+  });
+
+  it("accepts queen.action_downgrade → routes to :audit (mutations) stream", () => {
+    expect(isMutationAction("queen.action_downgrade")).toBe(true);
+  });
+
+  it("still accepts existing mutation actions (no regression)", () => {
+    for (const a of ["issue", "revoke", "set_capabilities", "rotate", "bootstrap"]) {
+      expect(isMutationAction(a), a).toBe(true);
+    }
+  });
+
+  it("rejects auth actions (still routed to :auth stream)", () => {
+    expect(isMutationAction("auth.success")).toBe(false);
+    expect(isMutationAction("auth.failure")).toBe(false);
+  });
+
+  it("rejects unknown actions (defensive — future enum additions need explicit wiring)", () => {
+    expect(isMutationAction("queen.unknown_event")).toBe(false);
+    expect(isMutationAction("rogue")).toBe(false);
+    expect(isMutationAction("")).toBe(false);
   });
 });

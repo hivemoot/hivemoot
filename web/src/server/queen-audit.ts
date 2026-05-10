@@ -145,18 +145,30 @@ export async function emitQueenVerdictFloorOverride(
     detail: QueenVerdictFloorOverrideDetail;
   },
 ): Promise<void> {
-  await auditAppend({
-    redis: args.redis,
-    installationId: args.installationId,
-    entry: {
-      ts: new Date().toISOString(),
-      fingerprint: args.fingerprint,
-      name: args.name,
-      action: "queen.verdict_floor_override",
-      actor: args.name,
-      detail: args.detail as unknown as Record<string, unknown>,
-    },
-  });
+  try {
+    await auditAppend({
+      redis: args.redis,
+      installationId: args.installationId,
+      entry: {
+        ts: new Date().toISOString(),
+        fingerprint: args.fingerprint,
+        name: args.name,
+        action: "queen.verdict_floor_override",
+        actor: args.name,
+        detail: args.detail as unknown as Record<string, unknown>,
+      },
+    });
+  } catch (err) {
+    // Defense-in-depth: the underlying auditAppend already
+    // catches internally, but the queen-audit module exports the
+    // stronger "never throws" contract that the resolve-action
+    // endpoint (slice 2c-b) will rely on. Wrap explicitly so a
+    // future change to auditAppend can't surprise callers.
+    console.warn(
+      `[queen-audit] emitQueenVerdictFloorOverride failed for installation=${args.installationId} room=${args.detail.room_id}`,
+      err,
+    );
+  }
 }
 
 /**
@@ -170,16 +182,23 @@ export async function emitQueenActionDowngrade(
     detail: QueenActionDowngradeDetail;
   },
 ): Promise<void> {
-  await auditAppend({
-    redis: args.redis,
-    installationId: args.installationId,
-    entry: {
-      ts: new Date().toISOString(),
-      fingerprint: args.fingerprint,
-      name: args.name,
-      action: "queen.action_downgrade",
-      actor: args.name,
-      detail: args.detail as unknown as Record<string, unknown>,
-    },
-  });
+  try {
+    await auditAppend({
+      redis: args.redis,
+      installationId: args.installationId,
+      entry: {
+        ts: new Date().toISOString(),
+        fingerprint: args.fingerprint,
+        name: args.name,
+        action: "queen.action_downgrade",
+        actor: args.name,
+        detail: args.detail as unknown as Record<string, unknown>,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[queen-audit] emitQueenActionDowngrade failed for installation=${args.installationId} room=${args.detail.room_id}`,
+      err,
+    );
+  }
 }

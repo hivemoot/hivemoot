@@ -218,7 +218,18 @@ export function buildAuditEntryJson(entry: AuditEntry): string {
   return JSON.stringify(entry);
 }
 
-function isMutationAction(action: string): action is AuditMutationAction {
+/**
+ * Classifier used by `auditAppend` to route entries to the
+ * `:audit` (mutations) or `:auth` stream.
+ *
+ * Exported (slice 2c-a builder pass-1): the queen-audit module
+ * extended `AuditMutationAction` with `queen.*` events, and the
+ * stream routing depends on this classifier accepting them at
+ * runtime. The TypeScript narrowing on the enum alone doesn't
+ * pin the JS branch; consumers (queen-audit.test.ts) call this
+ * directly to assert the new actions are mutation-class.
+ */
+export function isMutationAction(action: string): action is AuditMutationAction {
   return (
     action === "issue" ||
     action === "revoke" ||
