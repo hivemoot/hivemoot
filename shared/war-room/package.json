@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared war-room storage layer + redis-lock helper. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's `@upstash/redis` install is reused by source-level resolution; this package intentionally declares no @upstash/redis dependency to avoid a dual-package hazard (two installations producing non-assignable Redis types).",
+  "description": "Shared war-room storage layer + redis-lock helper + queen-verdict primitives. Imported by web (HTTP route handlers) and bot (direct internal callers); not published to npm. The consumer's @upstash/redis install is reused by source-level resolution; this package declares it as a devDependency to avoid a dual-package hazard. zod is intentionally NOT a dep here — see queen-verdict.ts header for the file: + symlink resolution rationale.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
