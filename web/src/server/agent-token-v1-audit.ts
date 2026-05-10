@@ -80,13 +80,25 @@ export function authStreamKey(installationId: string): string {
 // Entry shapes
 // ---------------------------------------------------------------------------
 
-/** Event classes that emit to the `:audit` (mutations) stream. */
+/**
+ * Event classes that emit to the `:audit` (mutations) stream.
+ *
+ * The `queen.*` prefix is for queen-runtime events emitted by
+ * `resolve-action`, `seal-decision`, `confirm-merge`, etc. — see
+ * `queen-audit.ts` for the typed wrappers + payload schemas. They
+ * reuse the agent-token mutations stream rather than introducing
+ * a new one (same retention math, single grep target for
+ * operators forensic-correlating queen events with token
+ * mutations).
+ */
 export type AuditMutationAction =
   | "issue"
   | "revoke"
   | "set_capabilities"
   | "rotate"
-  | "bootstrap";
+  | "bootstrap"
+  | "queen.verdict_floor_override"
+  | "queen.action_downgrade";
 
 /** Event classes that emit to the `:auth` (auth events) stream. */
 export type AuditAuthAction = "auth.success" | "auth.failure";
@@ -206,12 +218,25 @@ export function buildAuditEntryJson(entry: AuditEntry): string {
   return JSON.stringify(entry);
 }
 
-function isMutationAction(action: string): action is AuditMutationAction {
+/**
+ * Classifier used by `auditAppend` to route entries to the
+ * `:audit` (mutations) or `:auth` stream.
+ *
+ * Exported (slice 2c-a builder pass-1): the queen-audit module
+ * extended `AuditMutationAction` with `queen.*` events, and the
+ * stream routing depends on this classifier accepting them at
+ * runtime. The TypeScript narrowing on the enum alone doesn't
+ * pin the JS branch; consumers (queen-audit.test.ts) call this
+ * directly to assert the new actions are mutation-class.
+ */
+export function isMutationAction(action: string): action is AuditMutationAction {
   return (
     action === "issue" ||
     action === "revoke" ||
     action === "set_capabilities" ||
     action === "rotate" ||
-    action === "bootstrap"
+    action === "bootstrap" ||
+    action === "queen.verdict_floor_override" ||
+    action === "queen.action_downgrade"
   );
 }
