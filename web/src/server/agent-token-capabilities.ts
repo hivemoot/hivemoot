@@ -368,25 +368,56 @@ export function resolvePreset(name: string): readonly string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Mint-capable issuance gate (PR 645 builder pass-1 B1; RFC D10 + G16)
+// Mint-capable issuance gate (PR 645 builder pass-1 B1 / pass-2 / pass-3;
+// RFC D10 + G16)
 // ---------------------------------------------------------------------------
+
+/**
+ * The exact `allowed_permissions` shape RFC D10 specifies for the
+ * local_queen mint policy. Mint-capable non-apiarist tokens must be
+ * issued with this set verbatim — narrower fails closed (bearer
+ * cannot use a permission they didn't request), broader violates
+ * D10 by exceeding the queen's needed scope.
+ *
+ * Notably **excludes `contents`**: the local queen synthesizes
+ * verdicts from war-room contributions and posts comments; it must
+ * not read repo files. The default V1_PERMISSIONS shape (used at
+ * mint time when `allowed_permissions` is omitted) DOES include
+ * `contents: "read"` for legacy apiarist compatibility, which is
+ * exactly the gap this gate closes for local_queen.
+ */
+export const LOCAL_QUEEN_REQUIRED_PERMISSIONS: Readonly<
+  Record<string, "read" | "write" | "admin">
+> = Object.freeze({
+  pull_requests: "write",
+  issues: "write",
+  metadata: "read",
+});
 
 /**
  * Issue-time policy gate for mint-capable presets and roles.
  *
- * Per RFC D10 + G16 and builder pass-1 on PR 645, tokens granting
- * `installation_token.mint` for the new `local_queen` role must be
- * issued with a `policy.allowed_repos` list containing ≥1 repo. The
- * mint endpoint (web/src/app/api/github/installation-tokens) treats
- * policy-less bearers as legacy-permissive, so without this gate a
- * leaked policy-less `local_queen` bearer could mint installation
- * tokens for any repo in the installation grant — strictly worse
- * blast radius than apiarist (which stays per-installation-only).
+ * Per RFC D10 + G16, tokens granting `installation_token.mint` for
+ * the new `local_queen` role must be issued with BOTH halves of
+ * the D10 policy:
+ *   - `allowed_repos` — non-empty list (repo fan-out bound)
+ *   - `allowed_permissions` — exactly the LOCAL_QUEEN_REQUIRED_PERMISSIONS
+ *      set (permission scope bound; see RFC docs/architecture/
+ *      QUEEN_EXECUTION_MODE.md:566-567)
  *
- * `apiarist` is exempt: the existing host-broker preset predates the
- * policy model and tightening it would break in-the-wild apiarist
- * tokens. The next slice (or a follow-up issue against #638) tracks
- * graduating apiarist into the gate too — until then it stays legacy.
+ * The mint endpoint (web/src/app/api/github/installation-tokens)
+ * intersects V1_PERMISSIONS with the bearer's allowed_permissions;
+ * if allowed_permissions is omitted, the intersection is the full
+ * V1_PERMISSIONS set including `contents: "read"`. Without this
+ * gate enforcing both halves, a leaked allowedRepos-only
+ * local_queen bearer could mint tokens with `contents: "read"`
+ * scope — violating D10's intent that the local queen never reads
+ * repo files.
+ *
+ * `apiarist` is exempt from BOTH halves: the existing host-broker
+ * preset predates the policy model and tightening it would break
+ * in-the-wild apiarist tokens. The next slice tracks graduating
+ * apiarist into the gate too — until then it stays legacy.
  *
  * Used by:
  *   - POST /api/agent-tokens (operator-bearer issue)
@@ -400,34 +431,40 @@ export interface MintPolicyGateInput {
   /**
    * Preset name when the issue came from a preset; null for the
    * explicit-capabilities path. The apiarist carve-out keys ONLY on
-   * this server-resolved preset name — see pass-2 fix below.
+   * this server-resolved preset name — see pass-2 fix.
    */
   presetName?: string | null;
   /**
    * The policy that will be persisted with the token (snake_case
    * storage shape). null when no policy was supplied.
    */
-  policy?: { allowed_repos?: readonly string[] | null } | null;
+  policy?: {
+    allowed_repos?: readonly string[] | null;
+    allowed_permissions?: Readonly<Record<string, string>> | null;
+  } | null;
 }
 
 /**
  * Issue-time policy gate.
  *
- * # Pass-2 fix — apiarist carve-out is preset-only (B1, builder pass-2)
+ * # Pass-3 fix — both halves of D10 (B1, builder pass-3)
+ *
+ * Pass-2 closed the apiarist label-laundering bypass but only
+ * enforced repo fan-out (allowed_repos). Builder pass-3 found that
+ * a local_queen token issued with allowedRepos-only still mints
+ * installation tokens with the legacy V1_PERMISSIONS scope (which
+ * includes `contents: "read"`), violating RFC D10's permission
+ * scope half. The gate now also requires the exact
+ * LOCAL_QUEEN_REQUIRED_PERMISSIONS shape — narrower would fail
+ * closed at mint time, broader violates the D10 contract.
+ *
+ * # Pass-2 fix — apiarist carve-out is preset-only
  *
  * Pass-1 used `presetName === "apiarist" || agentRole === "apiarist"`
- * as the carve-out condition. `agent_role` is operator-supplied on
- * the explicit-capabilities path (POST /api/agent-tokens body), so
+ * as the carve-out condition. `agent_role` is operator-supplied;
  * an attacker could submit `capabilities: ['installation_token.mint',
- * ...] + agent_role: 'apiarist'` and the gate would return ok with
- * `policy: null` — reopening the policy-less mint-token path this
- * gate exists to close.
- *
- * The fix branches ONLY on the server-resolved preset name. If the
- * caller went through the explicit-capabilities path (`presetName ===
- * null`), the gate fires regardless of what role label they passed.
- * Apiarist tokens issued via explicit caps are still possible — they
- * just have to use `preset: "apiarist"` instead of label-laundering.
+ * ...] + agent_role: 'apiarist'` and the gate would return ok.
+ * The fix branches ONLY on the server-resolved preset name.
  */
 export function validateMintPolicyRequirement(
   args: MintPolicyGateInput,
@@ -440,19 +477,59 @@ export function validateMintPolicyRequirement(
   const isLegacyApiarist = args.presetName === "apiarist";
   if (isLegacyApiarist) return { ok: true };
 
+  // ----- Half 1 of D10: allowed_repos ≥ 1 -----
   const repos = args.policy?.allowed_repos;
-  if (Array.isArray(repos) && repos.length > 0) return { ok: true };
+  if (!Array.isArray(repos) || repos.length === 0) {
+    return {
+      ok: false,
+      message:
+        "Tokens granting installation_token.mint must be issued with " +
+        "a non-empty policy.allowedRepos list (RFC D10 half 1: bound " +
+        "the mint repo fan-out). Pass policy: { allowedRepos: " +
+        "['owner/repo', ...] } at issue time. The legacy apiarist " +
+        "preset is exempt only via `preset: 'apiarist'`.",
+    };
+  }
 
-  return {
-    ok: false,
-    message:
-      "Tokens granting installation_token.mint must be issued with " +
-      "policy.allowedRepos (≥1 repo) to bound the mint blast radius " +
-      "(RFC D10 / G16). The local_queen preset is mint-capable; pass " +
-      "policy: { allowedRepos: ['owner/repo', ...] } at issue time. " +
-      "The legacy apiarist preset is exempt only via " +
-      "`preset: 'apiarist'` — agent_role labels do not grant the " +
-      "exemption (operator-supplied label-laundering would otherwise " +
-      "bypass the gate).",
-  };
+  // ----- Half 2 of D10: allowed_permissions matches local-queen set -----
+  const perms = args.policy?.allowed_permissions;
+  if (!perms || typeof perms !== "object") {
+    return {
+      ok: false,
+      message:
+        "Tokens granting installation_token.mint must be issued with " +
+        "policy.allowedPermissions matching the RFC D10 local-queen " +
+        "permission scope (pull_requests: write, issues: write, " +
+        "metadata: read). Omitting allowedPermissions falls back to " +
+        "V1_PERMISSIONS at mint time, which includes contents:read — " +
+        "violating D10's intent that the local queen never reads " +
+        "repo files.",
+    };
+  }
+
+  const required = LOCAL_QUEEN_REQUIRED_PERMISSIONS;
+  const requiredKeys = Object.keys(required);
+  const givenKeys = Object.keys(perms);
+  const allRequiredPresent = requiredKeys.every(
+    (k) => perms[k] === required[k],
+  );
+  const noExtraKeys = givenKeys.every((k) =>
+    Object.prototype.hasOwnProperty.call(required, k),
+  );
+  if (!allRequiredPresent || !noExtraKeys) {
+    const expected = JSON.stringify(required);
+    const got = JSON.stringify(perms);
+    return {
+      ok: false,
+      message:
+        `Tokens granting installation_token.mint must have ` +
+        `policy.allowedPermissions exactly equal to the RFC D10 ` +
+        `local-queen scope ${expected}. Got ${got}. Notably ` +
+        `\`contents\` MUST be omitted — the local queen synthesizes ` +
+        `verdicts from war-room contributions and must not read repo ` +
+        `files.`,
+    };
+  }
+
+  return { ok: true };
 }
