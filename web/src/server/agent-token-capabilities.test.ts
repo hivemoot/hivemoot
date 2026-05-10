@@ -428,7 +428,18 @@ describe("cross-invariants", () => {
 // Mint-capable issuance gate (PR 645 builder pass-1 B1)
 // ---------------------------------------------------------------------------
 
-describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-1+pass-2", () => {
+describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-1+pass-2+pass-3", () => {
+  // Canonical local_queen policy shape (both halves of D10).
+  // Used as the happy-path baseline for every "policy passes" test.
+  const D10_POLICY = {
+    allowed_repos: ["hivemoot/colony"],
+    allowed_permissions: {
+      pull_requests: "write",
+      issues: "write",
+      metadata: "read",
+    },
+  };
+
   it("allows non-mint capabilities through with no policy", () => {
     const result = validateMintPolicyRequirement({
       capabilities: ["rooms.read", "tasks.claim"],
@@ -438,6 +449,8 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     expect(result.ok).toBe(true);
   });
 
+  // ----- D10 half 1: allowed_repos -----
+
   it("rejects local_queen preset issued without a policy", () => {
     const result = validateMintPolicyRequirement({
       capabilities: PRESETS.local_queen,
@@ -446,7 +459,6 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.message).toMatch(/installation_token\.mint/);
       expect(result.message).toMatch(/policy\.allowedRepos/);
     }
   });
@@ -469,29 +481,97 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     expect(result.ok).toBe(false);
   });
 
-  it("allows local_queen with a non-empty allowed_repos policy", () => {
+  // ----- D10 half 2: allowed_permissions (builder pass-3) -----
+
+  it("rejects local_queen with allowedRepos but NO allowedPermissions (pass-3 builder fix)", () => {
+    // Pass-2 accepted this shape; pass-3 closes it because the mint
+    // endpoint falls back to V1_PERMISSIONS (which includes
+    // contents:read) when allowedPermissions is omitted, violating
+    // RFC D10's permission scope half.
     const result = validateMintPolicyRequirement({
       capabilities: PRESETS.local_queen,
       presetName: "local_queen",
       policy: { allowed_repos: ["hivemoot/colony"] },
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/allowedPermissions/);
+      expect(result.message).toMatch(/contents/);
+    }
   });
 
-  it("rejects explicit-capabilities path that grants installation_token.mint without policy (no preset)", () => {
-    // The gate is capability-based — explicit capabilities including
-    // installation_token.mint trip it regardless of role label.
+  it("rejects local_queen with allowedPermissions including 'contents' (any value)", () => {
+    // RFC D10 explicitly drops `contents` — the local queen
+    // synthesizes verdicts and posts comments; it must not read
+    // repo files.
+    for (const level of ["read", "write", "admin"]) {
+      const result = validateMintPolicyRequirement({
+        capabilities: PRESETS.local_queen,
+        presetName: "local_queen",
+        policy: {
+          allowed_repos: ["hivemoot/colony"],
+          allowed_permissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+            contents: level,
+          },
+        },
+      });
+      expect(result.ok, `contents=${level} should be rejected`).toBe(false);
+    }
+  });
+
+  it("rejects local_queen with allowedPermissions narrower than D10 (e.g. read instead of write)", () => {
+    // Narrower fails closed at mint time (intersect would clamp the
+    // bearer to less than D10), but the gate's contract is "exact
+    // match" so we surface the mismatch at issue time.
     const result = validateMintPolicyRequirement({
-      capabilities: ["rooms.read", "installation_token.mint"],
-      presetName: null,
-      policy: null,
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: {
+        allowed_repos: ["hivemoot/colony"],
+        allowed_permissions: {
+          pull_requests: "read", // should be "write"
+          issues: "write",
+          metadata: "read",
+        },
+      },
     });
     expect(result.ok).toBe(false);
   });
 
-  it("apiarist preset is exempt from the gate (legacy carve-out)", () => {
-    // Apiarist predates the policy model. The carve-out keys on the
-    // server-resolved preset name only — see pass-2 fix below.
+  it("rejects local_queen with EXTRA permission keys beyond D10", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: {
+        allowed_repos: ["hivemoot/colony"],
+        allowed_permissions: {
+          pull_requests: "write",
+          issues: "write",
+          metadata: "read",
+          actions: "read", // not in D10's set
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows local_queen with the EXACT D10 policy shape (allowedRepos + allowedPermissions)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  // ----- Apiarist legacy carve-out -----
+
+  it("apiarist preset is exempt from BOTH halves of the gate (legacy carve-out)", () => {
+    // Apiarist predates the policy model. Both repo fan-out and
+    // permission scope checks skip when presetName === 'apiarist'.
     const result = validateMintPolicyRequirement({
       capabilities: PRESETS.apiarist,
       presetName: "apiarist",
@@ -500,37 +580,40 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     expect(result.ok).toBe(true);
   });
 
-  // Pass-2 (builder review on PR 645): the apiarist carve-out used
-  // to also accept `agentRole === "apiarist"`. Operator-supplied
-  // role labels can't be trusted for a security decision — the
-  // carve-out now keys ONLY on the server-resolved preset name.
-  // The previous test that pinned the bypass as expected behavior
-  // is now flipped: explicit-capabilities + claim role=apiarist
-  // MUST be rejected.
+  // ----- Label-laundering bypass (pass-2) -----
 
-  it("explicit capabilities with role label 'apiarist' but presetName=null → rejected (label-laundering closed, builder pass-2 B1)", () => {
+  it("explicit capabilities with role label 'apiarist' but presetName=null → rejected", () => {
     // The agentRole input field has been removed from
     // MintPolicyGateInput entirely — there's no way for the gate
-    // to even see the operator-supplied role. This test confirms
-    // the bypass path is structurally impossible: only presetName
-    // can grant the apiarist exemption.
+    // to even see the operator-supplied role. Only presetName can
+    // grant the apiarist exemption.
     const result = validateMintPolicyRequirement({
       capabilities: ["installation_token.mint"],
-      // No agentRole here — the type doesn't accept it. Operators
-      // cannot label-launder past the gate by passing
-      // `agent_role: 'apiarist'` in the request body.
       presetName: null,
       policy: null,
     });
     expect(result.ok).toBe(false);
   });
 
-  it("explicit capabilities with installation_token.mint but no preset → rejected even with custom role string (gate is capability+presetName-driven)", () => {
+  it("explicit capabilities with installation_token.mint but no preset → rejected", () => {
     const result = validateMintPolicyRequirement({
       capabilities: ["installation_token.mint", "rooms.synthesize"],
       presetName: null,
       policy: null,
     });
     expect(result.ok).toBe(false);
+  });
+
+  it("explicit-caps path can satisfy the gate by passing the full D10 policy explicitly", () => {
+    // Operators who really want a non-preset mint-capable token
+    // (e.g. custom roles) can still do so — they just have to
+    // pass the canonical D10 policy. This test pins that the
+    // gate is policy-based, not preset-required.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint", "rooms.synthesize"],
+      presetName: null,
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
   });
 });

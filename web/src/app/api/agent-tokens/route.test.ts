@@ -334,6 +334,78 @@ describe("POST /api/agent-tokens — body validation", () => {
     expect(res.status).toBe(201);
   });
 
+  it("preset 'local_queen' with allowedRepos but NO allowedPermissions → 400 (pass-3 D10 half 2)", async () => {
+    // Pass-2 accepted this shape; pass-3 rejects because the mint
+    // endpoint falls back to V1_PERMISSIONS (which includes
+    // contents:read) when allowedPermissions is omitted, violating
+    // RFC D10's permission-scope half.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: { allowedRepos: ["hivemoot/colony"] },
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.message).toMatch(/allowedPermissions/);
+    expect(body.message).toMatch(/contents/);
+  });
+
+  it("preset 'local_queen' with allowedPermissions including contents → 400 (D10 forbids contents)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+            contents: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+  });
+
+  it("preset 'local_queen' with EXACT D10 policy (allowedRepos + allowedPermissions) → 201 (happy path)", async () => {
+    // Pin the canonical D10 shape that survives the gate. If a
+    // future change tightens the gate further, this test catches
+    // it before it breaks the local_queen issuance path.
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        capabilities: ["installation_token.mint", "rooms.synthesize"],
+      }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(mockedIssue).toHaveBeenCalled();
+  });
+
   it("label-laundering — explicit capabilities with agent_role=apiarist → 400 (builder pass-2 fix)", async () => {
     // Pass-1 carve-out trusted operator-supplied agent_role; an
     // attacker could submit explicit installation_token.mint caps
