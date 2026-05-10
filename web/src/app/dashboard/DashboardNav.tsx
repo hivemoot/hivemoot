@@ -7,6 +7,7 @@ const TABS = [
   { href: "/dashboard", label: "Agent Health" },
   { href: "/dashboard/tasks", label: "Tasks" },
   { href: "/dashboard/rooms", label: "War Rooms" },
+  { href: "/dashboard/settings", label: "Settings" },
   { href: "/dashboard/credentials", label: "Credentials" },
 ] as const;
 
