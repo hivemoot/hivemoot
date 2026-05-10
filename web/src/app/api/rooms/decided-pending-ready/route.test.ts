@@ -13,7 +13,7 @@ vi.mock("@hivemoot/war-room", async () => {
 });
 
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
-import { getRoomCore } from "@hivemoot/war-room";
+import { getRoomCore, RoomNotFoundError } from "@hivemoot/war-room";
 import { GET } from "./route";
 
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);
@@ -124,6 +124,41 @@ describe("GET /api/rooms/decided-pending-ready", () => {
     const body = await res.json();
     expect(body.count).toBe(1);
     expect(body.rooms[0].roomId).toBe("rm-fresh");
+  });
+
+  it("RoomNotFoundError during hydrate is swallowed (stale-index race)", async () => {
+    mockedAuth.mockResolvedValue(
+      makeAuthOk({ redisSmembers: async () => ["rm-fresh", "rm-stale"] }),
+    );
+    mockedCore
+      .mockResolvedValueOnce(makeRoom("decided_pending_action"))
+      .mockRejectedValueOnce(new RoomNotFoundError("12345", "rm-stale"));
+    const res = await GET(
+      new NextRequest("https://www.hivemoot.dev/api/rooms/decided-pending-ready"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(1);
+    expect(body.rooms[0].roomId).toBe("rm-fresh");
+  });
+
+  it("real Redis failure during hydrate → 500 (NOT silently empty list, builder pass-2 fix)", async () => {
+    // Pre pass-2, the catch swallowed every failure as `null`,
+    // turning a Redis read error into `count: 0`. The local queen
+    // would then read "no work to do" and skip what it should have
+    // retried. Narrowed catch rethrows non-RoomNotFoundError so the
+    // outer storage_failure 500 fires.
+    mockedAuth.mockResolvedValue(
+      makeAuthOk({ redisSmembers: async () => ["rm-1"] }),
+    );
+    mockedCore.mockRejectedValueOnce(new Error("ECONNREFUSED redis://..."));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await GET(
+      new NextRequest("https://www.hivemoot.dev/api/rooms/decided-pending-ready"),
+    );
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: "storage_failure" });
+    errSpy.mockRestore();
   });
 
   it("sorts the response newest-first by opened_at (post-hoc, since SETs are unordered)", async () => {

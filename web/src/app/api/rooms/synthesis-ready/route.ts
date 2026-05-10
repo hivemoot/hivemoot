@@ -35,6 +35,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   getRoomCore,
+  RoomNotFoundError,
   statusIndexKey,
   type RoomCoreWithId,
 } from "@hivemoot/war-room";
@@ -72,6 +73,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // awaiting_contributions between the index read and the core
     // read; the caller's claim-synthesis call re-validates status,
     // so a stale entry here is harmless (just one wasted attempt).
+    //
+    // Builder pass-2 fix: only swallow `RoomNotFoundError` (the
+    // expected stale-index race). Rethrow every other failure so the
+    // outer `storage_failure` 500 branch runs — a Redis connection
+    // failure must NOT silently look like "no rooms ready" to the
+    // local queen, which would treat it as "idle" and skip the work
+    // it should have retried.
     const cores = await Promise.all(
       roomIds.map(async (roomId) => {
         try {
@@ -81,11 +89,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             redis: auth.redis,
           });
           return { roomId, ...core } as RoomCoreWithId;
-        } catch {
-          // Race: room transitioned (terminate / close) between the
-          // index read and the hash read. Filter out — it'll be
-          // gone from the index by the next request anyway.
-          return null;
+        } catch (err) {
+          if (err instanceof RoomNotFoundError) {
+            // Stale index entry — the room was terminated/closed
+            // between the SMEMBERS read and the hash read. Skip.
+            return null;
+          }
+          throw err;
         }
       }),
     );

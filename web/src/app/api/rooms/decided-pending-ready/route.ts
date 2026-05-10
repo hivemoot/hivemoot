@@ -45,6 +45,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   getRoomCore,
+  RoomNotFoundError,
   statusIndexKey,
   type RoomCoreWithId,
 } from "@hivemoot/war-room";
@@ -76,6 +77,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // G1). Newest-first is applied post-hoc on hydrated cores.
     const roomIds = await auth.redis.smembers(indexKey);
 
+    // Builder pass-2 fix: only swallow `RoomNotFoundError` (stale-
+    // index race). Rethrow every other failure so the outer
+    // `storage_failure` 500 branch fires — a Redis hiccup must NOT
+    // surface as `count: 0` to the local queen, which would treat
+    // it as "no work to do" and skip what it should have retried.
     const cores = await Promise.all(
       roomIds.map(async (roomId) => {
         try {
@@ -85,8 +91,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             redis: auth.redis,
           });
           return { roomId, ...core } as RoomCoreWithId;
-        } catch {
-          return null;
+        } catch (err) {
+          if (err instanceof RoomNotFoundError) return null;
+          throw err;
         }
       }),
     );
