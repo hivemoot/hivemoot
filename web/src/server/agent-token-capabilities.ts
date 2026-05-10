@@ -159,6 +159,15 @@ export const KNOWN_CAPABILITIES = [
   "rooms.update",
   "rooms.decide",
   "rooms.close",
+  // War rooms — local-mode queen synthesis path (RFC PR 3 / D14).
+  // Gates GET /api/rooms/synthesis-ready, GET decided-pending-ready,
+  // POST claim-synthesis, POST resolve-action, POST seal-decision,
+  // POST confirm-merge, POST report-merge-result. Additive to the
+  // existing `rooms.decide` + `rooms.close` set so cloud queen
+  // (cloud mode) and hive queen (local mode) can coexist with
+  // distinct capability surfaces — no silent expansion of the
+  // existing `queen` preset.
+  "rooms.synthesize",
   // War rooms — admin.
   "rooms.force_close",
   // Token management (admin only — see ADMIN_CLASS_CAPABILITIES).
@@ -293,6 +302,33 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "rooms.decide",
     "rooms.close",
   ],
+  // Local-mode queen preset (RFC PR 3 / D14 + builder pass-2 §2 +
+  // builder pass-7 §5). Distinct from `queen` so a leaked existing
+  // queen bearer cannot inherit `rooms.synthesize` or
+  // `installation_token.mint` privileges. Critically does NOT
+  // include `rooms.watch` (used to be a worker-style discovery
+  // channel; the local queen polls `synthesis-ready` instead, which
+  // is gated by `rooms.synthesize`).
+  //
+  // G16 — `installation_token.mint` is normally apiarist-only with
+  // a UDS broker pattern. The local queen needs to mint installation
+  // tokens directly (it runs in-container, can't go through a host
+  // broker). Blast radius is bounded by D10's token policy —
+  // `policy.allowed_repos = watched_repos` + minimal scopes.
+  local_queen: [
+    "agent_health.report",
+    "tasks.create",
+    "tasks.read",
+    "tasks.cancel",
+    "rooms.create",
+    "rooms.read",
+    "rooms.read_all",
+    "rooms.update",
+    "rooms.decide",
+    "rooms.close",
+    "rooms.synthesize",
+    "installation_token.mint",
+  ],
   dispatcher: [
     "tasks.create",
     "tasks.read",
@@ -329,4 +365,243 @@ export function resolvePreset(name: string): readonly string[] {
     );
   }
   return PRESETS[name];
+}
+
+// ---------------------------------------------------------------------------
+// Mint-capable issuance gate (PR 645 builder pass-1 B1 / pass-2 / pass-3;
+// RFC D10 + G16)
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact `allowed_permissions` shape RFC D10 specifies for the
+ * local_queen mint policy. Mint-capable non-apiarist tokens must be
+ * issued with this set verbatim — narrower fails closed (bearer
+ * cannot use a permission they didn't request), broader violates
+ * D10 by exceeding the queen's needed scope.
+ *
+ * Notably **excludes `contents`**: the local queen synthesizes
+ * verdicts from war-room contributions and posts comments; it must
+ * not read repo files. The default V1_PERMISSIONS shape (used at
+ * mint time when `allowed_permissions` is omitted) DOES include
+ * `contents: "read"` for legacy apiarist compatibility, which is
+ * exactly the gap this gate closes for local_queen.
+ */
+export const LOCAL_QUEEN_REQUIRED_PERMISSIONS: Readonly<
+  Record<string, "read" | "write" | "admin">
+> = Object.freeze({
+  pull_requests: "write",
+  issues: "write",
+  metadata: "read",
+});
+
+/**
+ * Issue-time policy gate for mint-capable presets and roles.
+ *
+ * Per RFC D10 + G16, tokens granting `installation_token.mint` for
+ * the new `local_queen` role must be issued with BOTH halves of
+ * the D10 policy:
+ *   - `allowed_repos` — non-empty list (repo fan-out bound)
+ *   - `allowed_permissions` — exactly the LOCAL_QUEEN_REQUIRED_PERMISSIONS
+ *      set (permission scope bound; see RFC docs/architecture/
+ *      QUEEN_EXECUTION_MODE.md:566-567)
+ *
+ * The mint endpoint (web/src/app/api/github/installation-tokens)
+ * intersects V1_PERMISSIONS with the bearer's allowed_permissions;
+ * if allowed_permissions is omitted, the intersection is the full
+ * V1_PERMISSIONS set including `contents: "read"`. Without this
+ * gate enforcing both halves, a leaked allowedRepos-only
+ * local_queen bearer could mint tokens with `contents: "read"`
+ * scope — violating D10's intent that the local queen never reads
+ * repo files.
+ *
+ * `apiarist` is exempt from BOTH halves: the existing host-broker
+ * preset predates the policy model and tightening it would break
+ * in-the-wild apiarist tokens. The next slice tracks graduating
+ * apiarist into the gate too — until then it stays legacy.
+ *
+ * Used by:
+ *   - POST /api/agent-tokens (operator-bearer issue)
+ *   - POST /api/dashboard/agent-tokens (cookie-auth issue)
+ *   - POST /api/agent-tokens/{name}/set-capabilities (recap; only
+ *     when the operation transitions a token INTO mint-capable shape)
+ */
+export interface MintPolicyGateInput {
+  /** Effective capability list of the resulting/updated token. */
+  capabilities: readonly string[];
+  /**
+   * Preset name when the issue came from a preset; null for the
+   * explicit-capabilities path. The apiarist + admin carve-outs key
+   * on this server-resolved preset name (see pass-2 fix).
+   */
+  presetName?: string | null;
+  /**
+   * Whether the caller passed `allowWildcards: true` — the explicit
+   * opt-in for bare `*` admin issuance. When the capability list
+   * contains a bare `*` AND this flag is true, the gate treats the
+   * token as the admin chain-root shape (which already grants
+   * `installation_token.mint` via wildcard expansion) and exempts
+   * it from D10. Mirrors the explicit `*` rejection rule on the
+   * mint endpoint's auth path. Default false.
+   */
+  allowWildcards?: boolean;
+  /**
+   * The policy that will be persisted with the token (snake_case
+   * storage shape). null when no policy was supplied.
+   */
+  policy?: {
+    allowed_repos?: readonly string[] | null;
+    allowed_permissions?: Readonly<Record<string, string>> | null;
+  } | null;
+}
+
+/**
+ * Legacy carve-outs for the mint-policy gate. Both predate the D10
+ * model and tightening either would break in-the-wild tokens:
+ *   - `apiarist`: host-broker preset (UDS-based mint pattern).
+ *   - `admin`: bare-`*` admin preset, the chain root for issuing
+ *      other tokens. Admin tokens hold every cap by wildcard
+ *      expansion including `installation_token.mint`; per RFC
+ *      they are intentionally privileged and predate D10's
+ *      per-token policy model. New mint-capable presets MUST go
+ *      through the gate; this set is closed.
+ *
+ * Pass-4 (B1, builder pass-3 follow-up): admin was added explicitly
+ * after a bypass via `capabilities: ["*"]` was found — see
+ * `validateMintPolicyRequirement` doc for the wildcard expansion fix.
+ */
+const MINT_GATE_LEGACY_PRESETS: ReadonlySet<string> = new Set([
+  "apiarist",
+  "admin",
+]);
+
+/**
+ * Issue-time policy gate.
+ *
+ * # Pass-4 fix — wildcard-aware capability detection (B1, builder pass-3 follow-up)
+ *
+ * Pass-3's gate used `capabilities.includes("installation_token.mint")`
+ * — a literal-string check. Authorization at the mint endpoint
+ * uses `bearerHasCapability` which expands wildcards, so:
+ *   - `capabilities: ["installation_token.*"]` does NOT trigger the
+ *     gate (no literal match) but DOES satisfy
+ *     `requires: "installation_token.mint"` at mint time
+ *   - `capabilities: ["*"]` (with `allowWildcards: true`) has the
+ *     same shape
+ *
+ * Both bypasses are now closed by switching the gate to
+ * `bearerHasCapability(capabilities, "installation_token.mint")` —
+ * the SAME predicate authorization uses. If the bearer can EVER
+ * mint at request time, the gate fires at issue time. Symmetric
+ * semantics, no asymmetry to exploit.
+ *
+ * `admin` is added to the legacy carve-out alongside `apiarist`.
+ * Admin tokens are the chain root and intentionally hold every
+ * cap by wildcard; subjecting them to the D10 gate would break
+ * the bootstrap path. See `MINT_GATE_LEGACY_PRESETS`.
+ *
+ * # Pass-3 fix — both halves of D10
+ *
+ * Pass-2 only enforced repo fan-out (allowed_repos). The mint
+ * endpoint falls back to V1_PERMISSIONS (which includes
+ * `contents: "read"`) when allowed_permissions is omitted,
+ * violating D10's permission scope half. The gate now also
+ * requires the exact LOCAL_QUEEN_REQUIRED_PERMISSIONS shape.
+ *
+ * # Pass-2 fix — apiarist carve-out is preset-only
+ *
+ * Pass-1 trusted operator-supplied `agent_role` for the apiarist
+ * exemption. Now keys ONLY on the server-resolved preset name.
+ */
+export function validateMintPolicyRequirement(
+  args: MintPolicyGateInput,
+): { ok: true } | { ok: false; message: string } {
+  // Wildcard-aware: ["installation_token.*"] and ["*"] both trigger
+  // the gate, matching the request-time auth predicate exactly.
+  const grantsMint = bearerHasCapability(
+    args.capabilities,
+    "installation_token.mint",
+  );
+  if (!grantsMint) return { ok: true };
+
+  // Server-resolved preset-name gate ONLY — agent_role is operator-
+  // supplied and cannot be trusted for a security decision.
+  // Both apiarist (legacy host-broker) and admin (chain root) are
+  // explicit carve-outs predating D10.
+  if (args.presetName !== null && args.presetName !== undefined) {
+    if (MINT_GATE_LEGACY_PRESETS.has(args.presetName)) return { ok: true };
+  }
+
+  // Explicit-caps admin opt-in: `capabilities: ["*"]` + the
+  // documented `allowWildcards: true` flag is the explicit
+  // power-user path for issuing an admin chain-root bearer
+  // without going through `preset: "admin"`. Bare `*` already
+  // expands to `installation_token.mint` (and every other non-
+  // admin-class cap), so the gate would fire on every admin
+  // token without this carve-out. Matches the
+  // MINT_GATE_LEGACY_PRESETS["admin"] exemption shape, just
+  // wired through capabilities rather than preset.
+  //
+  // The carve-out requires BOTH: a literal bare `*` in the cap
+  // list AND the operator's deliberate opt-in flag. Any other
+  // wildcard form (e.g. `installation_token.*`) does NOT qualify
+  // — those still trip the gate.
+  if (args.allowWildcards && args.capabilities.includes("*")) {
+    return { ok: true };
+  }
+
+  // ----- Half 1 of D10: allowed_repos ≥ 1 -----
+  const repos = args.policy?.allowed_repos;
+  if (!Array.isArray(repos) || repos.length === 0) {
+    return {
+      ok: false,
+      message:
+        "Tokens granting installation_token.mint must be issued with " +
+        "a non-empty policy.allowedRepos list (RFC D10 half 1: bound " +
+        "the mint repo fan-out). Pass policy: { allowedRepos: " +
+        "['owner/repo', ...] } at issue time. The legacy apiarist " +
+        "preset is exempt only via `preset: 'apiarist'`.",
+    };
+  }
+
+  // ----- Half 2 of D10: allowed_permissions matches local-queen set -----
+  const perms = args.policy?.allowed_permissions;
+  if (!perms || typeof perms !== "object") {
+    return {
+      ok: false,
+      message:
+        "Tokens granting installation_token.mint must be issued with " +
+        "policy.allowedPermissions matching the RFC D10 local-queen " +
+        "permission scope (pull_requests: write, issues: write, " +
+        "metadata: read). Omitting allowedPermissions falls back to " +
+        "V1_PERMISSIONS at mint time, which includes contents:read — " +
+        "violating D10's intent that the local queen never reads " +
+        "repo files.",
+    };
+  }
+
+  const required = LOCAL_QUEEN_REQUIRED_PERMISSIONS;
+  const requiredKeys = Object.keys(required);
+  const givenKeys = Object.keys(perms);
+  const allRequiredPresent = requiredKeys.every(
+    (k) => perms[k] === required[k],
+  );
+  const noExtraKeys = givenKeys.every((k) =>
+    Object.prototype.hasOwnProperty.call(required, k),
+  );
+  if (!allRequiredPresent || !noExtraKeys) {
+    const expected = JSON.stringify(required);
+    const got = JSON.stringify(perms);
+    return {
+      ok: false,
+      message:
+        `Tokens granting installation_token.mint must have ` +
+        `policy.allowedPermissions exactly equal to the RFC D10 ` +
+        `local-queen scope ${expected}. Got ${got}. Notably ` +
+        `\`contents\` MUST be omitted — the local queen synthesizes ` +
+        `verdicts from war-room contributions and must not read repo ` +
+        `files.`,
+    };
+  }
+
+  return { ok: true };
 }

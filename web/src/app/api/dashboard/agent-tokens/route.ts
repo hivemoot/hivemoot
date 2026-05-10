@@ -34,6 +34,8 @@ import {
   validateName,
   validateAgentRole,
   validateCapabilityString,
+  validateMintPolicyRequirement,
+  expandCapabilities,
   CapabilityValidationError,
   PRESETS,
   KNOWN_CAPABILITIES,
@@ -65,14 +67,41 @@ import {
 const ADMIN_CLASS_PRESETS: ReadonlySet<string> = new Set(["admin"]);
 
 /**
+ * Presets the dashboard cannot issue because they grant
+ * `installation_token.mint` and the dashboard wrapper has no
+ * `policy` input surface (RFC D10 + G16; PR 645 builder pass-1).
+ * Operators issuing these must go through POST /api/agent-tokens
+ * with an admin bearer + explicit policy.allowedRepos.
+ *
+ * `apiarist` is grandfathered into the issuance gate (legacy
+ * permissive) but the dashboard still hides it — apiarist tokens
+ * are infrastructure-tier and shouldn't be issued from a cookie
+ * session. local_queen is hidden for the same reason + the policy
+ * requirement.
+ */
+const MINT_CAPABLE_PRESETS: ReadonlySet<string> = new Set([
+  "apiarist",
+  "local_queen",
+]);
+
+/**
  * Capabilities disallowed in explicit-capabilities issuance via the
  * dashboard surface. Same rationale as ADMIN_CLASS_PRESETS — minting
  * `*` (wildcard) or `agent_tokens.manage` from cookie auth with no
  * expiry cap would bypass the bootstrap/chain split.
+ *
+ * `installation_token.mint` is included as a defense-in-depth layer
+ * on top of `validateMintPolicyRequirement` (PR 645 builder pass-2):
+ * the dashboard wrapper has no policy input surface, so any mint-
+ * capable token issued through it would be policy-less. Hard-deny
+ * on the explicit-capabilities path closes the path entirely
+ * regardless of agent_role label-laundering attempts; the policy
+ * gate below is the secondary check.
  */
 const ADMIN_CLASS_CAPABILITIES: ReadonlySet<string> = new Set([
   "*",
   "agent_tokens.manage",
+  "installation_token.mint",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -114,7 +143,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const body: ListResponse = {
       tokens,
       presets: Object.keys(PRESETS).filter(
-        (name) => !ADMIN_CLASS_PRESETS.has(name),
+        (name) => !ADMIN_CLASS_PRESETS.has(name) && !MINT_CAPABLE_PRESETS.has(name),
       ),
       capabilities: KNOWN_CAPABILITIES.filter(
         (cap) => !ADMIN_CLASS_CAPABILITIES.has(cap),
@@ -199,6 +228,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         { field: "preset", value: body.preset },
       );
     }
+    if (MINT_CAPABLE_PRESETS.has(body.preset)) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        `Preset '${body.preset}' is mint-capable (grants installation_token.mint) and cannot be issued from the dashboard — the dashboard wrapper has no policy input surface, and RFC D10 / G16 require policy.allowedRepos for mint-capable tokens. Use POST /api/agent-tokens with an admin bearer + policy: { allowedRepos: ['owner/repo', ...] } instead.`,
+        400,
+        { field: "preset", value: body.preset },
+      );
+    }
     try {
       capabilities = resolvePreset(body.preset);
       agent_role = body.preset;
@@ -234,15 +271,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
       throw err;
     }
-    // Admin-class capabilities (`*`, `agent_tokens.manage`) blocked
-    // here too — explicit-list path can't sneak past the preset filter.
-    for (const c of body.capabilities) {
-      if (typeof c === "string" && ADMIN_CLASS_CAPABILITIES.has(c)) {
+    // Admin-class capabilities (`*`, `agent_tokens.manage`,
+    // `installation_token.mint`) blocked here too — explicit-list
+    // path can't sneak past the preset filter.
+    //
+    // Order matters: detect bare-`*` FIRST (so error.value is `*`
+    // rather than the first cap `*` would expand to). The dashboard
+    // never wants to issue a bare-wildcard token regardless of
+    // expansion semantics; surfacing `*` as the offending value is
+    // the operator-readable signal.
+    if ((body.capabilities as readonly string[]).includes("*")) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        "Capability '*' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.",
+        400,
+        { field: "capabilities", value: "*" },
+      );
+    }
+    // Wildcard-aware admin-class detection (PR 645 builder pass-3
+    // follow-up B1): an earlier literal `.has(c)` check missed
+    // wildcard forms like `installation_token.*` (which expands to
+    // mint at request time). Now we expand the proposed capability
+    // list and check whether any admin-class cap is reachable.
+    const proposedExpanded = expandCapabilities(
+      body.capabilities as readonly string[],
+    );
+    for (const denied of ADMIN_CLASS_CAPABILITIES) {
+      if (proposedExpanded.has(denied)) {
         return v1Error(
           AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
-          `Capability '${c}' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
+          `Capability '${denied}' is admin-class and cannot be issued via the dashboard wrapper (this includes wildcard forms like 'installation_token.*' that expand to '${denied}'). Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
           400,
-          { field: "capabilities", value: c },
+          { field: "capabilities", value: denied },
         );
       }
     }
@@ -278,6 +338,29 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_EXPIRES_IN,
       expiresParse.message,
+      400,
+    );
+  }
+
+  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1) -----
+  // The dashboard wrapper does not accept a `policy` field — the
+  // structured-policy UX is API-path only. Mint-capable presets
+  // (today: local_queen) therefore cannot be issued from the
+  // dashboard; operators must use POST /api/agent-tokens with an
+  // admin bearer + explicit policy.allowedRepos.
+  const dashboardMintGate = validateMintPolicyRequirement({
+    capabilities,
+    presetName: typeof body.preset === "string" ? body.preset : null,
+    policy: null,
+  });
+  if (!dashboardMintGate.ok) {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
+      "The dashboard cannot issue mint-capable tokens (no policy " +
+        "input surface). Use POST /api/agent-tokens with an admin " +
+        "bearer and policy: { allowedRepos: ['owner/repo', ...] } " +
+        "instead. " +
+        dashboardMintGate.message,
       400,
     );
   }

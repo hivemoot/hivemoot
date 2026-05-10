@@ -259,4 +259,72 @@ describe("POST /api/agent-tokens/{name}/set-capabilities", () => {
       );
     }
   });
+
+  // PR 645 builder pass-1 B1 — refuse to transition tokens to a
+  // mint-capable shape via set-capabilities. set-capabilities does
+  // not accept a policy field, so transitioning to mint without a
+  // pre-existing policy.allowedRepos would create the same gap the
+  // issue-time gate closes. Operators must issue a NEW token with
+  // policy + revoke the old one.
+
+  it("set preset 'local_queen' → 400 (mint-capable transition refused)", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    const res = await POST(
+      makeRequest({ preset: "local_queen" }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/mint-capable shape/);
+    expect(body.message).toMatch(/D10 policy bound/);
+    expect(body.message).toMatch(/allowedRepos/);
+    expect(body.message).toMatch(/allowedPermissions/);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("set explicit caps with wildcard 'installation_token.*' → 400 (pass-3 wildcard-aware)", async () => {
+    // Pre-pass-3, the literal `.includes("installation_token.mint")`
+    // check missed wildcard forms. Now bearerHasCapability expansion
+    // catches it.
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    const res = await POST(
+      makeRequest({ capabilities: ["installation_token.*"] }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/wildcard forms/);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("set explicit caps including installation_token.mint → 400 (label-laundering attempt)", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    const res = await POST(
+      makeRequest({
+        capabilities: ["installation_token.mint", "rooms.read"],
+      }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("set preset 'apiarist' → falls through to set (legacy carve-out)", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedSet.mockResolvedValue({
+      name: "ap-1",
+      agent_role: "apiarist",
+      capabilities: ["installation_token.mint"],
+      fingerprint: "f1",
+      createdAt: "2026-04-27T10:00:00.000Z",
+      createdBy: "admin",
+      expiresAt: null,
+    });
+    const res = await POST(
+      makeRequest({ preset: "apiarist" }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockedSet).toHaveBeenCalled();
+  });
 });

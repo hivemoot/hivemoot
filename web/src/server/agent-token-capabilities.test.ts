@@ -11,6 +11,7 @@ import {
   validateName,
   validateAgentRole,
   validateCapabilityString,
+  validateMintPolicyRequirement,
   NAME_REGEX,
   CAPABILITY_REGEX,
 } from "./agent-token-capabilities";
@@ -283,6 +284,56 @@ describe("PRESETS", () => {
     expect(PRESETS.apiarist).toEqual(["installation_token.mint"]);
   });
 
+  it("rooms.synthesize is a known capability (RFC PR 3 + D14)", () => {
+    expect(KNOWN_CAPABILITIES.includes("rooms.synthesize")).toBe(true);
+  });
+
+  it("rooms.synthesize is NOT in queen preset (no silent expansion — RFC builder pass-2 §2)", () => {
+    expect(PRESETS.queen.includes("rooms.synthesize")).toBe(false);
+    expect(PRESETS.queen.includes("installation_token.mint")).toBe(false);
+  });
+
+  it("local_queen preset has rooms.synthesize + installation_token.mint (RFC PR 3 + G16)", () => {
+    expect(PRESETS.local_queen.includes("rooms.synthesize")).toBe(true);
+    expect(PRESETS.local_queen.includes("installation_token.mint")).toBe(true);
+  });
+
+  it("local_queen preset does NOT include rooms.watch (RFC builder pass-7 §5: queen polls synthesis-ready, not /watching)", () => {
+    expect(PRESETS.local_queen.includes("rooms.watch")).toBe(false);
+  });
+
+  it("local_queen preset has all queen-preset capabilities (additive only — D14)", () => {
+    for (const cap of PRESETS.queen) {
+      expect(
+        PRESETS.local_queen.includes(cap),
+        `local_queen should include queen's ${cap}`,
+      ).toBe(true);
+    }
+  });
+
+  it("local_queen does NOT include rooms.force_close (admin-only escape valve, G6)", () => {
+    expect(PRESETS.local_queen.includes("rooms.force_close")).toBe(false);
+  });
+
+  it("every preset granting rooms.create also grants rooms.read_all (PR 645 guard G3, KNOWN_CAPABILITIES :149-157 invariant)", () => {
+    // The KNOWN_CAPABILITIES note at agent-token-capabilities.ts:149-157
+    // commits to this pairing: rooms.create's 409 subject_already_open
+    // response surfaces existingRoomId, and that disclosure is benign
+    // ONLY because the bearer also has rooms.read_all (so they can
+    // already enumerate rooms anyway). A future preset with rooms.create
+    // but WITHOUT rooms.read_all would turn the 409 into a roomId-
+    // discovery oracle. Guard pass-1 on PR 645 asked for an automated
+    // pin so this invariant doesn't regress silently.
+    for (const [name, caps] of Object.entries(PRESETS)) {
+      if (caps.includes("rooms.create")) {
+        expect(
+          caps.includes("rooms.read_all"),
+          `${name} grants rooms.create but not rooms.read_all`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("admin preset includes both bare * AND agent_tokens.manage explicit (wildcard alone wouldn't cover it)", () => {
     expect(PRESETS.admin.includes("*")).toBe(true);
     expect(PRESETS.admin.includes("agent_tokens.manage")).toBe(true);
@@ -360,13 +411,295 @@ describe("cross-invariants", () => {
     }
   });
 
-  it("KNOWN_CAPABILITIES count matches the design doc claim (20)", () => {
+  it("KNOWN_CAPABILITIES count matches the design doc claim (21)", () => {
     // R2.2 baseline: 19 capabilities.
     // R3 (D.1.b-i): added `rooms.read_all` to differentiate
     // installation-wide listing (queen / monitoring) from worker
     // self-rooms reads (`rooms.read`). +1 → 20.
+    // RFC PR 3 (D14): added `rooms.synthesize` for the local-mode
+    // queen synthesis-path endpoints. +1 → 21.
     // If this fails, the doc section "Total: N capabilities" needs
     // to be updated alongside the addition.
-    expect(KNOWN_CAPABILITIES.length).toBe(20);
+    expect(KNOWN_CAPABILITIES.length).toBe(21);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mint-capable issuance gate (PR 645 builder pass-1 B1)
+// ---------------------------------------------------------------------------
+
+describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-1+pass-2+pass-3", () => {
+  // Canonical local_queen policy shape (both halves of D10).
+  // Used as the happy-path baseline for every "policy passes" test.
+  const D10_POLICY = {
+    allowed_repos: ["hivemoot/colony"],
+    allowed_permissions: {
+      pull_requests: "write",
+      issues: "write",
+      metadata: "read",
+    },
+  };
+
+  it("allows non-mint capabilities through with no policy", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["rooms.read", "tasks.claim"],
+      presetName: "worker",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  // ----- D10 half 1: allowed_repos -----
+
+  it("rejects local_queen preset issued without a policy", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/policy\.allowedRepos/);
+    }
+  });
+
+  it("rejects local_queen issued with policy whose allowed_repos is missing", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: { allowed_repos: null },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects local_queen issued with policy whose allowed_repos is empty array", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: { allowed_repos: [] },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  // ----- D10 half 2: allowed_permissions (builder pass-3) -----
+
+  it("rejects local_queen with allowedRepos but NO allowedPermissions (pass-3 builder fix)", () => {
+    // Pass-2 accepted this shape; pass-3 closes it because the mint
+    // endpoint falls back to V1_PERMISSIONS (which includes
+    // contents:read) when allowedPermissions is omitted, violating
+    // RFC D10's permission scope half.
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: { allowed_repos: ["hivemoot/colony"] },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/allowedPermissions/);
+      expect(result.message).toMatch(/contents/);
+    }
+  });
+
+  it("rejects local_queen with allowedPermissions including 'contents' (any value)", () => {
+    // RFC D10 explicitly drops `contents` — the local queen
+    // synthesizes verdicts and posts comments; it must not read
+    // repo files.
+    for (const level of ["read", "write", "admin"]) {
+      const result = validateMintPolicyRequirement({
+        capabilities: PRESETS.local_queen,
+        presetName: "local_queen",
+        policy: {
+          allowed_repos: ["hivemoot/colony"],
+          allowed_permissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+            contents: level,
+          },
+        },
+      });
+      expect(result.ok, `contents=${level} should be rejected`).toBe(false);
+    }
+  });
+
+  it("rejects local_queen with allowedPermissions narrower than D10 (e.g. read instead of write)", () => {
+    // Narrower fails closed at mint time (intersect would clamp the
+    // bearer to less than D10), but the gate's contract is "exact
+    // match" so we surface the mismatch at issue time.
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: {
+        allowed_repos: ["hivemoot/colony"],
+        allowed_permissions: {
+          pull_requests: "read", // should be "write"
+          issues: "write",
+          metadata: "read",
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects local_queen with EXTRA permission keys beyond D10", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: {
+        allowed_repos: ["hivemoot/colony"],
+        allowed_permissions: {
+          pull_requests: "write",
+          issues: "write",
+          metadata: "read",
+          actions: "read", // not in D10's set
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows local_queen with the EXACT D10 policy shape (allowedRepos + allowedPermissions)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.local_queen,
+      presetName: "local_queen",
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  // ----- Apiarist legacy carve-out -----
+
+  it("apiarist preset is exempt from BOTH halves of the gate (legacy carve-out)", () => {
+    // Apiarist predates the policy model. Both repo fan-out and
+    // permission scope checks skip when presetName === 'apiarist'.
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.apiarist,
+      presetName: "apiarist",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  // ----- Label-laundering bypass (pass-2) -----
+
+  it("explicit capabilities with role label 'apiarist' but presetName=null → rejected", () => {
+    // The agentRole input field has been removed from
+    // MintPolicyGateInput entirely — there's no way for the gate
+    // to even see the operator-supplied role. Only presetName can
+    // grant the apiarist exemption.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("explicit capabilities with installation_token.mint but no preset → rejected", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint", "rooms.synthesize"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("explicit-caps path can satisfy the gate by passing the full D10 policy explicitly", () => {
+    // Operators who really want a non-preset mint-capable token
+    // (e.g. custom roles) can still do so — they just have to
+    // pass the canonical D10 policy. This test pins that the
+    // gate is policy-based, not preset-required.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.mint", "rooms.synthesize"],
+      presetName: null,
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  // ----- Wildcard-aware capability detection (pass-3 follow-up B1) -----
+  // Pass-1 through pass-3 used `capabilities.includes("installation_token.mint")`
+  // as a literal string check. The mint endpoint's auth uses
+  // bearerHasCapability which expands wildcards. The asymmetry meant
+  // `["installation_token.*"]` and `["*"]` slipped past the gate but
+  // satisfied auth. Now both gates use the same expansion semantics.
+
+  it("rejects capabilities ['installation_token.*'] without policy (wildcard expands to mint)", () => {
+    // The literal includes() would say false; bearerHasCapability
+    // expansion catches the wildcard form. Same auth predicate as
+    // request-time, so no asymmetry.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects capabilities ['installation_token.*'] WITH allowedRepos but no allowedPermissions (D10 half 2 still required)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: { allowed_repos: ["hivemoot/colony"] },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows capabilities ['installation_token.*'] WITH full D10 policy (gate is policy-based, not literal-cap-based)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects capabilities ['*'] without allowWildcards opt-in (gate fires)", () => {
+    // Bare * needs the explicit allowWildcards flag to qualify
+    // for the admin chain-root carve-out. Without the flag,
+    // the wildcard expansion still triggers the mint detection.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["*"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("admin chain-root opt-in — capabilities ['*'] + allowWildcards: true → exempt (explicit power-user path)", () => {
+    // The deliberate-opt-in admin path predates D10. Documented
+    // carve-out keyed on the literal `*` cap + the operator's
+    // explicit allowWildcards flag. Other wildcard forms (e.g.
+    // `installation_token.*`) do NOT qualify even with the flag.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["*"],
+      presetName: null,
+      allowWildcards: true,
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("admin preset name → exempt (mirrors capabilities-`*` opt-in via the preset path)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.admin,
+      presetName: "admin",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("`installation_token.*` with allowWildcards: true is NOT the admin chain-root opt-in (gate still fires)", () => {
+    // Only bare `*` qualifies for the admin opt-in. A scoped
+    // wildcard prefix (`installation_token.*`) does NOT — that's
+    // a narrower grant the operator can issue with proper D10
+    // policy or not at all.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      allowWildcards: true,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
   });
 });

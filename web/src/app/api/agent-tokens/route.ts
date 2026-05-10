@@ -31,6 +31,7 @@ import {
   resolvePreset,
   validateName,
   validateAgentRole,
+  validateMintPolicyRequirement,
   CapabilityValidationError,
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
@@ -202,6 +203,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return v1Error(
       AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
       policyParse.message,
+      400,
+    );
+  }
+
+  // ----- mint-capable issuance gate (PR 645 builder pass-1 B1, pass-2 tightened) -----
+  // Tokens granting installation_token.mint must ship with
+  // policy.allowedRepos. The apiarist legacy carve-out keys ONLY on
+  // the server-resolved preset name — agent_role is operator-
+  // supplied and would otherwise allow label-laundering past the
+  // gate (builder pass-2 fix).
+  const mintGate = validateMintPolicyRequirement({
+    capabilities,
+    presetName: typeof body.preset === "string" ? body.preset : null,
+    allowWildcards,
+    policy: policyParse.policy ?? null,
+  });
+  if (!mintGate.ok) {
+    return v1Error(
+      AGENT_TOKENS_V1_ERROR.INVALID_POLICY,
+      mintGate.message,
       400,
     );
   }

@@ -124,9 +124,15 @@ describe("GET /api/dashboard/agent-tokens", () => {
     expect(body.tokens[0].name).toBe("queen");
     // Admin filtered out per #567 builder R1 — see the "preset catalog
     // filter" describe block below for the explicit regression.
+    // Mint-capable presets (apiarist, local_queen) also filtered —
+    // PR 645 builder pass-1 B1 (no policy input surface in the
+    // dashboard wrapper).
     expect(body.presets).toEqual(
-      expect.arrayContaining(["queen", "worker", "apiarist"]),
+      expect.arrayContaining(["queen", "worker"]),
     );
+    expect(body.presets).not.toContain("apiarist");
+    expect(body.presets).not.toContain("local_queen");
+    expect(body.presets).not.toContain("admin");
   });
 });
 
@@ -347,6 +353,92 @@ describe("POST /api/dashboard/agent-tokens — admin-class deny list (#567 build
   });
 });
 
+describe("POST /api/dashboard/agent-tokens — mint-capable preset deny list (PR 645 builder pass-1 B1)", () => {
+  // The dashboard wrapper has no `policy` input surface, so it
+  // can't issue mint-capable tokens with the required allowedRepos
+  // bound. Both the named preset and the explicit-capabilities
+  // path are rejected — the latter via the post-resolution gate
+  // since the dashboard never passes a policy.
+
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeByokAuthOk());
+    mockedRequireInstallation.mockReturnValue({
+      ok: true,
+      installationId: "12345",
+    } as never);
+  });
+
+  it("preset 'local_queen' → 400 with mint-capable rejection (preset-name path)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        preset: "local_queen",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/mint-capable/);
+    expect(body.message).toMatch(/POST \/api\/agent-tokens/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("preset 'apiarist' → 400 (also blocked from dashboard)", async () => {
+    // Apiarist is mint-capable too. Even though the issuance gate
+    // exempts it (legacy carve-out), the dashboard still hides /
+    // rejects it because cookie-auth + no-policy issuance of
+    // infrastructure-tier credentials is the wrong UX.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "ap-1",
+        preset: "apiarist",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("explicit capabilities including installation_token.mint → 400 (admin-class deny list fires, pass-2 defense-in-depth)", async () => {
+    // PR 645 builder pass-2: installation_token.mint is now in the
+    // dashboard's ADMIN_CLASS_CAPABILITIES deny list, so the
+    // explicit-caps path is rejected during capability validation
+    // BEFORE the post-resolution mint gate gets a chance to fire.
+    // This is the structural fix for the label-laundering bypass:
+    // operators cannot pass `agent_role: 'apiarist'` + caps with
+    // mint, because the cap is denied at validation time.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "minty",
+        agent_role: "minty",
+        capabilities: ["installation_token.mint", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/admin-class/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("label-laundering attempt — explicit caps with role=apiarist → 400 (admin-class deny list, no preset escape)", async () => {
+    // The pass-1 bypass: caller submits explicit caps with
+    // `agent_role: "apiarist"` claiming the legacy-permissive
+    // exemption. With pass-2: the cap is denied BEFORE the
+    // exemption check, AND the post-resolution gate now keys only
+    // on the server-resolved presetName (which is null on the
+    // explicit-caps path). Two redundant defenses — same outcome.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "labelware",
+        agent_role: "apiarist", // operator-supplied — must not grant exemption
+        capabilities: ["installation_token.mint"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)", () => {
   beforeEach(() => {
     mockedAuth.mockResolvedValue(makeByokAuthOk());
@@ -362,8 +454,20 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     const body = await res.json();
     expect(body.presets).not.toContain("admin");
     expect(body.presets).toEqual(
-      expect.arrayContaining(["queen", "worker", "apiarist", "monitoring", "dispatcher"]),
+      expect.arrayContaining(["queen", "worker", "monitoring", "dispatcher"]),
     );
+  });
+
+  it("excludes mint-capable presets ('apiarist', 'local_queen') from the presets list (PR 645 builder pass-1 B1)", async () => {
+    // The dashboard wrapper has no `policy` input surface, so it
+    // cannot issue mint-capable tokens with the required
+    // policy.allowedRepos bound (RFC D10 / G16). Hide those
+    // presets from the catalog so the operator never sees them
+    // as an option in the UI.
+    const res = await GET(makeRequest("GET"));
+    const body = await res.json();
+    expect(body.presets).not.toContain("apiarist");
+    expect(body.presets).not.toContain("local_queen");
   });
 
   it("returns the capability vocabulary filtered to non-admin entries", async () => {
@@ -373,11 +477,14 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     // applied to the POST issuance path).
     expect(body.capabilities).not.toContain("agent_tokens.manage");
     expect(body.capabilities).not.toContain("*");
-    // Sanity: every preset's capabilities ARE in the catalog so the
+    // installation_token.mint joined the admin-class deny list in
+    // PR 645 builder pass-2 (defense-in-depth on top of the policy
+    // gate — the dashboard has no policy input surface).
+    expect(body.capabilities).not.toContain("installation_token.mint");
+    // Sanity: non-mint preset capabilities ARE in the catalog so the
     // UI can faithfully render preset → custom transitions.
     expect(body.capabilities).toEqual(
       expect.arrayContaining([
-        "installation_token.mint",
         "agent_health.report",
         "tasks.claim",
         "rooms.create",
@@ -387,14 +494,15 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     );
   });
 
-  it("preserves subsystem-grouping order (installation_token → agent_health → tasks → rooms)", async () => {
+  it("preserves subsystem-grouping order (agent_health → tasks → rooms)", async () => {
     const res = await GET(makeRequest("GET"));
     const body = await res.json();
     const caps = body.capabilities as string[];
     const idxOf = (cap: string) => caps.indexOf(cap);
     // Each subsystem boundary stays ordered relative to the next so
-    // the UI can group by prefix without re-sorting.
-    expect(idxOf("installation_token.mint")).toBeLessThan(idxOf("agent_health.report"));
+    // the UI can group by prefix without re-sorting. installation_token.mint
+    // is no longer in the catalog (admin-class deny list, PR 645 pass-2)
+    // so the order check now starts at agent_health.
     expect(idxOf("agent_health.read")).toBeLessThan(idxOf("tasks.claim"));
     expect(idxOf("tasks.cancel")).toBeLessThan(idxOf("rooms.watch"));
   });

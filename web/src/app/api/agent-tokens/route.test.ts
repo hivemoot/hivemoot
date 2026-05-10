@@ -265,6 +265,229 @@ describe("POST /api/agent-tokens — body validation", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
   });
+
+  // PR 645 builder pass-1 B1 — issue-time gate on mint-capable presets.
+  // The gate fires AFTER capability resolution + policy parse but
+  // BEFORE the storage write. Same INVALID_POLICY error code as the
+  // V1.6 schema check so callers can branch on a single envelope.
+
+  it("preset 'local_queen' without policy → 400 INVALID_POLICY (mint gate)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.message).toMatch(/installation_token\.mint/);
+    expect(body.message).toMatch(/policy\.allowedRepos/);
+  });
+
+  it("preset 'local_queen' with empty allowedRepos → 400 (gate enforces non-empty list)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: { allowedRepos: [], allowedPermissions: { contents: "read" } },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+  });
+
+  it("explicit capabilities including installation_token.mint without policy → 400 (label-laundering attempt)", async () => {
+    // An operator might try to bypass the local_queen preset gate by
+    // passing the same caps + a non-apiarist role explicitly. Gate
+    // is capability-based, so it still fires.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "minty",
+        agent_role: "custom_minter",
+        capabilities: ["installation_token.mint", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+  });
+
+  it("preset 'apiarist' without policy → 200 (legacy carve-out preserved)", async () => {
+    // Apiarist tokens predate the policy model; tightening would
+    // break existing operator scripts. Confirms the gate's exemption
+    // is wired at the route layer.
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({ name: "ap-1", agent_role: "apiarist", capabilities: ["installation_token.mint"] }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "ap-1",
+        agent_role: "apiarist",
+        preset: "apiarist",
+      }),
+    );
+    // 201 is the success code — confirms the gate did NOT short-
+    // circuit the request to 400.
+    expect(res.status).toBe(201);
+  });
+
+  it("preset 'local_queen' with allowedRepos but NO allowedPermissions → 400 (pass-3 D10 half 2)", async () => {
+    // Pass-2 accepted this shape; pass-3 rejects because the mint
+    // endpoint falls back to V1_PERMISSIONS (which includes
+    // contents:read) when allowedPermissions is omitted, violating
+    // RFC D10's permission-scope half.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: { allowedRepos: ["hivemoot/colony"] },
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.message).toMatch(/allowedPermissions/);
+    expect(body.message).toMatch(/contents/);
+  });
+
+  it("preset 'local_queen' with allowedPermissions including contents → 400 (D10 forbids contents)", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+            contents: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+  });
+
+  it("preset 'local_queen' with EXACT D10 policy (allowedRepos + allowedPermissions) → 201 (happy path)", async () => {
+    // Pin the canonical D10 shape that survives the gate. If a
+    // future change tightens the gate further, this test catches
+    // it before it breaks the local_queen issuance path.
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        capabilities: ["installation_token.mint", "rooms.synthesize"],
+      }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "queen-hive-1",
+        agent_role: "local_queen",
+        preset: "local_queen",
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(mockedIssue).toHaveBeenCalled();
+  });
+
+  it("wildcard 'installation_token.*' without policy → 400 (pass-3 wildcard-aware mint gate)", async () => {
+    // Pre-pass-3, a literal `.includes("installation_token.mint")`
+    // missed wildcard forms. Now `bearerHasCapability` expansion
+    // catches it.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "minty",
+        agent_role: "minty",
+        capabilities: ["installation_token.*", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("wildcard 'installation_token.*' with full D10 policy → 201 (gate is policy-based)", async () => {
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({
+        name: "wildcard-mint",
+        agent_role: "wildcard-mint",
+        capabilities: ["installation_token.*", "rooms.read"],
+      }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "wildcard-mint",
+        agent_role: "wildcard-mint",
+        capabilities: ["installation_token.*", "rooms.read"],
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("admin chain-root '*' + allowWildcards still permitted (legacy carve-out preserved)", async () => {
+    // Pre-existing test pinned this; pass-3 added the explicit
+    // carve-out so it keeps working.
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({ name: "admin-1", agent_role: "admin", capabilities: ["*"] }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "admin-1",
+        agent_role: "admin",
+        capabilities: ["*"],
+        allowWildcards: true,
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("label-laundering — explicit capabilities with agent_role=apiarist → 400 (builder pass-2 fix)", async () => {
+    // Pass-1 carve-out trusted operator-supplied agent_role; an
+    // attacker could submit explicit installation_token.mint caps
+    // with agent_role=apiarist and the gate would return ok with
+    // policy: null. Pass-2: the carve-out keys ONLY on the
+    // server-resolved preset name (null on this path), so the
+    // gate fires regardless of the operator's role label.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "ap-fake",
+        agent_role: "apiarist", // operator-supplied — must NOT grant exemption
+        capabilities: ["installation_token.mint", "rooms.read"],
+        // No preset → presetName is null → exemption does not fire.
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_policy");
+    expect(body.message).toMatch(/installation_token\.mint/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

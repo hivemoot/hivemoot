@@ -33,6 +33,7 @@ import { setAgentTokenCapabilities } from "@/server/agent-token-v1";
 import {
   isKnownPreset,
   resolvePreset,
+  bearerHasCapability,
 } from "@/server/agent-token-capabilities";
 import { auditAppend } from "@/server/agent-token-v1-audit";
 import {
@@ -138,6 +139,48 @@ export async function POST(
           400,
         );
       }
+    }
+  }
+
+  // Mint-capable transition gate (PR 645 builder pass-1 B1, pass-3
+  // wildcard-aware).
+  //
+  // set-capabilities only changes capabilities, not policy. If the
+  // operation transitions a token INTO a mint-capable shape, we
+  // can't validate the policy without a separate fetch — and even
+  // then there's a race vs concurrent policy edits. Refuse the
+  // transition entirely; operators must issue a NEW token with the
+  // right policy + revoke the old one.
+  //
+  // Wildcard-aware (pass-3 follow-up): use bearerHasCapability
+  // instead of literal `.includes`. Otherwise an operator could
+  // submit `capabilities: ["installation_token.*"]` or `["*"]` to
+  // transition a token into mint-capable shape without tripping
+  // the gate, but still satisfy the request-time auth check.
+  //
+  // Legacy apiarist + admin presets are exempt to mirror the
+  // issue-time gate's carve-outs.
+  const transitionsToMint = bearerHasCapability(
+    capabilities,
+    "installation_token.mint",
+  );
+  if (transitionsToMint) {
+    const isLegacyPreset =
+      body.preset === "apiarist" || body.preset === "admin";
+    if (!isLegacyPreset) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        "Refusing to transition a token to a mint-capable shape via " +
+          "set-capabilities — set-capabilities does not accept a " +
+          "policy field, so the resulting token would lack the D10 " +
+          "policy bound required by RFC D10 / G16. Issue a new token " +
+          "via POST /api/agent-tokens with policy: { allowedRepos, " +
+          "allowedPermissions } and revoke this one instead. (This " +
+          "applies to wildcard forms like 'installation_token.*' and " +
+          "'*' too — they expand to 'installation_token.mint' at " +
+          "request time.)",
+        400,
+      );
     }
   }
 
