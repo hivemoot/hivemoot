@@ -406,6 +406,67 @@ describe("POST /api/agent-tokens — body validation", () => {
     expect(mockedIssue).toHaveBeenCalled();
   });
 
+  it("wildcard 'installation_token.*' without policy → 400 (pass-3 wildcard-aware mint gate)", async () => {
+    // Pre-pass-3, a literal `.includes("installation_token.mint")`
+    // missed wildcard forms. Now `bearerHasCapability` expansion
+    // catches it.
+    const res = await POST(
+      makeRequest("POST", {
+        name: "minty",
+        agent_role: "minty",
+        capabilities: ["installation_token.*", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("agent_tokens_v1_invalid_policy");
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it("wildcard 'installation_token.*' with full D10 policy → 201 (gate is policy-based)", async () => {
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({
+        name: "wildcard-mint",
+        agent_role: "wildcard-mint",
+        capabilities: ["installation_token.*", "rooms.read"],
+      }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "wildcard-mint",
+        agent_role: "wildcard-mint",
+        capabilities: ["installation_token.*", "rooms.read"],
+        policy: {
+          allowedRepos: ["hivemoot/colony"],
+          allowedPermissions: {
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("admin chain-root '*' + allowWildcards still permitted (legacy carve-out preserved)", async () => {
+    // Pre-existing test pinned this; pass-3 added the explicit
+    // carve-out so it keeps working.
+    mockedKeyring.mockReturnValue(makeKeyringOk());
+    mockedIssue.mockResolvedValue(
+      makeIssued({ name: "admin-1", agent_role: "admin", capabilities: ["*"] }),
+    );
+    const res = await POST(
+      makeRequest("POST", {
+        name: "admin-1",
+        agent_role: "admin",
+        capabilities: ["*"],
+        allowWildcards: true,
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
   it("label-laundering — explicit capabilities with agent_role=apiarist → 400 (builder pass-2 fix)", async () => {
     // Pass-1 carve-out trusted operator-supplied agent_role; an
     // attacker could submit explicit installation_token.mint caps

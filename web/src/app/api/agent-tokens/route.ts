@@ -216,6 +216,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const mintGate = validateMintPolicyRequirement({
     capabilities,
     presetName: typeof body.preset === "string" ? body.preset : null,
+    allowWildcards,
     policy: policyParse.policy ?? null,
   });
   if (!mintGate.ok) {

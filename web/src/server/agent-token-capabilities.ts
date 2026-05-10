@@ -430,10 +430,20 @@ export interface MintPolicyGateInput {
   capabilities: readonly string[];
   /**
    * Preset name when the issue came from a preset; null for the
-   * explicit-capabilities path. The apiarist carve-out keys ONLY on
-   * this server-resolved preset name — see pass-2 fix.
+   * explicit-capabilities path. The apiarist + admin carve-outs key
+   * on this server-resolved preset name (see pass-2 fix).
    */
   presetName?: string | null;
+  /**
+   * Whether the caller passed `allowWildcards: true` — the explicit
+   * opt-in for bare `*` admin issuance. When the capability list
+   * contains a bare `*` AND this flag is true, the gate treats the
+   * token as the admin chain-root shape (which already grants
+   * `installation_token.mint` via wildcard expansion) and exempts
+   * it from D10. Mirrors the explicit `*` rejection rule on the
+   * mint endpoint's auth path. Default false.
+   */
+  allowWildcards?: boolean;
   /**
    * The policy that will be persisted with the token (snake_case
    * storage shape). null when no policy was supplied.
@@ -445,37 +455,99 @@ export interface MintPolicyGateInput {
 }
 
 /**
+ * Legacy carve-outs for the mint-policy gate. Both predate the D10
+ * model and tightening either would break in-the-wild tokens:
+ *   - `apiarist`: host-broker preset (UDS-based mint pattern).
+ *   - `admin`: bare-`*` admin preset, the chain root for issuing
+ *      other tokens. Admin tokens hold every cap by wildcard
+ *      expansion including `installation_token.mint`; per RFC
+ *      they are intentionally privileged and predate D10's
+ *      per-token policy model. New mint-capable presets MUST go
+ *      through the gate; this set is closed.
+ *
+ * Pass-4 (B1, builder pass-3 follow-up): admin was added explicitly
+ * after a bypass via `capabilities: ["*"]` was found — see
+ * `validateMintPolicyRequirement` doc for the wildcard expansion fix.
+ */
+const MINT_GATE_LEGACY_PRESETS: ReadonlySet<string> = new Set([
+  "apiarist",
+  "admin",
+]);
+
+/**
  * Issue-time policy gate.
  *
- * # Pass-3 fix — both halves of D10 (B1, builder pass-3)
+ * # Pass-4 fix — wildcard-aware capability detection (B1, builder pass-3 follow-up)
  *
- * Pass-2 closed the apiarist label-laundering bypass but only
- * enforced repo fan-out (allowed_repos). Builder pass-3 found that
- * a local_queen token issued with allowedRepos-only still mints
- * installation tokens with the legacy V1_PERMISSIONS scope (which
- * includes `contents: "read"`), violating RFC D10's permission
- * scope half. The gate now also requires the exact
- * LOCAL_QUEEN_REQUIRED_PERMISSIONS shape — narrower would fail
- * closed at mint time, broader violates the D10 contract.
+ * Pass-3's gate used `capabilities.includes("installation_token.mint")`
+ * — a literal-string check. Authorization at the mint endpoint
+ * uses `bearerHasCapability` which expands wildcards, so:
+ *   - `capabilities: ["installation_token.*"]` does NOT trigger the
+ *     gate (no literal match) but DOES satisfy
+ *     `requires: "installation_token.mint"` at mint time
+ *   - `capabilities: ["*"]` (with `allowWildcards: true`) has the
+ *     same shape
+ *
+ * Both bypasses are now closed by switching the gate to
+ * `bearerHasCapability(capabilities, "installation_token.mint")` —
+ * the SAME predicate authorization uses. If the bearer can EVER
+ * mint at request time, the gate fires at issue time. Symmetric
+ * semantics, no asymmetry to exploit.
+ *
+ * `admin` is added to the legacy carve-out alongside `apiarist`.
+ * Admin tokens are the chain root and intentionally hold every
+ * cap by wildcard; subjecting them to the D10 gate would break
+ * the bootstrap path. See `MINT_GATE_LEGACY_PRESETS`.
+ *
+ * # Pass-3 fix — both halves of D10
+ *
+ * Pass-2 only enforced repo fan-out (allowed_repos). The mint
+ * endpoint falls back to V1_PERMISSIONS (which includes
+ * `contents: "read"`) when allowed_permissions is omitted,
+ * violating D10's permission scope half. The gate now also
+ * requires the exact LOCAL_QUEEN_REQUIRED_PERMISSIONS shape.
  *
  * # Pass-2 fix — apiarist carve-out is preset-only
  *
- * Pass-1 used `presetName === "apiarist" || agentRole === "apiarist"`
- * as the carve-out condition. `agent_role` is operator-supplied;
- * an attacker could submit `capabilities: ['installation_token.mint',
- * ...] + agent_role: 'apiarist'` and the gate would return ok.
- * The fix branches ONLY on the server-resolved preset name.
+ * Pass-1 trusted operator-supplied `agent_role` for the apiarist
+ * exemption. Now keys ONLY on the server-resolved preset name.
  */
 export function validateMintPolicyRequirement(
   args: MintPolicyGateInput,
 ): { ok: true } | { ok: false; message: string } {
-  const grantsMint = args.capabilities.includes("installation_token.mint");
+  // Wildcard-aware: ["installation_token.*"] and ["*"] both trigger
+  // the gate, matching the request-time auth predicate exactly.
+  const grantsMint = bearerHasCapability(
+    args.capabilities,
+    "installation_token.mint",
+  );
   if (!grantsMint) return { ok: true };
 
   // Server-resolved preset-name gate ONLY — agent_role is operator-
   // supplied and cannot be trusted for a security decision.
-  const isLegacyApiarist = args.presetName === "apiarist";
-  if (isLegacyApiarist) return { ok: true };
+  // Both apiarist (legacy host-broker) and admin (chain root) are
+  // explicit carve-outs predating D10.
+  if (args.presetName !== null && args.presetName !== undefined) {
+    if (MINT_GATE_LEGACY_PRESETS.has(args.presetName)) return { ok: true };
+  }
+
+  // Explicit-caps admin opt-in: `capabilities: ["*"]` + the
+  // documented `allowWildcards: true` flag is the explicit
+  // power-user path for issuing an admin chain-root bearer
+  // without going through `preset: "admin"`. Bare `*` already
+  // expands to `installation_token.mint` (and every other non-
+  // admin-class cap), so the gate would fire on every admin
+  // token without this carve-out. Matches the
+  // MINT_GATE_LEGACY_PRESETS["admin"] exemption shape, just
+  // wired through capabilities rather than preset.
+  //
+  // The carve-out requires BOTH: a literal bare `*` in the cap
+  // list AND the operator's deliberate opt-in flag. Any other
+  // wildcard form (e.g. `installation_token.*`) does NOT qualify
+  // — those still trip the gate.
+  if (args.allowWildcards && args.capabilities.includes("*")) {
+    return { ok: true };
+  }
 
   // ----- Half 1 of D10: allowed_repos ≥ 1 -----
   const repos = args.policy?.allowed_repos;

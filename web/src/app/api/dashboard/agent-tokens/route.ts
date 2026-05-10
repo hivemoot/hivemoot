@@ -35,6 +35,7 @@ import {
   validateAgentRole,
   validateCapabilityString,
   validateMintPolicyRequirement,
+  expandCapabilities,
   CapabilityValidationError,
   PRESETS,
   KNOWN_CAPABILITIES,
@@ -270,15 +271,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
       throw err;
     }
-    // Admin-class capabilities (`*`, `agent_tokens.manage`) blocked
-    // here too — explicit-list path can't sneak past the preset filter.
-    for (const c of body.capabilities) {
-      if (typeof c === "string" && ADMIN_CLASS_CAPABILITIES.has(c)) {
+    // Admin-class capabilities (`*`, `agent_tokens.manage`,
+    // `installation_token.mint`) blocked here too — explicit-list
+    // path can't sneak past the preset filter.
+    //
+    // Order matters: detect bare-`*` FIRST (so error.value is `*`
+    // rather than the first cap `*` would expand to). The dashboard
+    // never wants to issue a bare-wildcard token regardless of
+    // expansion semantics; surfacing `*` as the offending value is
+    // the operator-readable signal.
+    if ((body.capabilities as readonly string[]).includes("*")) {
+      return v1Error(
+        AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
+        "Capability '*' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.",
+        400,
+        { field: "capabilities", value: "*" },
+      );
+    }
+    // Wildcard-aware admin-class detection (PR 645 builder pass-3
+    // follow-up B1): an earlier literal `.has(c)` check missed
+    // wildcard forms like `installation_token.*` (which expands to
+    // mint at request time). Now we expand the proposed capability
+    // list and check whether any admin-class cap is reachable.
+    const proposedExpanded = expandCapabilities(
+      body.capabilities as readonly string[],
+    );
+    for (const denied of ADMIN_CLASS_CAPABILITIES) {
+      if (proposedExpanded.has(denied)) {
         return v1Error(
           AGENT_TOKENS_V1_ERROR.INVALID_CAPABILITIES,
-          `Capability '${c}' is admin-class and cannot be issued via the dashboard wrapper. Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
+          `Capability '${denied}' is admin-class and cannot be issued via the dashboard wrapper (this includes wildcard forms like 'installation_token.*' that expand to '${denied}'). Use POST /api/agent-tokens/bootstrap (cookie auth, 24h cap) or POST /api/agent-tokens with an existing admin bearer instead.`,
           400,
-          { field: "capabilities", value: c },
+          { field: "capabilities", value: denied },
         );
       }
     }

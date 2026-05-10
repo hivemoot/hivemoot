@@ -277,7 +277,23 @@ describe("POST /api/agent-tokens/{name}/set-capabilities", () => {
     const body = await res.json();
     expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
     expect(body.message).toMatch(/mint-capable shape/);
-    expect(body.message).toMatch(/policy\.allowedRepos/);
+    expect(body.message).toMatch(/D10 policy bound/);
+    expect(body.message).toMatch(/allowedRepos/);
+    expect(body.message).toMatch(/allowedPermissions/);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
+  it("set explicit caps with wildcard 'installation_token.*' → 400 (pass-3 wildcard-aware)", async () => {
+    // Pre-pass-3, the literal `.includes("installation_token.mint")`
+    // check missed wildcard forms. Now bearerHasCapability expansion
+    // catches it.
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    const res = await POST(
+      makeRequest({ capabilities: ["installation_token.*"] }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/wildcard forms/);
     expect(mockedSet).not.toHaveBeenCalled();
   });
 

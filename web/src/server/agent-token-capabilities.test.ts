@@ -616,4 +616,90 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     });
     expect(result.ok).toBe(true);
   });
+
+  // ----- Wildcard-aware capability detection (pass-3 follow-up B1) -----
+  // Pass-1 through pass-3 used `capabilities.includes("installation_token.mint")`
+  // as a literal string check. The mint endpoint's auth uses
+  // bearerHasCapability which expands wildcards. The asymmetry meant
+  // `["installation_token.*"]` and `["*"]` slipped past the gate but
+  // satisfied auth. Now both gates use the same expansion semantics.
+
+  it("rejects capabilities ['installation_token.*'] without policy (wildcard expands to mint)", () => {
+    // The literal includes() would say false; bearerHasCapability
+    // expansion catches the wildcard form. Same auth predicate as
+    // request-time, so no asymmetry.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects capabilities ['installation_token.*'] WITH allowedRepos but no allowedPermissions (D10 half 2 still required)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: { allowed_repos: ["hivemoot/colony"] },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows capabilities ['installation_token.*'] WITH full D10 policy (gate is policy-based, not literal-cap-based)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      policy: D10_POLICY,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects capabilities ['*'] without allowWildcards opt-in (gate fires)", () => {
+    // Bare * needs the explicit allowWildcards flag to qualify
+    // for the admin chain-root carve-out. Without the flag,
+    // the wildcard expansion still triggers the mint detection.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["*"],
+      presetName: null,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("admin chain-root opt-in — capabilities ['*'] + allowWildcards: true → exempt (explicit power-user path)", () => {
+    // The deliberate-opt-in admin path predates D10. Documented
+    // carve-out keyed on the literal `*` cap + the operator's
+    // explicit allowWildcards flag. Other wildcard forms (e.g.
+    // `installation_token.*`) do NOT qualify even with the flag.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["*"],
+      presetName: null,
+      allowWildcards: true,
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("admin preset name → exempt (mirrors capabilities-`*` opt-in via the preset path)", () => {
+    const result = validateMintPolicyRequirement({
+      capabilities: PRESETS.admin,
+      presetName: "admin",
+      policy: null,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("`installation_token.*` with allowWildcards: true is NOT the admin chain-root opt-in (gate still fires)", () => {
+    // Only bare `*` qualifies for the admin opt-in. A scoped
+    // wildcard prefix (`installation_token.*`) does NOT — that's
+    // a narrower grant the operator can issue with proper D10
+    // policy or not at all.
+    const result = validateMintPolicyRequirement({
+      capabilities: ["installation_token.*"],
+      presetName: null,
+      allowWildcards: true,
+      policy: null,
+    });
+    expect(result.ok).toBe(false);
+  });
 });
