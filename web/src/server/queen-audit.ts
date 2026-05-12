@@ -287,25 +287,58 @@ export async function emitQueenResolveAction(
  * window): one Redis call per request, bounded keyspace
  * (per-bearer-per-installation), drops naturally after the TTL.
  */
+/**
+ * RFC G11 specifies BOTH `per-bearer-per-minute AND
+ * per-installation-per-minute` caps. Per-bearer protects against a
+ * single buggy/compromised bearer; per-installation aggregate
+ * protects against multiple valid bearers in the same installation
+ * each consuming their per-bearer quota (e.g. queen + dispatcher
+ * + apiarist = 3 × 60 = 180/min — too much GitHub-mint + audit-write
+ * surface).
+ *
+ * Per-installation cap = 4× per-bearer. Allows 4 healthy bearers
+ * at full per-bearer rate (queen + dispatcher + apiarist + a
+ * cushion), blocks the obvious abuse case where many bearers
+ * coordinate.
+ */
 const RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS = 60;
-const RESOLVE_ACTION_RATE_LIMIT_MAX = 60;
+const RESOLVE_ACTION_PER_BEARER_MAX = 60;
+const RESOLVE_ACTION_PER_INSTALLATION_MAX = 240;
 
-function rateLimitKey(installationId: string, fingerprint: string): string {
+function perBearerRateLimitKey(installationId: string, fingerprint: string): string {
   return `hive:v1:queen:rl:resolve-action:${installationId}:${fingerprint}`;
 }
 
+function perInstallationRateLimitKey(installationId: string): string {
+  return `hive:v1:queen:rl:resolve-action:${installationId}:_install`;
+}
+
 /**
- * Check + increment the rate-limit counter atomically.
+ * Which counter hit the limit. The 429 response uses this to tell
+ * the caller whether retrying with a DIFFERENT bearer would help
+ * (per_bearer: yes; per_installation: no, the whole installation
+ * is over budget).
+ */
+export type RateLimitScope = "per_bearer" | "per_installation";
+
+/**
+ * Check + increment BOTH rate-limit counters (RFC G11).
  *
- * Returns `{ allowed: true }` when the call is permitted (counter
- * incremented). Returns `{ allowed: false, currentCount,
- * resetAtSecs }` when the rate limit is exceeded — the route
- * surfaces this as 429 with `Retry-After: resetAtSecs`.
+ * Both counters use the INCR + EXPIRE-on-first pattern. Increments
+ * happen in parallel against a fresh window each (separate keys
+ * with the same 60s TTL). Either counter being over its cap returns
+ * `allowed: false` with the offending scope.
  *
- * Uses the standard INCR + EXPIRE-on-first pattern: increment
- * unconditionally, then EXPIRE only on the first request of the
- * window (when INCR returns 1). The TTL is window length —
- * 60 seconds.
+ * Pass-2 builder fix: previously only per-bearer was checked. RFC
+ * G11 (docs/architecture/QUEEN_EXECUTION_MODE.md:672) requires
+ * both per-bearer AND per-installation. The aggregate prevents
+ * coordinated multi-bearer floods that would each be under their
+ * per-bearer quota.
+ *
+ * Why increment BOTH even if one is already over: the per-bearer
+ * counter still ticks on a rejected request (matches typical
+ * fail-fast rate limit semantics). Operators see continued churn
+ * in the metric, which is the signal they need.
  */
 export async function checkResolveActionRateLimit(args: {
   redis: Redis;
@@ -313,28 +346,59 @@ export async function checkResolveActionRateLimit(args: {
   fingerprint: string;
 }): Promise<
   | { allowed: true }
-  | { allowed: false; currentCount: number; resetAtSecs: number }
+  | {
+      allowed: false;
+      scope: RateLimitScope;
+      currentCount: number;
+      resetAtSecs: number;
+    }
 > {
-  const key = rateLimitKey(args.installationId, args.fingerprint);
-  const count = await args.redis.incr(key);
-  if (count === 1) {
-    // First request of the window — set the TTL.
-    await args.redis.expire(key, RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS);
+  const bearerKey = perBearerRateLimitKey(args.installationId, args.fingerprint);
+  const installKey = perInstallationRateLimitKey(args.installationId);
+
+  // Increment both in parallel. Order of failures: report per-bearer
+  // first if both are over (queen sees "your bearer is hot" before
+  // "the whole installation is hot" — actionable signal for them).
+  const [bearerCount, installCount] = await Promise.all([
+    args.redis.incr(bearerKey),
+    args.redis.incr(installKey),
+  ]);
+
+  // Set TTLs on first request of each window — bearer and install
+  // counters have independent first-of-window timing.
+  if (bearerCount === 1) {
+    await args.redis.expire(bearerKey, RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS);
   }
-  if (count > RESOLVE_ACTION_RATE_LIMIT_MAX) {
-    // Get remaining TTL for the Retry-After hint. Use PTTL? In
-    // Upstash, `ttl` returns seconds (or -1 / -2 sentinels).
-    const remainingTtl = await args.redis.ttl(key);
-    const resetAtSecs =
-      typeof remainingTtl === "number" && remainingTtl > 0
-        ? remainingTtl
-        : RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS;
+  if (installCount === 1) {
+    await args.redis.expire(installKey, RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS);
+  }
+
+  if (bearerCount > RESOLVE_ACTION_PER_BEARER_MAX) {
+    const ttl = await args.redis.ttl(bearerKey);
     return {
       allowed: false,
-      currentCount: count,
-      resetAtSecs,
+      scope: "per_bearer",
+      currentCount: bearerCount,
+      resetAtSecs:
+        typeof ttl === "number" && ttl > 0
+          ? ttl
+          : RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS,
     };
   }
+
+  if (installCount > RESOLVE_ACTION_PER_INSTALLATION_MAX) {
+    const ttl = await args.redis.ttl(installKey);
+    return {
+      allowed: false,
+      scope: "per_installation",
+      currentCount: installCount,
+      resetAtSecs:
+        typeof ttl === "number" && ttl > 0
+          ? ttl
+          : RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS,
+    };
+  }
+
   return { allowed: true };
 }
 
@@ -344,5 +408,6 @@ export async function checkResolveActionRateLimit(args: {
  */
 export const RESOLVE_ACTION_RATE_LIMIT = {
   windowSecs: RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS,
-  max: RESOLVE_ACTION_RATE_LIMIT_MAX,
+  perBearerMax: RESOLVE_ACTION_PER_BEARER_MAX,
+  perInstallationMax: RESOLVE_ACTION_PER_INSTALLATION_MAX,
 } as const;

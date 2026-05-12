@@ -291,13 +291,18 @@ export async function POST(
     );
   }
   if (!rateLimit.allowed) {
+    const scopeMessage =
+      rateLimit.scope === "per_bearer"
+        ? "per-bearer cap (60/min)"
+        : "per-installation aggregate cap (240/min)";
     return NextResponse.json(
       {
         code: "rate_limited",
         message:
-          `resolve-action rate limit exceeded: ${rateLimit.currentCount} calls ` +
-          `in the current window (max 60/min per bearer). Retry after ` +
+          `resolve-action rate limit exceeded — hit the ${scopeMessage}. ` +
+          `Current count: ${rateLimit.currentCount}. Retry after ` +
           `${rateLimit.resetAtSecs}s.`,
+        scope: rateLimit.scope,
         resetAtSecs: rateLimit.resetAtSecs,
       },
       {

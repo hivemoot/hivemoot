@@ -887,9 +887,10 @@ describe("POST /api/rooms/:roomId/resolve-action — pass-1: rate limit (G11)", 
     mockedGetRoomCore.mockResolvedValue(makeRoom());
   });
 
-  it("returns 429 with Retry-After when rate limit is exceeded", async () => {
+  it("returns 429 with Retry-After when per-bearer rate limit is exceeded", async () => {
     mockedRateLimit.mockResolvedValueOnce({
       allowed: false,
+      scope: "per_bearer",
       currentCount: 61,
       resetAtSecs: 42,
     });
@@ -898,12 +899,34 @@ describe("POST /api/rooms/:roomId/resolve-action — pass-1: rate limit (G11)", 
     expect(res.headers.get("Retry-After")).toBe("42");
     const body = await res.json();
     expect(body.code).toBe("rate_limited");
+    expect(body.scope).toBe("per_bearer");
     expect(body.resetAtSecs).toBe(42);
+    expect(body.message).toMatch(/per-bearer/);
+  });
+
+  it("returns 429 with scope='per_installation' when installation aggregate is over (builder pass-2 fix)", async () => {
+    // The case the per-installation cap exists for: a second bearer
+    // hits the endpoint, its own per-bearer counter is fine, but
+    // the installation aggregate is over. Tests would have allowed
+    // this through pre-pass-2.
+    mockedRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      scope: "per_installation",
+      currentCount: 241,
+      resetAtSecs: 22,
+    });
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe("rate_limited");
+    expect(body.scope).toBe("per_installation");
+    expect(body.message).toMatch(/per-installation/);
   });
 
   it("does NOT call GitHub mint / read / audit when rate-limited (fires BEFORE expensive ops)", async () => {
     mockedRateLimit.mockResolvedValueOnce({
       allowed: false,
+      scope: "per_bearer",
       currentCount: 61,
       resetAtSecs: 42,
     });
