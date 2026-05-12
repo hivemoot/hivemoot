@@ -98,7 +98,15 @@ export type AuditMutationAction =
   | "rotate"
   | "bootstrap"
   | "queen.verdict_floor_override"
-  | "queen.action_downgrade";
+  | "queen.action_downgrade"
+  /**
+   * Baseline `resolve-action` audit row. Written on EVERY successful
+   * resolve-action call (regardless of outcome). The stream entry
+   * ID is returned to the caller as `audit_id` so the upcoming
+   * `seal-decision` endpoint can verify the public comment header
+   * against the canonical resolve-action decision row.
+   */
+  | "queen.resolve_action";
 
 /** Event classes that emit to the `:auth` (auth events) stream. */
 export type AuditAuthAction = "auth.success" | "auth.failure";
@@ -237,6 +245,56 @@ export function isMutationAction(action: string): action is AuditMutationAction 
     action === "rotate" ||
     action === "bootstrap" ||
     action === "queen.verdict_floor_override" ||
-    action === "queen.action_downgrade"
+    action === "queen.action_downgrade" ||
+    action === "queen.resolve_action"
+  );
+}
+
+/**
+ * Sync variant of `auditAppend` — returns the stream entry ID and
+ * propagates Redis errors instead of swallowing them.
+ *
+ * Use this when the caller NEEDS the entry ID for the next API
+ * surface (slice 2c-b's resolve-action returns `audit_id` so the
+ * upcoming `seal-decision` endpoint can verify the public comment
+ * header against the canonical resolve-action decision row). The
+ * existing fire-and-forget `auditAppend` is wrong for these paths:
+ * a Redis hiccup on the audit XADD MUST fail the resolve-action
+ * call, not silently drop the audit row the next slice's contract
+ * depends on.
+ *
+ * Returns the XADD stream entry ID (e.g. "1715000000000-0").
+ */
+export async function auditAppendSync(args: {
+  redis: Redis;
+  installationId: string;
+  entry: AuditEntry;
+}): Promise<string> {
+  const isMutation = isMutationAction(args.entry.action);
+  const streamKey = isMutation
+    ? auditStreamKey(args.installationId)
+    : authStreamKey(args.installationId);
+  const maxlen = isMutation ? AUDIT_STREAM_MAXLEN : AUTH_STREAM_MAXLEN;
+  // Note: `args.redis.eval(...)` here invokes a Redis-side Lua
+  // script (the XADD wrapper), NOT JS-level eval.
+  const result = await runAuditXadd(args.redis, streamKey, maxlen, args.entry);
+  if (typeof result !== "string" || result.length === 0) {
+    throw new Error(
+      `XADD returned unexpected result for ${args.entry.action}: ${JSON.stringify(result)}`,
+    );
+  }
+  return result;
+}
+
+async function runAuditXadd(
+  redis: Redis,
+  streamKey: string,
+  maxlen: number,
+  entry: AuditEntry,
+): Promise<unknown> {
+  return redis.eval(
+    XADD_AUDIT_SCRIPT,
+    [streamKey],
+    [String(maxlen), JSON.stringify(entry)],
   );
 }

@@ -257,6 +257,10 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
     expect(isMutationAction("queen.action_downgrade")).toBe(true);
   });
 
+  it("accepts queen.resolve_action → routes to :audit (mutations) stream (slice 2c-b)", () => {
+    expect(isMutationAction("queen.resolve_action")).toBe(true);
+  });
+
   it("still accepts existing mutation actions (no regression)", () => {
     for (const a of ["issue", "revoke", "set_capabilities", "rotate", "bootstrap"]) {
       expect(isMutationAction(a), a).toBe(true);
@@ -272,5 +276,219 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
     expect(isMutationAction("queen.unknown_event")).toBe(false);
     expect(isMutationAction("rogue")).toBe(false);
     expect(isMutationAction("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitQueenResolveAction — baseline audit row with returned audit_id
+// ---------------------------------------------------------------------------
+//
+// Note: the module-level mock at the top of this file overrides
+// ONLY `auditAppend` (the fire-and-forget variant). `auditAppendSync`
+// is passed through from the real module, so these tests can
+// directly exercise it via a fake redis.eval.
+
+import {
+  emitQueenResolveAction,
+  checkResolveActionRateLimit,
+} from "./queen-audit";
+
+describe("emitQueenResolveAction — pass-1 audit_id contract", () => {
+  it("returns the stream entry id from the underlying XADD (audit_id for seal-decision)", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => "1715000000000-3"),
+    } as never;
+
+    const id = await emitQueenResolveAction({
+      installationId: "12345",
+      redis: fakeRedis,
+      name: "queen",
+      fingerprint: "fp1",
+      detail: {
+        room_id: "rm-1",
+        subject_ref: "hivemoot/colony#1",
+        recommended_action: "squash-merge",
+        permitted_action: "squash-merge",
+        clamped_verdict: "APPROVE",
+        reviewed_head_sha: "deadbeef",
+        current_head_sha: "deadbeef",
+        downgrade_reason: null,
+        floor_overridden: false,
+      },
+    });
+    expect(id).toBe("1715000000000-3");
+  });
+
+  it("throws (not swallows) when the underlying audit XADD fails — seal-decision needs a real audit row, not a silently-dropped one", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => {
+        throw new Error("redis down");
+      }),
+    } as never;
+
+    await expect(
+      emitQueenResolveAction({
+        installationId: "12345",
+        redis: fakeRedis,
+        name: "queen",
+        fingerprint: "fp1",
+        detail: {
+          room_id: "rm-1",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "comment",
+          permitted_action: "comment",
+          clamped_verdict: "COMMENT",
+          reviewed_head_sha: "deadbeef",
+          current_head_sha: "deadbeef",
+          downgrade_reason: null,
+          floor_overridden: false,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("throws when XADD returns an empty result (defensive — never let the caller see audit_id='')", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => ""),
+    } as never;
+    await expect(
+      emitQueenResolveAction({
+        installationId: "12345",
+        redis: fakeRedis,
+        name: "queen",
+        fingerprint: "fp1",
+        detail: {
+          room_id: "rm-1",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "comment",
+          permitted_action: "comment",
+          clamped_verdict: "COMMENT",
+          reviewed_head_sha: "deadbeef",
+          current_head_sha: "deadbeef",
+          downgrade_reason: null,
+          floor_overridden: false,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkResolveActionRateLimit (RFC G11) — per-bearer cap
+// ---------------------------------------------------------------------------
+
+describe("checkResolveActionRateLimit — G11 per-bearer + per-installation rate caps", () => {
+  /**
+   * Build a fakeRedis that maps INCR keys to canned counts. The keys
+   * contain the installationId / fingerprint substrings so the test
+   * can simulate per-bearer vs per-installation hits independently.
+   */
+  function makeFakeRedis(counts: {
+    perBearer?: number;
+    perInstallation?: number;
+    ttl?: number;
+  }) {
+    const expireCalls: Array<{ key: string; ttl: number }> = [];
+    return {
+      expireCalls,
+      redis: {
+        incr: vi.fn(async (key: string) => {
+          if (key.includes(":_install")) return counts.perInstallation ?? 1;
+          return counts.perBearer ?? 1;
+        }),
+        expire: vi.fn(async (key: string, ttl: number) => {
+          expireCalls.push({ key, ttl });
+          return 1;
+        }),
+        ttl: vi.fn(async () => counts.ttl ?? 60),
+      } as never,
+    };
+  }
+
+  it("allows the first call: both INCR return 1, EXPIRE wired on both keys", async () => {
+    const { redis, expireCalls } = makeFakeRedis({ perBearer: 1, perInstallation: 1 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(true);
+    // Both keys should have had EXPIRE set on the first call.
+    expect(expireCalls.length).toBe(2);
+    const expiredKeys = expireCalls.map((c) => c.key).sort();
+    expect(expiredKeys[0]).toMatch(/_install/);
+    expect(expiredKeys[1]).toMatch(/fp1/);
+  });
+
+  it("allows subsequent calls under both caps without re-setting TTL", async () => {
+    const { redis, expireCalls } = makeFakeRedis({ perBearer: 5, perInstallation: 20 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(true);
+    expect(expireCalls.length).toBe(0);
+  });
+
+  it("blocks with scope='per_bearer' when per-bearer counter exceeds 60", async () => {
+    const { redis } = makeFakeRedis({ perBearer: 61, perInstallation: 100, ttl: 17 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.scope).toBe("per_bearer");
+      expect(result.currentCount).toBe(61);
+      expect(result.resetAtSecs).toBe(17);
+    }
+  });
+
+  it("blocks with scope='per_installation' when bearer is under cap but installation aggregate exceeds 240 (builder pass-2 fix)", async () => {
+    // The key case the builder pass-2 fix targets: a SECOND bearer in
+    // the same installation, under its OWN cap (5/60), but the
+    // installation aggregate is over (241/240) because other bearers
+    // have been busy.
+    const { redis } = makeFakeRedis({ perBearer: 5, perInstallation: 241, ttl: 22 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp2-second-bearer-still-under-its-own-cap",
+    });
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.scope).toBe("per_installation");
+      expect(result.currentCount).toBe(241);
+      expect(result.resetAtSecs).toBe(22);
+    }
+  });
+
+  it("reports per_bearer FIRST when both caps are over (actionable signal for the calling bearer)", async () => {
+    // Both 61 (>60 per-bearer) AND 241 (>240 per-installation).
+    // Returns per_bearer because the calling bearer can self-correct
+    // (slow down) without coordinating with other bearers.
+    const { redis } = makeFakeRedis({ perBearer: 61, perInstallation: 241 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    if (!result.allowed) {
+      expect(result.scope).toBe("per_bearer");
+    }
+  });
+
+  it("uses 60-second fallback when TTL returns a sentinel (-1 / -2)", async () => {
+    const { redis } = makeFakeRedis({ perBearer: 61, ttl: -1 });
+    const result = await checkResolveActionRateLimit({
+      redis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    if (!result.allowed) {
+      expect(result.resetAtSecs).toBe(60);
+    }
   });
 });
