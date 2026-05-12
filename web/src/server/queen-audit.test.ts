@@ -257,6 +257,10 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
     expect(isMutationAction("queen.action_downgrade")).toBe(true);
   });
 
+  it("accepts queen.resolve_action → routes to :audit (mutations) stream (slice 2c-b)", () => {
+    expect(isMutationAction("queen.resolve_action")).toBe(true);
+  });
+
   it("still accepts existing mutation actions (no regression)", () => {
     for (const a of ["issue", "revoke", "set_capabilities", "rotate", "bootstrap"]) {
       expect(isMutationAction(a), a).toBe(true);
@@ -272,5 +276,189 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
     expect(isMutationAction("queen.unknown_event")).toBe(false);
     expect(isMutationAction("rogue")).toBe(false);
     expect(isMutationAction("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emitQueenResolveAction — baseline audit row with returned audit_id
+// ---------------------------------------------------------------------------
+//
+// Note: the module-level mock at the top of this file overrides
+// ONLY `auditAppend` (the fire-and-forget variant). `auditAppendSync`
+// is passed through from the real module, so these tests can
+// directly exercise it via a fake redis.eval.
+
+import {
+  emitQueenResolveAction,
+  checkResolveActionRateLimit,
+} from "./queen-audit";
+
+describe("emitQueenResolveAction — pass-1 audit_id contract", () => {
+  it("returns the stream entry id from the underlying XADD (audit_id for seal-decision)", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => "1715000000000-3"),
+    } as never;
+
+    const id = await emitQueenResolveAction({
+      installationId: "12345",
+      redis: fakeRedis,
+      name: "queen",
+      fingerprint: "fp1",
+      detail: {
+        room_id: "rm-1",
+        subject_ref: "hivemoot/colony#1",
+        recommended_action: "squash-merge",
+        permitted_action: "squash-merge",
+        clamped_verdict: "APPROVE",
+        reviewed_head_sha: "deadbeef",
+        current_head_sha: "deadbeef",
+        downgrade_reason: null,
+        floor_overridden: false,
+      },
+    });
+    expect(id).toBe("1715000000000-3");
+  });
+
+  it("throws (not swallows) when the underlying audit XADD fails — seal-decision needs a real audit row, not a silently-dropped one", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => {
+        throw new Error("redis down");
+      }),
+    } as never;
+
+    await expect(
+      emitQueenResolveAction({
+        installationId: "12345",
+        redis: fakeRedis,
+        name: "queen",
+        fingerprint: "fp1",
+        detail: {
+          room_id: "rm-1",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "comment",
+          permitted_action: "comment",
+          clamped_verdict: "COMMENT",
+          reviewed_head_sha: "deadbeef",
+          current_head_sha: "deadbeef",
+          downgrade_reason: null,
+          floor_overridden: false,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("throws when XADD returns an empty result (defensive — never let the caller see audit_id='')", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => ""),
+    } as never;
+    await expect(
+      emitQueenResolveAction({
+        installationId: "12345",
+        redis: fakeRedis,
+        name: "queen",
+        fingerprint: "fp1",
+        detail: {
+          room_id: "rm-1",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "comment",
+          permitted_action: "comment",
+          clamped_verdict: "COMMENT",
+          reviewed_head_sha: "deadbeef",
+          current_head_sha: "deadbeef",
+          downgrade_reason: null,
+          floor_overridden: false,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkResolveActionRateLimit (RFC G11) — per-bearer cap
+// ---------------------------------------------------------------------------
+
+describe("checkResolveActionRateLimit — G11 per-bearer rate cap", () => {
+  it("allows the first call (INCR returns 1, EXPIRE wired)", async () => {
+    const incrCalls: string[] = [];
+    const expireCalls: Array<{ key: string; ttl: number }> = [];
+    const fakeRedis = {
+      incr: vi.fn(async (key: string) => {
+        incrCalls.push(key);
+        return 1;
+      }),
+      expire: vi.fn(async (key: string, ttl: number) => {
+        expireCalls.push({ key, ttl });
+        return 1;
+      }),
+      ttl: vi.fn(async () => 60),
+    } as never;
+
+    const result = await checkResolveActionRateLimit({
+      redis: fakeRedis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(true);
+    expect(incrCalls[0]).toMatch(/hive:v1:queen:rl:resolve-action:12345:fp1/);
+    // EXPIRE only fires on the first request (INCR === 1).
+    expect(expireCalls.length).toBe(1);
+    expect(expireCalls[0].ttl).toBe(60);
+  });
+
+  it("allows subsequent calls under the cap without re-setting TTL", async () => {
+    const expireCalls: Array<unknown> = [];
+    const fakeRedis = {
+      incr: vi.fn(async () => 5),
+      expire: vi.fn(async (key: unknown, ttl: unknown) => {
+        expireCalls.push({ key, ttl });
+        return 1;
+      }),
+      ttl: vi.fn(async () => 45),
+    } as never;
+
+    const result = await checkResolveActionRateLimit({
+      redis: fakeRedis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(true);
+    // EXPIRE NOT called on subsequent calls (only INCR === 1).
+    expect(expireCalls.length).toBe(0);
+  });
+
+  it("blocks when INCR exceeds the max (61 > 60), returns resetAtSecs from TTL", async () => {
+    const fakeRedis = {
+      incr: vi.fn(async () => 61),
+      expire: vi.fn(async () => 1),
+      ttl: vi.fn(async () => 17),
+    } as never;
+
+    const result = await checkResolveActionRateLimit({
+      redis: fakeRedis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.currentCount).toBe(61);
+      expect(result.resetAtSecs).toBe(17);
+    }
+  });
+
+  it("uses 60-second fallback when TTL returns a sentinel (-1 / -2)", async () => {
+    const fakeRedis = {
+      incr: vi.fn(async () => 61),
+      expire: vi.fn(async () => 1),
+      ttl: vi.fn(async () => -1),
+    } as never;
+
+    const result = await checkResolveActionRateLimit({
+      redis: fakeRedis,
+      installationId: "12345",
+      fingerprint: "fp1",
+    });
+    if (!result.allowed) {
+      expect(result.resetAtSecs).toBe(60);
+    }
   });
 });

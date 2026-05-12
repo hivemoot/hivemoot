@@ -101,6 +101,8 @@ import {
 import {
   emitQueenVerdictFloorOverride,
   emitQueenActionDowngrade,
+  emitQueenResolveAction,
+  checkResolveActionRateLimit,
 } from "@/server/queen-audit";
 
 // ---------------------------------------------------------------------------
@@ -263,6 +265,47 @@ export async function POST(
     requires: "rooms.synthesize",
   });
   if (!auth.ok) return auth.response;
+
+  // ----- rate limit (RFC G11) -----
+  // Pass-1 builder fix: cap per-bearer-per-installation BEFORE the
+  // expensive GitHub mint/read + audit writes. Healthy queens call
+  // once per claim; this catches buggy loops and compromised bearers.
+  let rateLimit;
+  try {
+    rateLimit = await checkResolveActionRateLimit({
+      redis: auth.redis,
+      installationId: auth.installationId,
+      fingerprint: auth.envelope.fingerprint,
+    });
+  } catch (err) {
+    console.error("[rooms.resolve-action] rate limit check failed", {
+      installationId: auth.installationId,
+      error: err,
+    });
+    return NextResponse.json(
+      {
+        code: "storage_failure",
+        message: "Failed to check rate limit.",
+      },
+      { status: 500 },
+    );
+  }
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        code: "rate_limited",
+        message:
+          `resolve-action rate limit exceeded: ${rateLimit.currentCount} calls ` +
+          `in the current window (max 60/min per bearer). Retry after ` +
+          `${rateLimit.resetAtSecs}s.`,
+        resetAtSecs: rateLimit.resetAtSecs,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.resetAtSecs) },
+      },
+    );
+  }
 
   const { roomId } = await params;
 
@@ -558,19 +601,53 @@ export async function POST(
   }
 
   // ----- evaluate D1 invariants -----
-  const decision = evaluateResolveActionPolicy({
+  // Pass-1 builder fix: pass roomCore.last_post_close_drift_at
+  // through so the post_close_drift branch is reachable. The drift
+  // marker is set by the post-merge flow (slice 2e) when post-close
+  // events arrive; until then it stays unset, but the wire-up here
+  // is needed so a future drift marker blocks re-merge.
+  const policyDecision = evaluateResolveActionPolicy({
     clampedVerdict,
     prState,
     reviewedHeadSha: body.reviewedHeadSha,
-    // `last_post_close_drift_at` is not yet wired onto RoomCore in
-    // war-room (the drift-marker flow lands with confirm-merge in
-    // slice 2e). Until then we treat it as absent — the gate's
-    // post_close_drift branch is inert until that field exists.
-    lastPostCloseDriftAt: null,
+    lastPostCloseDriftAt: roomCore.last_post_close_drift_at ?? null,
   });
 
-  // ----- emit G2 if the queen's recommendation differs from the permit -----
-  if (decision.permittedAction !== body.recommendedAction) {
+  // ----- compute final permitted action (ceiling, not escalator) -----
+  // Pass-1 builder fix: the server policy is a CEILING on the queen's
+  // recommendation, never an escalator. If the queen recommended
+  // `comment` and the policy says `squash-merge` would also be
+  // permitted, we honor the queen's choice and return `comment`.
+  // A downgrade event (G2) is only emitted when squash-merge → comment
+  // — the genuine override case.
+  let finalPermittedAction: "comment" | "squash-merge";
+  let finalDowngradeReason = policyDecision.downgradeReason;
+  if (
+    body.recommendedAction === "squash-merge" &&
+    policyDecision.permittedAction === "comment"
+  ) {
+    // Genuine downgrade — server forced comment over queen's merge intent.
+    finalPermittedAction = "comment";
+    // The policy decision always sets a non-null downgradeReason when
+    // permittedAction='comment'; this is the actual reason.
+  } else {
+    // Queen recommended comment OR policy permits the queen's choice.
+    // Honor the queen.
+    finalPermittedAction = body.recommendedAction;
+    // No downgrade — null out the reason if the policy had set one
+    // (e.g. queen=comment + verdict=COMMENT puts policy at comment
+    // with downgradeReason=verdict_not_approve, but the queen
+    // CHOSE comment so it's not a downgrade).
+    if (finalPermittedAction === body.recommendedAction) {
+      finalDowngradeReason = null;
+    }
+  }
+  const isGenuineDowngrade =
+    body.recommendedAction === "squash-merge" &&
+    finalPermittedAction === "comment";
+
+  // ----- emit G2 only on genuine downgrade (squash-merge -> comment) -----
+  if (isGenuineDowngrade) {
     await emitQueenActionDowngrade({
       installationId: auth.installationId,
       redis: auth.redis,
@@ -581,25 +658,65 @@ export async function POST(
         subject_ref: roomCore.subject_ref,
         recommended_action: body.recommendedAction,
         permitted_action: "comment",
-        // downgradeReason is non-null when permittedAction='comment'.
-        // The TS type allows null but the invariant in
-        // evaluateResolveActionPolicy makes it always set on this
-        // branch (squash-merge requires no downgrade).
-        downgrade_reason: decision.downgradeReason ?? "verdict_not_approve",
+        downgrade_reason:
+          policyDecision.downgradeReason ?? "verdict_not_approve",
         clamped_verdict: clampedVerdict,
         reviewed_head_sha: body.reviewedHeadSha,
       },
     });
   }
 
+  // ----- emit baseline queen.resolve_action audit row + capture audit_id -----
+  // RFC endpoint contract: every successful resolve-action call
+  // gets an audit_id that seal-decision (slice 2d) verifies against
+  // the public comment header. NOT fire-and-forget — a Redis hiccup
+  // here MUST fail the call, not silently drop the audit row the
+  // next slice's contract depends on.
+  let auditId: string;
+  try {
+    auditId = await emitQueenResolveAction({
+      installationId: auth.installationId,
+      redis: auth.redis,
+      name: auth.name,
+      fingerprint: auth.envelope.fingerprint,
+      detail: {
+        room_id: roomId,
+        subject_ref: roomCore.subject_ref,
+        recommended_action: body.recommendedAction,
+        permitted_action: finalPermittedAction,
+        clamped_verdict: clampedVerdict,
+        reviewed_head_sha: body.reviewedHeadSha,
+        current_head_sha: prState.headSha,
+        downgrade_reason: finalDowngradeReason,
+        floor_overridden: floorOverridden,
+      },
+    });
+  } catch (err) {
+    console.error("[rooms.resolve-action] baseline audit emit failed", {
+      installationId: auth.installationId,
+      roomId,
+      error: err,
+    });
+    return NextResponse.json(
+      {
+        code: "storage_failure",
+        message:
+          "Failed to record resolve-action audit row. The seal-decision " +
+          "endpoint requires audit_id correlation — retrying may succeed.",
+      },
+      { status: 500 },
+    );
+  }
+
   return NextResponse.json(
     {
-      permittedAction: decision.permittedAction,
+      permittedAction: finalPermittedAction,
       clampedVerdict,
-      downgradeReason: decision.downgradeReason,
+      downgradeReason: finalDowngradeReason,
       reviewedHeadSha: body.reviewedHeadSha,
       currentHeadSha: prState.headSha,
       floorOverridden,
+      auditId,
     },
     { status: 200 },
   );

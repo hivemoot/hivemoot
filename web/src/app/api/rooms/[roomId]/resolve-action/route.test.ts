@@ -47,6 +47,8 @@ vi.mock("@/server/github-pr-state", async () => {
 vi.mock("@/server/queen-audit", () => ({
   emitQueenVerdictFloorOverride: vi.fn(async () => undefined),
   emitQueenActionDowngrade: vi.fn(async () => undefined),
+  emitQueenResolveAction: vi.fn(async () => "1715000000000-0"),
+  checkResolveActionRateLimit: vi.fn(async () => ({ allowed: true })),
 }));
 
 import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
@@ -68,6 +70,8 @@ import {
 import {
   emitQueenVerdictFloorOverride,
   emitQueenActionDowngrade,
+  emitQueenResolveAction,
+  checkResolveActionRateLimit,
 } from "@/server/queen-audit";
 import { POST } from "./route";
 
@@ -79,6 +83,8 @@ const mockedMintToken = vi.mocked(mintInstallationToken);
 const mockedGetPrState = vi.mocked(getPullRequestState);
 const mockedEmitG1 = vi.mocked(emitQueenVerdictFloorOverride);
 const mockedEmitG2 = vi.mocked(emitQueenActionDowngrade);
+const mockedEmitResolveAction = vi.mocked(emitQueenResolveAction);
+const mockedRateLimit = vi.mocked(checkResolveActionRateLimit);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -86,12 +92,22 @@ const mockedEmitG2 = vi.mocked(emitQueenActionDowngrade);
 
 const HEAD_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-function makeRedis(claimRaw: string | null = JSON.stringify({
-  runner: "queen-hive-1",
-  throughSequence: 42,
-})) {
+function makeRedis(
+  claimRaw: string | null = JSON.stringify({
+    runner: "queen-hive-1",
+    throughSequence: 42,
+  }),
+  overrides: { rateLimitCount?: number } = {},
+) {
   return {
+    // Claim verification path
     get: vi.fn(async () => claimRaw),
+    // Rate-limit path (INCR + EXPIRE-on-first + TTL on cap)
+    incr: vi.fn(async () => overrides.rateLimitCount ?? 1),
+    expire: vi.fn(async () => 1),
+    ttl: vi.fn(async () => 60),
+    // Baseline audit emit (queen.resolve_action via auditAppendSync)
+    eval: vi.fn(async () => `${Date.now()}-0`),
   } as never;
 }
 
@@ -194,7 +210,11 @@ beforeEach(() => {
   mockedGetPrState.mockReset();
   mockedEmitG1.mockReset();
   mockedEmitG2.mockReset();
+  mockedEmitResolveAction.mockReset();
+  mockedRateLimit.mockReset();
   // Defaults — individual tests override.
+  mockedRateLimit.mockResolvedValue({ allowed: true });
+  mockedEmitResolveAction.mockResolvedValue("1715000000000-0");
   mockedEnv.mockReturnValue(makeEnvOk());
   mockedGetRoomContributions.mockResolvedValue({});
   mockedMintToken.mockResolvedValue({
@@ -679,6 +699,185 @@ describe("POST /api/rooms/:roomId/resolve-action — GitHub + config errors", ()
     const res = await POST(makeRequest(makeBody()), makeContext());
     expect(res.status).toBe(500);
     expect((await res.json()).code).toBe("configuration_error");
+    errSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Builder pass-1 fixes: post-close drift + ceiling + audit_id + rate limit
+// ---------------------------------------------------------------------------
+
+describe("POST /api/rooms/:roomId/resolve-action — pass-1: post_close_drift wiring", () => {
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+  });
+
+  it("returns downgradeReason='post_close_drift' when room.last_post_close_drift_at is set", async () => {
+    mockedGetRoomCore.mockResolvedValue(
+      makeRoom({ last_post_close_drift_at: "2026-05-10T00:00:00Z" }),
+    );
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.permittedAction).toBe("comment");
+    expect(body.downgradeReason).toBe("post_close_drift");
+  });
+
+  it("treats missing last_post_close_drift_at as no-drift (current default room shape)", async () => {
+    mockedGetRoomCore.mockResolvedValue(makeRoom()); // no drift field
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    const body = await res.json();
+    expect(body.permittedAction).toBe("squash-merge");
+    expect(body.downgradeReason).toBeNull();
+  });
+});
+
+describe("POST /api/rooms/:roomId/resolve-action — pass-1: ceiling semantics (not escalator)", () => {
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedGetRoomCore.mockResolvedValue(makeRoom());
+  });
+
+  it("queen recommends comment + policy permits squash-merge → final is comment, NO G2 (server doesn't escalate)", async () => {
+    // Queen chose comment voluntarily even though D1 invariants would
+    // permit squash-merge. Final action = comment. No downgrade event.
+    const res = await POST(
+      makeRequest({ ...makeBody(), recommendedAction: "comment" }),
+      makeContext(),
+    );
+    const body = await res.json();
+    expect(body.permittedAction).toBe("comment");
+    expect(body.downgradeReason).toBeNull(); // queen's choice, not a downgrade
+    expect(mockedEmitG2).not.toHaveBeenCalled();
+  });
+
+  it("queen recommends comment + policy would downgrade to comment (CI failed) → final is comment, NO G2 (no actual override)", async () => {
+    // Both the queen AND the server agreed on comment. No downgrade.
+    mockedGetPrState.mockResolvedValue(makePrState({ ciState: "failure" }));
+    const res = await POST(
+      makeRequest({ ...makeBody(), recommendedAction: "comment" }),
+      makeContext(),
+    );
+    const body = await res.json();
+    expect(body.permittedAction).toBe("comment");
+    expect(body.downgradeReason).toBeNull();
+    expect(mockedEmitG2).not.toHaveBeenCalled();
+  });
+
+  it("queen recommends squash-merge + policy permits squash-merge → final is squash-merge, NO G2", async () => {
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    const body = await res.json();
+    expect(body.permittedAction).toBe("squash-merge");
+    expect(mockedEmitG2).not.toHaveBeenCalled();
+  });
+
+  it("queen recommends squash-merge + policy forces comment → final is comment, G2 emitted (genuine downgrade)", async () => {
+    mockedGetPrState.mockResolvedValue(makePrState({ ciState: "failure" }));
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    const body = await res.json();
+    expect(body.permittedAction).toBe("comment");
+    expect(body.downgradeReason).toBe("ci_failure");
+    expect(mockedEmitG2).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/rooms/:roomId/resolve-action — pass-1: audit_id return", () => {
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedGetRoomCore.mockResolvedValue(makeRoom());
+  });
+
+  it("returns auditId on the happy path", async () => {
+    mockedEmitResolveAction.mockResolvedValueOnce("1715-0");
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auditId).toBe("1715-0");
+  });
+
+  it("returns auditId even on downgrade paths (every successful call gets one)", async () => {
+    mockedGetPrState.mockResolvedValue(makePrState({ ciState: "failure" }));
+    mockedEmitResolveAction.mockResolvedValueOnce("9999-0");
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auditId).toBe("9999-0");
+    expect(body.permittedAction).toBe("comment");
+  });
+
+  it("emitQueenResolveAction is called with the final decision shape (post-ceiling)", async () => {
+    mockedGetPrState.mockResolvedValue(makePrState({ ciState: "failure" }));
+    await POST(makeRequest(makeBody()), makeContext());
+    expect(mockedEmitResolveAction).toHaveBeenCalledTimes(1);
+    const detail = mockedEmitResolveAction.mock.calls[0][0].detail;
+    // The detail reflects the FINAL decision (the ceiling).
+    expect(detail.permitted_action).toBe("comment");
+    expect(detail.recommended_action).toBe("squash-merge");
+    expect(detail.downgrade_reason).toBe("ci_failure");
+    expect(detail.current_head_sha).toBe(HEAD_SHA);
+    expect(detail.floor_overridden).toBe(false);
+  });
+
+  it("returns 500 storage_failure when the audit emit fails (next slice's contract requires the row)", async () => {
+    mockedEmitResolveAction.mockRejectedValueOnce(new Error("redis down"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("storage_failure");
+    errSpy.mockRestore();
+  });
+});
+
+describe("POST /api/rooms/:roomId/resolve-action — pass-1: rate limit (G11)", () => {
+  beforeEach(() => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    mockedGetRoomCore.mockResolvedValue(makeRoom());
+  });
+
+  it("returns 429 with Retry-After when rate limit is exceeded", async () => {
+    mockedRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      currentCount: 61,
+      resetAtSecs: 42,
+    });
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("42");
+    const body = await res.json();
+    expect(body.code).toBe("rate_limited");
+    expect(body.resetAtSecs).toBe(42);
+  });
+
+  it("does NOT call GitHub mint / read / audit when rate-limited (fires BEFORE expensive ops)", async () => {
+    mockedRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      currentCount: 61,
+      resetAtSecs: 42,
+    });
+    await POST(makeRequest(makeBody()), makeContext());
+    expect(mockedMintToken).not.toHaveBeenCalled();
+    expect(mockedGetPrState).not.toHaveBeenCalled();
+    expect(mockedEmitResolveAction).not.toHaveBeenCalled();
+    expect(mockedEmitG1).not.toHaveBeenCalled();
+    expect(mockedEmitG2).not.toHaveBeenCalled();
+  });
+
+  it("checks rate limit using the bearer's fingerprint (per-bearer scoping)", async () => {
+    await POST(makeRequest(makeBody()), makeContext());
+    expect(mockedRateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: "12345",
+        fingerprint: "fp123",
+      }),
+    );
+  });
+
+  it("returns 500 storage_failure when the rate-limit check itself throws", async () => {
+    mockedRateLimit.mockRejectedValueOnce(new Error("redis hiccup"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("storage_failure");
     errSpy.mockRestore();
   });
 });
