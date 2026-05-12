@@ -779,6 +779,59 @@ describe("POST /api/rooms/:roomId/resolve-action — pass-1: ceiling semantics (
     expect(body.downgradeReason).toBe("ci_failure");
     expect(mockedEmitG2).toHaveBeenCalledTimes(1);
   });
+
+  // Guard pass-1 audit-integrity pin: when G2 fires, the emit's
+  // detail fields MUST match the response fields. The pre-pass-1
+  // code had a hardcoded `permitted_action: "comment"` + a
+  // `?? "verdict_not_approve"` fallback that could ship falsified
+  // audit rows if the response/emit ever diverged again. Pin the
+  // alignment on every downgrade case.
+  it("AUDIT INTEGRITY: G2 emit's detail.permitted_action + downgrade_reason match the response (across all downgrade reasons)", async () => {
+    const cases: Array<{
+      prStateOverride: Record<string, unknown>;
+      expectedReason: string;
+    }> = [
+      { prStateOverride: { labels: [] }, expectedReason: "label_missing" },
+      { prStateOverride: { ciState: "failure" }, expectedReason: "ci_failure" },
+      { prStateOverride: { ciState: "pending" }, expectedReason: "ci_pending" },
+      { prStateOverride: { ciState: "truncated" }, expectedReason: "ci_truncated" },
+      {
+        prStateOverride: { headSha: "0000000000000000000000000000000000000000" },
+        expectedReason: "head_sha_drift",
+      },
+    ];
+    for (const c of cases) {
+      mockedEmitG2.mockClear();
+      mockedGetPrState.mockResolvedValue(makePrState(c.prStateOverride));
+      const res = await POST(makeRequest(makeBody()), makeContext());
+      const responseBody = await res.json();
+      expect(mockedEmitG2, c.expectedReason).toHaveBeenCalledTimes(1);
+      const detail = mockedEmitG2.mock.calls[0][0].detail;
+      // The audit row must say EXACTLY what the response says — no
+      // hardcoded values, no fallback defaults that drift from
+      // the actual decision.
+      expect(detail.permitted_action, c.expectedReason).toBe(responseBody.permittedAction);
+      expect(detail.downgrade_reason, c.expectedReason).toBe(responseBody.downgradeReason);
+      expect(detail.recommended_action, c.expectedReason).toBe("squash-merge");
+    }
+  });
+
+  it("AUDIT INTEGRITY: queen.resolve_action emit's detail matches the response (every successful call)", async () => {
+    // Same alignment pin for the baseline audit row.
+    mockedGetPrState.mockResolvedValue(makePrState({ ciState: "failure" }));
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    const responseBody = await res.json();
+
+    expect(mockedEmitResolveAction).toHaveBeenCalledTimes(1);
+    const detail = mockedEmitResolveAction.mock.calls[0][0].detail;
+    expect(detail.permitted_action).toBe(responseBody.permittedAction);
+    expect(detail.downgrade_reason).toBe(responseBody.downgradeReason);
+    expect(detail.recommended_action).toBe("squash-merge");
+    expect(detail.clamped_verdict).toBe(responseBody.clampedVerdict);
+    expect(detail.reviewed_head_sha).toBe(responseBody.reviewedHeadSha);
+    expect(detail.current_head_sha).toBe(responseBody.currentHeadSha);
+    expect(detail.floor_overridden).toBe(responseBody.floorOverridden);
+  });
 });
 
 describe("POST /api/rooms/:roomId/resolve-action — pass-1: audit_id return", () => {
