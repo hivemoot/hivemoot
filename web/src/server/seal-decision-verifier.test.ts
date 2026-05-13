@@ -204,6 +204,9 @@ function happyComment(
   verb: SealVerb = "merge",
 ): CommentPayload {
   return {
+    id: 999, // matches COMMENT_URL_PARSED.commentId
+    html_url:
+      "https://github.com/hivemoot/colony/pull/42#issuecomment-999", // matches the supplied URL
     body: `Intent to merge.\n${buildSealHeader(verb, auditId)}`,
     created_at: "2026-05-12T10:01:00.000Z", // 1 minute after audit
     performed_via_github_app: { id: APP_ID },
@@ -276,7 +279,116 @@ describe("verifyCommentMatches — check 1: URL → PR alignment (RFC negative t
   });
 });
 
-describe("verifyCommentMatches — check 2: comment author = bot (RFC negative test)", () => {
+describe("verifyCommentMatches — check 2: fetched-comment identity binding (builder pass-1 fix)", () => {
+  it("REJECTS the launder-different-PR-comment attack: supplied URL says /pull/42 but fetched comment was actually posted on PR 99", async () => {
+    // The attack: queen previously posted a real seal-header
+    // comment on PR 99 (which they sealed legitimately at the
+    // time). They now try to seal a NEW room for PR 42 by
+    // supplying a URL `/pull/42#issuecomment-{thatId}`. GitHub
+    // returns the actual comment, which has html_url pointing
+    // to PR 99 — the divergence flips this check.
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED, // queen claims /pull/42
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: AUDIT_TS,
+      comment: happyComment({
+        // GitHub returns the actual location of the comment:
+        // posted on PR 99, NOT PR 42. The seal-header is
+        // present + matches the audit_id (a real prior
+        // seal-decision); the queen is just laundering it.
+        html_url: "https://github.com/hivemoot/colony/pull/99#issuecomment-999",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure.check).toBe("comment_payload_identity_mismatch");
+      if (result.failure.check === "comment_payload_identity_mismatch") {
+        expect(result.failure.supplied.prNumber).toBe(42);
+        expect(result.failure.fetched.htmlUrl).toContain("/pull/99");
+      }
+    }
+  });
+
+  it("rejects when GitHub returns a comment with a different id than requested (proxy/cache/WAF mutation defense)", async () => {
+    // Defensive: GitHub should never return a different id than we
+    // asked for, but a misconfigured CDN / proxy / WAF could.
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED, // claims commentId=999
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: AUDIT_TS,
+      comment: happyComment({
+        id: 12345, // different from 999
+        html_url:
+          "https://github.com/hivemoot/colony/pull/42#issuecomment-12345",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure.check).toBe("comment_payload_identity_mismatch");
+    }
+  });
+
+  it("rejects when comment.html_url is unparseable (malformed GitHub response)", async () => {
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED,
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: AUDIT_TS,
+      comment: happyComment({ html_url: "not-a-valid-url" }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure.check).toBe("comment_payload_identity_mismatch");
+    }
+  });
+
+  it("rejects when html_url is for a different REPO entirely (cross-repo laundering)", async () => {
+    // Two installations could grant the same App access to two
+    // different repos; the queen for one repo can't seal with a
+    // comment from another repo's PR.
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED,
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: AUDIT_TS,
+      comment: happyComment({
+        html_url:
+          "https://github.com/hivemoot/another-repo/pull/42#issuecomment-999",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure.check).toBe("comment_payload_identity_mismatch");
+    }
+  });
+
+  it("accepts when fetched html_url and id match the supplied URL exactly", async () => {
+    // Positive control: the happy comment's html_url + id match
+    // COMMENT_URL_PARSED exactly. C2 should pass.
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED,
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: AUDIT_TS,
+      comment: happyComment(),
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("verifyCommentMatches — check 3: comment author = bot (RFC negative test)", () => {
   it("rejects when comment was posted by a human (performed_via_github_app === null)", () => {
     const result = verifyCommentMatches({
       subjectRefParsed: SUBJECT_REF,
@@ -310,7 +422,7 @@ describe("verifyCommentMatches — check 2: comment author = bot (RFC negative t
   });
 });
 
-describe("verifyCommentMatches — check 3: header binding (RFC negative test)", () => {
+describe("verifyCommentMatches — check 4: header binding (RFC negative test)", () => {
   it("rejects when comment body has no seal header (forgery: re-posted comment with no marker)", () => {
     const result = verifyCommentMatches({
       subjectRefParsed: SUBJECT_REF,
@@ -364,7 +476,7 @@ describe("verifyCommentMatches — check 3: header binding (RFC negative test)",
   });
 });
 
-describe("verifyCommentMatches — check 4: timestamp ordering (RFC negative test)", () => {
+describe("verifyCommentMatches — check 5: timestamp ordering (RFC negative test)", () => {
   it("rejects when comment created_at is BEFORE resolve-action audit timestamp (re-using old comment)", () => {
     const result = verifyCommentMatches({
       subjectRefParsed: SUBJECT_REF,

@@ -8,24 +8,46 @@
  * be able to forge the URL and seal without a public override
  * window having been posted.
  *
- * The four checks:
+ * # Builder pass-1 expansion (RFC G17 + 1)
  *
- *   1. **URL → PR alignment.** The comment URL's owner/repo/PR
- *      number must match the room's `subject_ref`. A leaked bearer
- *      can't seal room A with a comment posted on PR B.
- *   2. **Comment author = bot.** `performed_via_github_app.id` must
- *      match the installation's App ID. A leaked bearer can't seal
- *      with a comment posted by a human collaborator OR an
- *      unrelated bot.
- *   3. **Header binding.** The comment body MUST contain the
- *      header `<!-- hivemoot:queen-action:<verb>:<audit_id> -->`
- *      where `verb` matches the action (`merge` or `comment`) and
- *      `audit_id` matches the resolve-action audit row. A leaked
- *      bearer can't forge by re-posting an old comment.
- *   4. **Timestamp ordering.** The comment's `created_at` must be
- *      AFTER the resolve-action audit row's `ts`. A leaked bearer
- *      can't bind to a future resolve-action call with an
- *      already-posted comment.
+ * The RFC's four checks become FIVE in the implementation because
+ * GitHub's comment IDs are repo-scoped, not PR-scoped. Without a
+ * fetched-comment cross-check (C2 below), C1's URL→PR alignment
+ * only validates the queen's OWN claim about which PR the comment
+ * was posted on, not GitHub's authoritative location. A queen who
+ * posted a real seal-header comment on PR 99 could supply a URL
+ * with `/pull/42#issuecomment-{thatId}` to launder it onto room
+ * 42. C2 fetches the comment's authoritative html_url and re-
+ * parses it to catch the divergence.
+ *
+ * The five checks:
+ *
+ *   C1. **URL → PR alignment** (queen-supplied URL vs subject_ref).
+ *       Cheap — fires BEFORE the GitHub fetch. Catches the obvious
+ *       forgery where the URL path doesn't even claim the right PR.
+ *
+ *   C2. **Fetched-comment identity binding** (builder pass-1).
+ *       After the GitHub fetch, the response's `id` must equal
+ *       the supplied comment_id, and the response's authoritative
+ *       `html_url` must re-parse to the SAME owner/repo/PR/comment
+ *       as the supplied URL. Catches the launder-different-PR-
+ *       comment-by-rewriting-the-URL-path attack vector.
+ *
+ *   C3. **Comment author = bot.** `performed_via_github_app.id`
+ *       must match the installation's App ID. A leaked bearer
+ *       can't seal with a comment posted by a human or unrelated
+ *       bot.
+ *
+ *   C4. **Header binding.** The comment body MUST contain the
+ *       header `<!-- hivemoot:queen-action:<verb>:<audit_id> -->`
+ *       where `verb` matches the action (`merge` or `comment`)
+ *       and `audit_id` matches the resolve-action audit row.
+ *       A leaked bearer can't forge by re-posting an old comment.
+ *
+ *   C5. **Timestamp ordering.** The comment's `created_at` must
+ *       be STRICTLY AFTER the resolve-action audit row's `ts`.
+ *       A leaked bearer can't bind to a future resolve-action
+ *       call with an already-posted comment.
  *
  * This module is pure logic: it does NOT fetch the comment from
  * GitHub. The seal-decision endpoint (slice 2d-c) fetches the
@@ -33,7 +55,7 @@
  * parsed payload to `verifyCommentMatches` here.
  *
  * Splitting the logic out makes each check testable in isolation —
- * the four negative tests the RFC mandates land here, not buried
+ * the negative tests the RFC mandates land here, not buried
  * inside the endpoint's mock dance.
  */
 
@@ -169,11 +191,31 @@ export function parseSealHeader(
 
 /**
  * Subset of GitHub's issue-comment payload the verifier needs.
- * Fields not used by G17 (reactions, html_url, etc.) are omitted —
- * the seal-decision endpoint passes whatever shape GitHub returned,
- * narrowed to this surface.
+ *
+ * The `id` and `html_url` fields are load-bearing for the
+ * fetched-comment identity check (added builder pass-1):
+ *
+ *   - `id` lets us assert the fetched comment is the one the
+ *     supplied URL claimed (defensive — GitHub should never
+ *     return a different id, but a proxy / cache / WAF rewrite
+ *     could).
+ *   - `html_url` is the GitHub-authoritative URL for the comment.
+ *     We re-parse it and compare to the queen-supplied URL. This
+ *     closes the C1 forgery where the queen supplies a URL with
+ *     a PR-path that matches `subject_ref` but a comment_id that
+ *     was actually posted on a DIFFERENT PR in the same repo —
+ *     the fetched `html_url` carries the comment's real PR.
  */
 export interface CommentPayload {
+  /** Comment id. Repo-scoped, not PR-scoped — see the
+   * fetched-comment identity check at C2. */
+  id: number;
+  /**
+   * GitHub's authoritative URL for this comment. Re-parsed by
+   * the verifier and compared to the queen-supplied URL. A
+   * forged supply with a mismatched PR path will diverge here.
+   */
+  html_url: string;
   /** Comment body (markdown). Searched for the seal header. */
   body: string;
   /** Comment creation timestamp (ISO 8601). Compared to the
@@ -183,7 +225,7 @@ export interface CommentPayload {
    * The GitHub App that posted the comment. Present on comments
    * posted by App installations (modern API). The verifier
    * requires this — comments posted by humans or unauthenticated
-   * bots have `performed_via_github_app: null` and fail check 2.
+   * bots have `performed_via_github_app: null` and fail check 3.
    */
   performed_via_github_app: { id: number } | null;
 }
@@ -194,7 +236,25 @@ export interface CommentPayload {
  * queen can branch on.
  */
 export type VerifyCommentFailure =
+  /** C1: queen-supplied URL path doesn't match the room's
+   * subject_ref. Cheap check, fires BEFORE the GitHub fetch. */
   | { check: "url_pr_mismatch"; expected: string; got: string }
+  /**
+   * C2: the fetched comment payload disagrees with the queen-
+   * supplied URL. Either the comment.id is different (defensive —
+   * proxy / cache / WAF mutation), OR comment.html_url parses to
+   * a different PR than the supplied URL — meaning the comment_id
+   * was actually posted on a different PR in the same repo, and
+   * the queen tried to launder it through the URL path. Builder
+   * pass-1 fix: without this check, C1 only validates the queen's
+   * own claim, not GitHub's authoritative location of the comment.
+   */
+  | {
+      check: "comment_payload_identity_mismatch";
+      reason: string;
+      supplied: { commentId: number; owner: string; repo: string; prNumber: number };
+      fetched: { commentId: number; htmlUrl: string };
+    }
   | { check: "comment_author_mismatch"; expected_app_id: number; got_app_id: number | null }
   | { check: "header_missing_or_malformed"; reason: string }
   | { check: "header_verb_mismatch"; expected: SealVerb; got: SealVerb }
@@ -253,7 +313,102 @@ export function verifyCommentMatches(args: {
     };
   }
 
-  // Check 2: Comment author = the installation's App bot identity.
+  // Check 2 (builder pass-1 fix): fetched-comment identity binding.
+  //
+  // Comment IDs are repo-scoped on GitHub, not PR-scoped. The
+  // queen-supplied URL `/pull/42#issuecomment-999` claims comment
+  // 999 was posted on PR 42, but `GET /repos/{owner}/{repo}/issues/
+  // comments/999` will return comment 999 regardless of which PR
+  // it was actually posted on. Without this check, a queen who
+  // earlier posted a valid seal-header comment on PR 99 (a
+  // different PR in the same repo where they previously had a
+  // resolve-action approved) could supply that comment_id with a
+  // forged URL pointing to PR 42 in the same repo. C1 would pass
+  // (queen's URL says PR 42, subject_ref is PR 42) and the
+  // author/header/timestamp checks would line up.
+  //
+  // Defense: cross-check the fetched comment's authoritative
+  // identity (`id` + `html_url`) against the queen-supplied URL.
+  // `html_url` is GitHub's canonical URL for the comment — re-
+  // parse it and ensure it points to the SAME PR the queen
+  // claimed. If they disagree, the queen is laundering a
+  // different-PR comment.
+  if (args.comment.id !== args.commentUrlParsed.commentId) {
+    return {
+      ok: false,
+      failure: {
+        check: "comment_payload_identity_mismatch",
+        reason:
+          `fetched comment.id (${args.comment.id}) does not match the ` +
+          `supplied URL's commentId (${args.commentUrlParsed.commentId}). ` +
+          `GitHub returned a different comment than the URL claimed.`,
+        supplied: {
+          commentId: args.commentUrlParsed.commentId,
+          owner: args.commentUrlParsed.owner,
+          repo: args.commentUrlParsed.repo,
+          prNumber: args.commentUrlParsed.prNumber,
+        },
+        fetched: {
+          commentId: args.comment.id,
+          htmlUrl: args.comment.html_url,
+        },
+      },
+    };
+  }
+  const fetchedUrlParse = parseCommentUrl(args.comment.html_url);
+  if (!fetchedUrlParse.ok) {
+    return {
+      ok: false,
+      failure: {
+        check: "comment_payload_identity_mismatch",
+        reason:
+          `fetched comment.html_url is not a parseable PR comment URL: ` +
+          `${fetchedUrlParse.reason}`,
+        supplied: {
+          commentId: args.commentUrlParsed.commentId,
+          owner: args.commentUrlParsed.owner,
+          repo: args.commentUrlParsed.repo,
+          prNumber: args.commentUrlParsed.prNumber,
+        },
+        fetched: {
+          commentId: args.comment.id,
+          htmlUrl: args.comment.html_url,
+        },
+      },
+    };
+  }
+  if (
+    fetchedUrlParse.parsed.owner !== args.commentUrlParsed.owner ||
+    fetchedUrlParse.parsed.repo !== args.commentUrlParsed.repo ||
+    fetchedUrlParse.parsed.prNumber !== args.commentUrlParsed.prNumber ||
+    fetchedUrlParse.parsed.commentId !== args.commentUrlParsed.commentId
+  ) {
+    return {
+      ok: false,
+      failure: {
+        check: "comment_payload_identity_mismatch",
+        reason:
+          `fetched comment.html_url disagrees with the supplied URL. ` +
+          `The comment_id (${args.commentUrlParsed.commentId}) was actually ` +
+          `posted on ${fetchedUrlParse.parsed.owner}/${fetchedUrlParse.parsed.repo}` +
+          `#${fetchedUrlParse.parsed.prNumber}, not ` +
+          `${args.commentUrlParsed.owner}/${args.commentUrlParsed.repo}` +
+          `#${args.commentUrlParsed.prNumber}. The supplied URL was forged.`,
+        supplied: {
+          commentId: args.commentUrlParsed.commentId,
+          owner: args.commentUrlParsed.owner,
+          repo: args.commentUrlParsed.repo,
+          prNumber: args.commentUrlParsed.prNumber,
+        },
+        fetched: {
+          commentId: args.comment.id,
+          htmlUrl: args.comment.html_url,
+        },
+      },
+    };
+  }
+
+  // Check 3: Comment author = the installation's App bot identity.
   // `performed_via_github_app` is set by GitHub when the comment
   // was posted by a GitHub App installation (the modern API
   // surface). null when posted by a human OR by an unauthenticated
@@ -270,7 +425,7 @@ export function verifyCommentMatches(args: {
     };
   }
 
-  // Check 3: Header binding — parse + verify verb + audit_id.
+  // Check 4: Header binding — parse + verify verb + audit_id.
   const headerParse = parseSealHeader(args.comment.body);
   if (!headerParse.ok) {
     return {
@@ -303,7 +458,7 @@ export function verifyCommentMatches(args: {
     };
   }
 
-  // Check 4: Timestamp ordering. Comment MUST be created AFTER
+  // Check 5: Timestamp ordering. Comment MUST be created AFTER
   // the resolve-action audit row. Equal timestamps fail closed
   // (rejected) since a re-used comment can't have a strictly
   // later timestamp than the resolve-action call that authorized
