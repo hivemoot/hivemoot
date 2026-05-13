@@ -503,7 +503,8 @@ describe("verifyCommentMatches — check 4: header binding (RFC negative test)",
 });
 
 describe("verifyCommentMatches — check 5: timestamp ordering (RFC negative test)", () => {
-  it("rejects when comment created_at is BEFORE resolve-action audit timestamp (re-using old comment)", () => {
+  it("rejects when comment created_at is BEFORE the audit's second (re-using old comment)", () => {
+    // Whole second-or-more older — clearly an old comment.
     const result = verifyCommentMatches({
       subjectRefParsed: SUBJECT_REF,
       commentUrlParsed: COMMENT_URL_PARSED,
@@ -519,10 +520,32 @@ describe("verifyCommentMatches — check 5: timestamp ordering (RFC negative tes
     }
   });
 
-  it("rejects when comment created_at is EQUAL to resolve-action audit timestamp (must be strictly after)", () => {
-    // Strict-after semantics: a comment posted in the SAME ms as the
-    // audit row can't have been authorized by it (the audit row is
-    // emitted before the queen could have posted). Reject.
+  it("ACCEPTS when comment created_at is the same second as the audit (builder pass-2 fix — GitHub returns second-precision)", () => {
+    // The case builder pass-2 caught. Audit at 10:00:00.500Z (ms
+    // precision from new Date().toISOString()). Queen posts the
+    // comment at 10:00:00.900Z; GitHub returns created_at as
+    // "2026-05-12T10:00:00Z" (second-precision floor). Pre-fix
+    // logic rejected this as comment_predates_resolve_action.
+    // Post-fix: treat the GitHub-returned second as the LATEST
+    // possible actual time (window end at second+1000ms exclusive).
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED,
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: "2026-05-12T10:00:00.500Z", // audit has ms
+      comment: happyComment({ created_at: "2026-05-12T10:00:00Z" }), // GitHub second-precision
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("ACCEPTS when comment created_at equals the audit (now interpreted as same-second-window)", () => {
+    // Pre-pass-2 this REJECTED — strict-after semantics on
+    // millisecond comparison. Pass-2 treats the comment second
+    // as a window, so equal timestamps interpret as 'comment
+    // may have been posted anywhere in the audit's second' →
+    // possibly after the audit. Accept.
     const result = verifyCommentMatches({
       subjectRefParsed: SUBJECT_REF,
       commentUrlParsed: COMMENT_URL_PARSED,
@@ -531,6 +554,22 @@ describe("verifyCommentMatches — check 5: timestamp ordering (RFC negative tes
       expectedAuditId: "1715000000000-0",
       resolveActionTs: AUDIT_TS,
       comment: happyComment({ created_at: AUDIT_TS }),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("REJECTS when comment second is fully before audit second (audit at 10:00:01.500, comment at 10:00:00 → rejected)", () => {
+    // The pass-2 fix mustn't be too lenient. Even with the
+    // 1-second window, a comment whose ENTIRE second is before
+    // the audit's second must still reject.
+    const result = verifyCommentMatches({
+      subjectRefParsed: SUBJECT_REF,
+      commentUrlParsed: COMMENT_URL_PARSED,
+      expectedAppId: APP_ID,
+      expectedVerb: "merge",
+      expectedAuditId: "1715000000000-0",
+      resolveActionTs: "2026-05-12T10:00:01.500Z",
+      comment: happyComment({ created_at: "2026-05-12T10:00:00Z" }), // 1.5s-window before
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {

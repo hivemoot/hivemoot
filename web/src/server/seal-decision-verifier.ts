@@ -478,11 +478,32 @@ export function verifyCommentMatches(args: {
   }
 
   // Check 5: Timestamp ordering. Comment MUST be created AFTER
-  // the resolve-action audit row. Equal timestamps fail closed
-  // (rejected) since a re-used comment can't have a strictly
-  // later timestamp than the resolve-action call that authorized
-  // it. Both timestamps are ISO 8601 with consistent timezone, so
-  // lex compare works for ordering.
+  // the resolve-action audit row.
+  //
+  // Builder pass-2 fix: GitHub's issue-comment API returns
+  // `created_at` at SECOND precision (e.g. "2026-05-12T10:00:00Z"),
+  // while our audit row uses `new Date().toISOString()` which
+  // includes MILLISECONDS (e.g. "2026-05-12T10:00:00.500Z").
+  //
+  // Pre-fix logic (`commentTime <= audit_time`) would reject a
+  // valid comment posted at 10:00:00.900Z when the audit was at
+  // 10:00:00.500Z, because GitHub-floored commentTime = 10:00:00.000
+  // < audit 10:00:00.500. The endpoint would be flaky on the
+  // happy path.
+  //
+  // Fix: treat the second-precision comment timestamp as the
+  // LATEST possible actual time it represents — `commentTime +
+  // 1000ms exclusive`. Reject only when even that latest-possible
+  // time is at or before the audit time, i.e. when the comment's
+  // entire second is strictly before the audit. Same semantic as
+  // "the comment was posted in a wall-clock second BEFORE the
+  // audit row."
+  //
+  // Negligible leakage if GitHub ever adds ms precision to this
+  // field (would be at most 999ms of acceptance slack vs. the
+  // ms-precise check, way under the real-world gap between a
+  // resolve-action audit emit and a queen's GitHub comment-post).
+  const COMMENT_PRECISION_WINDOW_MS = 1000;
   const commentTime = Date.parse(args.comment.created_at);
   const audit_time = Date.parse(args.resolveActionTs);
   if (!Number.isFinite(commentTime) || !Number.isFinite(audit_time)) {
@@ -498,7 +519,9 @@ export function verifyCommentMatches(args: {
       },
     };
   }
-  if (commentTime <= audit_time) {
+  // Reject only when the latest possible comment time (end of
+  // GitHub's 1-second precision window) is at or before the audit.
+  if (commentTime + COMMENT_PRECISION_WINDOW_MS <= audit_time) {
     return {
       ok: false,
       failure: {
