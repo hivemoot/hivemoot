@@ -177,6 +177,32 @@ describe("parseSealHeader", () => {
       }
     }
   });
+
+  it("rejects MULTIPLE seal-headers in the same body (guard pass-1 G1 — stacked-header forgery defense)", () => {
+    // A legit queen comment carries exactly one header. Multiple
+    // headers is either a queen comment-builder bug OR an attacker
+    // trying to game first-match parsing with stacked headers
+    // (e.g. their forged audit_id at the top, the legit one
+    // lower). Fail closed.
+    const body =
+      "First header line\n" +
+      buildSealHeader("merge", "1715000000000-0") +
+      "\nintermediate body\n" +
+      buildSealHeader("merge", "1715000000000-7");
+    const result = parseSealHeader(body);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/2 seal-headers/);
+    }
+  });
+
+  it("rejects two headers with the same audit_id but different verbs (still ambiguous)", () => {
+    const body =
+      buildSealHeader("merge", "1715000000000-0") +
+      "\n\n" +
+      buildSealHeader("comment", "1715000000000-0");
+    expect(parseSealHeader(body).ok).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

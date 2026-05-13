@@ -155,8 +155,12 @@ export interface ParsedSealHeader {
 // Verb is a fixed enum; audit_id is the XADD stream entry id format
 // `{ms-timestamp}-{seq}` plus a defensive char class. Capture and
 // validate further at use site.
-const SEAL_HEADER_REGEX =
-  /<!--\s*hivemoot:queen-action:(merge|comment):([a-zA-Z0-9_-]+)\s*-->/;
+//
+// Global flag for multi-occurrence detection (guard pass-1 G1):
+// the verifier rejects bodies with MORE than one header — see
+// the parser body for rationale.
+const SEAL_HEADER_REGEX_GLOBAL =
+  /<!--\s*hivemoot:queen-action:(merge|comment):([a-zA-Z0-9_-]+)\s*-->/g;
 
 export function parseSealHeader(
   body: string,
@@ -166,8 +170,14 @@ export function parseSealHeader(
   if (typeof body !== "string") {
     return { ok: false, reason: "comment body must be a string" };
   }
-  const match = body.match(SEAL_HEADER_REGEX);
-  if (!match) {
+  // Use matchAll + global regex so we can detect multiple
+  // occurrences (guard pass-1 G1). A legit queen comment posts
+  // exactly one header; multiple headers in one body is either a
+  // bug in the queen's comment-builder OR an attempt to game
+  // first-match parsing with a stacked-headers payload. Either
+  // way, fail closed — the operator inspects the comment manually.
+  const matches = [...body.matchAll(SEAL_HEADER_REGEX_GLOBAL)];
+  if (matches.length === 0) {
     return {
       ok: false,
       reason:
@@ -175,7 +185,16 @@ export function parseSealHeader(
         "`<!-- hivemoot:queen-action:<verb>:<audit_id> -->` header",
     };
   }
-  const [, verb, auditId] = match;
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      reason:
+        `comment body contains ${matches.length} seal-headers; exactly 1 ` +
+        `required. Multiple headers in a single comment is either a queen ` +
+        `comment-builder bug or a stacked-headers forgery attempt. Reject.`,
+    };
+  }
+  const [, verb, auditId] = matches[0];
   if (auditId.length === 0) {
     return { ok: false, reason: "audit_id in header is empty" };
   }
