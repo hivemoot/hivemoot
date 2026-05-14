@@ -385,6 +385,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch issues (issues boom) — showing PRs only.");
@@ -408,6 +409,7 @@ describe("buzzCommand", () => {
       expect.any(Map),
       expect.any(Map),
       undefined,
+      undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
     expect(summaryArg.notes).toContain("Could not fetch pull requests (prs boom) — showing issues only.");
@@ -430,6 +432,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -473,6 +476,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       expect.any(Map),
+      undefined,
       undefined,
     );
     const summaryArg = mockedFormatStatus.mock.calls[0][0];
@@ -571,6 +575,7 @@ describe("buzzCommand", () => {
       voteMap,
       expect.any(Map),
       undefined,
+      undefined,
     );
   });
 
@@ -665,6 +670,7 @@ describe("buzzCommand", () => {
       expect.any(Date),
       expect.any(Map),
       notificationMap,
+      undefined,
       undefined,
     );
   });

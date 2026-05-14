@@ -814,3 +814,104 @@ team:
     expect(config.roles.engineer.instructions).toHaveLength(10_000);
   });
 });
+
+describe("loadTeamConfig() — governance.labelMapping", () => {
+  const repo = { owner: "hivemoot", repo: "colony" };
+
+  function makeYaml(governance: string): string {
+    return `
+team:
+  roles:
+    engineer:
+      description: Build things.
+      instructions: Write code.
+${governance}
+`.trim();
+  }
+
+  it("returns undefined labelMapping when governance section is absent", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml("")));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping).toBeUndefined();
+  });
+
+  it("returns undefined labelMapping when governance.labelMapping is absent", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml("governance:\n  voting: true")));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping).toBeUndefined();
+  });
+
+  it("parses a single phase mapping correctly", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion:\n      - status:in-progress`)));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping).toEqual({ discussion: ["status:in-progress"] });
+  });
+
+  it("parses multiple phase mappings and lowercases values", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(
+      `governance:\n  labelMapping:\n    discussion:\n      - STATUS:OPEN\n    voting:\n      - custom:vote`
+    )));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping?.discussion).toEqual(["status:open"]);
+    expect(config.labelMapping?.voting).toEqual(["custom:vote"]);
+  });
+
+  it("trims whitespace from label values", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    readyToImplement:\n      - "  my-label  "`)));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping?.readyToImplement).toEqual(["my-label"]);
+  });
+
+  it("skips empty string label values", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion:\n      - ""\n      - real-label`)));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping?.discussion).toEqual(["real-label"]);
+  });
+
+  it("returns undefined when all label values are empty strings", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion:\n      - ""`)));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping).toBeUndefined();
+  });
+
+  it("throws when governance.labelMapping is not an object", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml("governance:\n  labelMapping: true")));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("governance.labelMapping must be an object");
+  });
+
+  it("throws when a phase value is not an array", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion: "not-an-array"`)));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("governance.labelMapping.discussion must be an array");
+  });
+
+  it("throws when a label entry is not a string", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion:\n      - 123`)));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("governance.labelMapping.discussion[0] must be a string");
+  });
+
+  it("throws when a label exceeds 100 characters", async () => {
+    const longLabel = "a".repeat(101);
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    voting:\n      - ${longLabel}`)));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("exceeds 100 characters");
+  });
+
+  it("throws when a phase has more than 50 labels", async () => {
+    const labels = Array.from({ length: 51 }, (_, i) => `      - label-${i}`).join("\n");
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    discussion:\n${labels}`)));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("exceeds 50 entries");
+  });
+
+  it("throws when an unknown key is present in labelMapping", async () => {
+    mockedGh.mockResolvedValue(encode(makeYaml(`governance:\n  labelMapping:\n    unknownPhase:\n      - my-label`)));
+    await expect(loadTeamConfig(repo)).rejects.toThrow("unknown key(s): unknownPhase");
+  });
+
+  it("accepts all valid phase keys without error", async () => {
+    const yaml = `governance:\n  labelMapping:\n    discussion: [d]\n    voting: [v]\n    extendedVoting: [ev]\n    readyToImplement: [rti]\n    needsHuman: [nh]\n    implementation: [impl]\n    rejected: [rej]\n    inconclusive: [inc]\n    stale: [stale]\n    implemented: [done]\n    mergeReady: [mr]`;
+    mockedGh.mockResolvedValue(encode(makeYaml(yaml)));
+    const config = await loadTeamConfig(repo);
+    expect(config.labelMapping).toBeDefined();
+    expect(config.labelMapping?.discussion).toEqual(["d"]);
+    expect(config.labelMapping?.mergeReady).toEqual(["mr"]);
+  });
+});

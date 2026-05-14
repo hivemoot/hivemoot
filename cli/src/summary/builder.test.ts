@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSummary } from "./builder.js";
-import type { GitHubIssue, GitHubPR, RepoRef } from "../config/types.js";
+import type { GitHubIssue, GitHubPR, LabelMapping, RepoRef } from "../config/types.js";
 
 const repo: RepoRef = { owner: "hivemoot", repo: "colony" };
 const now = new Date("2025-06-15T12:00:00Z");
@@ -1311,5 +1311,82 @@ describe("buildSummary()", () => {
     expect(summary.notes).toContain(
       "Issue pipeline and implementation-gap metrics are omitted because no governance phase labels were detected.",
     );
+  });
+});
+
+describe("buildSummary() — labelMapping", () => {
+  function makeIssueWithLabel(label: string, number = 1): GitHubIssue {
+    return {
+      number,
+      title: `Issue ${number}`,
+      labels: [{ name: label }],
+      assignees: [],
+      author: { login: "alice" },
+      comments: [],
+      createdAt: "2025-06-15T12:00:00Z",
+      updatedAt: "2025-06-15T12:00:00Z",
+      url: `https://github.com/hivemoot/colony/issues/${number}`,
+    };
+  }
+
+  it("buckets issue into discuss using a custom discussion label", () => {
+    const labelMapping: LabelMapping = { discussion: ["status:open"] };
+    const issue = makeIssueWithLabel("status:open");
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.discuss.some((i) => i.number === 1)).toBe(true);
+  });
+
+  it("buckets issue into voteOn using a custom voting label", () => {
+    const labelMapping: LabelMapping = { voting: ["custom:vote"] };
+    const issue = makeIssueWithLabel("custom:vote");
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.voteOn.some((i) => i.number === 1)).toBe(true);
+  });
+
+  it("buckets issue into implement using a custom readyToImplement label", () => {
+    const labelMapping: LabelMapping = { readyToImplement: ["status:approved"] };
+    const issue = makeIssueWithLabel("status:approved");
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.implement.some((i) => i.number === 1)).toBe(true);
+  });
+
+  it("built-in labels still work when custom mapping is provided (additive)", () => {
+    const labelMapping: LabelMapping = { discussion: ["custom:discuss"] };
+    const builtInIssue = makeIssueWithLabel("hivemoot:discussion", 1);
+    const customIssue = makeIssueWithLabel("custom:discuss", 2);
+    const summary = buildSummary(repo, [builtInIssue, customIssue], [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.discuss.some((i) => i.number === 1)).toBe(true);
+    expect(summary.discuss.some((i) => i.number === 2)).toBe(true);
+  });
+
+  it("custom label matching is case-insensitive (stored lowercase, compared lowercase)", () => {
+    const labelMapping: LabelMapping = { voting: ["custom:vote"] };
+    const issue = makeIssueWithLabel("Custom:Vote");
+    const summary = buildSummary(repo, [issue], [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.voteOn.some((i) => i.number === 1)).toBe(true);
+  });
+
+  it("populates issuePipeline when only custom labels are present", () => {
+    const labelMapping: LabelMapping = {
+      discussion: ["status:open"],
+      voting: ["status:vote"],
+      readyToImplement: ["status:approved"],
+    };
+    const issues = [
+      makeIssueWithLabel("status:open", 1),
+      makeIssueWithLabel("status:vote", 2),
+      makeIssueWithLabel("status:approved", 3),
+    ];
+    const summary = buildSummary(repo, issues, [], "testuser", now, new Map(), new Map(), undefined, labelMapping);
+    expect(summary.repositoryHealth?.issuePipeline).toBeDefined();
+    expect(summary.repositoryHealth?.issuePipeline?.discussion).toBe(1);
+    expect(summary.repositoryHealth?.issuePipeline?.voting).toBe(1);
+    expect(summary.repositoryHealth?.issuePipeline?.readyToImplement).toBe(1);
+  });
+
+  it("does not affect bucketing when labelMapping is undefined", () => {
+    const issue = makeIssueWithLabel("hivemoot:discussion");
+    const summary = buildSummary(repo, [issue], [], "testuser", now);
+    expect(summary.discuss.some((i) => i.number === 1)).toBe(true);
   });
 });
