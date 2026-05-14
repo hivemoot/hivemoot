@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { INSTALL_APP_URL } from "@/lib/constants";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import SetupWizard from "./SetupWizard";
@@ -352,7 +353,7 @@ export default async function SetupPage({
                 ) : (
                   <>
                     <Link
-                      href="https://github.com/apps/hivemoot/installations/new"
+                      href={INSTALL_APP_URL}
                       className="flex w-full items-center justify-center gap-2.5 rounded-lg bg-honey-500 px-5 py-3 text-sm font-semibold text-[#111114] transition-all hover:bg-honey-400 hover:shadow-lg hover:shadow-honey-500/20"
                     >
                       <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
