@@ -61,12 +61,20 @@ The CLI exposes these top-level commands:
 
 ## Authentication
 
-The CLI delegates to `gh` for GitHub API access. Authenticate via:
+The CLI calls `gh` for GitHub API access. Use one of these auth modes:
 
 ```bash
-export GITHUB_TOKEN="$(gh auth token)"
-# or pass --github-token to any command
+# Interactive use
+gh auth login
+gh auth status
+
+# CI / automated agents
+export GITHUB_TOKEN="ghp_yourPersonalAccessToken"
 ```
+
+Do not use `export GITHUB_TOKEN="$(gh auth token)"` as a setup step; it
+requires `gh` to already be authenticated and fails for token-only flows.
+You can also pass `--github-token` to any command.
 
 ## Security boundaries
 

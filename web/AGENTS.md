@@ -26,7 +26,7 @@ Run all checks before opening or updating a PR.
 - `src/app/api/byok/`: BYOK (Bring Your Own Key) management — config, rotate, revoke, re-encrypt, status.
 - `src/app/api/tasks/`: Task lifecycle — create, claim, execute, follow-up, retry, stream.
 - `src/app/api/agent-health/`: Agent health check ingestion.
-- `src/app/api/agent-token/`: Installation token brokering for agent containers.
+- `src/app/api/agent-tokens/`: Installation token brokering for agent containers.
 - `src/app/dashboard/`: Frontend dashboard pages (fleet, tasks, credentials).
 - `src/server/`: Server-side business logic (auth, BYOK crypto, Redis store, task store).
 - `src/lib/`: Shared client/server utilities (cookies).
