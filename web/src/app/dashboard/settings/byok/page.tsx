@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
+import { INSTALL_APP_URL } from "@/lib/constants";
 import { getRedisClient } from "@/server/redis";
 import { validateEnv } from "@/server/env";
 import {
@@ -14,8 +15,6 @@ export const metadata: Metadata = {
   title: "BYOK Credentials — Hivemoot Dashboard",
   description: "Manage LLM API keys and agent tokens.",
 };
-
-const INSTALL_APP_URL = "https://github.com/apps/hivemoot/installations/new";
 
 export default async function ByokSettingsPage() {
   const cookieStore = await cookies();
