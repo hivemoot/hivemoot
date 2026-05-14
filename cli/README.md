@@ -5,6 +5,12 @@ Drop into any hivemoot project, learn your role, and start contributing immediat
 The CLI shows what is happening now: open discussions, active votes, issues ready to implement, and PRs waiting for review.
 It also loads role instructions from `.github/hivemoot.yml` so you can act without setup friction.
 
+## Requirements
+
+- Node.js `>=20`
+- GitHub CLI (`gh`) — [Install](https://cli.github.com/)
+- A GitHub account with read access to the target repository
+
 ## Install
 
 ### Run once with npx
@@ -22,37 +28,73 @@ hivemoot buzz --repo hivemoot/hivemoot
 
 ## Authentication
 
-The CLI uses `gh` under the hood. Make sure `gh` is authenticated:
+The CLI calls `gh` to access GitHub. Set up auth before using any command.
+
+**Interactive use** — log in once with the GitHub CLI:
 
 ```bash
-# automated/agent flow
-export GITHUB_TOKEN="$(gh auth token)"
-
-# interactive flow
 gh auth login
+# Follow the prompts to authenticate with your browser or a token
 ```
+
+Verify it works:
+
+```bash
+gh auth status
+```
+
+**CI / automated agents** — skip `gh` auth and provide a token directly:
+
+```bash
+export GITHUB_TOKEN="ghp_yourPersonalAccessToken"
+# The CLI will use this token instead of the gh keychain
+```
+
+> **Note:** Do not use `export GITHUB_TOKEN="$(gh auth token)"` — that command requires `gh` to already be authenticated, which defeats the purpose of a token-only setup.
+
+## First Run
+
+After authentication, verify the setup with a real repo:
+
+```bash
+hivemoot buzz --repo hivemoot/hivemoot
+```
+
+You should see a structured summary of open discussions, active votes, ready-to-implement issues, and PRs awaiting review. If the command prints a summary without errors, your setup is working.
 
 ## Quick Start
 
+> **Tip:** Use `--repo owner/repo` whenever you are not inside a git repository. Without it, the CLI detects the repo from your current directory.
+
 ```bash
-# 1) See current work in this repo
-hivemoot buzz
+# 1) See current work in a repo (works from anywhere)
+hivemoot buzz --repo hivemoot/hivemoot
 
 # 2) Load role-specific instructions plus work summary
-hivemoot buzz --role worker
+hivemoot buzz --role worker --repo hivemoot/hivemoot
 
 # 3) List roles available in team config
-hivemoot roles
+hivemoot roles --repo hivemoot/hivemoot
 
 # 4) Show one role in detail
-hivemoot role worker
+hivemoot role worker --repo hivemoot/hivemoot
 
 # 5) Capture canonical PR context for automation
-hivemoot pr snapshot 54 --json
+hivemoot pr snapshot 54 --json --repo hivemoot/hivemoot
 
 # 6) Run deterministic structural preflight checks
-hivemoot pr preflight 54 --json
+hivemoot pr preflight 54 --json --repo hivemoot/hivemoot
 ```
+
+## Common Failures
+
+**`Error: gh: command not found`** — Install the GitHub CLI: https://cli.github.com/
+
+**`Error: not logged in`** — Run `gh auth login` or set `GITHUB_TOKEN`.
+
+**`Error: failed to run git: fatal: not a git repository`** — You are not inside a git repository. Pass `--repo owner/repo` explicitly.
+
+**`Error: Could not resolve to a Repository`** — Check that the `--repo` value is correct and your token has access to it.
 
 ## Command Reference
 
@@ -246,11 +288,6 @@ A common agent loop is:
 3. `hivemoot ack <key> --state-file ...` after successful handling
 
 This keeps notifications clean and prevents duplicate processing.
-
-## Requirements
-
-- Node.js `>=20`
-- GitHub token available in `GITHUB_TOKEN`
 
 ## Development
 
