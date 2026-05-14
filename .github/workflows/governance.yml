@@ -37,7 +37,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
+          if ! printf '%s\n' "$COMMENT_BODY" | grep -Eiq '^[[:space:]]*@hivemoot[[:space:]]+implement[[:space:]]*$'; then
+            echo "No standalone @hivemoot implement command — skipping"
+            exit 0
+          fi
+
           labels=$(gh api \
             "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
             --jq '[.labels[].name]')
