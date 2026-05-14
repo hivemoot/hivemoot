@@ -181,7 +181,7 @@ export default function SettingsDashboard() {
         </h1>
         <p className="mt-2 text-sm text-zinc-400">
           Per-installation configuration. See also{" "}
-          <Link href="/dashboard/credentials" className="text-honey-400 hover:underline">
+          <Link href="/dashboard/settings/byok" className="text-honey-400 hover:underline">
             BYOK credentials
           </Link>
           .

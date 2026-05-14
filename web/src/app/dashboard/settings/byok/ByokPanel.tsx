@@ -1206,7 +1206,7 @@ function CapabilityTokensSection({
 // Main panel
 // ---------------------------------------------------------------------------
 
-export default function CredentialsPanel() {
+export default function ByokPanel() {
   const [sessionExpired, setSessionExpired] = useState(false);
 
   return (

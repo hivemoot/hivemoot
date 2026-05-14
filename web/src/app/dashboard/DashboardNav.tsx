@@ -8,19 +8,24 @@ const TABS = [
   { href: "/dashboard/tasks", label: "Tasks" },
   { href: "/dashboard/rooms", label: "War Rooms" },
   { href: "/dashboard/settings", label: "Settings" },
-  { href: "/dashboard/credentials", label: "Credentials" },
+  { href: "/dashboard/settings/byok", label: "Credentials" },
 ] as const;
 
 export function DashboardNav() {
   const pathname = usePathname();
+  const activeHref =
+    TABS
+      .filter((tab) =>
+        tab.href === "/dashboard"
+          ? pathname === "/dashboard"
+          : pathname === tab.href || pathname.startsWith(`${tab.href}/`),
+      )
+      .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? "/dashboard";
 
   return (
     <div className="-mb-px flex gap-6">
       {TABS.map((tab) => {
-        const isActive =
-          tab.href === "/dashboard"
-            ? pathname === "/dashboard"
-            : pathname.startsWith(tab.href);
+        const isActive = tab.href === activeHref;
 
         return (
           <Link
