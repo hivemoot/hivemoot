@@ -42,7 +42,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
      f"sk-ant-{_REDACTED}"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"), f"sk-{_REDACTED}"),
     # GitHub tokens (ghp_/ghs_/gho_/ghu_/ghr_).
-    (re.compile(r"\bgh[psuo]_[A-Za-z0-9]{20,}\b"), f"gh*_{_REDACTED}"),
+    (re.compile(r"\bgh[psuor]_[A-Za-z0-9]{20,}\b"), f"gh*_{_REDACTED}"),
     # Generic ``token=<val>`` / ``api_key: <val>`` / ``api-key: "<val>"``
     # in URL query, YAML/JSON config, or inline error text.  Optional
     # surrounding quotes so ``api_key: "sk_..."`` scrubs the value
