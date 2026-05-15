@@ -23,14 +23,10 @@
  * but better folded into the confirm-merge endpoint's invariant
  * check rather than duplicated in this list endpoint.
  *
- * **Today this endpoint returns an empty list in steady state**
- * because no code path SADDs to the `decided_pending_action` status
- * index until seal-decision lands (PR 3c slice 2). This PR exists
- * now to:
- *   - establish the route surface area + capability gating
- *   - let PR 4's hive queen plugin compile against the right
- *     interface
- *   - get the auth contract reviewed in isolation
+ * `seal-decision` SADDs rooms to the `decided_pending_action` status
+ * index when it verifies a squash-merge intent comment. The hive
+ * local queen polls this endpoint, waits out the override window, and
+ * calls `confirm-merge` for the authoritative tick-N+1 recheck.
  *
  * Response shape:
  *   { rooms: RoomCoreWithId[], count: number }

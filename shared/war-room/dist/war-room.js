@@ -763,6 +763,83 @@ export class RoomDecisionTooLargeError extends Error {
         this.sizeBytes = sizeBytes;
     }
 }
+/** Thrown when a pending-merge storage transition sees an unexpected status. */
+export class RoomPendingMergeInvalidStatusError extends Error {
+    roomId;
+    expectedStatus;
+    actualStatus;
+    constructor(roomId, expectedStatus, actualStatus) {
+        super(`Room ${roomId} is in status ${JSON.stringify(actualStatus)}; expected ${JSON.stringify(expectedStatus)} for pending-merge transition.`);
+        this.name = "RoomPendingMergeInvalidStatusError";
+        this.roomId = roomId;
+        this.expectedStatus = expectedStatus;
+        this.actualStatus = actualStatus;
+    }
+}
+/** Thrown when events arrive after a squash-merge intent was sealed
+ * and before confirm-merge attempts to close the room. */
+export class RoomPendingMergeDriftError extends Error {
+    roomId;
+    expectedPendingSequence;
+    lastSeq;
+    constructor(roomId, expectedPendingSequence, lastSeq) {
+        super(`Sequence drift on pending-merge room ${roomId}: expected pending sequence ${expectedPendingSequence}, got ${lastSeq}. Downgrade or re-run synthesis before merging.`);
+        this.name = "RoomPendingMergeDriftError";
+        this.roomId = roomId;
+        this.expectedPendingSequence = expectedPendingSequence;
+        this.lastSeq = lastSeq;
+    }
+}
+/** Thrown when a merge-result report does not match the approved
+ * merge attempt recorded by confirm-merge. */
+export class RoomMergeAttemptMismatchError extends Error {
+    roomId;
+    expectedMergeAttemptId;
+    actualMergeAttemptId;
+    constructor(roomId, expectedMergeAttemptId, actualMergeAttemptId) {
+        super(`Merge attempt mismatch for room ${roomId}: expected ${expectedMergeAttemptId}, got ${actualMergeAttemptId ?? "<none>"}.`);
+        this.name = "RoomMergeAttemptMismatchError";
+        this.roomId = roomId;
+        this.expectedMergeAttemptId = expectedMergeAttemptId;
+        this.actualMergeAttemptId = actualMergeAttemptId;
+    }
+}
+/** Thrown when a merge-result report uses the right merge attempt id
+ * but not the same bearer that received confirm-merge approval. */
+export class RoomMergeAttemptBearerMismatchError extends Error {
+    roomId;
+    expectedFingerprint;
+    actualFingerprint;
+    constructor(roomId, expectedFingerprint, actualFingerprint) {
+        super(`Merge attempt bearer mismatch for room ${roomId}: expected fingerprint ${expectedFingerprint ?? "<none>"}, got ${actualFingerprint}.`);
+        this.name = "RoomMergeAttemptBearerMismatchError";
+        this.roomId = roomId;
+        this.expectedFingerprint = expectedFingerprint;
+        this.actualFingerprint = actualFingerprint;
+    }
+}
+/** Thrown when merge-result reporting is attempted before
+ * confirm-merge has recorded a merge-approved decision. */
+export class RoomMergeReportNotApprovedError extends Error {
+    roomId;
+    decisionOutcome;
+    constructor(roomId, decisionOutcome) {
+        super(`Room ${roomId} has decision_outcome=${decisionOutcome ?? "<none>"}; report-merge-result requires merge_approved.`);
+        this.name = "RoomMergeReportNotApprovedError";
+        this.roomId = roomId;
+        this.decisionOutcome = decisionOutcome;
+    }
+}
+/** Thrown when a merge transition expects an existing room decision
+ * but the room hash does not contain one. */
+export class RoomDecisionMissingError extends Error {
+    roomId;
+    constructor(roomId) {
+        super(`Room ${roomId} does not have a decision payload.`);
+        this.name = "RoomDecisionMissingError";
+        this.roomId = roomId;
+    }
+}
 /**
  * Thrown when `ROOM_DECIDE_CLAIM_SCRIPT` finds the synthesis claim
  * already held by another queen runner (benign conflict — the
@@ -1668,13 +1745,14 @@ return {1, seq}
  *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
  *   [4] statusSetAwaitingContribKey    — SREM idempotent
  *   [5] statusSetDecidingKey           — SREM idempotent
- *   [6] installationIndexKey           — all-rooms-for-installation sorted set
- *   [7] repoIndexKey                   — per-repo set
- *   [8] seqKey
- *   [9] eventsKey
- *   [10] participantsKey               — for TTL only
- *   [11] contributionsKey              — for TTL only
- *   [12] claimKey                      — DELed if held (deciding-state cleanup)
+ *   [6] statusSetDecidedPendingKey     — SREM idempotent
+ *   [7] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [8] repoIndexKey                   — per-repo set
+ *   [9] seqKey
+ *   [10] eventsKey
+ *   [11] participantsKey               — for TTL only
+ *   [12] contributionsKey              — for TTL only
+ *   [13] claimKey                      — DELed if held (deciding-state cleanup)
  *
  * ARGV:
  *   [1] roomId
@@ -1693,10 +1771,10 @@ if not currStatus then return {-1, "room_not_found"} end
 if currStatus == "closed" then
   return {-1, currStatus}
 end
-redis.call("del", KEYS[12])
-local seq = redis.call("incr", KEYS[8])
+redis.call("del", KEYS[13])
+local seq = redis.call("incr", KEYS[9])
 local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq), 1)
-redis.call("zadd", KEYS[9], seq, eventJson)
+redis.call("zadd", KEYS[10], seq, eventJson)
 redis.call("hset", KEYS[1], "status", "closed",
                           "closed_at", ARGV[3],
                           "closed_reason", ARGV[5])
@@ -1704,7 +1782,8 @@ redis.call("del", KEYS[2])
 redis.call("srem", KEYS[3], ARGV[1])
 redis.call("srem", KEYS[4], ARGV[1])
 redis.call("srem", KEYS[5], ARGV[1])
--- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.
+redis.call("srem", KEYS[6], ARGV[1])
+-- KEYS[7] (installationIndexKey) is intentionally NOT ZREM'd here.
 -- Closed rooms remain in the installation index so the dashboard's
 -- "Active and past governance synthesis rooms" surface can list them
 -- for the retention window (30 days). The room hash itself TTL's via
@@ -1712,13 +1791,13 @@ redis.call("srem", KEYS[5], ARGV[1])
 -- orphan-cleanup pass ZREMs the now-stale index entry on the next
 -- read. /watching filters by status server-side, so closed rooms
 -- still don't surface to agent dispatch.
-redis.call("srem", KEYS[7], ARGV[1])
+redis.call("srem", KEYS[8], ARGV[1])
 local retention = tonumber(ARGV[4])
 redis.call("expire", KEYS[1], retention)
-redis.call("expire", KEYS[8], retention)
 redis.call("expire", KEYS[9], retention)
 redis.call("expire", KEYS[10], retention)
 redis.call("expire", KEYS[11], retention)
+redis.call("expire", KEYS[12], retention)
 return {1, seq}
 `;
 /**
@@ -1835,6 +1914,112 @@ redis.call("expire", KEYS[7], retention)
 redis.call("expire", KEYS[8], retention)
 redis.call("expire", KEYS[9], retention)
 return {1, closedSeq}
+`;
+/**
+ * ROOM_SEAL_PENDING_MERGE_SCRIPT — local-queen squash-merge intent.
+ *
+ * Same claim/runner/sequence guards as `ROOM_CLOSE_SCRIPT`, but the
+ * happy path moves the room to `decided_pending_action` instead of
+ * `closed`. The subject lock and repo index stay in place while the
+ * operator override window is open; `confirm-merge` is responsible
+ * for the terminal close.
+ */
+export const ROOM_SEAL_PENDING_MERGE_SCRIPT = `
+local claim = redis.call("get", KEYS[2])
+if not claim then return {-3, "claim_lost"} end
+local ok, parsed = pcall(cjson.decode, claim)
+if not ok then return {-3, "decode_error"} end
+local expectedRunner = ARGV[5]
+if expectedRunner ~= "" and parsed.runner ~= expectedRunner then
+  return {-3, "claim_runner_mismatch", parsed.runner or ""}
+end
+local claimThroughSeq = tonumber(parsed.throughSequence)
+local expectedThroughSeq = tonumber(ARGV[2])
+if claimThroughSeq ~= expectedThroughSeq then
+  return {-3, "claim_throughSeq_mismatch", claimThroughSeq}
+end
+local lastSeq = tonumber(redis.call("get", KEYS[3])) or 0
+if lastSeq ~= expectedThroughSeq then
+  redis.call("del", KEYS[2])
+  redis.call("hset", KEYS[1], "status", "awaiting_contributions",
+                            "deciding_through_sequence", "")
+  redis.call("srem", KEYS[4], ARGV[1])
+  redis.call("sadd", KEYS[5], ARGV[1])
+  return {-2, lastSeq}
+end
+local pendingSeq = lastSeq + 1
+local pendingEventJson = string.gsub(ARGV[4], "__SEQ__", tostring(pendingSeq), 1)
+redis.call("hset", KEYS[1], "status", "decided_pending_action",
+                          "decision", ARGV[3],
+                          "deciding_through_sequence", "")
+redis.call("zadd", KEYS[7], pendingSeq, pendingEventJson)
+redis.call("set", KEYS[3], tostring(pendingSeq))
+redis.call("del", KEYS[2])
+redis.call("srem", KEYS[4], ARGV[1])
+redis.call("sadd", KEYS[6], ARGV[1])
+return {1, pendingSeq}
+`;
+/**
+ * ROOM_CONFIRM_PENDING_MERGE_SCRIPT — terminal close after D1 recheck.
+ *
+ * `confirm-merge` computes the server-authoritative outcome before
+ * calling this script. The script only enforces storage invariants:
+ * status is still `decided_pending_action`, no new events landed
+ * since the pending seal event, and the close/index cleanup happens
+ * atomically with the updated decision payload.
+ */
+export const ROOM_CONFIRM_PENDING_MERGE_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus ~= "decided_pending_action" then return {-1, currStatus} end
+local expectedPendingSeq = tonumber(ARGV[2])
+local lastSeq = tonumber(redis.call("get", KEYS[2])) or 0
+if lastSeq ~= expectedPendingSeq then return {-2, lastSeq} end
+local closedSeq = lastSeq + 1
+local closedEventJson = string.gsub(ARGV[4], "__SEQ__", tostring(closedSeq), 1)
+redis.call("hset", KEYS[1], "status", "closed",
+                          "decision", ARGV[3],
+                          "closed_at", ARGV[5])
+redis.call("zadd", KEYS[5], closedSeq, closedEventJson)
+redis.call("set", KEYS[2], tostring(closedSeq))
+redis.call("del", KEYS[4])
+redis.call("srem", KEYS[3], ARGV[1])
+-- KEYS[8] (installationIndexKey) remains for dashboard listability.
+redis.call("srem", KEYS[9], ARGV[1])
+local retention = tonumber(ARGV[6])
+redis.call("expire", KEYS[1], retention)
+redis.call("expire", KEYS[2], retention)
+redis.call("expire", KEYS[5], retention)
+redis.call("expire", KEYS[6], retention)
+redis.call("expire", KEYS[7], retention)
+return {1, closedSeq}
+`;
+/**
+ * ROOM_REPORT_MERGE_RESULT_SCRIPT — update GitHub merge outcome fields.
+ *
+ * Runs after the local queen attempts `gh pr merge --squash`. The room
+ * must already be closed by `confirm-merge`, and the report must match
+ * the exact `merge_attempt_id` recorded there.
+ */
+export const ROOM_REPORT_MERGE_RESULT_SCRIPT = `
+local currStatus = redis.call("hget", KEYS[1], "status")
+if not currStatus then return {-1, "room_not_found"} end
+if currStatus ~= "closed" then return {-1, currStatus} end
+local decisionJson = redis.call("hget", KEYS[1], "decision")
+if not decisionJson then return {-2, "no_decision"} end
+local ok, decision = pcall(cjson.decode, decisionJson)
+if not ok then return {-2, "decode_error"} end
+if decision.merge_attempt_id ~= ARGV[1] then
+  return {-3, decision.merge_attempt_id or ""}
+end
+if decision.decision_outcome ~= "merge_approved" then
+  return {-4, decision.decision_outcome or ""}
+end
+if decision.merge_attempt_fingerprint ~= ARGV[3] then
+  return {-5, decision.merge_attempt_fingerprint or ""}
+end
+redis.call("hset", KEYS[1], "decision", ARGV[2])
+return {1}
 `;
 // ---------------------------------------------------------------------------
 // Helpers (D.1.a-ii)
@@ -2630,6 +2815,7 @@ export async function terminateRoom(args) {
         statusIndexKey(args.installationId, "awaiting_rsvp"),
         statusIndexKey(args.installationId, "awaiting_contributions"),
         statusIndexKey(args.installationId, "deciding"),
+        statusIndexKey(args.installationId, "decided_pending_action"),
         installationIndexKey(args.installationId),
         repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
         seqKey(args.roomId),
@@ -2690,24 +2876,27 @@ export async function terminateRoom(args) {
  *   - `RoomClaimPayloadCorruptError` — claim payload corrupted;
  *     ABORT, operator inspects
  */
-export async function closeRoomWithDecision(args) {
-    validateSubjectRef(args.subject);
-    validateRunnerFormat(args.decision.synthesis_runner);
-    if (args.expectedRunner !== undefined) {
-        validateRunnerFormat(args.expectedRunner);
-    }
+function assertDecisionContentWithinLimit(decision) {
     // BYTE length, not UTF-16 code-unit `.length`. A multi-byte
     // synthesis (emoji, non-ASCII narrative) can have `.length` < byte
     // budget while the actual storage payload exceeds 64 KiB. Closes
     // #515 builder R1 — file uses Buffer.byteLength elsewhere for
     // consistency (see ROOM_EVENT_BODY_MAX_BYTES enforcement at
     // assertEventBodySize).
-    const decisionContentBytes = Buffer.byteLength(args.decision.content, "utf8");
+    const decisionContentBytes = Buffer.byteLength(decision.content, "utf8");
     if (decisionContentBytes > 64 * 1024) {
         // Typed class (closes #519 guard N1) so the route layer can
         // map via `instanceof` instead of regex-matching the message.
         throw new RoomDecisionTooLargeError(decisionContentBytes);
     }
+}
+export async function closeRoomWithDecision(args) {
+    validateSubjectRef(args.subject);
+    validateRunnerFormat(args.decision.synthesis_runner);
+    if (args.expectedRunner !== undefined) {
+        validateRunnerFormat(args.expectedRunner);
+    }
+    assertDecisionContentWithinLimit(args.decision);
     const nowMs = args.nowMs ?? Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const retention = args.retentionSecs ?? ROOM_RETENTION_AFTER_CLOSE_SECS;
@@ -2767,6 +2956,181 @@ export async function closeRoomWithDecision(args) {
         }
     }
     throw new Error(`ROOM_CLOSE_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
+}
+/**
+ * Seal a server-permitted squash-merge intent. This is the local
+ * queen's tick-N transition after it posts the public intent comment:
+ * `deciding` -> `decided_pending_action`.
+ */
+export async function sealRoomForPendingMerge(args) {
+    validateSubjectRef(args.subject);
+    validateRunnerFormat(args.expectedRunner);
+    validateRunnerFormat(args.decision.synthesis_runner);
+    assertDecisionContentWithinLimit(args.decision);
+    const nowMs = args.nowMs ?? Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const decision = {
+        ...args.decision,
+        pending_action_at: args.decision.pending_action_at ?? nowIso,
+    };
+    const eventTemplate = JSON.stringify({
+        seq: "__SEQ__",
+        timestamp: nowIso,
+        event_type: "room_decided",
+        actor_role: "manager",
+        actor_id: decision.synthesis_runner,
+        body: {
+            synthesis_runner: decision.synthesis_runner,
+            pending_action: "squash-merge",
+        },
+    });
+    const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+    const result = dispatchScriptResult(await args.redis.eval(ROOM_SEAL_PENDING_MERGE_SCRIPT, [
+        roomKey(args.installationId, args.roomId),
+        claimKey(args.roomId),
+        seqKey(args.roomId),
+        statusIndexKey(args.installationId, "deciding"),
+        statusIndexKey(args.installationId, "awaiting_contributions"),
+        statusIndexKey(args.installationId, "decided_pending_action"),
+        eventsKey(args.roomId),
+    ], [
+        args.roomId,
+        String(args.expectedThroughSequence),
+        JSON.stringify(decision),
+        luaTemplate,
+        args.expectedRunner,
+    ]));
+    if (result.ok === 1 && typeof result.tag1 === "number") {
+        return result.tag1;
+    }
+    if (result.ok === -2 && typeof result.tag1 === "number") {
+        throw new RoomCloseDriftError(args.roomId, args.expectedThroughSequence, result.tag1);
+    }
+    if (result.ok === -3 && typeof result.tag1 === "string") {
+        if (result.tag1 === "claim_lost") {
+            throw new RoomCloseClaimLostError(args.roomId);
+        }
+        if (result.tag1 === "decode_error") {
+            throw new RoomClaimPayloadCorruptError(args.roomId);
+        }
+        if (result.tag1 === "claim_throughSeq_mismatch") {
+            const actual = typeof result.tag2 === "number" ? result.tag2 : -1;
+            throw new RoomCloseClaimThroughSeqMismatchError(args.roomId, args.expectedThroughSequence, actual);
+        }
+        if (result.tag1 === "claim_runner_mismatch") {
+            throw new RoomCloseClaimRunnerMismatchError(args.roomId, args.expectedRunner, typeof result.tag2 === "string" ? result.tag2 : "");
+        }
+    }
+    throw new Error(`ROOM_SEAL_PENDING_MERGE_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
+}
+/**
+ * Confirm or downgrade a pending squash-merge intent after the local
+ * queen's tick-N+1 GitHub re-read. Both outcomes close the room; a
+ * merge-approved decision carries `github_merge_status: "pending"`
+ * until `reportMergeResultForRoom` records the actual GitHub result.
+ */
+export async function confirmPendingMergeDecision(args) {
+    validateSubjectRef(args.subject);
+    validateRunnerFormat(args.decision.synthesis_runner);
+    assertDecisionContentWithinLimit(args.decision);
+    const nowMs = args.nowMs ?? Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const retention = args.retentionSecs ?? ROOM_RETENTION_AFTER_CLOSE_SECS;
+    const decision = {
+        ...args.decision,
+        merge_confirmed_at: args.decision.merge_confirmed_at ?? nowIso,
+    };
+    const eventTemplate = JSON.stringify({
+        seq: "__SEQ__",
+        timestamp: nowIso,
+        event_type: "room_decided",
+        actor_role: "manager",
+        actor_id: decision.synthesis_runner,
+        body: {
+            synthesis_runner: decision.synthesis_runner,
+            decision_outcome: decision.decision_outcome ?? null,
+            decision_outcome_reason: decision.decision_outcome_reason ?? null,
+            merge_attempt_id: decision.merge_attempt_id ?? null,
+        },
+    });
+    const luaTemplate = eventTemplate.replace('"__SEQ__"', "__SEQ__");
+    const result = dispatchScriptResult(await args.redis.eval(ROOM_CONFIRM_PENDING_MERGE_SCRIPT, [
+        roomKey(args.installationId, args.roomId),
+        seqKey(args.roomId),
+        statusIndexKey(args.installationId, "decided_pending_action"),
+        subjectLockKey(args.installationId, args.subject.type, args.subject.ref, args.roomId),
+        eventsKey(args.roomId),
+        participantsKey(args.roomId),
+        contributionsKey(args.roomId),
+        installationIndexKey(args.installationId),
+        repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
+    ], [
+        args.roomId,
+        String(args.expectedPendingSequence),
+        JSON.stringify(decision),
+        luaTemplate,
+        nowIso,
+        String(retention),
+    ]));
+    if (result.ok === 1 && typeof result.tag1 === "number") {
+        return result.tag1;
+    }
+    if (result.ok === -1 && typeof result.tag1 === "string") {
+        if (result.tag1 === "room_not_found") {
+            throw new RoomNotFoundError(args.installationId, args.roomId);
+        }
+        throw new RoomPendingMergeInvalidStatusError(args.roomId, "decided_pending_action", result.tag1);
+    }
+    if (result.ok === -2 && typeof result.tag1 === "number") {
+        throw new RoomPendingMergeDriftError(args.roomId, args.expectedPendingSequence, result.tag1);
+    }
+    throw new Error(`ROOM_CONFIRM_PENDING_MERGE_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
+}
+/**
+ * Record the GitHub-side result for a merge attempt previously
+ * approved by `confirmPendingMergeDecision`.
+ */
+export async function reportMergeResultForRoom(args) {
+    const nowMs = args.nowMs ?? Date.now();
+    const decision = {
+        ...args.decision,
+        merge_reported_at: args.decision.merge_reported_at ?? new Date(nowMs).toISOString(),
+    };
+    const result = dispatchScriptResult(await args.redis.eval(ROOM_REPORT_MERGE_RESULT_SCRIPT, [roomKey(args.installationId, args.roomId)], [
+        args.mergeAttemptId,
+        JSON.stringify(decision),
+        args.mergeAttemptFingerprint,
+    ]));
+    if (result.ok === 1)
+        return;
+    if (result.ok === -1 && typeof result.tag1 === "string") {
+        if (result.tag1 === "room_not_found") {
+            throw new RoomNotFoundError(args.installationId, args.roomId);
+        }
+        throw new RoomPendingMergeInvalidStatusError(args.roomId, "closed", result.tag1);
+    }
+    if (result.ok === -2 && typeof result.tag1 === "string") {
+        if (result.tag1 === "no_decision") {
+            throw new RoomDecisionMissingError(args.roomId);
+        }
+        throw new RoomClaimPayloadCorruptError(args.roomId);
+    }
+    if (result.ok === -3) {
+        throw new RoomMergeAttemptMismatchError(args.roomId, args.mergeAttemptId, typeof result.tag1 === "string" && result.tag1.length > 0
+            ? result.tag1
+            : null);
+    }
+    if (result.ok === -4) {
+        throw new RoomMergeReportNotApprovedError(args.roomId, typeof result.tag1 === "string" && result.tag1.length > 0
+            ? result.tag1
+            : null);
+    }
+    if (result.ok === -5) {
+        throw new RoomMergeAttemptBearerMismatchError(args.roomId, typeof result.tag1 === "string" && result.tag1.length > 0
+            ? result.tag1
+            : null, args.mergeAttemptFingerprint);
+    }
+    throw new Error(`ROOM_REPORT_MERGE_RESULT_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
 }
 // ---------------------------------------------------------------------------
 // Read primitives — events / participants / contributions

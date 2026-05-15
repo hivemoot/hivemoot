@@ -12,9 +12,10 @@
  *   - failed to post the intended-action comment and explicitly
  *     downgraded the room to comment-only.
  *
- * This first implementation slice supports final_state=`closed`.
- * The `decided_pending_action` squash-merge path remains under the
- * umbrella local-queen issue and will add its own storage primitive.
+ * `final_state=closed` seals a comment-only decision. When
+ * resolve-action permitted squash-merge, `final_state=decided_pending_action`
+ * seals the public intent comment and leaves the room ready for
+ * confirm-merge's tick-N+1 recheck.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,6 +24,7 @@ import { parseJsonBody } from "@/server/request-utils";
 import { validateEnv } from "@/server/env";
 import {
   closeRoomWithDecision,
+  sealRoomForPendingMerge,
   getRoomCore,
   type RoomDecision,
   type SubjectRef,
@@ -72,7 +74,7 @@ const SEAL_DECISION_PERMISSIONS: Readonly<
 
 const AUDIT_ID_MAX_AGE_MS = 15 * 60 * 1000;
 
-type FinalState = "closed";
+type FinalState = "closed" | "decided_pending_action";
 type DowngradeReason = "intended_action_post_failed";
 
 interface SealDecisionBody {
@@ -113,12 +115,11 @@ function parseSealDecisionBody(raw: Record<string, unknown>):
   if (typeof auditId !== "string" || auditId.length === 0) {
     return { ok: false, message: "auditId must be a non-empty string." };
   }
-  if (finalState !== "closed") {
+  if (finalState !== "closed" && finalState !== "decided_pending_action") {
     return {
       ok: false,
       message:
-        "finalState must be 'closed' in this endpoint slice; " +
-        "'decided_pending_action' is handled by the merge-confirm slice.",
+        "finalState must be 'closed' or 'decided_pending_action'.",
     };
   }
   if (
@@ -136,13 +137,23 @@ function parseSealDecisionBody(raw: Record<string, unknown>):
   const downgradeReason = pickAlias(raw, "downgradeReason", "downgrade_reason");
   const hasCommentUrl = typeof commentUrl === "string" && commentUrl.length > 0;
   const hasDowngrade = downgradeReason !== undefined && downgradeReason !== null;
-  if (hasCommentUrl === hasDowngrade) {
+  if (finalState === "closed" && hasCommentUrl === hasDowngrade) {
     return {
       ok: false,
       message:
         "Provide exactly one of commentUrl/comment_url or " +
         "downgradeReason/downgrade_reason.",
     };
+  }
+  if (finalState === "decided_pending_action") {
+    if (!hasCommentUrl || hasDowngrade) {
+      return {
+        ok: false,
+        message:
+          "finalState=decided_pending_action requires commentUrl/comment_url " +
+          "and must not include downgradeReason/downgrade_reason.",
+      };
+    }
   }
   if (hasDowngrade && downgradeReason !== "intended_action_post_failed") {
     return {
@@ -209,7 +220,7 @@ function parseSealDecisionBody(raw: Record<string, unknown>):
     body: {
       queenRunner,
       auditId,
-      finalState: "closed",
+      finalState,
       sealedThroughSequence,
       decision: {
         synthesized_at: d.synthesized_at,
@@ -324,12 +335,28 @@ export async function POST(
   if (roomCore.status !== "deciding") {
     if (
       roomCore.status === "closed" &&
+      body.finalState === "closed" &&
       roomCore.decision?.seal_audit_id === body.auditId
     ) {
       return NextResponse.json(
         {
           finalState: "closed",
           closedSequence: body.sealedThroughSequence + 1,
+          auditId: body.auditId,
+          idempotent: true,
+        },
+        { status: 200 },
+      );
+    }
+    if (
+      roomCore.status === "decided_pending_action" &&
+      body.finalState === "decided_pending_action" &&
+      roomCore.decision?.seal_audit_id === body.auditId
+    ) {
+      return NextResponse.json(
+        {
+          finalState: "decided_pending_action",
+          pendingSequence: roomCore.decision.sequence_closed + 1,
           auditId: body.auditId,
           idempotent: true,
         },
@@ -451,6 +478,7 @@ export async function POST(
       auditId: body.auditId,
       auditTs: auditRow.ts,
       permittedAction: auditRow.detail.permitted_action,
+      finalState: body.finalState,
     });
     if (!verifyResponse.ok) return verifyResponse.response;
   } else if (auditRow.detail.permitted_action !== "squash-merge") {
@@ -470,17 +498,33 @@ export async function POST(
     ref: roomCore.subject_ref,
   };
 
-  let closedSequence: number;
+  let finalSequence: number;
   try {
-    closedSequence = await closeRoomWithDecision({
-      installationId: auth.installationId,
-      roomId,
-      expectedThroughSequence: body.sealedThroughSequence,
-      expectedRunner: body.queenRunner,
-      decision: { ...body.decision, seal_audit_id: body.auditId },
-      subject,
-      redis: auth.redis,
-    });
+    if (body.finalState === "decided_pending_action") {
+      finalSequence = await sealRoomForPendingMerge({
+        installationId: auth.installationId,
+        roomId,
+        expectedThroughSequence: body.sealedThroughSequence,
+        expectedRunner: body.queenRunner,
+        decision: {
+          ...body.decision,
+          seal_audit_id: body.auditId,
+          reviewed_head_sha: auditRow.detail.reviewed_head_sha,
+        },
+        subject,
+        redis: auth.redis,
+      });
+    } else {
+      finalSequence = await closeRoomWithDecision({
+        installationId: auth.installationId,
+        roomId,
+        expectedThroughSequence: body.sealedThroughSequence,
+        expectedRunner: body.queenRunner,
+        decision: { ...body.decision, seal_audit_id: body.auditId },
+        subject,
+        redis: auth.redis,
+      });
+    }
   } catch (err) {
     const mapped = mapCloseError(err);
     if (mapped) return mapped;
@@ -505,14 +549,19 @@ export async function POST(
     });
   }
 
-  return NextResponse.json(
-    {
-      finalState: "closed",
-      closedSequence,
-      auditId: body.auditId,
-    },
-    { status: 200 },
-  );
+  const responseBody =
+    body.finalState === "decided_pending_action"
+      ? {
+          finalState: "decided_pending_action" as const,
+          pendingSequence: finalSequence,
+          auditId: body.auditId,
+        }
+      : {
+          finalState: "closed" as const,
+          closedSequence: finalSequence,
+          auditId: body.auditId,
+        };
+  return NextResponse.json(responseBody, { status: 200 });
 }
 
 async function verifyCommentSeal(args: {
@@ -523,16 +572,19 @@ async function verifyCommentSeal(args: {
   auditId: string;
   auditTs: string;
   permittedAction: "comment" | "squash-merge";
+  finalState: FinalState;
 }): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
-  if (args.permittedAction !== "comment") {
+  const expectedPermittedAction =
+    args.finalState === "decided_pending_action" ? "squash-merge" : "comment";
+  if (args.permittedAction !== expectedPermittedAction) {
     return {
       ok: false,
       response: NextResponse.json(
         {
           code: "invalid_final_state_for_permitted_action",
           message:
-            "finalState=closed with commentUrl requires resolve-action " +
-            "permittedAction=comment.",
+            `finalState=${args.finalState} with commentUrl requires ` +
+            `resolve-action permittedAction=${expectedPermittedAction}.`,
         },
         { status: 409 },
       ),
@@ -684,7 +736,8 @@ async function verifyCommentSeal(args: {
     throw err;
   }
 
-  const expectedVerb: SealVerb = "comment";
+  const expectedVerb: SealVerb =
+    args.finalState === "decided_pending_action" ? "merge" : "comment";
   const verification = verifyCommentMatches({
     subjectRefParsed: parsedRef.ref,
     commentUrlParsed: parsedUrl.parsed,

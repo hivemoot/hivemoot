@@ -566,6 +566,36 @@ describe("mintInstallationToken — V1.6 allowedPermissions", () => {
     });
   });
 
+  it("server-internal ceiling can include checks:read", async () => {
+    const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
+    await mintInstallationToken(
+      {
+        ...VALID_OPTIONS,
+        permissionCeiling: {
+          pull_requests: "read",
+          checks: "read",
+          contents: "read",
+          metadata: "read",
+        },
+        allowedPermissions: {
+          pull_requests: "read",
+          checks: "read",
+          contents: "read",
+          metadata: "read",
+        },
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.permissions).toEqual({
+      pull_requests: "read",
+      checks: "read",
+      contents: "read",
+      metadata: "read",
+    });
+  });
+
   it("attempt to escalate (write where default is read) is silently capped", async () => {
     const fetcher = vi.fn().mockResolvedValue(fakeResponse(201, successBody()));
     await mintInstallationToken(

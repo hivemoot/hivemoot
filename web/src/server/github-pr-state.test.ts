@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   getPullRequestState,
+  getPullRequestMergeState,
   deriveCiState,
   PullRequestNotFoundError,
   GitHubAPIError,
@@ -448,5 +449,52 @@ describe("getPullRequestState", () => {
     // PR is first; checks + status follow in either order.
     expect(callOrder[0]).toBe("pr");
     expect(callOrder.slice(1).sort()).toEqual(["checks", "status"]);
+  });
+});
+
+describe("getPullRequestMergeState", () => {
+  it("returns GitHub's merged state and merge commit", async () => {
+    const fetchImpl = makeFetchMock([
+      {
+        match: "/pulls/42",
+        body: {
+          state: "closed",
+          merged: true,
+          merge_commit_sha: "feedface",
+          head: { sha: "deadbeef" },
+        },
+      },
+    ]);
+
+    await expect(
+      getPullRequestMergeState({
+        token: "ghs_test",
+        owner: "hivemoot",
+        repo: "hivemoot",
+        prNumber: 42,
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      state: "closed",
+      merged: true,
+      mergeCommitSha: "feedface",
+      headSha: "deadbeef",
+    });
+  });
+
+  it("throws PullRequestNotFoundError on 404", async () => {
+    const fetchImpl = makeFetchMock([
+      { match: "/pulls/99", body: { message: "Not Found" }, status: 404 },
+    ]);
+
+    await expect(
+      getPullRequestMergeState({
+        token: "ghs_test",
+        owner: "hivemoot",
+        repo: "hivemoot",
+        prNumber: 99,
+        fetchImpl,
+      }),
+    ).rejects.toBeInstanceOf(PullRequestNotFoundError);
   });
 });

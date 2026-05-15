@@ -288,6 +288,34 @@ export interface RoomDecision {
     /** Optional local-queen seal idempotency marker. Existing cloud
      * close calls leave this unset. */
     seal_audit_id?: string;
+    /** Head SHA the queen synthesized against, copied from the
+     * resolve-action audit row when sealing a squash-merge intent. */
+    reviewed_head_sha?: string;
+    /** Timestamp when the squash-merge intent entered
+     * `decided_pending_action`. Used by confirm-merge to enforce the
+     * operator override window and stale-intent TTL. */
+    pending_action_at?: string;
+    /** Final server-authoritative outcome for a pending merge intent. */
+    decision_outcome?: "merge_approved" | "merge_downgraded";
+    /** First failed invariant when `decision_outcome` is
+     * `merge_downgraded`. */
+    decision_outcome_reason?: string;
+    /** GitHub merge execution status after the server approves a merge. */
+    github_merge_status?: "pending" | "succeeded" | "failed";
+    /** Idempotency key for the server-approved local queen merge attempt. */
+    merge_attempt_id?: string;
+    /** Bearer fingerprint that received confirm-merge approval. Required
+     * again by report-merge-result so sibling local_queen tokens cannot
+     * report another runner's merge outcome. */
+    merge_attempt_fingerprint?: string;
+    /** Merge commit reported after a successful GitHub squash merge. */
+    merge_commit_oid?: string;
+    /** Local queen error class reported after a failed GitHub merge. */
+    github_merge_error_class?: string;
+    /** Timestamp when confirm-merge finalized this room. */
+    merge_confirmed_at?: string;
+    /** Timestamp when report-merge-result updated GitHub outcome fields. */
+    merge_reported_at?: string;
 }
 /**
  * Append-only event log entry. Stored as JSON in the
@@ -684,6 +712,50 @@ export declare class RoomContributionTooLargeError extends Error {
 export declare class RoomDecisionTooLargeError extends Error {
     readonly sizeBytes: number;
     constructor(sizeBytes: number);
+}
+/** Thrown when a pending-merge storage transition sees an unexpected status. */
+export declare class RoomPendingMergeInvalidStatusError extends Error {
+    readonly roomId: string;
+    readonly expectedStatus: RoomStatus;
+    readonly actualStatus: string;
+    constructor(roomId: string, expectedStatus: RoomStatus, actualStatus: string);
+}
+/** Thrown when events arrive after a squash-merge intent was sealed
+ * and before confirm-merge attempts to close the room. */
+export declare class RoomPendingMergeDriftError extends Error {
+    readonly roomId: string;
+    readonly expectedPendingSequence: number;
+    readonly lastSeq: number;
+    constructor(roomId: string, expectedPendingSequence: number, lastSeq: number);
+}
+/** Thrown when a merge-result report does not match the approved
+ * merge attempt recorded by confirm-merge. */
+export declare class RoomMergeAttemptMismatchError extends Error {
+    readonly roomId: string;
+    readonly expectedMergeAttemptId: string;
+    readonly actualMergeAttemptId: string | null;
+    constructor(roomId: string, expectedMergeAttemptId: string, actualMergeAttemptId: string | null);
+}
+/** Thrown when a merge-result report uses the right merge attempt id
+ * but not the same bearer that received confirm-merge approval. */
+export declare class RoomMergeAttemptBearerMismatchError extends Error {
+    readonly roomId: string;
+    readonly expectedFingerprint: string | null;
+    readonly actualFingerprint: string;
+    constructor(roomId: string, expectedFingerprint: string | null, actualFingerprint: string);
+}
+/** Thrown when merge-result reporting is attempted before
+ * confirm-merge has recorded a merge-approved decision. */
+export declare class RoomMergeReportNotApprovedError extends Error {
+    readonly roomId: string;
+    readonly decisionOutcome: string | null;
+    constructor(roomId: string, decisionOutcome: string | null);
+}
+/** Thrown when a merge transition expects an existing room decision
+ * but the room hash does not contain one. */
+export declare class RoomDecisionMissingError extends Error {
+    readonly roomId: string;
+    constructor(roomId: string);
 }
 /**
  * Thrown when `ROOM_DECIDE_CLAIM_SCRIPT` finds the synthesis claim
@@ -1282,13 +1354,14 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
  *   [4] statusSetAwaitingContribKey    — SREM idempotent
  *   [5] statusSetDecidingKey           — SREM idempotent
- *   [6] installationIndexKey           — all-rooms-for-installation sorted set
- *   [7] repoIndexKey                   — per-repo set
- *   [8] seqKey
- *   [9] eventsKey
- *   [10] participantsKey               — for TTL only
- *   [11] contributionsKey              — for TTL only
- *   [12] claimKey                      — DELed if held (deciding-state cleanup)
+ *   [6] statusSetDecidedPendingKey     — SREM idempotent
+ *   [7] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [8] repoIndexKey                   — per-repo set
+ *   [9] seqKey
+ *   [10] eventsKey
+ *   [11] participantsKey               — for TTL only
+ *   [12] contributionsKey              — for TTL only
+ *   [13] claimKey                      — DELed if held (deciding-state cleanup)
  *
  * ARGV:
  *   [1] roomId
@@ -1301,7 +1374,7 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   {1, sequence}             terminated cleanly
  *   {-1, currentStatus}       already closed (no-op for operator double-tap)
  */
-export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[12])\nlocal seq = redis.call(\"incr\", KEYS[8])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[9], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\n-- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Closed rooms remain in the installation index so the dashboard's\n-- \"Active and past governance synthesis rooms\" surface can list them\n-- for the retention window (30 days). The room hash itself TTL's via\n-- KEYS[1] expire below; once that fires, listRooms's built-in\n-- orphan-cleanup pass ZREMs the now-stale index entry on the next\n-- read. /watching filters by status server-side, so closed rooms\n-- still don't surface to agent dispatch.\nredis.call(\"srem\", KEYS[7], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nreturn {1, seq}\n";
+export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[13])\nlocal seq = redis.call(\"incr\", KEYS[9])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[10], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\nredis.call(\"srem\", KEYS[6], ARGV[1])\n-- KEYS[7] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Closed rooms remain in the installation index so the dashboard's\n-- \"Active and past governance synthesis rooms\" surface can list them\n-- for the retention window (30 days). The room hash itself TTL's via\n-- KEYS[1] expire below; once that fires, listRooms's built-in\n-- orphan-cleanup pass ZREMs the now-stale index entry on the next\n-- read. /watching filters by status server-side, so closed rooms\n-- still don't surface to agent dispatch.\nredis.call(\"srem\", KEYS[8], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nredis.call(\"expire\", KEYS[12], retention)\nreturn {1, seq}\n";
 /**
  * ROOM_CLOSE_SCRIPT — queen happy-path close with sequence-consistency.
  *
@@ -1367,6 +1440,34 @@ export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"
  *   {-3, "decode_error"}                             claim payload corruption
  */
 export declare const ROOM_CLOSE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal expectedRunner = ARGV[7]\nif expectedRunner ~= \"\" and parsed.runner ~= expectedRunner then\n  return {-3, \"claim_runner_mismatch\", parsed.runner or \"\"}\nend\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  -- Drift: new events arrived during synthesis. Revert atomically\n  -- (closes design B2: prior implementation orphaned rooms from\n  -- both deciding and awaiting_contributions sets, making them\n  -- invisible to subsequent ticks).\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[7], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[3], tostring(closedSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"del\", KEYS[6])\nredis.call(\"srem\", KEYS[4], ARGV[1])\n-- KEYS[10] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Same rationale as ROOM_TERMINATE_SCRIPT: closed rooms stay in the\n-- installation index for the retention window so the dashboard\n-- can list past synthesis rooms. listRooms's orphan-cleanup\n-- collects stale entries lazily after the hash TTL expires.\nredis.call(\"srem\", KEYS[11], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[3], retention)\nredis.call(\"expire\", KEYS[7], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nreturn {1, closedSeq}\n";
+/**
+ * ROOM_SEAL_PENDING_MERGE_SCRIPT — local-queen squash-merge intent.
+ *
+ * Same claim/runner/sequence guards as `ROOM_CLOSE_SCRIPT`, but the
+ * happy path moves the room to `decided_pending_action` instead of
+ * `closed`. The subject lock and repo index stay in place while the
+ * operator override window is open; `confirm-merge` is responsible
+ * for the terminal close.
+ */
+export declare const ROOM_SEAL_PENDING_MERGE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal expectedRunner = ARGV[5]\nif expectedRunner ~= \"\" and parsed.runner ~= expectedRunner then\n  return {-3, \"claim_runner_mismatch\", parsed.runner or \"\"}\nend\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal pendingSeq = lastSeq + 1\nlocal pendingEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(pendingSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"decided_pending_action\",\n                          \"decision\", ARGV[3],\n                          \"deciding_through_sequence\", \"\")\nredis.call(\"zadd\", KEYS[7], pendingSeq, pendingEventJson)\nredis.call(\"set\", KEYS[3], tostring(pendingSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"sadd\", KEYS[6], ARGV[1])\nreturn {1, pendingSeq}\n";
+/**
+ * ROOM_CONFIRM_PENDING_MERGE_SCRIPT — terminal close after D1 recheck.
+ *
+ * `confirm-merge` computes the server-authoritative outcome before
+ * calling this script. The script only enforces storage invariants:
+ * status is still `decided_pending_action`, no new events landed
+ * since the pending seal event, and the close/index cleanup happens
+ * atomically with the updated decision payload.
+ */
+export declare const ROOM_CONFIRM_PENDING_MERGE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus ~= \"decided_pending_action\" then return {-1, currStatus} end\nlocal expectedPendingSeq = tonumber(ARGV[2])\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[2])) or 0\nif lastSeq ~= expectedPendingSeq then return {-2, lastSeq} end\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[5], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[2], tostring(closedSeq))\nredis.call(\"del\", KEYS[4])\nredis.call(\"srem\", KEYS[3], ARGV[1])\n-- KEYS[8] (installationIndexKey) remains for dashboard listability.\nredis.call(\"srem\", KEYS[9], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[2], retention)\nredis.call(\"expire\", KEYS[5], retention)\nredis.call(\"expire\", KEYS[6], retention)\nredis.call(\"expire\", KEYS[7], retention)\nreturn {1, closedSeq}\n";
+/**
+ * ROOM_REPORT_MERGE_RESULT_SCRIPT — update GitHub merge outcome fields.
+ *
+ * Runs after the local queen attempts `gh pr merge --squash`. The room
+ * must already be closed by `confirm-merge`, and the report must match
+ * the exact `merge_attempt_id` recorded there.
+ */
+export declare const ROOM_REPORT_MERGE_RESULT_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus ~= \"closed\" then return {-1, currStatus} end\nlocal decisionJson = redis.call(\"hget\", KEYS[1], \"decision\")\nif not decisionJson then return {-2, \"no_decision\"} end\nlocal ok, decision = pcall(cjson.decode, decisionJson)\nif not ok then return {-2, \"decode_error\"} end\nif decision.merge_attempt_id ~= ARGV[1] then\n  return {-3, decision.merge_attempt_id or \"\"}\nend\nif decision.decision_outcome ~= \"merge_approved\" then\n  return {-4, decision.decision_outcome or \"\"}\nend\nif decision.merge_attempt_fingerprint ~= ARGV[3] then\n  return {-5, decision.merge_attempt_fingerprint or \"\"}\nend\nredis.call(\"hset\", KEYS[1], \"decision\", ARGV[2])\nreturn {1}\n";
 /**
  * Validate role at the BODY boundary. Distinct from the internal
  * `assertRoleFormat` — this version is for caller-supplied role
@@ -1844,36 +1945,6 @@ export declare function terminateRoom(args: {
     redis: Redis;
     nowMs?: number;
 }): Promise<number>;
-/**
- * Close a room with the queen's synthesized decision — happy-path
- * close that requires a live claim AND sequence consistency.
- *
- * The queen calls this AFTER `claimSynthesis` returns
- * `{throughSequence, claimTtlSecs}` and AFTER the queen's runtime
- * has produced a `RoomDecision`. The script verifies:
- *   1. Claim still exists (DEL'd → force-close raced; abort)
- *   2. Claim's `throughSequence` matches caller's expectation
- *      (mismatch → another runner re-claimed; abort)
- *   3. Live `seq` matches `expectedThroughSequence` (drift → new
- *      events arrived during synthesis; revert + retry)
- *
- * Drift handling: revert is atomic. The queen aborts its GitHub
- * post on `RoomCloseDriftError`, and the manager loop re-claims on
- * the next tick (the room's status is back at
- * `awaiting_contributions` — synthesis re-enters cleanly).
- *
- * Throws (each typed for caller decision):
- *   - `RoomCloseClaimLostError` — claim DELed (likely force-close);
- *     ABORT the GitHub post and surface terminal state to operator
- *   - `RoomCloseClaimThroughSeqMismatchError` — different runner
- *     re-claimed; ABORT, do NOT post
- *   - `RoomCloseClaimRunnerMismatchError` — local-queen seal saw a
- *     live claim held by a different runner; ABORT, do NOT post
- *   - `RoomCloseDriftError` — sequence drift; revert is already
- *     applied, queen logs and exits, manager re-claims
- *   - `RoomClaimPayloadCorruptError` — claim payload corrupted;
- *     ABORT, operator inspects
- */
 export declare function closeRoomWithDecision(args: {
     installationId: string;
     roomId: string;
@@ -1887,6 +1958,50 @@ export declare function closeRoomWithDecision(args: {
     redis: Redis;
     nowMs?: number;
 }): Promise<number>;
+/**
+ * Seal a server-permitted squash-merge intent. This is the local
+ * queen's tick-N transition after it posts the public intent comment:
+ * `deciding` -> `decided_pending_action`.
+ */
+export declare function sealRoomForPendingMerge(args: {
+    installationId: string;
+    roomId: string;
+    expectedThroughSequence: number;
+    expectedRunner: string;
+    decision: RoomDecision;
+    subject: SubjectRef;
+    redis: Redis;
+    nowMs?: number;
+}): Promise<number>;
+/**
+ * Confirm or downgrade a pending squash-merge intent after the local
+ * queen's tick-N+1 GitHub re-read. Both outcomes close the room; a
+ * merge-approved decision carries `github_merge_status: "pending"`
+ * until `reportMergeResultForRoom` records the actual GitHub result.
+ */
+export declare function confirmPendingMergeDecision(args: {
+    installationId: string;
+    roomId: string;
+    expectedPendingSequence: number;
+    decision: RoomDecision;
+    subject: SubjectRef;
+    redis: Redis;
+    retentionSecs?: number;
+    nowMs?: number;
+}): Promise<number>;
+/**
+ * Record the GitHub-side result for a merge attempt previously
+ * approved by `confirmPendingMergeDecision`.
+ */
+export declare function reportMergeResultForRoom(args: {
+    installationId: string;
+    roomId: string;
+    mergeAttemptId: string;
+    mergeAttemptFingerprint: string;
+    decision: RoomDecision;
+    redis: Redis;
+    nowMs?: number;
+}): Promise<void>;
 /**
  * Read events from a room's append-only log, ordered by sequence.
  * `since` filters to events with `seq > since` (caller's last-seen

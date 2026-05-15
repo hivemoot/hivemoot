@@ -87,6 +87,17 @@ export interface PullRequestState {
   mergeableState: string | null;
 }
 
+export interface PullRequestMergeState {
+  /** Current GitHub PR state. */
+  state: "open" | "closed";
+  /** True only once GitHub reports the PR as merged. */
+  merged: boolean;
+  /** GitHub's merge commit SHA, present for merged PRs. */
+  mergeCommitSha: string | null;
+  /** Current head SHA, useful for diagnostics on failed reports. */
+  headSha: string;
+}
+
 /**
  * Thrown when GitHub returns 404 for the PR (deleted / wrong repo).
  * Resolve-action surfaces this as 404 to the caller — the room core
@@ -303,4 +314,35 @@ export async function getPullRequestState(
   });
 
   return { headSha, labels, ciState, mergeableState };
+}
+
+export async function getPullRequestMergeState(
+  args: GetPullRequestStateArgs,
+): Promise<PullRequestMergeState> {
+  const doFetch = args.fetchImpl ?? fetch;
+  const baseRef = `${args.owner}/${args.repo}#${args.prNumber}`;
+  const prEndpoint = `${GH_API}/repos/${args.owner}/${args.repo}/pulls/${args.prNumber}`;
+  const prRes = await doFetch(prEndpoint, { headers: ghHeaders(args.token) });
+  if (prRes.status === 404) {
+    throw new PullRequestNotFoundError(args.owner, args.repo, args.prNumber);
+  }
+  if (!prRes.ok) {
+    throw new GitHubAPIError(
+      `GET /repos/{owner}/{repo}/pulls/{pull_number} (${baseRef})`,
+      prRes.status,
+      await prRes.text(),
+    );
+  }
+  const prBody = (await prRes.json()) as {
+    state: "open" | "closed";
+    merged: boolean;
+    merge_commit_sha: string | null;
+    head: { sha: string };
+  };
+  return {
+    state: prBody.state,
+    merged: prBody.merged,
+    mergeCommitSha: prBody.merge_commit_sha ?? null,
+    headSha: prBody.head.sha,
+  };
 }

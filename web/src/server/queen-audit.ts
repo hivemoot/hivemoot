@@ -264,6 +264,26 @@ export interface QueenIntendedActionPostFailedDetail {
   retry_count: number | null;
 }
 
+export interface QueenConfirmMergeDetail {
+  room_id: string;
+  subject_ref: string;
+  audit_id_from_resolve_action: string;
+  merge_attempt_id: string;
+  decision_outcome: "merge_approved" | "merge_downgraded";
+  decision_outcome_reason: string | null;
+  reviewed_head_sha: string;
+  current_head_sha: string;
+}
+
+export interface QueenMergeResultDetail {
+  room_id: string;
+  subject_ref: string;
+  merge_attempt_id: string;
+  github_merge_status: "succeeded" | "failed";
+  merge_commit_oid: string | null;
+  error_class: string | null;
+}
+
 /**
  * Emit the baseline `queen.resolve_action` audit row. Returns the
  * stream entry ID (the `audit_id` the route returns to the caller).
@@ -320,6 +340,54 @@ export async function emitQueenIntendedActionPostFailed(
   } catch (err) {
     console.warn(
       `[queen-audit] emitQueenIntendedActionPostFailed failed for installation=${args.installationId} room=${args.detail.room_id}`,
+      err,
+    );
+  }
+}
+
+export async function emitQueenConfirmMerge(
+  args: QueenAuditCallerContext & { detail: QueenConfirmMergeDetail },
+): Promise<void> {
+  try {
+    await auditAppend({
+      redis: args.redis,
+      installationId: args.installationId,
+      entry: {
+        ts: new Date().toISOString(),
+        fingerprint: args.fingerprint,
+        name: args.name,
+        action: "queen.confirm_merge",
+        actor: args.name,
+        detail: args.detail as unknown as Record<string, unknown>,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[queen-audit] emitQueenConfirmMerge failed for installation=${args.installationId} room=${args.detail.room_id}`,
+      err,
+    );
+  }
+}
+
+export async function emitQueenMergeResult(
+  args: QueenAuditCallerContext & { detail: QueenMergeResultDetail },
+): Promise<void> {
+  try {
+    await auditAppend({
+      redis: args.redis,
+      installationId: args.installationId,
+      entry: {
+        ts: new Date().toISOString(),
+        fingerprint: args.fingerprint,
+        name: args.name,
+        action: "queen.merge_result",
+        actor: args.name,
+        detail: args.detail as unknown as Record<string, unknown>,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[queen-audit] emitQueenMergeResult failed for installation=${args.installationId} room=${args.detail.room_id}`,
       err,
     );
   }
@@ -488,8 +556,14 @@ const RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS = 60;
 const RESOLVE_ACTION_PER_BEARER_MAX = 60;
 const RESOLVE_ACTION_PER_INSTALLATION_MAX = 240;
 
+type QueenRateLimitedEndpoint =
+  | "resolve-action"
+  | "seal-decision"
+  | "confirm-merge"
+  | "report-merge-result";
+
 function perBearerRateLimitKey(
-  endpoint: "resolve-action" | "seal-decision",
+  endpoint: QueenRateLimitedEndpoint,
   installationId: string,
   fingerprint: string,
 ): string {
@@ -497,7 +571,7 @@ function perBearerRateLimitKey(
 }
 
 function perInstallationRateLimitKey(
-  endpoint: "resolve-action" | "seal-decision",
+  endpoint: QueenRateLimitedEndpoint,
   installationId: string,
 ): string {
   return `hive:v1:queen:rl:${endpoint}:${installationId}:_install`;
@@ -568,8 +642,46 @@ export async function checkSealDecisionRateLimit(args: {
   });
 }
 
+export async function checkConfirmMergeRateLimit(args: {
+  redis: Redis;
+  installationId: string;
+  fingerprint: string;
+}): Promise<
+  | { allowed: true }
+  | {
+      allowed: false;
+      scope: RateLimitScope;
+      currentCount: number;
+      resetAtSecs: number;
+    }
+> {
+  return checkQueenEndpointRateLimit({
+    ...args,
+    endpoint: "confirm-merge",
+  });
+}
+
+export async function checkReportMergeResultRateLimit(args: {
+  redis: Redis;
+  installationId: string;
+  fingerprint: string;
+}): Promise<
+  | { allowed: true }
+  | {
+      allowed: false;
+      scope: RateLimitScope;
+      currentCount: number;
+      resetAtSecs: number;
+    }
+> {
+  return checkQueenEndpointRateLimit({
+    ...args,
+    endpoint: "report-merge-result",
+  });
+}
+
 async function checkQueenEndpointRateLimit(args: {
-  endpoint: "resolve-action" | "seal-decision";
+  endpoint: QueenRateLimitedEndpoint;
   redis: Redis;
   installationId: string;
   fingerprint: string;
