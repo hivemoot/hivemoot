@@ -9,6 +9,10 @@ import { LABELS, MESSAGES, REQUIRED_REPOSITORY_LABELS } from "../../config.js";
 import type { IssueRef } from "../../lib/types.js";
 import type { IncomingMessage, ServerResponse } from "http";
 import { app as registerWebhookApp } from "./index.js";
+import {
+  maybeCreatePrReviewRoom,
+  maybeEmitSubjectUpdated,
+} from "../../lib/war-room-routing.js";
 
 // Mock probot to prevent actual initialization
 vi.mock("../../lib/war-room-routing.js", () => ({
@@ -2191,6 +2195,8 @@ describe("Queen Bot", () => {
       vi.mocked(getLinkedIssues).mockReset();
       vi.mocked(loadRepositoryConfig).mockReset();
       vi.mocked(disablePullRequestAutoMerge).mockReset().mockResolvedValue(undefined);
+      vi.mocked(maybeCreatePrReviewRoom).mockReset().mockResolvedValue({ roomId: null });
+      vi.mocked(maybeEmitSubjectUpdated).mockReset().mockResolvedValue({ sequence: null });
     });
 
     it("should call processImplementationIntake on pull_request.opened", async () => {
@@ -2214,6 +2220,36 @@ describe("Queen Bot", () => {
       );
     });
 
+    it("creates the PR review room on opened before intake can fail", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([
+        { number: 689, title: "issue", state: "OPEN", labels: { nodes: [] } },
+      ] as any);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+      vi.mocked(processImplementationIntake).mockRejectedValueOnce(new Error("intake failed"));
+
+      await expect(
+        handlers.get("pull_request.opened")!({
+          octokit: mkOctokit(),
+          log: mkLog(),
+          payload: {
+            installation: { id: 12345 },
+            pull_request: { number: 690, body: "Fixes #689", base: { ref: "main" } },
+            repository: testRepo,
+          },
+        }),
+      ).rejects.toThrow("intake failed");
+
+      expect(maybeCreatePrReviewRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 12345,
+          prNumber: 690,
+        }),
+      );
+    });
+
     it("should call processImplementationIntake on pull_request.synchronize", async () => {
       const { handlers } = createWebhookHarness();
       vi.mocked(getLinkedIssues).mockResolvedValue([]);
@@ -2230,6 +2266,52 @@ describe("Queen Bot", () => {
 
       expect(processImplementationIntake).toHaveBeenCalledWith(
         expect.objectContaining({ trigger: "updated" })
+      );
+    });
+
+    it("creates the PR review room on synchronize when subject_updated finds no room", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+      vi.mocked(maybeEmitSubjectUpdated)
+        .mockResolvedValueOnce({ sequence: null, skipped: "no_room" })
+        .mockResolvedValueOnce({ sequence: 7 });
+      vi.mocked(maybeCreatePrReviewRoom).mockResolvedValue({
+        roomId: "875e5bb0-27a2-4e6c-bb13-08904919f194",
+      });
+
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 12345 },
+          pull_request: {
+            number: 688,
+            base: { ref: "main" },
+            head: { sha: "new-head-sha" },
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(maybeCreatePrReviewRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 12345,
+          prNumber: 688,
+        }),
+      );
+      expect(maybeEmitSubjectUpdated).toHaveBeenCalledTimes(2);
+      expect(maybeEmitSubjectUpdated).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 12345,
+          prNumber: 688,
+          changeKind: "synchronize",
+          headSha: "new-head-sha",
+        }),
       );
     });
 

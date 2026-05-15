@@ -93,7 +93,7 @@ const mockedRateLimit = vi.mocked(checkResolveActionRateLimit);
 const HEAD_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
 function makeRedis(
-  claimRaw: string | null = JSON.stringify({
+  claimRaw: unknown = JSON.stringify({
     runner: "queen-hive-1",
     throughSequence: 42,
   }),
@@ -393,6 +393,27 @@ describe("POST /api/rooms/:roomId/resolve-action — claim verification", () => 
 
   it("returns 409 claim_payload_corrupt when the claim JSON is unparseable", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk(makeRedis("not-json-at-all")));
+    mockedGetRoomCore.mockResolvedValue(makeRoom());
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("claim_payload_corrupt");
+    errSpy.mockRestore();
+  });
+
+  it("accepts claims returned as parsed JSON objects by Redis clients", async () => {
+    mockedAuth.mockResolvedValue(
+      makeAuthOk(makeRedis({ runner: "queen-hive-1", throughSequence: 42 })),
+    );
+    mockedGetRoomCore.mockResolvedValue(makeRoom());
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 409 claim_payload_corrupt for malformed object claims", async () => {
+    mockedAuth.mockResolvedValue(
+      makeAuthOk(makeRedis({ runner: "queen-hive-1", throughSequence: "42" })),
+    );
     mockedGetRoomCore.mockResolvedValue(makeRoom());
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await POST(makeRequest(makeBody()), makeContext());
