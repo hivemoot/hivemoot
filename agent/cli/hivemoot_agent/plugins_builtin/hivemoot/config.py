@@ -423,6 +423,14 @@ class HivemootQueenConfig(StrictPluginConfig):
             "Keep false until the web confirm/report endpoints are deployed."
         ),
     )
+    merge_report_queue_file: Path = Field(
+        default=Path("/tmp/hivemoot-queen-merge-reports.json"),
+        description=(
+            "Local retry queue for successful GitHub merges whose "
+            "report-merge-result call failed. Keep this on writable "
+            "persistent storage when enable_squash_merge is true."
+        ),
+    )
 
 
 class HivemootConfig(StrictPluginConfig):

@@ -388,9 +388,11 @@ subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
   the decision through `/api/rooms/:roomId/seal-decision`.  When
   `enable_squash_merge` is true, it also polls
   `/api/rooms/decided-pending-ready`, calls the server-side
-  `confirm-merge` gate, runs `gh pr merge --squash` only after
-  approval, and reports the GitHub outcome back through
-  `/api/rooms/:roomId/report-merge-result`.  It is disabled by
+  `confirm-merge` gate, runs `gh pr merge --squash` with
+  `--match-head-commit` only after approval, and reports the GitHub
+  outcome back through `/api/rooms/:roomId/report-merge-result`.
+  Successful merges whose result report fails are retried from the
+  local `merge_report_queue_file`.  It is disabled by
   default; keep cloud `queen_mode=cloud` until the web endpoints,
   runner image, token policy, and fleet config are deployed and
   observed healthy.
@@ -430,6 +432,7 @@ plugins:
       base_url: https://www.hivemoot.dev
       runner_id: hive-queen-1
       enable_squash_merge: false
+      merge_report_queue_file: /workspace/hivemoot-queen-merge-reports.json
 ```
 
 Deploy the runner with `enable_squash_merge: false` first to verify

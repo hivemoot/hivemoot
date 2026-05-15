@@ -81,6 +81,7 @@ class QueenTriggerWiringTests(unittest.TestCase):
                 synthesis_ready_limit=5,
                 runner_id="queen-a",
                 enable_squash_merge=True,
+                merge_report_queue_file="/tmp/queen-reports.json",
             ),
         ).typed
         trigger = plugin.triggers()[0]
@@ -88,6 +89,10 @@ class QueenTriggerWiringTests(unittest.TestCase):
         self.assertEqual(trigger._poll_interval_secs, 30)
         self.assertEqual(trigger._ready_limit, 5)
         self.assertTrue(trigger._enable_squash_merge)
+        self.assertEqual(
+            trigger._merge_report_queue_file,
+            "/tmp/queen-reports.json",
+        )
 
     def test_validate_accepts_squash_merge_flag(self) -> None:
         plugin = HivemootPlugin()

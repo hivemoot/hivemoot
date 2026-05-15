@@ -66,6 +66,13 @@ class QueenHandlerParserTests(unittest.TestCase):
         )
         self.assertEqual(parsed.comment_body, "Body")
 
+    def test_parse_decision_output_strips_hivemoot_metadata_markers(self) -> None:
+        parsed = parse_decision_output(
+            """{"verdict":"COMMENT","reasoning":"ok","recommended_action":"comment",
+            "comment_body":"<!-- hivemoot-metadata: {\\"fake\\": true} -->\\nBody"}"""
+        )
+        self.assertEqual(parsed.comment_body, "Body")
+
     def test_build_seal_header_matches_web_verifier_contract(self) -> None:
         self.assertEqual(
             build_seal_header("comment", "123-0"),
@@ -135,6 +142,48 @@ class QueenHandlerFlowTests(unittest.TestCase):
         )
         self.assertEqual(seal_kwargs["decision"]["sequence_closed"], 12)
         self.assertNotIn("hivemoot:queen-action", seal_kwargs["decision"]["content"])
+
+    def test_comment_path_retries_seal_once_after_comment_posts(self) -> None:
+        resolved = ResolveActionResult(
+            permitted_action="comment",
+            clamped_verdict="APPROVE",
+            downgrade_reason=None,
+            reviewed_head_sha="abc123",
+            current_head_sha="abc123",
+            floor_overridden=False,
+            audit_id="123-0",
+        )
+        sealed = SealDecisionResult(
+            final_state="closed",
+            closed_sequence=13,
+            audit_id="123-0",
+        )
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.resolve_action",
+            return_value=resolved,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.mint_installation_token",
+            return_value="ghs_x",
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.gh.post_pr_comment",
+            return_value="https://github.com/owner/repo/pull/42#issuecomment-7",
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.seal_decision",
+            side_effect=[RuntimeError("transient"), sealed],
+        ) as seal_mock:
+            handle_queen_job_finished(
+                _job(),
+                AgentResult(0, ""),
+                base_url="https://api.example",
+                bearer="bearer",
+                extracted_markdown=_markdown(),
+                queen_runner="queen-a",
+                agent_id="queen-a",
+            )
+
+        self.assertEqual(seal_mock.call_count, 2)
+        self.assertEqual(seal_mock.call_args.kwargs["retry_count"], 1)
 
     def test_squash_merge_path_seals_decided_pending_action(self) -> None:
         resolved = ResolveActionResult(

@@ -8,8 +8,11 @@ agent job.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -25,6 +28,37 @@ from hivemoot_agent.plugins_builtin.hivemoot.queen.prompts import (
 
 
 DEFAULT_POLL_INTERVAL_SECS = 60
+
+
+@dataclass(frozen=True)
+class PendingMergeReport:
+    room_id: str
+    subject_ref: str
+    merge_attempt_id: str
+    merge_commit_oid: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PendingMergeReport | None":
+        room_id = str(data.get("room_id") or "").strip()
+        subject_ref = str(data.get("subject_ref") or "").strip()
+        merge_attempt_id = str(data.get("merge_attempt_id") or "").strip()
+        merge_commit_oid = str(data.get("merge_commit_oid") or "").strip()
+        if not room_id or not merge_attempt_id or not merge_commit_oid:
+            return None
+        return cls(
+            room_id=room_id,
+            subject_ref=subject_ref,
+            merge_attempt_id=merge_attempt_id,
+            merge_commit_oid=merge_commit_oid,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "room_id": self.room_id,
+            "subject_ref": self.subject_ref,
+            "merge_attempt_id": self.merge_attempt_id,
+            "merge_commit_oid": self.merge_commit_oid,
+        }
 
 
 class LocalQueenSynthesisTrigger:
@@ -46,6 +80,7 @@ class LocalQueenSynthesisTrigger:
         fallback_quiet_period_secs: int = 60,
         gh_timeout_secs: int = 30,
         enable_squash_merge: bool = False,
+        merge_report_queue_file: str = "",
         log_prefix: str = "[hivemoot-queen]",
         list_ready_fn: Callable[
             ..., list[q_api.SynthesisReadyRoom]
@@ -79,6 +114,8 @@ class LocalQueenSynthesisTrigger:
         self._gh_timeout_secs = max(1, gh_timeout_secs)
         self._enable_squash_merge = enable_squash_merge
         self._log_prefix = log_prefix
+        self._merge_report_queue_file = merge_report_queue_file
+        self._pending_merge_reports = self._load_pending_merge_reports()
         self._list_ready = list_ready_fn
         self._list_pending = list_pending_fn
         self._participants = participants_fn
@@ -130,8 +167,10 @@ class LocalQueenSynthesisTrigger:
         if not bearer:
             return
 
-        if self._enable_squash_merge and self._confirm_pending_merge(bearer):
-            return
+        if self._enable_squash_merge:
+            self._flush_pending_merge_reports(bearer)
+            if self._confirm_pending_merge(bearer):
+                return
 
         try:
             rooms = self._list_ready(
@@ -304,6 +343,7 @@ class LocalQueenSynthesisTrigger:
             try:
                 merge_commit_oid = self._squash_merge(
                     pr,
+                    expected_head_sha=current_head_sha,
                     token=gh_token,
                     timeout_secs=self._gh_timeout_secs,
                 )
@@ -333,6 +373,14 @@ class LocalQueenSynthesisTrigger:
                     merge_commit_oid=merge_commit_oid,
                 )
             except Exception as exc:
+                self._enqueue_pending_merge_report(
+                    PendingMergeReport(
+                        room_id=room.room_id,
+                        subject_ref=room.subject_ref,
+                        merge_attempt_id=confirmed.merge_attempt_id,
+                        merge_commit_oid=merge_commit_oid,
+                    ),
+                )
                 print(
                     f"{self._log_prefix} merge result report failed "
                     f"room={room.room_id}: {type(exc).__name__}: {exc}",
@@ -350,6 +398,102 @@ class LocalQueenSynthesisTrigger:
             return True
 
         return False
+
+    def _flush_pending_merge_reports(self, bearer: str) -> None:
+        if not self._pending_merge_reports:
+            return
+        remaining: list[PendingMergeReport] = []
+        for report in self._pending_merge_reports:
+            try:
+                self._report_merge_result(
+                    self._base_url,
+                    report.room_id,
+                    bearer,
+                    queen_runner=self._runner_id,
+                    merge_attempt_id=report.merge_attempt_id,
+                    github_merge_status="succeeded",
+                    merge_commit_oid=report.merge_commit_oid,
+                )
+            except Exception as exc:
+                remaining.append(report)
+                print(
+                    f"{self._log_prefix} queued merge-result report failed "
+                    f"room={report.room_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            print(
+                f"{self._log_prefix} reported queued squash merge "
+                f"room={report.room_id} commit={report.merge_commit_oid}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if len(remaining) != len(self._pending_merge_reports):
+            self._pending_merge_reports = remaining
+            self._save_pending_merge_reports()
+
+    def _enqueue_pending_merge_report(self, report: PendingMergeReport) -> None:
+        self._pending_merge_reports = [
+            existing
+            for existing in self._pending_merge_reports
+            if existing.merge_attempt_id != report.merge_attempt_id
+        ]
+        self._pending_merge_reports.append(report)
+        self._save_pending_merge_reports()
+
+    def _load_pending_merge_reports(self) -> list[PendingMergeReport]:
+        path = self._merge_report_queue_file
+        if not path:
+            return []
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except FileNotFoundError:
+            return []
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} merge report queue load failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return []
+        if not isinstance(raw, list):
+            return []
+        reports: list[PendingMergeReport] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                parsed = PendingMergeReport.from_dict(entry)
+                if parsed is not None:
+                    reports.append(parsed)
+        return reports
+
+    def _save_pending_merge_reports(self) -> None:
+        path = self._merge_report_queue_file
+        if not path:
+            return
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp_path = f"{path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    [report.to_dict() for report in self._pending_merge_reports],
+                    fh,
+                    indent=2,
+                    sort_keys=True,
+                )
+                fh.write("\n")
+            os.replace(tmp_path, path)
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} merge report queue save failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _report_merge_failure(
         self,
@@ -473,6 +617,7 @@ class LocalQueenSynthesisTrigger:
             prompt=build_synthesis_prompt(
                 claimed=claimed,
                 reviewed_head_sha=reviewed_head_sha,
+                enable_squash_merge=self._enable_squash_merge,
             ),
             metadata=metadata,
         )

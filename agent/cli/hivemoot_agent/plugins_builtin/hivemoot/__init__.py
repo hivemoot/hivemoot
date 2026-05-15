@@ -626,6 +626,7 @@ class HivemootPlugin:
                 fallback_quiet_period_secs=cfg.queen.fallback_quiet_period_secs,
                 gh_timeout_secs=cfg.queen.gh_timeout_secs,
                 enable_squash_merge=cfg.queen.enable_squash_merge,
+                merge_report_queue_file=str(cfg.queen.merge_report_queue_file),
             )
             triggers.append(self._queen_trigger)  # type: ignore[arg-type]
 

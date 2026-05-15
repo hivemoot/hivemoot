@@ -74,7 +74,22 @@ def _run_gh(
 ) -> str:
     if not token:
         raise GHCommandError("missing GitHub token")
-    env = os.environ.copy()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        in {
+            "PATH",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+        }
+    }
     env["GH_TOKEN"] = token
     env["GITHUB_TOKEN"] = token
     try:
@@ -161,9 +176,13 @@ def get_pr_merge_commit_sha(
 def squash_merge_pr(
     pr: PullRequestRef,
     *,
+    expected_head_sha: str,
     token: str,
     timeout_secs: int = 30,
 ) -> str:
+    expected = expected_head_sha.strip()
+    if not expected:
+        raise ValueError("expected_head_sha must be non-empty")
     _run_gh(
         [
             "pr",
@@ -172,6 +191,8 @@ def squash_merge_pr(
             "--repo",
             pr.full_repo,
             "--squash",
+            "--match-head-commit",
+            expected,
         ],
         token=token,
         timeout_secs=timeout_secs,

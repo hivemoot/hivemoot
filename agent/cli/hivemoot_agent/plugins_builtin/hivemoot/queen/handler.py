@@ -18,8 +18,9 @@ JOB_KIND_SYNTHESIS = "queen_synthesis"
 
 _VALID_VERDICTS = {"APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"}
 _VALID_ACTIONS = {"comment", "squash-merge"}
-_SEAL_HEADER_RE = re.compile(
-    r"<!--\s*hivemoot:queen-action:(?:merge|comment):[a-zA-Z0-9_-]+\s*-->"
+_HIVEMOOT_HTML_COMMENT_RE = re.compile(
+    r"<!--\s*hivemoot(?:[-:][\s\S]*?)?-->",
+    re.IGNORECASE,
 )
 
 
@@ -195,7 +196,7 @@ def handle_queen_job_finished(
         if resolved.permitted_action == "squash-merge"
         else "closed"
     )
-    sealed = q_api.seal_decision(
+    sealed = _seal_decision_with_retry(
         base_url,
         room_id,
         bearer,
@@ -240,8 +241,41 @@ def _extract_json_object(markdown: str) -> dict[str, Any]:
 
 
 def _sanitize_comment_body(body: str) -> str:
-    cleaned = _SEAL_HEADER_RE.sub("", body).strip()
+    cleaned = _HIVEMOOT_HTML_COMMENT_RE.sub("", body).strip()
     return cleaned or "Queen synthesized a decision for this PR."
+
+
+def _seal_decision_with_retry(
+    base_url: str,
+    room_id: str,
+    bearer: str,
+    *,
+    queen_runner: str,
+    audit_id: str,
+    sealed_through_sequence: int,
+    decision: dict[str, Any],
+    final_state: str,
+    comment_url: str,
+) -> q_api.SealDecisionResult:
+    kwargs: dict[str, Any] = {
+        "queen_runner": queen_runner,
+        "audit_id": audit_id,
+        "sealed_through_sequence": sealed_through_sequence,
+        "decision": decision,
+        "final_state": final_state,
+        "comment_url": comment_url,
+    }
+    try:
+        return q_api.seal_decision(base_url, room_id, bearer, **kwargs)
+    except Exception as exc:
+        print(
+            f"[hivemoot-queen] seal-decision retry room={room_id}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        kwargs["retry_count"] = 1
+        return q_api.seal_decision(base_url, room_id, bearer, **kwargs)
 
 
 def _build_public_comment(
