@@ -352,6 +352,7 @@ export async function POST(
       ? undefined
       : (policy.downgradeReason ?? "head_sha_drift"),
     merge_attempt_id: body.mergeAttemptId,
+    merge_attempt_fingerprint: auth.envelope.fingerprint,
     github_merge_status: mergeApproved ? "pending" : undefined,
   };
 

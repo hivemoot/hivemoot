@@ -414,6 +414,10 @@ export interface RoomDecision {
   github_merge_status?: "pending" | "succeeded" | "failed";
   /** Idempotency key for the server-approved local queen merge attempt. */
   merge_attempt_id?: string;
+  /** Bearer fingerprint that received confirm-merge approval. Required
+   * again by report-merge-result so sibling local_queen tokens cannot
+   * report another runner's merge outcome. */
+  merge_attempt_fingerprint?: string;
   /** Merge commit reported after a successful GitHub squash merge. */
   merge_commit_oid?: string;
   /** Local queen error class reported after a failed GitHub merge. */
@@ -1427,6 +1431,27 @@ export class RoomMergeAttemptMismatchError extends Error {
     this.roomId = roomId;
     this.expectedMergeAttemptId = expectedMergeAttemptId;
     this.actualMergeAttemptId = actualMergeAttemptId;
+  }
+}
+
+/** Thrown when a merge-result report uses the right merge attempt id
+ * but not the same bearer that received confirm-merge approval. */
+export class RoomMergeAttemptBearerMismatchError extends Error {
+  public readonly roomId: string;
+  public readonly expectedFingerprint: string | null;
+  public readonly actualFingerprint: string;
+  constructor(
+    roomId: string,
+    expectedFingerprint: string | null,
+    actualFingerprint: string,
+  ) {
+    super(
+      `Merge attempt bearer mismatch for room ${roomId}: expected fingerprint ${expectedFingerprint ?? "<none>"}, got ${actualFingerprint}.`,
+    );
+    this.name = "RoomMergeAttemptBearerMismatchError";
+    this.roomId = roomId;
+    this.expectedFingerprint = expectedFingerprint;
+    this.actualFingerprint = actualFingerprint;
   }
 }
 
@@ -2788,6 +2813,9 @@ if decision.merge_attempt_id ~= ARGV[1] then
 end
 if decision.decision_outcome ~= "merge_approved" then
   return {-4, decision.decision_outcome or ""}
+end
+if decision.merge_attempt_fingerprint ~= ARGV[3] then
+  return {-5, decision.merge_attempt_fingerprint or ""}
 end
 redis.call("hset", KEYS[1], "decision", ARGV[2])
 return {1}
@@ -4379,6 +4407,7 @@ export async function reportMergeResultForRoom(args: {
   installationId: string;
   roomId: string;
   mergeAttemptId: string;
+  mergeAttemptFingerprint: string;
   decision: RoomDecision;
   redis: Redis;
   nowMs?: number;
@@ -4392,7 +4421,11 @@ export async function reportMergeResultForRoom(args: {
     await args.redis.eval(
       ROOM_REPORT_MERGE_RESULT_SCRIPT,
       [roomKey(args.installationId, args.roomId)],
-      [args.mergeAttemptId, JSON.stringify(decision)],
+      [
+        args.mergeAttemptId,
+        JSON.stringify(decision),
+        args.mergeAttemptFingerprint,
+      ],
     ),
   );
 
@@ -4428,6 +4461,15 @@ export async function reportMergeResultForRoom(args: {
       typeof result.tag1 === "string" && result.tag1.length > 0
         ? result.tag1
         : null,
+    );
+  }
+  if (result.ok === -5) {
+    throw new RoomMergeAttemptBearerMismatchError(
+      args.roomId,
+      typeof result.tag1 === "string" && result.tag1.length > 0
+        ? result.tag1
+        : null,
+      args.mergeAttemptFingerprint,
     );
   }
   throw new Error(

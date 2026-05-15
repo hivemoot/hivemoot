@@ -230,6 +230,7 @@ describe("POST /api/rooms/:roomId/confirm-merge", () => {
         decision: expect.objectContaining({
           decision_outcome: "merge_approved",
           merge_attempt_id: "attempt-1",
+          merge_attempt_fingerprint: "fp123",
           github_merge_status: "pending",
         }),
       }),

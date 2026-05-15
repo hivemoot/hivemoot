@@ -136,6 +136,7 @@ function makeRoom(overrides: Record<string, unknown> = {}) {
       sequence_closed: 7,
       decision_outcome: "merge_approved" as const,
       merge_attempt_id: "attempt-1",
+      merge_attempt_fingerprint: "fp123",
       github_merge_status: "pending" as const,
     },
     ...overrides,
@@ -199,6 +200,7 @@ describe("POST /api/rooms/:roomId/report-merge-result", () => {
     expect(mockedReport).toHaveBeenCalledWith(
       expect.objectContaining({
         mergeAttemptId: "attempt-1",
+        mergeAttemptFingerprint: "fp123",
         decision: expect.objectContaining({
           github_merge_status: "succeeded",
           merge_commit_oid: MERGE_SHA,
@@ -255,6 +257,28 @@ describe("POST /api/rooms/:roomId/report-merge-result", () => {
     );
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe("github_merge_result_mismatch");
+    expect(mockedReport).not.toHaveBeenCalled();
+  });
+
+  it("requires the same bearer fingerprint that confirm-merge approved", async () => {
+    mockedGetRoomCore.mockResolvedValue(
+      makeRoom({
+        decision: {
+          ...makeRoom().decision,
+          merge_attempt_fingerprint: "other-fp",
+        },
+      }),
+    );
+
+    const res = await POST(makeRequest(makeBody()), makeContext());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      code: "merge_attempt_bearer_mismatch",
+      expectedFingerprint: "other-fp",
+    });
+    expect(mockedMintToken).not.toHaveBeenCalled();
+    expect(mockedGetMergeState).not.toHaveBeenCalled();
     expect(mockedReport).not.toHaveBeenCalled();
   });
 

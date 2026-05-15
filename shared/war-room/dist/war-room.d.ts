@@ -304,6 +304,10 @@ export interface RoomDecision {
     github_merge_status?: "pending" | "succeeded" | "failed";
     /** Idempotency key for the server-approved local queen merge attempt. */
     merge_attempt_id?: string;
+    /** Bearer fingerprint that received confirm-merge approval. Required
+     * again by report-merge-result so sibling local_queen tokens cannot
+     * report another runner's merge outcome. */
+    merge_attempt_fingerprint?: string;
     /** Merge commit reported after a successful GitHub squash merge. */
     merge_commit_oid?: string;
     /** Local queen error class reported after a failed GitHub merge. */
@@ -731,6 +735,14 @@ export declare class RoomMergeAttemptMismatchError extends Error {
     readonly expectedMergeAttemptId: string;
     readonly actualMergeAttemptId: string | null;
     constructor(roomId: string, expectedMergeAttemptId: string, actualMergeAttemptId: string | null);
+}
+/** Thrown when a merge-result report uses the right merge attempt id
+ * but not the same bearer that received confirm-merge approval. */
+export declare class RoomMergeAttemptBearerMismatchError extends Error {
+    readonly roomId: string;
+    readonly expectedFingerprint: string | null;
+    readonly actualFingerprint: string;
+    constructor(roomId: string, expectedFingerprint: string | null, actualFingerprint: string);
 }
 /** Thrown when merge-result reporting is attempted before
  * confirm-merge has recorded a merge-approved decision. */
@@ -1454,7 +1466,7 @@ export declare const ROOM_CONFIRM_PENDING_MERGE_SCRIPT = "\nlocal currStatus = r
  * must already be closed by `confirm-merge`, and the report must match
  * the exact `merge_attempt_id` recorded there.
  */
-export declare const ROOM_REPORT_MERGE_RESULT_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus ~= \"closed\" then return {-1, currStatus} end\nlocal decisionJson = redis.call(\"hget\", KEYS[1], \"decision\")\nif not decisionJson then return {-2, \"no_decision\"} end\nlocal ok, decision = pcall(cjson.decode, decisionJson)\nif not ok then return {-2, \"decode_error\"} end\nif decision.merge_attempt_id ~= ARGV[1] then\n  return {-3, decision.merge_attempt_id or \"\"}\nend\nif decision.decision_outcome ~= \"merge_approved\" then\n  return {-4, decision.decision_outcome or \"\"}\nend\nredis.call(\"hset\", KEYS[1], \"decision\", ARGV[2])\nreturn {1}\n";
+export declare const ROOM_REPORT_MERGE_RESULT_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus ~= \"closed\" then return {-1, currStatus} end\nlocal decisionJson = redis.call(\"hget\", KEYS[1], \"decision\")\nif not decisionJson then return {-2, \"no_decision\"} end\nlocal ok, decision = pcall(cjson.decode, decisionJson)\nif not ok then return {-2, \"decode_error\"} end\nif decision.merge_attempt_id ~= ARGV[1] then\n  return {-3, decision.merge_attempt_id or \"\"}\nend\nif decision.decision_outcome ~= \"merge_approved\" then\n  return {-4, decision.decision_outcome or \"\"}\nend\nif decision.merge_attempt_fingerprint ~= ARGV[3] then\n  return {-5, decision.merge_attempt_fingerprint or \"\"}\nend\nredis.call(\"hset\", KEYS[1], \"decision\", ARGV[2])\nreturn {1}\n";
 /**
  * Validate role at the BODY boundary. Distinct from the internal
  * `assertRoleFormat` — this version is for caller-supplied role
@@ -1984,6 +1996,7 @@ export declare function reportMergeResultForRoom(args: {
     installationId: string;
     roomId: string;
     mergeAttemptId: string;
+    mergeAttemptFingerprint: string;
     decision: RoomDecision;
     redis: Redis;
     nowMs?: number;

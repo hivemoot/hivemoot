@@ -771,14 +771,14 @@ function makeMockRedis() {
         return [1, closedSeq];
       }
 
-      // ROOM_REPORT_MERGE_RESULT_SCRIPT — 1 key, 2 args
+      // ROOM_REPORT_MERGE_RESULT_SCRIPT — 1 key, 3 args
       if (
         keys.length === 1 &&
-        argv.length === 2 &&
+        argv.length === 3 &&
         script.includes("merge_attempt_id")
       ) {
         const [roomK] = keys;
-        const [mergeAttemptId, decisionJson] = argv;
+        const [mergeAttemptId, decisionJson, mergeAttemptFingerprint] = argv;
         const currStatus = hashes.get(roomK)?.get("status") as
           | string
           | undefined;
@@ -786,16 +786,22 @@ function makeMockRedis() {
         if (currStatus !== "closed") return [-1, currStatus];
         const rawDecision = hashes.get(roomK)?.get("decision");
         if (rawDecision === undefined) return [-2, "no_decision"];
-        let existing: { merge_attempt_id?: string; decision_outcome?: string };
+        let existing: {
+          merge_attempt_id?: string;
+          merge_attempt_fingerprint?: string;
+          decision_outcome?: string;
+        };
         try {
           existing =
             typeof rawDecision === "string"
               ? (JSON.parse(rawDecision) as {
                   merge_attempt_id?: string;
+                  merge_attempt_fingerprint?: string;
                   decision_outcome?: string;
                 })
               : (rawDecision as {
                   merge_attempt_id?: string;
+                  merge_attempt_fingerprint?: string;
                   decision_outcome?: string;
                 });
         } catch {
@@ -806,6 +812,9 @@ function makeMockRedis() {
         }
         if (existing.decision_outcome !== "merge_approved") {
           return [-4, existing.decision_outcome ?? ""];
+        }
+        if (existing.merge_attempt_fingerprint !== mergeAttemptFingerprint) {
+          return [-5, existing.merge_attempt_fingerprint ?? ""];
         }
         getHash(roomK).set("decision", decisionJson);
         return [1];
@@ -4342,6 +4351,7 @@ import {
   RoomCloseClaimRunnerMismatchError,
   RoomCloseDriftError,
   RoomClaimPayloadCorruptError,
+  RoomMergeAttemptBearerMismatchError,
   RoomMergeAttemptMismatchError,
   RoomPendingMergeDriftError,
   RoomRunnerFormatError,
@@ -4410,6 +4420,9 @@ describe("local queen pending-merge scripts source", () => {
     expect(ROOM_CONFIRM_PENDING_MERGE_SCRIPT).toContain('"closed"');
     expect(ROOM_CONFIRM_PENDING_MERGE_SCRIPT).toContain("expire");
     expect(ROOM_REPORT_MERGE_RESULT_SCRIPT).toContain("merge_attempt_id");
+    expect(ROOM_REPORT_MERGE_RESULT_SCRIPT).toContain(
+      "merge_attempt_fingerprint",
+    );
     expect(ROOM_REPORT_MERGE_RESULT_SCRIPT).toContain("merge_approved");
   });
 });
@@ -5137,6 +5150,7 @@ describe("local queen pending merge storage transitions", () => {
         ...room.decision,
         decision_outcome: "merge_approved",
         merge_attempt_id: "attempt-1",
+        merge_attempt_fingerprint: "fp123",
         github_merge_status: "pending",
       },
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
@@ -5209,6 +5223,7 @@ describe("local queen pending merge storage transitions", () => {
         ...room.decision,
         decision_outcome: "merge_approved",
         merge_attempt_id: "attempt-1",
+        merge_attempt_fingerprint: "fp123",
         github_merge_status: "pending",
       },
       subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
@@ -5225,6 +5240,7 @@ describe("local queen pending merge storage transitions", () => {
       installationId: "12345",
       roomId: RID_A,
       mergeAttemptId: "attempt-1",
+      mergeAttemptFingerprint: "fp123",
       decision: {
         ...closed.decision,
         github_merge_status: "succeeded",
@@ -5250,10 +5266,22 @@ describe("local queen pending merge storage transitions", () => {
         installationId: "12345",
         roomId: RID_A,
         mergeAttemptId: "other-attempt",
+        mergeAttemptFingerprint: "fp123",
         decision: reported.decision!,
         redis,
       }),
     ).rejects.toThrow(RoomMergeAttemptMismatchError);
+
+    await expect(
+      reportMergeResultForRoom({
+        installationId: "12345",
+        roomId: RID_A,
+        mergeAttemptId: "attempt-1",
+        mergeAttemptFingerprint: "other-fp",
+        decision: reported.decision!,
+        redis,
+      }),
+    ).rejects.toThrow(RoomMergeAttemptBearerMismatchError);
   });
 });
 

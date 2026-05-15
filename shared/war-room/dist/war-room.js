@@ -804,6 +804,20 @@ export class RoomMergeAttemptMismatchError extends Error {
         this.actualMergeAttemptId = actualMergeAttemptId;
     }
 }
+/** Thrown when a merge-result report uses the right merge attempt id
+ * but not the same bearer that received confirm-merge approval. */
+export class RoomMergeAttemptBearerMismatchError extends Error {
+    roomId;
+    expectedFingerprint;
+    actualFingerprint;
+    constructor(roomId, expectedFingerprint, actualFingerprint) {
+        super(`Merge attempt bearer mismatch for room ${roomId}: expected fingerprint ${expectedFingerprint ?? "<none>"}, got ${actualFingerprint}.`);
+        this.name = "RoomMergeAttemptBearerMismatchError";
+        this.roomId = roomId;
+        this.expectedFingerprint = expectedFingerprint;
+        this.actualFingerprint = actualFingerprint;
+    }
+}
 /** Thrown when merge-result reporting is attempted before
  * confirm-merge has recorded a merge-approved decision. */
 export class RoomMergeReportNotApprovedError extends Error {
@@ -1999,6 +2013,9 @@ end
 if decision.decision_outcome ~= "merge_approved" then
   return {-4, decision.decision_outcome or ""}
 end
+if decision.merge_attempt_fingerprint ~= ARGV[3] then
+  return {-5, decision.merge_attempt_fingerprint or ""}
+end
 redis.call("hset", KEYS[1], "decision", ARGV[2])
 return {1}
 `;
@@ -3076,7 +3093,11 @@ export async function reportMergeResultForRoom(args) {
         ...args.decision,
         merge_reported_at: args.decision.merge_reported_at ?? new Date(nowMs).toISOString(),
     };
-    const result = dispatchScriptResult(await args.redis.eval(ROOM_REPORT_MERGE_RESULT_SCRIPT, [roomKey(args.installationId, args.roomId)], [args.mergeAttemptId, JSON.stringify(decision)]));
+    const result = dispatchScriptResult(await args.redis.eval(ROOM_REPORT_MERGE_RESULT_SCRIPT, [roomKey(args.installationId, args.roomId)], [
+        args.mergeAttemptId,
+        JSON.stringify(decision),
+        args.mergeAttemptFingerprint,
+    ]));
     if (result.ok === 1)
         return;
     if (result.ok === -1 && typeof result.tag1 === "string") {
@@ -3100,6 +3121,11 @@ export async function reportMergeResultForRoom(args) {
         throw new RoomMergeReportNotApprovedError(args.roomId, typeof result.tag1 === "string" && result.tag1.length > 0
             ? result.tag1
             : null);
+    }
+    if (result.ok === -5) {
+        throw new RoomMergeAttemptBearerMismatchError(args.roomId, typeof result.tag1 === "string" && result.tag1.length > 0
+            ? result.tag1
+            : null, args.mergeAttemptFingerprint);
     }
     throw new Error(`ROOM_REPORT_MERGE_RESULT_SCRIPT returned unexpected result: ${JSON.stringify(result)}`);
 }

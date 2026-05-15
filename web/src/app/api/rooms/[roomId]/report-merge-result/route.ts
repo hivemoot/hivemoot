@@ -17,6 +17,7 @@ import {
   type RoomDecision,
   RoomDecisionMissingError,
   RoomIdFormatError,
+  RoomMergeAttemptBearerMismatchError,
   RoomMergeAttemptMismatchError,
   RoomMergeReportNotApprovedError,
   RoomNotFoundError,
@@ -266,6 +267,17 @@ export async function POST(
       { status: 409 },
     );
   }
+  if (decision.merge_attempt_fingerprint !== auth.envelope.fingerprint) {
+    return NextResponse.json(
+      {
+        code: "merge_attempt_bearer_mismatch",
+        message:
+          "report-merge-result must use the same bearer that received confirm-merge approval.",
+        expectedFingerprint: decision.merge_attempt_fingerprint ?? null,
+      },
+      { status: 409 },
+    );
+  }
   if (
     decision.github_merge_status === "succeeded" ||
     decision.github_merge_status === "failed"
@@ -355,6 +367,7 @@ export async function POST(
       installationId: auth.installationId,
       roomId,
       mergeAttemptId: body.mergeAttemptId,
+      mergeAttemptFingerprint: auth.envelope.fingerprint,
       decision: updatedDecision,
       redis: auth.redis,
     });
@@ -488,6 +501,17 @@ function mapStorageError(err: unknown): NextResponse | null {
         message: err.message,
         expectedMergeAttemptId: err.expectedMergeAttemptId,
         actualMergeAttemptId: err.actualMergeAttemptId,
+      },
+      { status: 409 },
+    );
+  }
+  if (err instanceof RoomMergeAttemptBearerMismatchError) {
+    return NextResponse.json(
+      {
+        code: "merge_attempt_bearer_mismatch",
+        message: err.message,
+        expectedFingerprint: err.expectedFingerprint,
+        actualFingerprint: err.actualFingerprint,
       },
       { status: 409 },
     );
