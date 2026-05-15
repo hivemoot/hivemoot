@@ -70,6 +70,8 @@ class RoomStateRaceError(RuntimeError):
 #   * owner_conflict — first-wins gate lost; another runner already
 #     holds this role's slot in subscriber-mode. Surfaced by /present
 #     and /heartbeat.
+#   * participant_state_precondition — same runner tried to /present a
+#     terminal slot (resolved / timed_out). Treat as stale overlap.
 #
 # 404s (added per guard's PR #615 review feedback so heartbeats stop
 # instead of spinning forever):

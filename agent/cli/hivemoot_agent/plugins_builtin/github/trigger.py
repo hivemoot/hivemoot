@@ -236,8 +236,8 @@ class _GitHubWatchTrigger:
         # period (subscriber mode, awaiting initial mint) doesn't flood
         # stderr with one warning per poll. One warning per minute
         # covers operator visibility without spam.
-        last_no_token_warn = 0.0
         no_token_warn_interval = 60.0
+        last_no_token_warn = -no_token_warn_interval
 
         while not self._stop_event.is_set():
             # Re-resolve token EACH poll so a rotation in either mode
