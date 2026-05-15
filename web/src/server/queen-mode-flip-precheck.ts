@@ -16,12 +16,11 @@
  *     github_merge_status: pending` (the stranded-merge state PR 3's
  *     reconciler resolves)
  *
- * **PR 2 only checks `deciding` today.** `decided_pending_action`
- * and the stranded-merge audit fields don't exist yet (PR 3 ships
- * the new RoomStatus + audit shape). The precheck is structured so
- * PR 3 can extend `BlockedReason` without breaking callers — the
- * `details` field is intentionally a sum type rather than a union
- * of disjoint shapes.
+ * Blocks on all local-queen work that has already moved past the
+ * first synthesis step. The local queen owns both the pending merge
+ * window and the final `report-merge-result` call, so a flip back to
+ * cloud while either state exists would strand work the cloud queen
+ * cannot safely complete.
  *
  * Force-flip escape valve: G6 says operators can force-expire the
  * blocking rooms via the dashboard with a confirmation modal +
@@ -33,7 +32,7 @@
  */
 
 import { type Redis } from "@upstash/redis";
-import { statusIndexKey } from "@hivemoot/war-room";
+import { roomKey, statusIndexKey, type RoomDecision } from "@hivemoot/war-room";
 
 const TICK_LOCK_PREFIX = "hive:v1:lock:queen-tick:";
 
@@ -49,9 +48,9 @@ export interface BlockedReason {
    */
   counts: {
     deciding: number;
-    /** Reserved for PR 3 — always 0 today since the state doesn't exist. */
+    /** Rooms waiting out the local-queen merge override window. */
     decided_pending_action: number;
-    /** Reserved for PR 3+G37 — stranded-merge rooms. Always 0 today. */
+    /** Closed rooms approved for merge but not yet result-reported. */
     stranded_merge: number;
     /**
      * 1 when a queen-tick is mid-flight (its per-installation lock
@@ -79,6 +78,53 @@ interface PrecheckArgs {
   nowMs?: number;
 }
 
+function parseDecision(raw: unknown): RoomDecision | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "string") return JSON.parse(raw) as RoomDecision;
+  if (typeof raw === "object") return raw as RoomDecision;
+  return null;
+}
+
+async function findStrandedMergeRoomIds(args: {
+  installationId: string;
+  redis: Redis;
+  closedIds: readonly string[];
+}): Promise<string[]> {
+  const candidates = await Promise.all(
+    args.closedIds.map(async (roomId) => {
+      const fields = await args.redis.hgetall<Record<string, unknown>>(
+        roomKey(args.installationId, roomId),
+      );
+      if (fields === null || fields.status === undefined) return null;
+      if (fields.status !== "closed") return null;
+
+      const decision = parseDecision(fields.decision);
+      if (
+        decision?.decision_outcome === "merge_approved" &&
+        decision.github_merge_status === "pending"
+      ) {
+        return roomId;
+      }
+      return null;
+    }),
+  );
+  return candidates.filter((roomId): roomId is string => roomId !== null);
+}
+
+function sampleRoomIds(...groups: readonly string[][]): string[] {
+  const seen = new Set<string>();
+  const sample: string[] = [];
+  for (const group of groups) {
+    for (const roomId of group) {
+      if (seen.has(roomId)) continue;
+      seen.add(roomId);
+      sample.push(roomId);
+      if (sample.length >= SAMPLE_LIMIT) return sample;
+    }
+  }
+  return sample;
+}
+
 /**
  * Returns `null` when the flip is safe to proceed. Returns a
  * `{ blocked: BlockedReason }` envelope (matching `setQueenSettings`'
@@ -88,7 +134,7 @@ interface PrecheckArgs {
  * release the lock and the operator sees a 500 storage_failure
  * (not a silent flip).
  *
- * Two checks run in parallel:
+ * Checks run in parallel where possible:
  *   1. Status-keyed scan of the `deciding` index (G1 — guard pass-1).
  *      The earlier `listRooms({limit: 100})` returned newest-first
  *      across ALL statuses, so a sprint-burst of 100+ awaiting rooms
@@ -102,7 +148,13 @@ interface PrecheckArgs {
  *      `WRONGTYPE` against a real Redis SET. Tests passed because the
  *      mock didn't enforce key-type semantics. Ordering is irrelevant
  *      — the precheck only needs `count + bounded sample`.
- *   2. Tick-lock probe (G2 — guard pass-1). Looks up the queen-tick's
+ *   2. Status-keyed scan of `decided_pending_action`; any hit means
+ *      local queen owns the next confirm-merge step.
+ *   3. Status-keyed scan of `closed`, followed by a per-room field
+ *      check for `decision_outcome=merge_approved` plus
+ *      `github_merge_status=pending`; these rooms are waiting for
+ *      the local queen's `report-merge-result`.
+ *   4. Tick-lock probe (G2 — guard pass-1). Looks up the queen-tick's
  *      per-installation lock; if held, a tick is mid-flight and its
  *      manager-loop won't re-read the mode until the next fire. We
  *      surface this as `tick_running: 1` so the dashboard tells the
@@ -113,32 +165,58 @@ export async function checkInFlightForFlip(
   args: PrecheckArgs,
 ): Promise<{ blocked: BlockedReason } | null> {
   const decidingKey = statusIndexKey(args.installationId, "deciding");
+  const decidedPendingKey = statusIndexKey(
+    args.installationId,
+    "decided_pending_action",
+  );
+  const closedKey = statusIndexKey(args.installationId, "closed");
   const lockKey = tickLockKey(args.installationId);
 
-  // Parallel: SMEMBERS the deciding-status SET + EXISTS the tick
-  // lock. Two independent reads, neither blocks the other.
+  // Parallel: SMEMBERS the status SETs + EXISTS the tick lock. These
+  // independent reads do not block each other.
   // (statusIndexKey is SADD/SREM-backed, see war-room.ts:2269-2526.)
-  const [decidingIds, tickLockHeld] = await Promise.all([
-    args.redis.smembers(decidingKey),
-    args.redis.exists(lockKey),
-  ]);
+  const [decidingIds, decidedPendingIds, closedIds, tickLockHeld] =
+    await Promise.all([
+      args.redis.smembers(decidingKey),
+      args.redis.smembers(decidedPendingKey),
+      args.redis.smembers(closedKey),
+      args.redis.exists(lockKey),
+    ]);
+  const strandedMergeIds = await findStrandedMergeRoomIds({
+    installationId: args.installationId,
+    redis: args.redis,
+    closedIds,
+  });
 
   const deciding = decidingIds.length;
+  const decidedPendingAction = decidedPendingIds.length;
+  const strandedMerge = strandedMergeIds.length;
   const tickRunning = tickLockHeld > 0 ? 1 : 0;
-  const sampleRoomIds = decidingIds.slice(0, SAMPLE_LIMIT);
+  const samples = sampleRoomIds(
+    decidingIds,
+    decidedPendingIds,
+    strandedMergeIds,
+  );
 
-  if (deciding === 0 && tickRunning === 0) return null;
+  if (
+    deciding === 0 &&
+    decidedPendingAction === 0 &&
+    strandedMerge === 0 &&
+    tickRunning === 0
+  ) {
+    return null;
+  }
 
   return {
     blocked: {
       reason: "rooms_in_flight",
       counts: {
         deciding,
-        decided_pending_action: 0,
-        stranded_merge: 0,
+        decided_pending_action: decidedPendingAction,
+        stranded_merge: strandedMerge,
         tick_running: tickRunning,
       },
-      sampleRoomIds,
+      sampleRoomIds: samples,
     },
   };
 }
