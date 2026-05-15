@@ -530,6 +530,7 @@ export async function POST(
       repo: `${parsedRef.ref.owner}/${parsedRef.ref.repo}`,
       appId: env.config.githubAppId,
       appPrivateKeyPem: env.config.githubAppPrivateKey,
+      permissionCeiling: RESOLVE_ACTION_PERMISSIONS,
       allowedPermissions: RESOLVE_ACTION_PERMISSIONS,
     });
   } catch (err) {

@@ -461,6 +461,12 @@ describe("POST /api/rooms/:roomId/resolve-action — squash-merge happy path", (
       contents: "read",
       metadata: "read",
     });
+    expect(mintCall.permissionCeiling).toEqual({
+      pull_requests: "read",
+      checks: "read",
+      contents: "read",
+      metadata: "read",
+    });
   });
 
   it("does NOT emit G1 or G2 audit events on the all-pass squash-merge path", async () => {
