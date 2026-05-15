@@ -321,7 +321,7 @@ Mode-toggle confirmation step (text aligned with D16's reconciled local-outage c
 
 ### Operational smoke
 
-A local-mode rollout is not complete when the runner starts. Operators should first run a comment-only smoke (`enable_squash_merge=false`) against a tiny, ready-linked PR in a watched repo and verify three observable facts: the webhook created a room, at least one reviewer contributed, and the hive queen posted the final synthesis. Only after those pass should `enable_squash_merge=true` be enabled and tested with an automerge-eligible PR; otherwise a broken local queen can look healthy while PRs pile up unsynthesized.
+A local-mode rollout is not complete when the runner starts. Before the smoke, confirm the runner is using a `local_queen` token scoped to the watched repo. Operators should first run a comment-only smoke (`enable_squash_merge=false`) against a tiny, ready-linked PR in a watched repo and verify three observable facts: the webhook created a room, at least one reviewer contributed, and the hive queen posted the final synthesis. If those signals do not appear before the stuck-room alarm threshold, flip `queen_mode` back to `cloud` and investigate. Only after the comment-only smoke passes should `enable_squash_merge=true` be enabled and tested with a designated low-risk automerge-eligible PR the operator controls; otherwise a broken local queen can look healthy while PRs pile up unsynthesized or the first squash-merge test can become an unintended production merge.
 
 ## Hive queen plugin shape
 
