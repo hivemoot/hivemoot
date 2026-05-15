@@ -8,9 +8,10 @@
  *
  *   1. Clamped verdict (post-`applyDowngradeOnlyFloor`) == APPROVE
  *   2. `hivemoot:automerge` label present
- *   3. CI green (Check Runs + legacy Status both passing)
- *   4. Head SHA stable (reviewed_head_sha matches current GitHub head)
- *   5. No prior post-close drift recorded on the room
+ *   3. `hivemoot:hold` label absent
+ *   4. CI green (Check Runs + legacy Status both passing)
+ *   5. Head SHA stable (reviewed_head_sha matches current GitHub head)
+ *   6. No prior post-close drift recorded on the room
  *      (`last_post_close_drift_at` unset — set by a different flow
  *      after a confirmed merge sees post-close events arrive,
  *      indicating the room shouldn't be re-merged)
@@ -52,6 +53,8 @@ export type DowngradeReason =
   | "verdict_not_approve"
   /** `hivemoot:automerge` label not present on the PR. */
   | "label_missing"
+  /** `hivemoot:hold` label present on the PR. */
+  | "hold_label_present"
   /** GitHub returned `total_count > 100` check-runs — unseen checks
    * could be failing, so fail closed. */
   | "ci_truncated"
@@ -89,10 +92,11 @@ export interface PolicyDecision {
  *      verify any CI signal, so we want to surface this distinctly
  *      from a label-only failure)
  *   3. label_missing
- *   4. ci_failure
- *   5. ci_pending
- *   6. head_sha_drift
- *   7. post_close_drift
+ *   4. hold_label_present
+ *   5. ci_failure
+ *   6. ci_pending
+ *   7. head_sha_drift
+ *   8. post_close_drift
  *
  * All-pass returns `{ permittedAction: "squash-merge", downgradeReason: null }`.
  */
@@ -115,6 +119,12 @@ export function evaluateResolveActionPolicy(args: {
   }
   if (!args.prState.labels.includes("hivemoot:automerge")) {
     return { permittedAction: "comment", downgradeReason: "label_missing" };
+  }
+  if (args.prState.labels.includes("hivemoot:hold")) {
+    return {
+      permittedAction: "comment",
+      downgradeReason: "hold_label_present",
+    };
   }
   if (args.prState.ciState === "failure") {
     return { permittedAction: "comment", downgradeReason: "ci_failure" };

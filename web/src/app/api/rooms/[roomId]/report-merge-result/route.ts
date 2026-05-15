@@ -46,6 +46,8 @@ const REPORT_MERGE_PERMISSIONS: Readonly<
   metadata: "read",
 });
 
+const MAX_REPORT_AGE_MS = 15 * 60 * 1000;
+
 interface ReportMergeResultBody {
   queenRunner: string;
   mergeAttemptId: string;
@@ -304,6 +306,27 @@ export async function POST(
     );
   }
 
+  const closedAtMs = Date.parse(roomCore.closed_at ?? "");
+  if (!Number.isFinite(closedAtMs)) {
+    return NextResponse.json(
+      {
+        code: "decision_missing_merge_context",
+        message: "Closed merge-approved room must include closed_at.",
+      },
+      { status: 409 },
+    );
+  }
+  if (Date.now() - closedAtMs > MAX_REPORT_AGE_MS) {
+    return NextResponse.json(
+      {
+        code: "merge_report_stale",
+        message:
+          "Merge result report is older than 15 minutes; re-run synthesis.",
+      },
+      { status: 410 },
+    );
+  }
+
   const subjectRef = parsePullRequestSubjectRef(roomCore.subject_ref);
   if (!subjectRef.ok) {
     return NextResponse.json(
@@ -428,6 +451,7 @@ async function mintReadToken(args: {
       repo: args.repo,
       appId: env.config.githubAppId,
       appPrivateKeyPem: env.config.githubAppPrivateKey,
+      permissionCeiling: REPORT_MERGE_PERMISSIONS,
       allowedPermissions: REPORT_MERGE_PERMISSIONS,
     });
     return { ok: true, token: tokenResult.token };

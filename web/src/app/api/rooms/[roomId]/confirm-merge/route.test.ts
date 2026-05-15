@@ -235,6 +235,12 @@ describe("POST /api/rooms/:roomId/confirm-merge", () => {
         }),
       }),
     );
+    expect(mockedMintToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissionCeiling: expect.objectContaining({ checks: "read" }),
+        allowedPermissions: expect.objectContaining({ checks: "read" }),
+      }),
+    );
     expect(mockedEmit).toHaveBeenCalledWith(
       expect.objectContaining({
         detail: expect.objectContaining({
@@ -264,6 +270,31 @@ describe("POST /api/rooms/:roomId/confirm-merge", () => {
         decision: expect.objectContaining({
           decision_outcome: "merge_downgraded",
           decision_outcome_reason: "head_sha_drift",
+          github_merge_status: undefined,
+        }),
+      }),
+    );
+  });
+
+  it("downgrades when an operator hold label is present", async () => {
+    mockedGetPrState.mockResolvedValue({
+      headSha: HEAD_SHA,
+      labels: ["hivemoot:automerge", "hivemoot:hold"],
+      ciState: "success",
+      mergeableState: "clean",
+    });
+    const res = await POST(makeRequest(makeBody()), makeContext());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      decisionOutcome: "merge_downgraded",
+      decisionOutcomeReason: "hold_label_present",
+      githubMergeStatus: null,
+    });
+    expect(mockedConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          decision_outcome: "merge_downgraded",
+          decision_outcome_reason: "hold_label_present",
           github_merge_status: undefined,
         }),
       }),

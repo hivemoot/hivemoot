@@ -512,6 +512,7 @@ async function mintReadToken(args: {
       repo: args.repo,
       appId: env.config.githubAppId,
       appPrivateKeyPem: env.config.githubAppPrivateKey,
+      permissionCeiling: CONFIRM_MERGE_PERMISSIONS,
       allowedPermissions: CONFIRM_MERGE_PERMISSIONS,
     });
     return { ok: true, token: tokenResult.token };

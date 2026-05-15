@@ -124,6 +124,7 @@ function makeRoom(overrides: Record<string, unknown> = {}) {
     subject_ref: "hivemoot/colony#42",
     opened_at: "2026-05-10T00:00:00Z",
     status: "closed" as const,
+    closed_at: "2026-05-10T00:04:00.000Z",
     timing_config: {
       max_age_secs: 86400,
       drop_threshold_secs: 600,
@@ -207,6 +208,12 @@ describe("POST /api/rooms/:roomId/report-merge-result", () => {
         }),
       }),
     );
+    expect(mockedMintToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissionCeiling: expect.objectContaining({ pull_requests: "read" }),
+        allowedPermissions: expect.objectContaining({ pull_requests: "read" }),
+      }),
+    );
     expect(mockedEmit).toHaveBeenCalledWith(
       expect.objectContaining({
         detail: expect.objectContaining({
@@ -277,6 +284,22 @@ describe("POST /api/rooms/:roomId/report-merge-result", () => {
       code: "merge_attempt_bearer_mismatch",
       expectedFingerprint: "other-fp",
     });
+    expect(mockedMintToken).not.toHaveBeenCalled();
+    expect(mockedGetMergeState).not.toHaveBeenCalled();
+    expect(mockedReport).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale pending result reports", async () => {
+    mockedGetRoomCore.mockResolvedValue(
+      makeRoom({
+        closed_at: "2026-05-09T23:49:00.000Z",
+      }),
+    );
+
+    const res = await POST(makeRequest(makeBody()), makeContext());
+
+    expect(res.status).toBe(410);
+    expect((await res.json()).code).toBe("merge_report_stale");
     expect(mockedMintToken).not.toHaveBeenCalled();
     expect(mockedGetMergeState).not.toHaveBeenCalled();
     expect(mockedReport).not.toHaveBeenCalled();

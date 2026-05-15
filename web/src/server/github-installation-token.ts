@@ -159,12 +159,19 @@ export interface MintOptions {
   /**
    * V1.6+: per-token permission narrowing from the agent token's
    * `policy.allowed_permissions`. When set, the requested scope is
-   * `intersectPermissions(V1_PERMISSIONS, allowedPermissions)` — the
+   * `intersectPermissions(permissionCeiling, allowedPermissions)` — the
    * token can only narrow the default; it cannot raise it.
    * Absence (undefined) preserves V1.5 behavior — request V1_PERMISSIONS
    * verbatim.
    */
   allowedPermissions?: Record<string, GitHubPermissionLevel>;
+  /**
+   * Server-internal ceiling for call sites that need read-only scopes
+   * outside the public V1 broker default, such as `checks:read` for
+   * PR-state verification. Defaults to V1_PERMISSIONS so the public
+   * installation-token broker contract is unchanged.
+   */
+  permissionCeiling?: Readonly<Record<string, GitHubPermissionLevel>>;
 }
 
 export interface InstallationAccessTokenResponse {
@@ -345,8 +352,14 @@ export async function mintInstallationToken(
   options: MintOptions,
   fetcher: Fetcher = fetch,
 ): Promise<InstallationAccessTokenResponse> {
-  const { installationId, repo, appId, appPrivateKeyPem, allowedPermissions } =
-    options;
+  const {
+    installationId,
+    repo,
+    appId,
+    appPrivateKeyPem,
+    allowedPermissions,
+    permissionCeiling = V1_PERMISSIONS,
+  } = options;
 
   // Validate repo shape BEFORE generating the JWT so a malformed input
   // doesn't burn an RSA signing operation.
@@ -356,7 +369,7 @@ export async function mintInstallationToken(
   // (legacy/V1.5 tokens) this returns V1_PERMISSIONS unchanged; with
   // narrowing (V1.6 tokens) it returns the intersected map.
   const effectivePermissions = intersectPermissions(
-    V1_PERMISSIONS,
+    permissionCeiling,
     allowedPermissions,
   );
 

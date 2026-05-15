@@ -92,6 +92,17 @@ describe("evaluateResolveActionPolicy — downgrade reasons", () => {
     expect(result.downgradeReason).toBe("label_missing");
   });
 
+  it("hold_label_present: operator hold label blocks merge", () => {
+    const result = evaluateResolveActionPolicy({
+      ...baseInputs,
+      prState: makePrState({
+        labels: ["hivemoot:automerge", "hivemoot:hold"],
+      }),
+    });
+    expect(result.downgradeReason).toBe("hold_label_present");
+    expect(result.permittedAction).toBe("comment");
+  });
+
   it("ci_failure: any failing check-run", () => {
     const result = evaluateResolveActionPolicy({
       ...baseInputs,
@@ -164,6 +175,19 @@ describe("evaluateResolveActionPolicy — first failure wins", () => {
     expect(result.downgradeReason).toBe("label_missing");
   });
 
+  it("hold_label_present dominates ci_failure", () => {
+    const result = evaluateResolveActionPolicy({
+      clampedVerdict: "APPROVE",
+      prState: makePrState({
+        ciState: "failure",
+        labels: ["hivemoot:automerge", "hivemoot:hold"],
+      }),
+      reviewedHeadSha: HEAD_SHA,
+      lastPostCloseDriftAt: null,
+    });
+    expect(result.downgradeReason).toBe("hold_label_present");
+  });
+
   it("ci_failure dominates ci_pending (the failure already happened)", () => {
     // Can't actually have both at the same time per CiState, but
     // pin the order between failure and pending here in case the
@@ -212,7 +236,11 @@ describe("evaluateResolveActionPolicy — response shape invariant", () => {
     // exhaustive coverage.
     const verdicts = ["APPROVE", "COMMENT", "CONCERNS", "REQUEST_CHANGES"] as const;
     const ciStates = ["success", "failure", "pending", "no_checks", "truncated"] as const;
-    const labelSets = [["hivemoot:automerge"], []];
+    const labelSets = [
+      ["hivemoot:automerge"],
+      ["hivemoot:automerge", "hivemoot:hold"],
+      [],
+    ];
     const driftStates = [null, "2026-05-10T00:00:00Z"];
 
     for (const v of verdicts) {
