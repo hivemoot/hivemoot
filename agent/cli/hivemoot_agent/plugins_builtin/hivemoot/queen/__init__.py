@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from hivemoot_agent.plugins_builtin.hivemoot.queen.api import (
     ClaimedSynthesis,
+    ConfirmMergeResult,
+    MergeReportResult,
     QueenAPIConflictError,
     ResolveActionResult,
     SealDecisionResult,
@@ -23,8 +25,10 @@ from hivemoot_agent.plugins_builtin.hivemoot.queen.trigger import (
 
 __all__ = (
     "ClaimedSynthesis",
+    "ConfirmMergeResult",
     "JOB_KIND_SYNTHESIS",
     "LocalQueenSynthesisTrigger",
+    "MergeReportResult",
     "QueenAPIConflictError",
     "ResolveActionResult",
     "SealDecisionResult",

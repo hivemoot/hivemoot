@@ -80,14 +80,16 @@ class QueenTriggerWiringTests(unittest.TestCase):
                 poll_interval_secs=30,
                 synthesis_ready_limit=5,
                 runner_id="queen-a",
+                enable_squash_merge=True,
             ),
         ).typed
         trigger = plugin.triggers()[0]
         self.assertEqual(trigger._base_url, "https://staging.example")
         self.assertEqual(trigger._poll_interval_secs, 30)
         self.assertEqual(trigger._ready_limit, 5)
+        self.assertTrue(trigger._enable_squash_merge)
 
-    def test_validate_rejects_reserved_squash_merge_flag(self) -> None:
+    def test_validate_accepts_squash_merge_flag(self) -> None:
         plugin = HivemootPlugin()
         config = _mk_config(
             queen=HivemootQueenConfig(
@@ -97,10 +99,7 @@ class QueenTriggerWiringTests(unittest.TestCase):
             ),
         )
         errors = plugin.validate(config)
-        self.assertTrue(
-            any("enable_squash_merge is reserved" in e for e in errors),
-            errors,
-        )
+        self.assertEqual(errors, [])
 
 
 class QueenOnFinishedWiringTests(unittest.TestCase):

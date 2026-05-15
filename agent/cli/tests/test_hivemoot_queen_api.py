@@ -49,6 +49,37 @@ class QueenApiTests(unittest.TestCase):
         self.assertEqual(rooms[0].subject_ref, "owner/repo#42")
         self.assertEqual(rooms[0].timing_config["quiet_period_secs"], 60)
 
+    def test_list_decided_pending_ready_rooms_uses_pending_endpoint(self) -> None:
+        with patch.object(
+            q_api,
+            "get_json",
+            return_value=(
+                200,
+                {
+                    "rooms": [
+                        {
+                            "roomId": "room-1",
+                            "status": "decided_pending_action",
+                            "subject_type": "pr_review",
+                            "subject_ref": "owner/repo#42",
+                            "manager": "bot-queen",
+                            "opened_at": "2026-05-15T00:00:00Z",
+                        },
+                    ],
+                },
+                b"",
+            ),
+        ) as get_mock:
+            rooms = q_api.list_decided_pending_ready_rooms(
+                "https://api.example", "bearer", limit=3,
+            )
+        get_mock.assert_called_once_with(
+            "https://api.example/api/rooms/decided-pending-ready?limit=3",
+            "bearer",
+            timeout=10,
+        )
+        self.assertEqual(rooms[0].status, "decided_pending_action")
+
     def test_claim_synthesis_maps_conflict(self) -> None:
         with patch.object(
             q_api,
@@ -143,6 +174,98 @@ class QueenApiTests(unittest.TestCase):
         self.assertEqual(body["finalState"], "closed")
         self.assertEqual(body["commentUrl"], "https://github.com/o/r/pull/1#issuecomment-2")
         self.assertEqual(result.closed_sequence, 13)
+
+    def test_seal_decision_can_request_pending_merge_state(self) -> None:
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(
+                200,
+                {
+                    "finalState": "decided_pending_action",
+                    "pendingSequence": 13,
+                    "auditId": "123-0",
+                },
+                b"",
+            ),
+        ) as post_mock:
+            result = q_api.seal_decision(
+                "https://api.example",
+                "room-1",
+                "bearer",
+                queen_runner="runner",
+                audit_id="123-0",
+                sealed_through_sequence=12,
+                decision={
+                    "synthesized_at": "2026-05-15T00:00:00Z",
+                    "synthesis_runner": "runner",
+                    "content": "ok",
+                    "sequence_closed": 12,
+                },
+                final_state="decided_pending_action",
+                comment_url="https://github.com/o/r/pull/1#issuecomment-2",
+            )
+        self.assertEqual(post_mock.call_args[0][1]["finalState"], "decided_pending_action")
+        self.assertEqual(result.pending_sequence, 13)
+
+    def test_confirm_merge_payload_and_result(self) -> None:
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(
+                200,
+                {
+                    "decisionOutcome": "merge_approved",
+                    "decisionOutcomeReason": None,
+                    "githubMergeStatus": "pending",
+                    "mergeAttemptId": "attempt-1",
+                    "closedSequence": 9,
+                },
+                b"",
+            ),
+        ) as post_mock:
+            result = q_api.confirm_merge(
+                "https://api.example",
+                "room-1",
+                "bearer",
+                queen_runner="runner",
+                merge_attempt_id="attempt-1",
+                current_head_sha="abc",
+            )
+        body = post_mock.call_args[0][1]
+        self.assertEqual(body["mergeAttemptId"], "attempt-1")
+        self.assertEqual(body["currentHeadSha"], "abc")
+        self.assertEqual(result.decision_outcome, "merge_approved")
+        self.assertEqual(result.github_merge_status, "pending")
+
+    def test_report_merge_result_payload_and_result(self) -> None:
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(
+                200,
+                {
+                    "githubMergeStatus": "succeeded",
+                    "mergeAttemptId": "attempt-1",
+                    "mergeCommitOid": "feedface",
+                    "errorClass": None,
+                },
+                b"",
+            ),
+        ) as post_mock:
+            result = q_api.report_merge_result(
+                "https://api.example",
+                "room-1",
+                "bearer",
+                queen_runner="runner",
+                merge_attempt_id="attempt-1",
+                github_merge_status="succeeded",
+                merge_commit_oid="feedface",
+            )
+        body = post_mock.call_args[0][1]
+        self.assertEqual(body["githubMergeStatus"], "succeeded")
+        self.assertEqual(body["mergeCommitOid"], "feedface")
+        self.assertEqual(result.merge_commit_oid, "feedface")
 
 
 if __name__ == "__main__":

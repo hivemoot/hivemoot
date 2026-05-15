@@ -417,8 +417,10 @@ class HivemootQueenConfig(StrictPluginConfig):
     enable_squash_merge: bool = Field(
         default=False,
         description=(
-            "Reserved for the future confirm-merge/report-merge-result "
-            "slice. This PR supports only the verified comment-close path."
+            "When true, the local queen may seal squash-merge intents, "
+            "poll decided-pending rooms, call confirm-merge, run "
+            "``gh pr merge --squash``, and report the GitHub outcome. "
+            "Keep false until the web confirm/report endpoints are deployed."
         ),
     )
 

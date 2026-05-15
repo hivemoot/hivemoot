@@ -136,6 +136,64 @@ class QueenHandlerFlowTests(unittest.TestCase):
         self.assertEqual(seal_kwargs["decision"]["sequence_closed"], 12)
         self.assertNotIn("hivemoot:queen-action", seal_kwargs["decision"]["content"])
 
+    def test_squash_merge_path_seals_decided_pending_action(self) -> None:
+        resolved = ResolveActionResult(
+            permitted_action="squash-merge",
+            clamped_verdict="APPROVE",
+            downgrade_reason=None,
+            reviewed_head_sha="abc123",
+            current_head_sha="abc123",
+            floor_overridden=False,
+            audit_id="123-0",
+        )
+        sealed = SealDecisionResult(
+            final_state="decided_pending_action",
+            closed_sequence=0,
+            audit_id="123-0",
+            pending_sequence=13,
+        )
+        markdown = """```json
+{
+  "verdict": "APPROVE",
+  "reasoning": "All checks pass.",
+  "recommended_action": "squash-merge",
+  "comment_body": "Intent to squash merge after override window."
+}
+```"""
+
+        with patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.resolve_action",
+            return_value=resolved,
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.mint_installation_token",
+            return_value="ghs_x",
+        ), patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.gh.post_pr_comment",
+            return_value="https://github.com/owner/repo/pull/42#issuecomment-7",
+        ) as comment_mock, patch(
+            "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.seal_decision",
+            return_value=sealed,
+        ) as seal_mock:
+            handle_queen_job_finished(
+                _job(),
+                AgentResult(0, ""),
+                base_url="https://api.example",
+                bearer="bearer",
+                extracted_markdown=markdown,
+                queen_runner="queen-a",
+                agent_id="queen-a",
+                enable_squash_merge=True,
+            )
+
+        self.assertIn(
+            "<!-- hivemoot:queen-action:merge:123-0 -->",
+            comment_mock.call_args[0][1],
+        )
+        self.assertEqual(
+            seal_mock.call_args.kwargs["final_state"],
+            "decided_pending_action",
+        )
+
     def test_nonzero_exit_does_not_mutate(self) -> None:
         with patch(
             "hivemoot_agent.plugins_builtin.hivemoot.queen.handler.q_api.resolve_action",

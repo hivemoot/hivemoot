@@ -139,10 +139,14 @@ def handle_queen_job_finished(
         sealed_through_sequence=sealed_through_sequence,
     )
 
-    if resolved.permitted_action != "comment":
+    if resolved.permitted_action == "squash-merge" and not enable_squash_merge:
         raise RuntimeError(
-            "local queen squash-merge path is not implemented in this "
-            f"runner slice (permittedAction={resolved.permitted_action})"
+            "local queen squash-merge path was permitted while "
+            "enable_squash_merge=false"
+        )
+    if resolved.permitted_action not in {"comment", "squash-merge"}:
+        raise RuntimeError(
+            f"resolve-action returned unknown permittedAction={resolved.permitted_action}"
         )
 
     pr = gh.parse_subject_ref(subject_ref)
@@ -186,6 +190,11 @@ def handle_queen_job_finished(
             )
         raise
 
+    final_state = (
+        "decided_pending_action"
+        if resolved.permitted_action == "squash-merge"
+        else "closed"
+    )
     sealed = q_api.seal_decision(
         base_url,
         room_id,
@@ -198,6 +207,7 @@ def handle_queen_job_finished(
             sealed_through_sequence=sealed_through_sequence,
             content=decision.comment_body,
         ),
+        final_state=final_state,
         comment_url=comment_url,
     )
 

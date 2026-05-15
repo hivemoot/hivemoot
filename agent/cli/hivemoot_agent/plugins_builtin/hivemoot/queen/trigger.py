@@ -45,15 +45,26 @@ class LocalQueenSynthesisTrigger:
         claim_ttl_secs: int = 900,
         fallback_quiet_period_secs: int = 60,
         gh_timeout_secs: int = 30,
+        enable_squash_merge: bool = False,
         log_prefix: str = "[hivemoot-queen]",
         list_ready_fn: Callable[
             ..., list[q_api.SynthesisReadyRoom]
         ] = q_api.list_synthesis_ready_rooms,
+        list_pending_fn: Callable[
+            ..., list[q_api.SynthesisReadyRoom]
+        ] = q_api.list_decided_pending_ready_rooms,
         participants_fn: Callable[..., dict[str, Any]] = q_api.get_room_participants,
         events_fn: Callable[..., list[dict[str, Any]]] = q_api.list_room_events,
         claim_fn: Callable[..., q_api.ClaimedSynthesis] = q_api.claim_synthesis,
+        confirm_merge_fn: Callable[
+            ..., q_api.ConfirmMergeResult
+        ] = q_api.confirm_merge,
+        report_merge_result_fn: Callable[
+            ..., q_api.MergeReportResult
+        ] = q_api.report_merge_result,
         mint_token_fn: Callable[..., str] = q_api.mint_installation_token,
         get_head_sha_fn: Callable[..., str] = gh.get_pr_head_sha,
+        squash_merge_fn: Callable[..., str] = gh.squash_merge_pr,
         now_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self._plugin = plugin
@@ -66,13 +77,18 @@ class LocalQueenSynthesisTrigger:
         self._claim_ttl_secs = max(1, claim_ttl_secs)
         self._fallback_quiet_period_secs = max(0, fallback_quiet_period_secs)
         self._gh_timeout_secs = max(1, gh_timeout_secs)
+        self._enable_squash_merge = enable_squash_merge
         self._log_prefix = log_prefix
         self._list_ready = list_ready_fn
+        self._list_pending = list_pending_fn
         self._participants = participants_fn
         self._events = events_fn
         self._claim = claim_fn
+        self._confirm_merge = confirm_merge_fn
+        self._report_merge_result = report_merge_result_fn
         self._mint_token = mint_token_fn
         self._get_head_sha = get_head_sha_fn
+        self._squash_merge = squash_merge_fn
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._stop_event = threading.Event()
 
@@ -112,6 +128,9 @@ class LocalQueenSynthesisTrigger:
 
         bearer = self._token_resolver()
         if not bearer:
+            return
+
+        if self._enable_squash_merge and self._confirm_pending_merge(bearer):
             return
 
         try:
@@ -214,6 +233,149 @@ class LocalQueenSynthesisTrigger:
                 flush=True,
             )
             return
+
+    def _confirm_pending_merge(self, bearer: str) -> bool:
+        try:
+            rooms = self._list_pending(
+                self._base_url,
+                bearer,
+                limit=self._ready_limit,
+            )
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} decided-pending-ready failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
+        for room in rooms:
+            try:
+                pr = gh.parse_subject_ref(room.subject_ref)
+                gh_token = self._mint_token(
+                    self._base_url,
+                    bearer,
+                    repo=pr.full_repo,
+                    agent_id=self._agent_id or None,
+                )
+                current_head_sha = self._get_head_sha(
+                    pr,
+                    token=gh_token,
+                    timeout_secs=self._gh_timeout_secs,
+                )
+                merge_attempt_id = (
+                    f"{self._runner_id}:{room.room_id}:{current_head_sha[:12]}"
+                )
+                confirmed = self._confirm_merge(
+                    self._base_url,
+                    room.room_id,
+                    bearer,
+                    queen_runner=self._runner_id,
+                    merge_attempt_id=merge_attempt_id,
+                    current_head_sha=current_head_sha,
+                )
+            except q_api.QueenAPIConflictError as exc:
+                print(
+                    f"{self._log_prefix} confirm skipped room={room.room_id}: "
+                    f"{exc.code}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            except Exception as exc:
+                print(
+                    f"{self._log_prefix} confirm failed room={room.room_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+
+            if confirmed.decision_outcome != "merge_approved":
+                print(
+                    f"{self._log_prefix} merge downgraded room={room.room_id} "
+                    f"reason={confirmed.decision_outcome_reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return True
+
+            try:
+                merge_commit_oid = self._squash_merge(
+                    pr,
+                    token=gh_token,
+                    timeout_secs=self._gh_timeout_secs,
+                )
+            except Exception as exc:
+                self._report_merge_failure(
+                    bearer=bearer,
+                    room=room,
+                    merge_attempt_id=confirmed.merge_attempt_id,
+                    error_class=type(exc).__name__,
+                )
+                print(
+                    f"{self._log_prefix} squash merge failed "
+                    f"room={room.room_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return True
+
+            try:
+                self._report_merge_result(
+                    self._base_url,
+                    room.room_id,
+                    bearer,
+                    queen_runner=self._runner_id,
+                    merge_attempt_id=confirmed.merge_attempt_id,
+                    github_merge_status="succeeded",
+                    merge_commit_oid=merge_commit_oid,
+                )
+            except Exception as exc:
+                print(
+                    f"{self._log_prefix} merge result report failed "
+                    f"room={room.room_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return True
+
+            print(
+                f"{self._log_prefix} squash merged room={room.room_id} "
+                f"commit={merge_commit_oid}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return True
+
+        return False
+
+    def _report_merge_failure(
+        self,
+        *,
+        bearer: str,
+        room: q_api.SynthesisReadyRoom,
+        merge_attempt_id: str,
+        error_class: str,
+    ) -> None:
+        try:
+            self._report_merge_result(
+                self._base_url,
+                room.room_id,
+                bearer,
+                queen_runner=self._runner_id,
+                merge_attempt_id=merge_attempt_id,
+                github_merge_status="failed",
+                error_class=error_class,
+            )
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} failed merge-result report failed "
+                f"room={room.room_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _is_room_ready(self, room: q_api.SynthesisReadyRoom, bearer: str) -> bool:
         try:

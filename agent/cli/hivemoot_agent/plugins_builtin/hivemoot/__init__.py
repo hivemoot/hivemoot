@@ -16,7 +16,8 @@ One plugin, six independently-toggleable features:
     and call ``/present + /contribute`` or ``/present + /withdraw``.
   * ``queen`` — local queen runner: poll synthesis-ready rooms,
     claim one, run local synthesis, post the verified GitHub comment,
-    and seal the closed decision.
+    seal the decision, and optionally execute server-confirmed
+    squash merges.
 
 YAML shape (``hivemoot.yaml``):
 
@@ -311,11 +312,6 @@ class HivemootPlugin:
             errors.append(
                 "AGENT_ID env var or plugins.hivemoot.queen.runner_id "
                 "is required when queen.enabled is true"
-            )
-        if cfg.queen.enable_squash_merge:
-            errors.append(
-                "plugins.hivemoot.queen.enable_squash_merge is reserved "
-                "until confirm-merge/report-merge-result endpoints land"
             )
         return errors
 
@@ -629,6 +625,7 @@ class HivemootPlugin:
                 claim_ttl_secs=cfg.queen.claim_ttl_secs,
                 fallback_quiet_period_secs=cfg.queen.fallback_quiet_period_secs,
                 gh_timeout_secs=cfg.queen.gh_timeout_secs,
+                enable_squash_merge=cfg.queen.enable_squash_merge,
             )
             triggers.append(self._queen_trigger)  # type: ignore[arg-type]
 

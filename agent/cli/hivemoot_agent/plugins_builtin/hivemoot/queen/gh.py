@@ -21,8 +21,10 @@ __all__ = (
     "GHCommandError",
     "PullRequestRef",
     "get_pr_head_sha",
+    "get_pr_merge_commit_sha",
     "parse_subject_ref",
     "post_pr_comment",
+    "squash_merge_pr",
 )
 
 
@@ -126,6 +128,59 @@ def get_pr_head_sha(
     if not out:
         raise GHCommandError(f"gh pr view returned empty head SHA for {pr.full_repo}#{pr.number}")
     return out
+
+
+def get_pr_merge_commit_sha(
+    pr: PullRequestRef,
+    *,
+    token: str,
+    timeout_secs: int = 30,
+) -> str:
+    out = _run_gh(
+        [
+            "pr",
+            "view",
+            str(pr.number),
+            "--repo",
+            pr.full_repo,
+            "--json",
+            "mergeCommit",
+            "--jq",
+            ".mergeCommit.oid // \"\"",
+        ],
+        token=token,
+        timeout_secs=timeout_secs,
+    )
+    if not out:
+        raise GHCommandError(
+            f"gh pr view returned empty merge commit for {pr.full_repo}#{pr.number}"
+        )
+    return out
+
+
+def squash_merge_pr(
+    pr: PullRequestRef,
+    *,
+    token: str,
+    timeout_secs: int = 30,
+) -> str:
+    _run_gh(
+        [
+            "pr",
+            "merge",
+            str(pr.number),
+            "--repo",
+            pr.full_repo,
+            "--squash",
+        ],
+        token=token,
+        timeout_secs=timeout_secs,
+    )
+    return get_pr_merge_commit_sha(
+        pr,
+        token=token,
+        timeout_secs=timeout_secs,
+    )
 
 
 def post_pr_comment(

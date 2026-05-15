@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins_builtin.hivemoot.queen import (
     ClaimedSynthesis,
+    ConfirmMergeResult,
     LocalQueenSynthesisTrigger,
     SynthesisReadyRoom,
 )
@@ -47,6 +48,18 @@ def _room() -> SynthesisReadyRoom:
         manager="bot-queen",
         opened_at="2026-05-15T00:00:00Z",
         timing_config={"quiet_period_secs": 60},
+    )
+
+
+def _pending_room() -> SynthesisReadyRoom:
+    return SynthesisReadyRoom(
+        room_id="room-2",
+        status="decided_pending_action",
+        subject_type="pr_review",
+        subject_ref="owner/repo#43",
+        manager="bot-queen",
+        opened_at="2026-05-15T00:00:00Z",
+        timing_config={},
     )
 
 
@@ -165,6 +178,77 @@ class LocalQueenTriggerTests(unittest.TestCase):
         trigger._tick(dispatcher)
         self.assertEqual(plugin.reserved, 1)
         self.assertEqual(plugin.released, 1)
+
+    def test_confirmed_pending_merge_runs_squash_and_reports_success(self) -> None:
+        dispatcher = MagicMock()
+        list_ready = MagicMock(return_value=[_room()])
+        report = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            runner_id="queen-a",
+            agent_id="queen-a",
+            enable_squash_merge=True,
+            list_ready_fn=list_ready,
+            list_pending_fn=MagicMock(return_value=[_pending_room()]),
+            confirm_merge_fn=MagicMock(
+                return_value=ConfirmMergeResult(
+                    decision_outcome="merge_approved",
+                    decision_outcome_reason=None,
+                    github_merge_status="pending",
+                    merge_attempt_id="queen-a:room-2:abc123",
+                    closed_sequence=9,
+                ),
+            ),
+            report_merge_result_fn=report,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="abc123deadbeef"),
+            squash_merge_fn=MagicMock(return_value="feedface"),
+        )
+
+        trigger._tick(dispatcher)
+
+        dispatcher.dispatch.assert_not_called()
+        list_ready.assert_not_called()
+        report.assert_called_once_with(
+            "https://api.example",
+            "room-2",
+            "bearer",
+            queen_runner="queen-a",
+            merge_attempt_id="queen-a:room-2:abc123",
+            github_merge_status="succeeded",
+            merge_commit_oid="feedface",
+        )
+
+    def test_pending_merge_downgrade_does_not_run_gh_merge(self) -> None:
+        squash_merge = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            runner_id="queen-a",
+            agent_id="queen-a",
+            enable_squash_merge=True,
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            list_pending_fn=MagicMock(return_value=[_pending_room()]),
+            confirm_merge_fn=MagicMock(
+                return_value=ConfirmMergeResult(
+                    decision_outcome="merge_downgraded",
+                    decision_outcome_reason="head_sha_drift",
+                    github_merge_status=None,
+                    merge_attempt_id="queen-a:room-2:abc123",
+                    closed_sequence=9,
+                ),
+            ),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="abc123deadbeef"),
+            squash_merge_fn=squash_merge,
+        )
+
+        trigger._tick(MagicMock())
+
+        squash_merge.assert_not_called()
 
 
 if __name__ == "__main__":

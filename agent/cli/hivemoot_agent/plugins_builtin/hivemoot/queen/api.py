@@ -21,15 +21,20 @@ from hivemoot_agent.plugins_builtin.hivemoot.http import (
 
 __all__ = (
     "ClaimedSynthesis",
+    "ConfirmMergeResult",
+    "MergeReportResult",
     "QueenAPIConflictError",
     "ResolveActionResult",
     "SealDecisionResult",
     "SynthesisReadyRoom",
     "claim_synthesis",
+    "confirm_merge",
     "get_room_participants",
     "list_room_events",
+    "list_decided_pending_ready_rooms",
     "list_synthesis_ready_rooms",
     "mint_installation_token",
+    "report_merge_result",
     "resolve_action",
     "seal_decision",
 )
@@ -87,6 +92,26 @@ class SealDecisionResult:
     final_state: str
     closed_sequence: int
     audit_id: str
+    pending_sequence: int = 0
+    idempotent: bool = False
+
+
+@dataclass
+class ConfirmMergeResult:
+    decision_outcome: str
+    decision_outcome_reason: str | None
+    github_merge_status: str | None
+    merge_attempt_id: str
+    closed_sequence: int
+    idempotent: bool = False
+
+
+@dataclass
+class MergeReportResult:
+    github_merge_status: str
+    merge_attempt_id: str
+    merge_commit_oid: str | None
+    error_class: str | None
     idempotent: bool = False
 
 
@@ -155,6 +180,36 @@ def list_synthesis_ready_rooms(
         return []
     if not isinstance(rooms_raw, list):
         raise RuntimeError("synthesis-ready response `rooms` must be a list")
+    rooms: list[SynthesisReadyRoom] = []
+    for entry in rooms_raw:
+        if isinstance(entry, dict):
+            rooms.append(_parse_ready_room(entry))
+    return rooms
+
+
+def list_decided_pending_ready_rooms(
+    base_url: str,
+    bearer: str,
+    *,
+    limit: int = 10,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> list[SynthesisReadyRoom]:
+    url = (
+        f"{base_url.rstrip('/')}/api/rooms/decided-pending-ready?"
+        f"limit={max(1, int(limit))}"
+    )
+    status, parsed, raw = get_json(url, bearer, timeout=timeout)
+    if status != 200:
+        raise RuntimeError(
+            f"decided-pending-ready returned status {status}: {_body_excerpt(raw)}"
+        )
+    if not isinstance(parsed, dict):
+        raise RuntimeError("decided-pending-ready response was not a JSON object")
+    rooms_raw = parsed.get("rooms")
+    if rooms_raw is None:
+        return []
+    if not isinstance(rooms_raw, list):
+        raise RuntimeError("decided-pending-ready response `rooms` must be a list")
     rooms: list[SynthesisReadyRoom] = []
     for entry in rooms_raw:
         if isinstance(entry, dict):
@@ -350,6 +405,7 @@ def seal_decision(
     audit_id: str,
     sealed_through_sequence: int,
     decision: dict[str, Any],
+    final_state: str = "closed",
     comment_url: str | None = None,
     downgrade_reason: str | None = None,
     error_class: str | None = None,
@@ -360,7 +416,7 @@ def seal_decision(
     body: dict[str, Any] = {
         "queenRunner": queen_runner,
         "auditId": audit_id,
-        "finalState": "closed",
+        "finalState": final_state,
         "sealedThroughSequence": sealed_through_sequence,
         "decision": decision,
     }
@@ -391,6 +447,131 @@ def seal_decision(
         closed_sequence=_as_int(
             parsed.get("closedSequence") or parsed.get("closed_sequence"),
         ),
+        pending_sequence=_as_int(
+            parsed.get("pendingSequence") or parsed.get("pending_sequence"),
+        ),
         audit_id=str(parsed.get("auditId") or parsed.get("audit_id") or ""),
+        idempotent=bool(parsed.get("idempotent") or False),
+    )
+
+
+def confirm_merge(
+    base_url: str,
+    room_id: str,
+    bearer: str,
+    *,
+    queen_runner: str,
+    merge_attempt_id: str,
+    current_head_sha: str,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> ConfirmMergeResult:
+    url = f"{base_url.rstrip('/')}/api/rooms/{_room_path(room_id)}/confirm-merge"
+    status, parsed, raw = post_json(
+        url,
+        {
+            "queenRunner": queen_runner,
+            "mergeAttemptId": merge_attempt_id,
+            "currentHeadSha": current_head_sha,
+        },
+        bearer,
+        timeout=timeout,
+    )
+    if status == 409 and isinstance(parsed, dict):
+        raise QueenAPIConflictError(
+            "confirm-merge",
+            str(parsed.get("code") or "conflict"),
+            _body_excerpt(raw),
+        )
+    if status != 200:
+        raise RuntimeError(
+            f"confirm-merge returned status {status}: {_body_excerpt(raw)}"
+        )
+    if not isinstance(parsed, dict):
+        raise RuntimeError("confirm-merge response was not a JSON object")
+    return ConfirmMergeResult(
+        decision_outcome=str(
+            parsed.get("decisionOutcome") or parsed.get("decision_outcome") or "",
+        ),
+        decision_outcome_reason=(
+            str(
+                parsed.get("decisionOutcomeReason")
+                or parsed.get("decision_outcome_reason")
+            )
+            if (
+                parsed.get("decisionOutcomeReason")
+                or parsed.get("decision_outcome_reason")
+            )
+            else None
+        ),
+        github_merge_status=(
+            str(parsed.get("githubMergeStatus") or parsed.get("github_merge_status"))
+            if parsed.get("githubMergeStatus") or parsed.get("github_merge_status")
+            else None
+        ),
+        merge_attempt_id=str(
+            parsed.get("mergeAttemptId") or parsed.get("merge_attempt_id") or "",
+        ),
+        closed_sequence=_as_int(
+            parsed.get("closedSequence") or parsed.get("closed_sequence"),
+        ),
+        idempotent=bool(parsed.get("idempotent") or False),
+    )
+
+
+def report_merge_result(
+    base_url: str,
+    room_id: str,
+    bearer: str,
+    *,
+    queen_runner: str,
+    merge_attempt_id: str,
+    github_merge_status: str,
+    merge_commit_oid: str | None = None,
+    error_class: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> MergeReportResult:
+    url = (
+        f"{base_url.rstrip('/')}/api/rooms/"
+        f"{_room_path(room_id)}/report-merge-result"
+    )
+    body: dict[str, Any] = {
+        "queenRunner": queen_runner,
+        "mergeAttemptId": merge_attempt_id,
+        "githubMergeStatus": github_merge_status,
+    }
+    if merge_commit_oid:
+        body["mergeCommitOid"] = merge_commit_oid
+    if error_class:
+        body["errorClass"] = error_class
+    status, parsed, raw = post_json(url, body, bearer, timeout=timeout)
+    if status == 409 and isinstance(parsed, dict):
+        raise QueenAPIConflictError(
+            "report-merge-result",
+            str(parsed.get("code") or "conflict"),
+            _body_excerpt(raw),
+        )
+    if status != 200:
+        raise RuntimeError(
+            f"report-merge-result returned status {status}: {_body_excerpt(raw)}"
+        )
+    if not isinstance(parsed, dict):
+        raise RuntimeError("report-merge-result response was not a JSON object")
+    return MergeReportResult(
+        github_merge_status=str(
+            parsed.get("githubMergeStatus") or parsed.get("github_merge_status") or "",
+        ),
+        merge_attempt_id=str(
+            parsed.get("mergeAttemptId") or parsed.get("merge_attempt_id") or "",
+        ),
+        merge_commit_oid=(
+            str(parsed.get("mergeCommitOid") or parsed.get("merge_commit_oid"))
+            if parsed.get("mergeCommitOid") or parsed.get("merge_commit_oid")
+            else None
+        ),
+        error_class=(
+            str(parsed.get("errorClass") or parsed.get("error_class"))
+            if parsed.get("errorClass") or parsed.get("error_class")
+            else None
+        ),
         idempotent=bool(parsed.get("idempotent") or False),
     )
