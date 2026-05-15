@@ -3315,6 +3315,41 @@ describe("D.1.a-ii R2 / B2 — per-(room, role) first-wins gate", () => {
     expect(participants.drone.resolved_at).toBeDefined();
   });
 
+  it("same agent present cannot regress a timed_out slot back to pending", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    await timeoutParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      subjectRole: "drone",
+      watchdogRole: "manager",
+      watchdogAgentId: "bot-queen",
+      sequenceObservedByClient: 2,
+      redis,
+    });
+
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-runner-1",
+        sequenceObservedByClient: 3,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("timed_out");
+    expect(participants.drone.resolved_at).toBeDefined();
+  });
+
   it("re-RSVP from withdrew is allowed even with a different agent_id", async () => {
     await presentParticipant({
       installationId: "12345",
