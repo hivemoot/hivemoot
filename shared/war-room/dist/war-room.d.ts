@@ -285,6 +285,9 @@ export interface RoomDecision {
     /** Sequence number this synthesis was based on. Caller compares
      * against the live `seq` at close time to detect drift. */
     sequence_closed: number;
+    /** Optional local-queen seal idempotency marker. Existing cloud
+     * close calls leave this unset. */
+    seal_audit_id?: string;
 }
 /**
  * Append-only event log entry. Stored as JSON in the
@@ -766,6 +769,20 @@ export declare class RoomCloseClaimThroughSeqMismatchError extends Error {
     readonly expectedThroughSequence: number;
     readonly actualThroughSequence: number;
     constructor(roomId: string, expectedThroughSequence: number, actualThroughSequence: number);
+}
+/**
+ * Thrown by `closeRoomWithDecision` when the live synthesis claim is
+ * held by a different runner than the caller expected. Existing
+ * cloud-close callers do not pass `expectedRunner`, but the local
+ * queen's two-step `resolve-action` → `seal-decision` path does:
+ * a claim TTL expiry followed by a re-claim at the same sequence
+ * must not let the old runner seal against the new runner's claim.
+ */
+export declare class RoomCloseClaimRunnerMismatchError extends Error {
+    readonly roomId: string;
+    readonly expectedRunner: string;
+    readonly actualRunner: string;
+    constructor(roomId: string, expectedRunner: string, actualRunner: string);
 }
 /**
  * Thrown by `closeRoomWithDecision` when new events arrived between
@@ -1338,6 +1355,8 @@ export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"
  *   [4] closedEventJsonTemplate  — JSON with `__SEQ__` placeholder
  *   [5] closedAt                 — ISO 8601
  *   [6] retentionSecs            — sibling TTL
+ *   [7] expectedRunner           — optional; empty string disables
+ *                                  runner ownership check
  *
  * Returns:
  *   {1, sequence}                                    closed cleanly
@@ -1347,7 +1366,7 @@ export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"
  *                                                    different runner re-claimed
  *   {-3, "decode_error"}                             claim payload corruption
  */
-export declare const ROOM_CLOSE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  -- Drift: new events arrived during synthesis. Revert atomically\n  -- (closes design B2: prior implementation orphaned rooms from\n  -- both deciding and awaiting_contributions sets, making them\n  -- invisible to subsequent ticks).\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[7], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[3], tostring(closedSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"del\", KEYS[6])\nredis.call(\"srem\", KEYS[4], ARGV[1])\n-- KEYS[10] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Same rationale as ROOM_TERMINATE_SCRIPT: closed rooms stay in the\n-- installation index for the retention window so the dashboard\n-- can list past synthesis rooms. listRooms's orphan-cleanup\n-- collects stale entries lazily after the hash TTL expires.\nredis.call(\"srem\", KEYS[11], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[3], retention)\nredis.call(\"expire\", KEYS[7], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nreturn {1, closedSeq}\n";
+export declare const ROOM_CLOSE_SCRIPT = "\nlocal claim = redis.call(\"get\", KEYS[2])\nif not claim then return {-3, \"claim_lost\"} end\nlocal ok, parsed = pcall(cjson.decode, claim)\nif not ok then return {-3, \"decode_error\"} end\nlocal expectedRunner = ARGV[7]\nif expectedRunner ~= \"\" and parsed.runner ~= expectedRunner then\n  return {-3, \"claim_runner_mismatch\", parsed.runner or \"\"}\nend\nlocal claimThroughSeq = tonumber(parsed.throughSequence)\nlocal expectedThroughSeq = tonumber(ARGV[2])\nif claimThroughSeq ~= expectedThroughSeq then\n  return {-3, \"claim_throughSeq_mismatch\", claimThroughSeq}\nend\nlocal lastSeq = tonumber(redis.call(\"get\", KEYS[3])) or 0\nif lastSeq ~= expectedThroughSeq then\n  -- Drift: new events arrived during synthesis. Revert atomically\n  -- (closes design B2: prior implementation orphaned rooms from\n  -- both deciding and awaiting_contributions sets, making them\n  -- invisible to subsequent ticks).\n  redis.call(\"del\", KEYS[2])\n  redis.call(\"hset\", KEYS[1], \"status\", \"awaiting_contributions\",\n                            \"deciding_through_sequence\", \"\")\n  redis.call(\"srem\", KEYS[4], ARGV[1])\n  redis.call(\"sadd\", KEYS[5], ARGV[1])\n  return {-2, lastSeq}\nend\nlocal closedSeq = lastSeq + 1\nlocal closedEventJson = string.gsub(ARGV[4], \"__SEQ__\", tostring(closedSeq), 1)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"decision\", ARGV[3],\n                          \"closed_at\", ARGV[5])\nredis.call(\"zadd\", KEYS[7], closedSeq, closedEventJson)\nredis.call(\"set\", KEYS[3], tostring(closedSeq))\nredis.call(\"del\", KEYS[2])\nredis.call(\"del\", KEYS[6])\nredis.call(\"srem\", KEYS[4], ARGV[1])\n-- KEYS[10] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Same rationale as ROOM_TERMINATE_SCRIPT: closed rooms stay in the\n-- installation index for the retention window so the dashboard\n-- can list past synthesis rooms. listRooms's orphan-cleanup\n-- collects stale entries lazily after the hash TTL expires.\nredis.call(\"srem\", KEYS[11], ARGV[1])\nlocal retention = tonumber(ARGV[6])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[3], retention)\nredis.call(\"expire\", KEYS[7], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nreturn {1, closedSeq}\n";
 /**
  * Validate role at the BODY boundary. Distinct from the internal
  * `assertRoleFormat` — this version is for caller-supplied role
@@ -1848,6 +1867,8 @@ export declare function terminateRoom(args: {
  *     ABORT the GitHub post and surface terminal state to operator
  *   - `RoomCloseClaimThroughSeqMismatchError` — different runner
  *     re-claimed; ABORT, do NOT post
+ *   - `RoomCloseClaimRunnerMismatchError` — local-queen seal saw a
+ *     live claim held by a different runner; ABORT, do NOT post
  *   - `RoomCloseDriftError` — sequence drift; revert is already
  *     applied, queen logs and exits, manager re-claims
  *   - `RoomClaimPayloadCorruptError` — claim payload corrupted;
@@ -1858,6 +1879,8 @@ export declare function closeRoomWithDecision(args: {
     roomId: string;
     /** Captured at claim time from `claimSynthesis(...).throughSequence`. */
     expectedThroughSequence: number;
+    /** Optional guard for two-step local-queen seals. */
+    expectedRunner?: string;
     decision: RoomDecision;
     subject: SubjectRef;
     retentionSecs?: number;

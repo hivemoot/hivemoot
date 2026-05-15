@@ -106,7 +106,14 @@ export type AuditMutationAction =
    * `seal-decision` endpoint can verify the public comment header
    * against the canonical resolve-action decision row.
    */
-  | "queen.resolve_action";
+  | "queen.resolve_action"
+  /**
+   * Local queen intended-action comment failed after resolve-action
+   * permitted a merge. The seal-decision downgrade path records
+   * this separately from `queen.action_downgrade`, which is a
+   * server-side policy downgrade.
+   */
+  | "queen.intended_action_post_failed";
 
 /** Event classes that emit to the `:auth` (auth events) stream. */
 export type AuditAuthAction = "auth.success" | "auth.failure";
@@ -246,7 +253,8 @@ export function isMutationAction(action: string): action is AuditMutationAction 
     action === "bootstrap" ||
     action === "queen.verdict_floor_override" ||
     action === "queen.action_downgrade" ||
-    action === "queen.resolve_action"
+    action === "queen.resolve_action" ||
+    action === "queen.intended_action_post_failed"
   );
 }
 
