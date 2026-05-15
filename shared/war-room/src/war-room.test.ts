@@ -340,6 +340,12 @@ function makeMockRedis() {
             ) {
               return [-4, "owner_conflict", parsed.agent_id];
             }
+            if (
+              parsed.agent_id === ownerExpected &&
+              (parsed.status === "resolved" || parsed.status === "timed_out")
+            ) {
+              return [-6, "participant_state_precondition", parsed.status];
+            }
           }
         }
 
@@ -3271,6 +3277,42 @@ describe("D.1.a-ii R2 / B2 — per-(room, role) first-wins gate", () => {
         redis,
       }),
     ).resolves.toBeGreaterThan(0);
+  });
+
+  it("same agent present cannot regress a resolved slot back to pending", async () => {
+    await presentParticipant({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-1",
+      sequenceObservedByClient: 1,
+      redis,
+    });
+    await submitContribution({
+      installationId: "12345",
+      roomId: RID_A,
+      role: "drone",
+      agentId: "drone-runner-1",
+      sequenceObservedByClient: 2,
+      body: { verdict: "APPROVE", summary: "lgtm" },
+      rawMd: "approved.",
+      redis,
+    });
+
+    await expect(
+      presentParticipant({
+        installationId: "12345",
+        roomId: RID_A,
+        role: "drone",
+        agentId: "drone-runner-1",
+        sequenceObservedByClient: 3,
+        redis,
+      }),
+    ).rejects.toThrow(RoomParticipantStatePreconditionError);
+
+    const participants = await getRoomParticipants({ roomId: RID_A, redis });
+    expect(participants.drone.status).toBe("resolved");
+    expect(participants.drone.resolved_at).toBeDefined();
   });
 
   it("re-RSVP from withdrew is allowed even with a different agent_id", async () => {

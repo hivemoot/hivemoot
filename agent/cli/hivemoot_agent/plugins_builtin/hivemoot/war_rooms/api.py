@@ -78,7 +78,13 @@ class RoomStateRaceError(RuntimeError):
 #   * participant_not_found — slot was withdrawn or never created.
 #     Also terminal; the lifecycle is over.
 _RACE_CODES_BY_STATUS: dict[int, frozenset[str]] = {
-    409: frozenset({"status_precondition_failed", "owner_conflict"}),
+    409: frozenset(
+        {
+            "status_precondition_failed",
+            "owner_conflict",
+            "participant_state_precondition",
+        }
+    ),
     404: frozenset({"room_not_found", "participant_not_found"}),
 }
 
