@@ -15,6 +15,7 @@ from hivemoot_agent.plugins_builtin.hivemoot.config import (
     HivemootConfig,
     HivemootGithubWorkflowsConfig,
     HivemootHealthConfig,
+    HivemootQueenConfig,
     HivemootTasksConfig,
     HivemootWarRoomsConfig,
 )
@@ -28,6 +29,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertFalse(cfg.github_workflows.enabled)
         self.assertFalse(cfg.apiarist.enabled)
         self.assertFalse(cfg.war_rooms.enabled)
+        self.assertFalse(cfg.queen.enabled)
 
     def test_war_rooms_defaults(self) -> None:
         cfg = HivemootWarRoomsConfig()
@@ -77,6 +79,16 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.service, "")
         self.assertEqual(cfg.repo, "")
 
+    def test_queen_defaults(self) -> None:
+        cfg = HivemootQueenConfig()
+        self.assertFalse(cfg.enabled)
+        self.assertEqual(cfg.base_url, "https://www.hivemoot.dev")
+        self.assertEqual(cfg.poll_interval_secs, 60)
+        self.assertEqual(cfg.synthesis_ready_limit, 10)
+        self.assertEqual(cfg.claim_ttl_secs, 900)
+        self.assertEqual(cfg.runner_id, "")
+        self.assertFalse(cfg.enable_squash_merge)
+
 
 class StrictnessTests(unittest.TestCase):
     """StrictPluginConfig forbids unknown fields — catches operator
@@ -110,6 +122,25 @@ class RangeTests(unittest.TestCase):
             HivemootApiaristConfig(timeout_seconds=0)
         with self.assertRaises(ValidationError):
             HivemootApiaristConfig(timeout_seconds=-1)
+
+    def test_queen_poll_interval_min_5s(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(poll_interval_secs=4)
+        HivemootQueenConfig(poll_interval_secs=5)
+
+    def test_queen_ready_limit_range(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(synthesis_ready_limit=0)
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(synthesis_ready_limit=51)
+        HivemootQueenConfig(synthesis_ready_limit=50)
+
+    def test_queen_claim_ttl_range(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(claim_ttl_secs=59)
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(claim_ttl_secs=901)
+        HivemootQueenConfig(claim_ttl_secs=900)
 
 
 if __name__ == "__main__":

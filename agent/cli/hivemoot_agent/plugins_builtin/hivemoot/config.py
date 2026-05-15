@@ -1,7 +1,8 @@
 """Pydantic config schema for the consolidated ``hivemoot`` plugin.
 
-One plugin, three features (health / tasks / github_workflows), each
-toggled independently.  The shared inputs (bearer token, base URL)
+One plugin, six features (health / tasks / github_workflows /
+apiarist / war_rooms / queen), each toggled independently.  The
+shared inputs (bearer token, base URL)
 live at the top level so operators don't repeat them under every
 feature block.
 
@@ -22,6 +23,8 @@ YAML shape:
         github_workflows:
           enabled: true
           role_name: builder
+        queen:
+          enabled: false
 """
 
 from __future__ import annotations
@@ -340,6 +343,86 @@ class HivemootWarRoomsConfig(StrictPluginConfig):
     )
 
 
+class HivemootQueenConfig(StrictPluginConfig):
+    """Local queen runner — claims synthesis-ready rooms and posts
+    verified GitHub comments through the local hive container.
+
+    Disabled by default. Operators should enable this only after the
+    web-side local-queen endpoints are deployed and the installation is
+    still in cloud mode; the final ``queen_mode=local`` flip is a
+    separate rollout step.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the local queen synthesis trigger + on_job_finished "
+            "handler. Off by default; fleet YAML opts one runner in."
+        ),
+    )
+    base_url: str = Field(
+        default="https://www.hivemoot.dev",
+        description=(
+            "Base URL for the local-queen API endpoints. The runner "
+            "polls /api/rooms/synthesis-ready and posts resolve/seal "
+            "requests under this base."
+        ),
+    )
+    poll_interval_secs: int = Field(
+        default=60,
+        ge=5,
+        description=(
+            "Seconds between local queen synthesis polls. Default 60s "
+            "matches the cloud queen tick cadence; floor prevents "
+            "tight-looping during backend failures."
+        ),
+    )
+    synthesis_ready_limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description=(
+            "Max rooms fetched from /synthesis-ready per poll. The "
+            "trigger claims at most one room per tick/run."
+        ),
+    )
+    claim_ttl_secs: int = Field(
+        default=900,
+        ge=60,
+        le=900,
+        description=(
+            "TTL requested for /claim-synthesis. Must stay within the "
+            "server's 15 minute seal-decision audit window."
+        ),
+    )
+    fallback_quiet_period_secs: int = Field(
+        default=60,
+        ge=0,
+        description=(
+            "Quiet period used when a room core lacks timing_config."
+        ),
+    )
+    runner_id: str = Field(
+        default="",
+        description=(
+            "Stable local queen runner id. Empty = AGENT_ID. This value "
+            "must match the claim and seal-decision queenRunner field."
+        ),
+    )
+    gh_timeout_secs: int = Field(
+        default=30,
+        ge=1,
+        description="Timeout for individual gh CLI calls.",
+    )
+    enable_squash_merge: bool = Field(
+        default=False,
+        description=(
+            "Reserved for the future confirm-merge/report-merge-result "
+            "slice. This PR supports only the verified comment-close path."
+        ),
+    )
+
+
 class HivemootConfig(StrictPluginConfig):
     """Top-level typed config for the consolidated hivemoot plugin."""
 
@@ -372,4 +455,8 @@ class HivemootConfig(StrictPluginConfig):
     war_rooms: HivemootWarRoomsConfig = Field(
         default_factory=HivemootWarRoomsConfig,
         description="War-room watcher + per-room triage/contribution handler.",
+    )
+    queen: HivemootQueenConfig = Field(
+        default_factory=HivemootQueenConfig,
+        description="Local queen synthesis runner.",
     )
