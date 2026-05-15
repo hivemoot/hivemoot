@@ -524,4 +524,24 @@ describe("processRepository", () => {
 
     expect(mockPRs.findPRsWithLabel).not.toHaveBeenCalled();
   });
+
+  it("should skip archived repositories before loading config", async () => {
+    const { createPROperations, loadRepositoryConfig, logger } = await import("../api/lib/index.js");
+
+    const mockOctokit = {} as Parameters<typeof processRepository>[0];
+    const repo = {
+      owner: { login: "test-org" },
+      name: "archived-repo",
+      full_name: "test-org/archived-repo",
+      archived: true,
+    };
+
+    await processRepository(mockOctokit, repo, testAppId);
+
+    expect(loadRepositoryConfig).not.toHaveBeenCalled();
+    expect(createPROperations).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      "[test-org/archived-repo] Repository is archived; skipping stale PR cleanup"
+    );
+  });
 });
