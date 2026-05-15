@@ -355,7 +355,7 @@ Write like a teammate, not a report generator. Lead with your point.
 **Hivemoot plugin** (minimal: `AGENT_PLUGINS=hivemoot`; for tasks
 that operate on GitHub repos, add `github`):
 
-The consolidated `hivemoot` plugin bundles three feature-toggled
+The consolidated `hivemoot` plugin bundles feature-toggled
 subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
 
 - `health` — periodic heartbeats + per-run reports to
@@ -375,6 +375,27 @@ subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
   operating mode, buzz role loading, skill bundle.  Co-loads with
   the `github` plugin and reads its typed config for `repos[0]` +
   `workspace`.
+- `apiarist` — GitHub installation-token brokering through the host
+  apiarist Unix socket.
+- `war_rooms` — reviewer-side room watching, RSVP/contribution
+  lifecycle, and per-room heartbeat reporting.
+- `queen` — local queen synthesis runner.  When enabled on exactly
+  one hive runner for an installation, it polls
+  `/api/rooms/synthesis-ready`, verifies all participants are
+  non-pending and the room quiet period has elapsed, claims synthesis,
+  captures a fresh PR head SHA with a minted GitHub App token, runs a
+  local synthesis job, posts a verified GitHub App comment, and seals
+  the decision through `/api/rooms/:roomId/seal-decision`.  When
+  `enable_squash_merge` is true, it also polls
+  `/api/rooms/decided-pending-ready`, calls the server-side
+  `confirm-merge` gate, runs `gh pr merge --squash` with
+  `--match-head-commit` only after approval, and reports the GitHub
+  outcome back through `/api/rooms/:roomId/report-merge-result`.
+  Successful merges whose result report fails are retried from the
+  local `merge_report_queue_file`.  It is disabled by
+  default; keep cloud `queen_mode=cloud` until the web endpoints,
+  runner image, token policy, and fleet config are deployed and
+  observed healthy.
 
 Task claim flow: the trigger polls `plugins.hivemoot.tasks.claim_url`
 every `poll_interval_secs` (default 10s).  On a successful claim it
@@ -399,6 +420,26 @@ Backend contract:
   so codex writes its final markdown directly (preferred over NDJSON parsing).
 - Health contract: see
   [`web/AGENT_HEALTH_CONTRACT.md`](../web/AGENT_HEALTH_CONTRACT.md).
+- Local queen rollout: issue local-queen tokens with the
+  `local_queen` preset and a repo-scoped policy, then opt in with:
+
+```yaml
+plugins:
+  hivemoot:
+    token_file: !secret hivemoot_local_queen_token
+    queen:
+      enabled: true
+      base_url: https://www.hivemoot.dev
+      runner_id: hive-queen-1
+      enable_squash_merge: false
+      merge_report_queue_file: /workspace/hivemoot-queen-merge-reports.json
+```
+
+Deploy the runner with `enable_squash_merge: false` first to verify
+the comment-close path while the cloud queen is still authoritative.
+After the confirm/report endpoints are live and the runner is healthy,
+set `enable_squash_merge: true`, then flip the installation's
+`queen_mode` from `cloud` to `local`.
 
 Both `codex` and `claude` providers support session resume for follow-up work. GitHub mention triggers store one session per notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Cron ticks (empty session key) always start fresh by design. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 

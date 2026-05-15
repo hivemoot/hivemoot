@@ -1,6 +1,6 @@
 """Consolidated Hivemoot ecosystem plugin.
 
-One plugin, five independently-toggleable features:
+One plugin, six independently-toggleable features:
 
   * ``health`` — periodic heartbeats + per-run reports to
     ``POST {base_url}/api/agent-health`` (dashboard Agent Health tab).
@@ -14,6 +14,10 @@ One plugin, five independently-toggleable features:
   * ``war_rooms`` — poll ``/api/rooms/watching``, dispatch a triage
     Job per visible room, parse the agent's structured response,
     and call ``/present + /contribute`` or ``/present + /withdraw``.
+  * ``queen`` — local queen runner: poll synthesis-ready rooms,
+    claim one, run local synthesis, post the verified GitHub comment,
+    seal the decision, and optionally execute server-confirmed
+    squash merges.
 
 YAML shape (``hivemoot.yaml``):
 
@@ -31,6 +35,8 @@ YAML shape (``hivemoot.yaml``):
           enabled: true
         war_rooms:
           enabled: true
+        queen:
+          enabled: false
 
 Host behaviour is plugin-agnostic per ADR-002; this plugin owns its
 full vertical slice (triggers, lifecycle hooks, system prompts,
@@ -130,6 +136,8 @@ class HivemootPlugin:
         # it (set).  Starts set so the first claim is unblocked.
         self._task_inflight: threading.Event = threading.Event()
         self._task_inflight.set()
+        self._queen_inflight: threading.Event = threading.Event()
+        self._queen_inflight.set()
 
         # ── GitHub-workflows subsystem state ─────────────────────
         self._target_repo: str = ""
@@ -159,6 +167,8 @@ class HivemootPlugin:
         # when the post sequence totally fails. None when war_rooms
         # disabled OR triggers() hasn't been called yet.
         self._war_room_trigger: Any = None
+        # Local queen trigger reference, cached for tests/diagnostics.
+        self._queen_trigger: Any = None
 
         # ── Engine-side lifecycle substrate (PRs C+D of the
         #    JOB_LIFECYCLE_UNIFICATION RFC) ────────────────────────
@@ -194,6 +204,8 @@ class HivemootPlugin:
             errors.extend(self._validate_tasks(cfg))
         if cfg.github_workflows.enabled:
             errors.extend(self._validate_github_workflows(cfg))
+        if cfg.queen.enabled:
+            errors.extend(self._validate_queen(cfg))
 
         return errors
 
@@ -279,6 +291,28 @@ class HivemootPlugin:
                 "PATH (used by the role loader)."
             )
 
+        return errors
+
+    def _validate_queen(self, cfg: "HivemootConfig") -> list[str]:
+        errors: list[str] = []
+        if not cfg.queen.base_url:
+            errors.append(
+                "plugins.hivemoot.queen.base_url is required when "
+                "queen.enabled is true"
+            )
+        if cfg.token_file is None and not (
+            os.environ.get("HIVEMOOT_AGENT_TOKEN_FILE")
+            or os.environ.get("HIVEMOOT_AGENT_TOKEN")
+        ):
+            errors.append(
+                "plugins.hivemoot.token_file (or HIVEMOOT_AGENT_TOKEN"
+                "{,_FILE} env) is required when queen.enabled is true"
+            )
+        if not (cfg.queen.runner_id or self.resolved_agent_id()):
+            errors.append(
+                "AGENT_ID env var or plugins.hivemoot.queen.runner_id "
+                "is required when queen.enabled is true"
+            )
         return errors
 
     def setup(self, config: PluginConfig) -> None:
@@ -568,6 +602,34 @@ class HivemootPlugin:
                 ),
             )
 
+        if cfg.queen.enabled:
+            from hivemoot_agent.plugins_builtin.hivemoot.auth import (
+                resolve_agent_token,
+            )
+            from hivemoot_agent.plugins_builtin.hivemoot.queen import (
+                LocalQueenSynthesisTrigger,
+            )
+
+            token_path = str(cfg.token_file) if cfg.token_file else ""
+            runner_id = cfg.queen.runner_id or self.resolved_agent_id()
+            self._queen_trigger = LocalQueenSynthesisTrigger(
+                self,
+                base_url=cfg.queen.base_url,
+                token_resolver=lambda _token=token_path: resolve_agent_token(
+                    _token,
+                ),
+                runner_id=runner_id,
+                agent_id=self.resolved_agent_id(),
+                poll_interval_secs=cfg.queen.poll_interval_secs,
+                ready_limit=cfg.queen.synthesis_ready_limit,
+                claim_ttl_secs=cfg.queen.claim_ttl_secs,
+                fallback_quiet_period_secs=cfg.queen.fallback_quiet_period_secs,
+                gh_timeout_secs=cfg.queen.gh_timeout_secs,
+                enable_squash_merge=cfg.queen.enable_squash_merge,
+                merge_report_queue_file=str(cfg.queen.merge_report_queue_file),
+            )
+            triggers.append(self._queen_trigger)  # type: ignore[arg-type]
+
         return triggers
 
     def system_prompt(self, config: PluginConfig) -> str:
@@ -710,6 +772,23 @@ class HivemootPlugin:
                 # skipped the release.
                 self.release_task_slot()
 
+        if cfg.queen.enabled:
+            from hivemoot_agent.plugins_builtin.hivemoot.queen import (
+                is_queen_job,
+            )
+            if is_queen_job(job):
+                try:
+                    self._queen_on_job_finished(job, result, config)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-queen] on_job_finished raised "
+                        f"room={job.metadata.get('room_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                finally:
+                    self.release_queen_slot()
+
         if cfg.health.enabled and cfg.health.post_run_reports:
             try:
                 self._health_on_job_finished(job, result)
@@ -820,6 +899,50 @@ class HivemootPlugin:
             on_post_failure=evict,
         )
 
+    def _queen_on_job_finished(
+        self,
+        job: Job,
+        result: AgentResult,
+        config: PluginConfig,
+    ) -> None:
+        from hivemoot_agent.plugins_builtin.hivemoot.auth import (
+            resolve_agent_token,
+        )
+        from hivemoot_agent.plugins_builtin.hivemoot.queen import (
+            handle_queen_job_finished,
+        )
+        from hivemoot_agent.plugins_builtin.hivemoot.tasks import (
+            result_extractor,
+        )
+
+        cfg = self._cfg
+        if cfg is None or not cfg.queen.enabled:
+            return
+
+        bearer = resolve_agent_token(
+            str(cfg.token_file) if cfg.token_file else "",
+        )
+        provider = config.get("AGENT_PROVIDER", "claude")
+        log_path = self._resolve_provider_log_path(config)
+        sidecar = self._codex_sidecar_path
+
+        markdown = result_extractor.extract_result(
+            provider, log_path, sidecar_path=sidecar,
+        )
+        runner_id = cfg.queen.runner_id or self.resolved_agent_id()
+
+        handle_queen_job_finished(
+            job,
+            result,
+            base_url=cfg.queen.base_url,
+            bearer=bearer,
+            extracted_markdown=markdown,
+            queen_runner=runner_id,
+            agent_id=self.resolved_agent_id() or None,
+            gh_timeout_secs=cfg.queen.gh_timeout_secs,
+            enable_squash_merge=cfg.queen.enable_squash_merge,
+        )
+
     # ── Helpers used by triggers ──────────────────────────────────
 
     def resolved_agent_id(self) -> str:
@@ -861,6 +984,24 @@ class HivemootPlugin:
         ``on_job_finished``'s finally block and from the trigger's
         dispatch-failed path."""
         self._task_inflight.set()
+
+    # ── In-flight gate for the local queen trigger ───────────────
+
+    def wait_queen_slot(
+        self, stop_event: threading.Event, timeout: float = 1.0,
+    ) -> bool:
+        """Block until the local queen can claim another room."""
+        if stop_event.is_set():
+            return False
+        return self._queen_inflight.wait(timeout=timeout)
+
+    def reserve_queen_slot(self) -> None:
+        """Mark the local queen as busy with one synthesis job."""
+        self._queen_inflight.clear()
+
+    def release_queen_slot(self) -> None:
+        """Release the local queen synthesis slot."""
+        self._queen_inflight.set()
 
     # ── Private: shared resolvers ─────────────────────────────────
 
