@@ -439,6 +439,19 @@ describe("readQueenResolveActionAuditRow — seal-decision lookup", () => {
     expect(row.detail.permitted_action).toBe("comment");
   });
 
+  it("accepts parsed JSON audit entries returned by Redis clients", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => makeEntry()),
+    } as never;
+    const row = await readQueenResolveActionAuditRow({
+      redis: fakeRedis,
+      installationId: "12345",
+      auditId: "1715000000000-0",
+    });
+    expect(row.id).toBe("1715000000000-0");
+    expect(row.detail.room_id).toBe("rm-1");
+  });
+
   it("throws typed not-found when the stream row is missing", async () => {
     const fakeRedis = {
       eval: vi.fn(async () => null),

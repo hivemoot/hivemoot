@@ -446,16 +446,9 @@ export async function readQueenResolveActionAuditRow(args: {
   if (raw === null || raw === undefined) {
     throw new QueenResolveActionAuditNotFoundError(args.auditId);
   }
-  if (typeof raw !== "string") {
-    throw new QueenResolveActionAuditMalformedError(
-      args.auditId,
-      "entry payload is not a string",
-    );
-  }
-
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   } catch {
     throw new QueenResolveActionAuditMalformedError(
       args.auditId,
