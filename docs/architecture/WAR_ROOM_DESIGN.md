@@ -833,6 +833,11 @@ role-spoofing risk). Returns: open rooms in `awaiting_rsvp` or
 rooms where this role has already RSVP'd-and-resolved at the current
 sequence.
 
+`POST /present` may refresh a pending slot or re-RSVP a withdrawn
+slot, but it must not move `resolved` or `timed_out` participants
+back to `pending`; stale overlapping worker jobs should stop on that
+participant-state precondition so queen synthesis can proceed.
+
 **Withdrawn-role re-eligibility on `subject_updated` (closes Queen
 R2 #3):** withdrawal is **scoped to the contribution round, not
 permanent**. Concretely:
