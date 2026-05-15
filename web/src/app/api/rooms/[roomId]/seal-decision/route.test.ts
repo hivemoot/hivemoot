@@ -16,6 +16,7 @@ vi.mock("@hivemoot/war-room", async () => {
   return {
     ...real,
     closeRoomWithDecision: vi.fn(),
+    sealRoomForPendingMerge: vi.fn(),
     getRoomCore: vi.fn(),
   };
 });
@@ -56,6 +57,7 @@ import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import { validateEnv } from "@/server/env";
 import {
   closeRoomWithDecision,
+  sealRoomForPendingMerge,
   getRoomCore,
   RoomNotFoundError,
   RoomCloseClaimRunnerMismatchError,
@@ -74,6 +76,7 @@ import { POST } from "./route";
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);
 const mockedEnv = vi.mocked(validateEnv);
 const mockedClose = vi.mocked(closeRoomWithDecision);
+const mockedSealPending = vi.mocked(sealRoomForPendingMerge);
 const mockedGetRoomCore = vi.mocked(getRoomCore);
 const mockedMintToken = vi.mocked(mintInstallationToken);
 const mockedGetIssueComment = vi.mocked(getIssueComment);
@@ -197,6 +200,7 @@ beforeEach(() => {
   mockedAuth.mockReset();
   mockedEnv.mockReset();
   mockedClose.mockReset();
+  mockedSealPending.mockReset();
   mockedGetRoomCore.mockReset();
   mockedMintToken.mockReset();
   mockedGetIssueComment.mockReset();
@@ -225,6 +229,7 @@ beforeEach(() => {
   });
   mockedGetIssueComment.mockResolvedValue(makeComment());
   mockedClose.mockResolvedValue(8);
+  mockedSealPending.mockResolvedValue(8);
   mockedEmitPostFailed.mockResolvedValue(undefined);
 });
 
@@ -271,6 +276,49 @@ describe("POST /api/rooms/:roomId/seal-decision", () => {
       expect.objectContaining({
         expectedThroughSequence: 7,
         expectedRunner: "queen-hive-1",
+        subject: { type: "pr_review", ref: "hivemoot/colony#42" },
+      }),
+    );
+  });
+
+  it("seals a squash-merge intent into decided_pending_action with merge header", async () => {
+    mockedReadAudit.mockResolvedValue(
+      makeAudit({
+        detail: {
+          recommended_action: "squash-merge",
+          permitted_action: "squash-merge",
+          clamped_verdict: "APPROVE",
+        },
+      }),
+    );
+    mockedGetIssueComment.mockResolvedValue(
+      makeComment({
+        body: `${buildSealHeader("merge", AUDIT_ID)}\n\nMerge intent`,
+      }),
+    );
+    const res = await POST(
+      makeRequest(
+        makeBody({
+          finalState: "decided_pending_action",
+        }),
+      ),
+      makeContext(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      finalState: "decided_pending_action",
+      pendingSequence: 8,
+      auditId: AUDIT_ID,
+    });
+    expect(mockedClose).not.toHaveBeenCalled();
+    expect(mockedSealPending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedThroughSequence: 7,
+        expectedRunner: "queen-hive-1",
+        decision: expect.objectContaining({
+          seal_audit_id: AUDIT_ID,
+          reviewed_head_sha: "deadbeef",
+        }),
         subject: { type: "pr_review", ref: "hivemoot/colony#42" },
       }),
     );

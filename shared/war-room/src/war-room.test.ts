@@ -636,6 +636,181 @@ function makeMockRedis() {
         return [1, closedSeq];
       }
 
+      // ROOM_SEAL_PENDING_MERGE_SCRIPT — 7 keys, 5 args
+      if (
+        keys.length === 7 &&
+        argv.length === 5 &&
+        script.includes("decided_pending_action") &&
+        script.includes("claim_lost")
+      ) {
+        const [
+          roomK,
+          claimK,
+          seqK,
+          statusDecidingK,
+          statusAwaitingK,
+          statusPendingK,
+          eventsK,
+        ] = keys;
+        const [
+          roomId,
+          expectedThroughSeqStr,
+          decisionJson,
+          pendingEventTemplate,
+          expectedRunner,
+        ] = argv;
+
+        const claim = store.get(claimK);
+        if (claim === undefined) return [-3, "claim_lost"];
+        let parsedClaim: { runner: string; throughSequence: number };
+        try {
+          parsedClaim =
+            typeof claim === "string"
+              ? (JSON.parse(claim) as {
+                  runner: string;
+                  throughSequence: number;
+                })
+              : (claim as { runner: string; throughSequence: number });
+        } catch {
+          return [-3, "decode_error"];
+        }
+        if (expectedRunner !== "" && parsedClaim.runner !== expectedRunner) {
+          return [-3, "claim_runner_mismatch", parsedClaim.runner];
+        }
+        const expectedThroughSeq = Number(expectedThroughSeqStr);
+        if (parsedClaim.throughSequence !== expectedThroughSeq) {
+          return [
+            -3,
+            "claim_throughSeq_mismatch",
+            parsedClaim.throughSequence,
+          ];
+        }
+        const lastSeq = (store.get(seqK) as number | undefined) ?? 0;
+        if (lastSeq !== expectedThroughSeq) {
+          store.delete(claimK);
+          getHash(roomK).set("status", "awaiting_contributions");
+          getHash(roomK).set("deciding_through_sequence", "");
+          getSet(statusDecidingK).delete(roomId);
+          getSet(statusAwaitingK).add(roomId);
+          return [-2, lastSeq];
+        }
+        const pendingSeq = lastSeq + 1;
+        const pendingEventJson = pendingEventTemplate.replace(
+          "__SEQ__",
+          String(pendingSeq),
+        );
+        getHash(roomK).set("status", "decided_pending_action");
+        getHash(roomK).set("decision", decisionJson);
+        getHash(roomK).set("deciding_through_sequence", "");
+        getSortedSet(eventsK).push({
+          member: pendingEventJson,
+          score: pendingSeq,
+        });
+        store.set(seqK, pendingSeq);
+        store.delete(claimK);
+        getSet(statusDecidingK).delete(roomId);
+        getSet(statusPendingK).add(roomId);
+        return [1, pendingSeq];
+      }
+
+      // ROOM_CONFIRM_PENDING_MERGE_SCRIPT — 9 keys, 6 args
+      if (
+        keys.length === 9 &&
+        argv.length === 6 &&
+        script.includes("expectedPendingSeq") &&
+        script.includes("decided_pending_action")
+      ) {
+        const [
+          roomK,
+          seqK,
+          statusPendingK,
+          subjectIdxK,
+          eventsK,
+          _participantsK,
+          _contributionsK,
+          installK,
+          repoK,
+        ] = keys;
+        const [
+          roomId,
+          expectedPendingSeqStr,
+          decisionJson,
+          closedEventTemplate,
+          closedAt,
+          retentionSecs,
+        ] = argv;
+
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus !== "decided_pending_action") {
+          return [-1, currStatus];
+        }
+        const expectedPendingSeq = Number(expectedPendingSeqStr);
+        const lastSeq = (store.get(seqK) as number | undefined) ?? 0;
+        if (lastSeq !== expectedPendingSeq) return [-2, lastSeq];
+        const closedSeq = lastSeq + 1;
+        const closedEventJson = closedEventTemplate.replace(
+          "__SEQ__",
+          String(closedSeq),
+        );
+        getHash(roomK).set("status", "closed");
+        getHash(roomK).set("decision", decisionJson);
+        getHash(roomK).set("closed_at", closedAt);
+        getSortedSet(eventsK).push({
+          member: closedEventJson,
+          score: closedSeq,
+        });
+        store.set(seqK, closedSeq);
+        store.delete(subjectIdxK);
+        getSet(statusPendingK).delete(roomId);
+        void installK;
+        getSet(repoK).delete(roomId);
+        void retentionSecs;
+        return [1, closedSeq];
+      }
+
+      // ROOM_REPORT_MERGE_RESULT_SCRIPT — 1 key, 2 args
+      if (
+        keys.length === 1 &&
+        argv.length === 2 &&
+        script.includes("merge_attempt_id")
+      ) {
+        const [roomK] = keys;
+        const [mergeAttemptId, decisionJson] = argv;
+        const currStatus = hashes.get(roomK)?.get("status") as
+          | string
+          | undefined;
+        if (currStatus === undefined) return [-1, "room_not_found"];
+        if (currStatus !== "closed") return [-1, currStatus];
+        const rawDecision = hashes.get(roomK)?.get("decision");
+        if (rawDecision === undefined) return [-2, "no_decision"];
+        let existing: { merge_attempt_id?: string; decision_outcome?: string };
+        try {
+          existing =
+            typeof rawDecision === "string"
+              ? (JSON.parse(rawDecision) as {
+                  merge_attempt_id?: string;
+                  decision_outcome?: string;
+                })
+              : (rawDecision as {
+                  merge_attempt_id?: string;
+                  decision_outcome?: string;
+                });
+        } catch {
+          return [-2, "decode_error"];
+        }
+        if (existing.merge_attempt_id !== mergeAttemptId) {
+          return [-3, existing.merge_attempt_id ?? ""];
+        }
+        if (existing.decision_outcome !== "merge_approved") {
+          return [-4, existing.decision_outcome ?? ""];
+        }
+        getHash(roomK).set("decision", decisionJson);
+        return [1];
+      }
+
       return null;
     },
   );
@@ -4152,15 +4327,23 @@ describe("recoverDeciding", () => {
 import {
   ROOM_TERMINATE_SCRIPT,
   ROOM_CLOSE_SCRIPT,
+  ROOM_SEAL_PENDING_MERGE_SCRIPT,
+  ROOM_CONFIRM_PENDING_MERGE_SCRIPT,
+  ROOM_REPORT_MERGE_RESULT_SCRIPT,
   validateRunnerFormat,
   // terminateRoom is imported in the top-level block (line ~43).
   closeRoomWithDecision,
+  sealRoomForPendingMerge,
+  confirmPendingMergeDecision,
+  reportMergeResultForRoom,
   RoomAlreadyClosedError,
   RoomCloseClaimLostError,
   RoomCloseClaimThroughSeqMismatchError,
   RoomCloseClaimRunnerMismatchError,
   RoomCloseDriftError,
   RoomClaimPayloadCorruptError,
+  RoomMergeAttemptMismatchError,
+  RoomPendingMergeDriftError,
   RoomRunnerFormatError,
   type RoomDecision,
 } from "./war-room";
@@ -4213,6 +4396,21 @@ describe("D.1.a-iii.c ROOM_CLOSE_SCRIPT source", () => {
     // orphan-cleanup collects stale entries lazily once the hash
     // TTL expires.
     expect(ROOM_CLOSE_SCRIPT).not.toContain("zrem");
+  });
+});
+
+describe("local queen pending-merge scripts source", () => {
+  it("keeps pending merge non-terminal until confirm-merge", () => {
+    expect(ROOM_SEAL_PENDING_MERGE_SCRIPT).toContain("decided_pending_action");
+    expect(ROOM_SEAL_PENDING_MERGE_SCRIPT).toContain("claim_runner_mismatch");
+    expect(ROOM_SEAL_PENDING_MERGE_SCRIPT).toContain(", 1)");
+    expect(ROOM_CONFIRM_PENDING_MERGE_SCRIPT).toContain(
+      "decided_pending_action",
+    );
+    expect(ROOM_CONFIRM_PENDING_MERGE_SCRIPT).toContain('"closed"');
+    expect(ROOM_CONFIRM_PENDING_MERGE_SCRIPT).toContain("expire");
+    expect(ROOM_REPORT_MERGE_RESULT_SCRIPT).toContain("merge_attempt_id");
+    expect(ROOM_REPORT_MERGE_RESULT_SCRIPT).toContain("merge_approved");
   });
 });
 
@@ -4840,6 +5038,222 @@ describe("closeRoomWithDecision", () => {
     const events = await listRoomEvents({ roomId: RID_A, since: 1, redis });
     const decided = events.find((e) => e.event_type === "room_decided");
     expect(decided?.seq).toBe(closedSeq);
+  });
+});
+
+describe("local queen pending merge storage transitions", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  let claimResult: { throughSequence: number; claimTtlSecs: number };
+
+  beforeEach(async () => {
+    redis = makeMockRedis();
+    await createRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      manager: "bot-queen",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    await redis.hset(roomKey("12345", RID_A), {
+      status: "awaiting_contributions",
+    });
+    claimResult = await claimSynthesis({
+      installationId: "12345",
+      roomId: RID_A,
+      queenRunner: "queen-A.pid42",
+      redis,
+    });
+  });
+
+  function makePendingDecision(
+    overrides?: Partial<RoomDecision>,
+  ): RoomDecision {
+    return {
+      synthesized_at: "2026-04-28T07:00:00.000Z",
+      synthesis_runner: "queen-A.pid42",
+      content: "## Synthesis\n\nApprove and squash-merge.",
+      sequence_closed: claimResult.throughSequence,
+      seal_audit_id: "1715000000000-0",
+      reviewed_head_sha: "deadbeef",
+      ...overrides,
+    };
+  }
+
+  async function sealPending(): Promise<number> {
+    return sealRoomForPendingMerge({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedThroughSequence: claimResult.throughSequence,
+      expectedRunner: "queen-A.pid42",
+      decision: makePendingDecision(),
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+      nowMs: Date.parse("2026-04-28T07:01:00.000Z"),
+    });
+  }
+
+  it("seals a squash-merge intent into decided_pending_action without releasing the subject", async () => {
+    const pendingSeq = await sealPending();
+    expect(pendingSeq).toBe(claimResult.throughSequence + 1);
+
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room.status).toBe("decided_pending_action");
+    expect(room.decision?.seal_audit_id).toBe("1715000000000-0");
+    expect(room.decision?.reviewed_head_sha).toBe("deadbeef");
+    expect(room.decision?.pending_action_at).toBe(
+      "2026-04-28T07:01:00.000Z",
+    );
+    expect(await redis.get(claimKey(RID_A))).toBeNull();
+
+    await expect(
+      createRoom({
+        installationId: "12345",
+        roomId: RID_B,
+        manager: "bot-queen",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(RoomSubjectAlreadyOpenError);
+  });
+
+  it("confirm-merge closes the pending room and releases indexes", async () => {
+    const pendingSeq = await sealPending();
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    if (!room.decision) throw new Error("expected pending decision");
+
+    const closedSeq = await confirmPendingMergeDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedPendingSequence: pendingSeq,
+      decision: {
+        ...room.decision,
+        decision_outcome: "merge_approved",
+        merge_attempt_id: "attempt-1",
+        github_merge_status: "pending",
+      },
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+      nowMs: Date.parse("2026-04-28T07:02:30.000Z"),
+    });
+    expect(closedSeq).toBe(pendingSeq + 1);
+
+    const closed = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(closed.status).toBe("closed");
+    expect(closed.decision?.decision_outcome).toBe("merge_approved");
+    expect(closed.decision?.merge_attempt_id).toBe("attempt-1");
+    expect(closed.decision?.github_merge_status).toBe("pending");
+
+    await expect(
+      createRoom({
+        installationId: "12345",
+        roomId: RID_B,
+        manager: "bot-queen",
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("confirm-merge rejects sequence drift after pending seal", async () => {
+    const pendingSeq = await sealPending();
+    await redis.set(seqKey(RID_A), pendingSeq + 1);
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    if (!room.decision) throw new Error("expected pending decision");
+
+    await expect(
+      confirmPendingMergeDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedPendingSequence: pendingSeq,
+        decision: {
+          ...room.decision,
+          decision_outcome: "merge_downgraded",
+          decision_outcome_reason: "head_sha_drift",
+          merge_attempt_id: "attempt-1",
+        },
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      }),
+    ).rejects.toThrow(RoomPendingMergeDriftError);
+  });
+
+  it("report-merge-result updates the approved merge attempt exactly once", async () => {
+    const pendingSeq = await sealPending();
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    if (!room.decision) throw new Error("expected pending decision");
+    await confirmPendingMergeDecision({
+      installationId: "12345",
+      roomId: RID_A,
+      expectedPendingSequence: pendingSeq,
+      decision: {
+        ...room.decision,
+        decision_outcome: "merge_approved",
+        merge_attempt_id: "attempt-1",
+        github_merge_status: "pending",
+      },
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      redis,
+    });
+    const closed = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    if (!closed.decision) throw new Error("expected closed decision");
+
+    await reportMergeResultForRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      mergeAttemptId: "attempt-1",
+      decision: {
+        ...closed.decision,
+        github_merge_status: "succeeded",
+        merge_commit_oid: "cafebabe",
+      },
+      redis,
+      nowMs: Date.parse("2026-04-28T07:03:00.000Z"),
+    });
+
+    const reported = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(reported.decision?.github_merge_status).toBe("succeeded");
+    expect(reported.decision?.merge_commit_oid).toBe("cafebabe");
+    expect(reported.decision?.merge_reported_at).toBe(
+      "2026-04-28T07:03:00.000Z",
+    );
+
+    await expect(
+      reportMergeResultForRoom({
+        installationId: "12345",
+        roomId: RID_A,
+        mergeAttemptId: "other-attempt",
+        decision: reported.decision!,
+        redis,
+      }),
+    ).rejects.toThrow(RoomMergeAttemptMismatchError);
   });
 });
 

@@ -113,7 +113,11 @@ export type AuditMutationAction =
    * this separately from `queen.action_downgrade`, which is a
    * server-side policy downgrade.
    */
-  | "queen.intended_action_post_failed";
+  | "queen.intended_action_post_failed"
+  /** Server-authoritative confirm-merge approval or downgrade. */
+  | "queen.confirm_merge"
+  /** Local queen's reported GitHub merge execution result. */
+  | "queen.merge_result";
 
 /** Event classes that emit to the `:auth` (auth events) stream. */
 export type AuditAuthAction = "auth.success" | "auth.failure";
@@ -254,7 +258,9 @@ export function isMutationAction(action: string): action is AuditMutationAction 
     action === "queen.verdict_floor_override" ||
     action === "queen.action_downgrade" ||
     action === "queen.resolve_action" ||
-    action === "queen.intended_action_post_failed"
+    action === "queen.intended_action_post_failed" ||
+    action === "queen.confirm_merge" ||
+    action === "queen.merge_result"
   );
 }
 
