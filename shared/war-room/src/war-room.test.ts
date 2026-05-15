@@ -483,9 +483,9 @@ function makeMockRedis() {
         return [1, seq];
       }
 
-      // ROOM_TERMINATE_SCRIPT — 12 keys, 5 args (D.1.a-iii.c R2)
+      // ROOM_TERMINATE_SCRIPT — 13 keys, 5 args (D.1.a-iii.c R2)
       if (
-        keys.length === 12 &&
+        keys.length === 13 &&
         argv.length === 5 &&
         script.includes("closed_reason")
       ) {
@@ -495,6 +495,7 @@ function makeMockRedis() {
           statusAwaitingRsvpK,
           statusAwaitingContribK,
           statusDecidingK,
+          statusDecidedPendingK,
           installK,
           repoK,
           seqK,
@@ -524,12 +525,13 @@ function makeMockRedis() {
         getHash(roomK).set("closed_at", closedAt);
         getHash(roomK).set("closed_reason", closedReason);
         store.delete(subjectIdxK);
-        // SREM all three non-terminal status sets idempotently
+        // SREM all non-terminal status sets idempotently
         // (closes #515 builder R1 — defensive against stale
         // caller-observed status).
         getSet(statusAwaitingRsvpK).delete(roomId);
         getSet(statusAwaitingContribK).delete(roomId);
         getSet(statusDecidingK).delete(roomId);
+        getSet(statusDecidedPendingK).delete(roomId);
         // installation index is intentionally NOT pruned here.
         // Closed rooms remain in the installation index for the
         // dashboard's "Active and past" listing; listRooms's
@@ -919,6 +921,7 @@ function makeMockRedis() {
       }
       return removed;
     }),
+    smembers: vi.fn(async (key: string) => Array.from(sets.get(key) ?? [])),
     eval: luaSim,
   };
 
@@ -4363,15 +4366,17 @@ describe("D.1.a-iii.c ROOM_TERMINATE_SCRIPT source", () => {
     expect(ROOM_TERMINATE_SCRIPT).toContain("closed_reason");
     expect(ROOM_TERMINATE_SCRIPT).toContain('"closed"');
     // Claim DEL covers deciding-state cleanup (closes design R3 N8 +
-    // #515 builder R1 — KEYS[12] after the 3-status-set expansion)
-    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[12])');
+    // #515 builder R1 — KEYS[13] after the 4-status-set expansion)
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[13])');
     // Subject lock release
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("del", KEYS[2])');
     // Idempotent SREM from ALL non-terminal status sets (#515 R1):
-    // KEYS[3]=awaiting_rsvp, KEYS[4]=awaiting_contributions, KEYS[5]=deciding
+    // KEYS[3]=awaiting_rsvp, KEYS[4]=awaiting_contributions,
+    // KEYS[5]=deciding, KEYS[6]=decided_pending_action.
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[3], ARGV[1])');
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[4], ARGV[1])');
     expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[5], ARGV[1])');
+    expect(ROOM_TERMINATE_SCRIPT).toContain('redis.call("srem", KEYS[6], ARGV[1])');
     // The installation index entry is INTENTIONALLY NOT ZREM'd on
     // terminate — closed rooms remain listable for the dashboard's
     // "Active and past governance synthesis rooms" surface. The
@@ -5131,6 +5136,31 @@ describe("local queen pending merge storage transitions", () => {
         redis,
       }),
     ).rejects.toThrow(RoomSubjectAlreadyOpenError);
+  });
+
+  it("force-closing a pending merge removes decided_pending_action membership", async () => {
+    await sealPending();
+    const pendingSetKey = statusIndexKey("12345", "decided_pending_action");
+    expect(await redis.smembers(pendingSetKey)).toContain(RID_A);
+
+    await terminateRoom({
+      installationId: "12345",
+      roomId: RID_A,
+      reason: "force_close",
+      subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+      actorRole: "system",
+      actorId: "operator-1",
+      redis,
+    });
+
+    const room = await getRoomCore({
+      installationId: "12345",
+      roomId: RID_A,
+      redis,
+    });
+    expect(room.status).toBe("closed");
+    expect(room.closed_reason).toBe("force_close");
+    expect(await redis.smembers(pendingSetKey)).not.toContain(RID_A);
   });
 
   it("confirm-merge closes the pending room and releases indexes", async () => {

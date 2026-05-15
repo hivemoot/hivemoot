@@ -18,10 +18,11 @@ import { checkInFlightForFlip } from "./queen-mode-flip-precheck";
 interface MockState {
   decidingIds?: string[];
   decidedPendingIds?: string[];
-  closedIds?: string[];
+  installationRoomIds?: string[];
   roomHashes?: Record<string, Record<string, unknown> | null>;
   tickLockHeld: boolean;
   errorOnSmembers?: Error;
+  errorOnZrange?: Error;
   errorOnExists?: Error;
   errorOnHgetall?: Error;
 }
@@ -34,8 +35,11 @@ function makeMockRedis(state: MockState): Redis {
       if (key.endsWith(":decided_pending_action")) {
         return state.decidedPendingIds ?? [];
       }
-      if (key.endsWith(":closed")) return state.closedIds ?? [];
       return [];
+    }),
+    zrange: vi.fn(async () => {
+      if (state.errorOnZrange) throw state.errorOnZrange;
+      return state.installationRoomIds ?? [];
     }),
     // Intentionally NOT defined — if the implementation ever switches
     // back to ZRANGE, the call throws "redis.zrange is not a function"
@@ -100,7 +104,7 @@ describe("checkInFlightForFlip", () => {
 
   it("blocks on closed merge-approved rooms still pending report-merge-result", async () => {
     const redis = makeMockRedis({
-      closedIds: ["rm-closed"],
+      installationRoomIds: ["rm-closed"],
       roomHashes: {
         "rm-closed": {
           status: "closed",
@@ -126,7 +130,7 @@ describe("checkInFlightForFlip", () => {
 
   it("ignores closed rooms whose GitHub merge result is already final", async () => {
     const redis = makeMockRedis({
-      closedIds: ["rm-done", "rm-downgraded", "rm-raced"],
+      installationRoomIds: ["rm-done", "rm-downgraded", "rm-raced"],
       roomHashes: {
         "rm-done": {
           status: "closed",
@@ -236,7 +240,7 @@ describe("checkInFlightForFlip", () => {
 
   it("propagates closed-room hydrate errors (caller surfaces 500)", async () => {
     const redis = makeMockRedis({
-      closedIds: ["rm-closed"],
+      installationRoomIds: ["rm-closed"],
       tickLockHeld: false,
       errorOnHgetall: new Error("hgetall down"),
     });
@@ -258,11 +262,17 @@ describe("checkInFlightForFlip", () => {
     expect(redis.smembers).toHaveBeenCalledWith(
       "hive:v1:idx:room:status:42:decided_pending_action",
     );
-    expect(redis.smembers).toHaveBeenCalledWith(
-      "hive:v1:idx:room:status:42:closed",
+    expect(redis.zrange).toHaveBeenCalledWith(
+      "hive:v1:idx:room:installation:42",
+      0,
+      -1,
+      { rev: true },
     );
     expect(redis.exists).toHaveBeenCalledWith("hive:v1:lock:queen-tick:42");
-    // Belt-and-suspenders: confirm zrange was never reached.
-    expect((redis as unknown as { zrange?: unknown }).zrange).toBeUndefined();
+    // The stranded-merge scan intentionally uses the installation
+    // index; there is no closed status SET in the storage contract.
+    expect(redis.smembers).not.toHaveBeenCalledWith(
+      "hive:v1:idx:room:status:42:closed",
+    );
   });
 });

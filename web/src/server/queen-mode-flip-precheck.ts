@@ -32,7 +32,12 @@
  */
 
 import { type Redis } from "@upstash/redis";
-import { roomKey, statusIndexKey, type RoomDecision } from "@hivemoot/war-room";
+import {
+  installationIndexKey,
+  roomKey,
+  statusIndexKey,
+  type RoomDecision,
+} from "@hivemoot/war-room";
 
 const TICK_LOCK_PREFIX = "hive:v1:lock:queen-tick:";
 
@@ -88,10 +93,10 @@ function parseDecision(raw: unknown): RoomDecision | null {
 async function findStrandedMergeRoomIds(args: {
   installationId: string;
   redis: Redis;
-  closedIds: readonly string[];
+  roomIds: readonly string[];
 }): Promise<string[]> {
   const candidates = await Promise.all(
-    args.closedIds.map(async (roomId) => {
+    args.roomIds.map(async (roomId) => {
       const fields = await args.redis.hgetall<Record<string, unknown>>(
         roomKey(args.installationId, roomId),
       );
@@ -150,7 +155,7 @@ function sampleRoomIds(...groups: readonly string[][]): string[] {
  *      — the precheck only needs `count + bounded sample`.
  *   2. Status-keyed scan of `decided_pending_action`; any hit means
  *      local queen owns the next confirm-merge step.
- *   3. Status-keyed scan of `closed`, followed by a per-room field
+ *   3. Installation-index scan followed by a per-room field
  *      check for `decision_outcome=merge_approved` plus
  *      `github_merge_status=pending`; these rooms are waiting for
  *      the local queen's `report-merge-result`.
@@ -169,23 +174,24 @@ export async function checkInFlightForFlip(
     args.installationId,
     "decided_pending_action",
   );
-  const closedKey = statusIndexKey(args.installationId, "closed");
+  const installationKey = installationIndexKey(args.installationId);
   const lockKey = tickLockKey(args.installationId);
 
-  // Parallel: SMEMBERS the status SETs + EXISTS the tick lock. These
-  // independent reads do not block each other.
+  // Parallel: SMEMBERS the live status SETs, ZRANGE the installation
+  // index, and EXISTS the tick lock. These independent reads do not
+  // block each other.
   // (statusIndexKey is SADD/SREM-backed, see war-room.ts:2269-2526.)
-  const [decidingIds, decidedPendingIds, closedIds, tickLockHeld] =
+  const [decidingIds, decidedPendingIds, installationRoomIds, tickLockHeld] =
     await Promise.all([
       args.redis.smembers(decidingKey),
       args.redis.smembers(decidedPendingKey),
-      args.redis.smembers(closedKey),
+      args.redis.zrange<string[]>(installationKey, 0, -1, { rev: true }),
       args.redis.exists(lockKey),
     ]);
   const strandedMergeIds = await findStrandedMergeRoomIds({
     installationId: args.installationId,
     redis: args.redis,
-    closedIds,
+    roomIds: installationRoomIds,
   });
 
   const deciding = decidingIds.length;

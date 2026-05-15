@@ -1354,13 +1354,14 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
  *   [4] statusSetAwaitingContribKey    — SREM idempotent
  *   [5] statusSetDecidingKey           — SREM idempotent
- *   [6] installationIndexKey           — all-rooms-for-installation sorted set
- *   [7] repoIndexKey                   — per-repo set
- *   [8] seqKey
- *   [9] eventsKey
- *   [10] participantsKey               — for TTL only
- *   [11] contributionsKey              — for TTL only
- *   [12] claimKey                      — DELed if held (deciding-state cleanup)
+ *   [6] statusSetDecidedPendingKey     — SREM idempotent
+ *   [7] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [8] repoIndexKey                   — per-repo set
+ *   [9] seqKey
+ *   [10] eventsKey
+ *   [11] participantsKey               — for TTL only
+ *   [12] contributionsKey              — for TTL only
+ *   [13] claimKey                      — DELed if held (deciding-state cleanup)
  *
  * ARGV:
  *   [1] roomId
@@ -1373,7 +1374,7 @@ export declare const ROOM_RECOVER_DECIDING_SCRIPT = "\nlocal currStatus = redis.
  *   {1, sequence}             terminated cleanly
  *   {-1, currentStatus}       already closed (no-op for operator double-tap)
  */
-export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[12])\nlocal seq = redis.call(\"incr\", KEYS[8])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[9], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\n-- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Closed rooms remain in the installation index so the dashboard's\n-- \"Active and past governance synthesis rooms\" surface can list them\n-- for the retention window (30 days). The room hash itself TTL's via\n-- KEYS[1] expire below; once that fires, listRooms's built-in\n-- orphan-cleanup pass ZREMs the now-stale index entry on the next\n-- read. /watching filters by status server-side, so closed rooms\n-- still don't surface to agent dispatch.\nredis.call(\"srem\", KEYS[7], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[8], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nreturn {1, seq}\n";
+export declare const ROOM_TERMINATE_SCRIPT = "\nlocal currStatus = redis.call(\"hget\", KEYS[1], \"status\")\nif not currStatus then return {-1, \"room_not_found\"} end\nif currStatus == \"closed\" then\n  return {-1, currStatus}\nend\nredis.call(\"del\", KEYS[13])\nlocal seq = redis.call(\"incr\", KEYS[9])\nlocal eventJson = string.gsub(ARGV[2], \"__SEQ__\", tostring(seq), 1)\nredis.call(\"zadd\", KEYS[10], seq, eventJson)\nredis.call(\"hset\", KEYS[1], \"status\", \"closed\",\n                          \"closed_at\", ARGV[3],\n                          \"closed_reason\", ARGV[5])\nredis.call(\"del\", KEYS[2])\nredis.call(\"srem\", KEYS[3], ARGV[1])\nredis.call(\"srem\", KEYS[4], ARGV[1])\nredis.call(\"srem\", KEYS[5], ARGV[1])\nredis.call(\"srem\", KEYS[6], ARGV[1])\n-- KEYS[7] (installationIndexKey) is intentionally NOT ZREM'd here.\n-- Closed rooms remain in the installation index so the dashboard's\n-- \"Active and past governance synthesis rooms\" surface can list them\n-- for the retention window (30 days). The room hash itself TTL's via\n-- KEYS[1] expire below; once that fires, listRooms's built-in\n-- orphan-cleanup pass ZREMs the now-stale index entry on the next\n-- read. /watching filters by status server-side, so closed rooms\n-- still don't surface to agent dispatch.\nredis.call(\"srem\", KEYS[8], ARGV[1])\nlocal retention = tonumber(ARGV[4])\nredis.call(\"expire\", KEYS[1], retention)\nredis.call(\"expire\", KEYS[9], retention)\nredis.call(\"expire\", KEYS[10], retention)\nredis.call(\"expire\", KEYS[11], retention)\nredis.call(\"expire\", KEYS[12], retention)\nreturn {1, seq}\n";
 /**
  * ROOM_CLOSE_SCRIPT — queen happy-path close with sequence-consistency.
  *

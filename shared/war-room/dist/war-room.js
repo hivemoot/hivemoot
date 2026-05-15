@@ -1745,13 +1745,14 @@ return {1, seq}
  *   [3] statusSetAwaitingRsvpKey       — SREM idempotent
  *   [4] statusSetAwaitingContribKey    — SREM idempotent
  *   [5] statusSetDecidingKey           — SREM idempotent
- *   [6] installationIndexKey           — all-rooms-for-installation sorted set
- *   [7] repoIndexKey                   — per-repo set
- *   [8] seqKey
- *   [9] eventsKey
- *   [10] participantsKey               — for TTL only
- *   [11] contributionsKey              — for TTL only
- *   [12] claimKey                      — DELed if held (deciding-state cleanup)
+ *   [6] statusSetDecidedPendingKey     — SREM idempotent
+ *   [7] installationIndexKey           — all-rooms-for-installation sorted set
+ *   [8] repoIndexKey                   — per-repo set
+ *   [9] seqKey
+ *   [10] eventsKey
+ *   [11] participantsKey               — for TTL only
+ *   [12] contributionsKey              — for TTL only
+ *   [13] claimKey                      — DELed if held (deciding-state cleanup)
  *
  * ARGV:
  *   [1] roomId
@@ -1770,10 +1771,10 @@ if not currStatus then return {-1, "room_not_found"} end
 if currStatus == "closed" then
   return {-1, currStatus}
 end
-redis.call("del", KEYS[12])
-local seq = redis.call("incr", KEYS[8])
+redis.call("del", KEYS[13])
+local seq = redis.call("incr", KEYS[9])
 local eventJson = string.gsub(ARGV[2], "__SEQ__", tostring(seq), 1)
-redis.call("zadd", KEYS[9], seq, eventJson)
+redis.call("zadd", KEYS[10], seq, eventJson)
 redis.call("hset", KEYS[1], "status", "closed",
                           "closed_at", ARGV[3],
                           "closed_reason", ARGV[5])
@@ -1781,7 +1782,8 @@ redis.call("del", KEYS[2])
 redis.call("srem", KEYS[3], ARGV[1])
 redis.call("srem", KEYS[4], ARGV[1])
 redis.call("srem", KEYS[5], ARGV[1])
--- KEYS[6] (installationIndexKey) is intentionally NOT ZREM'd here.
+redis.call("srem", KEYS[6], ARGV[1])
+-- KEYS[7] (installationIndexKey) is intentionally NOT ZREM'd here.
 -- Closed rooms remain in the installation index so the dashboard's
 -- "Active and past governance synthesis rooms" surface can list them
 -- for the retention window (30 days). The room hash itself TTL's via
@@ -1789,13 +1791,13 @@ redis.call("srem", KEYS[5], ARGV[1])
 -- orphan-cleanup pass ZREMs the now-stale index entry on the next
 -- read. /watching filters by status server-side, so closed rooms
 -- still don't surface to agent dispatch.
-redis.call("srem", KEYS[7], ARGV[1])
+redis.call("srem", KEYS[8], ARGV[1])
 local retention = tonumber(ARGV[4])
 redis.call("expire", KEYS[1], retention)
-redis.call("expire", KEYS[8], retention)
 redis.call("expire", KEYS[9], retention)
 redis.call("expire", KEYS[10], retention)
 redis.call("expire", KEYS[11], retention)
+redis.call("expire", KEYS[12], retention)
 return {1, seq}
 `;
 /**
@@ -2813,6 +2815,7 @@ export async function terminateRoom(args) {
         statusIndexKey(args.installationId, "awaiting_rsvp"),
         statusIndexKey(args.installationId, "awaiting_contributions"),
         statusIndexKey(args.installationId, "deciding"),
+        statusIndexKey(args.installationId, "decided_pending_action"),
         installationIndexKey(args.installationId),
         repoIndexKeyForSubject(args.installationId, args.subject.type, args.subject.ref),
         seqKey(args.roomId),
