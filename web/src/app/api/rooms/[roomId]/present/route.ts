@@ -29,6 +29,7 @@ import {
   RoomEventStatusPreconditionError,
   RoomEventBodyTooLargeError,
   RoomParticipantOwnerConflictError,
+  RoomParticipantStatePreconditionError,
   RoomRunnerFormatError,
   validateRunnerFormat,
 } from "@hivemoot/war-room";
@@ -175,6 +176,16 @@ function mapWriteError(err: unknown, roomId: string): NextResponse {
         code: "owner_conflict",
         message: err.message,
         existingAgentId: err.existingAgentId,
+      },
+      { status: 409 },
+    );
+  }
+  if (err instanceof RoomParticipantStatePreconditionError) {
+    return NextResponse.json(
+      {
+        code: "participant_state_precondition",
+        message: err.message,
+        actualState: err.actualState,
       },
       { status: 409 },
     );

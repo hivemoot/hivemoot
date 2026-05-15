@@ -2124,6 +2124,9 @@ export type RoomEventAction =
  *   {-2, currentRoomStatus}                 allowed-status mismatch
  *   {-3, "room_not_found"}                  roomKey hash missing
  *   {-4, "owner_conflict", existingAgentId} per-role first-wins gate
+ *   {-6, "participant_state_precondition", currentParticipantStatus}
+ *                                           present cannot regress a
+ *                                           terminal participant slot
  */
 export const ROOM_APPEND_EVENT_SCRIPT = `
 if ARGV[2] ~= "" then
@@ -2145,6 +2148,9 @@ if ARGV[4] ~= "" then
     local parsed = cjson.decode(existingMat)
     if parsed.agent_id ~= ARGV[5] and parsed.status ~= "withdrew" then
       return {-4, "owner_conflict", parsed.agent_id}
+    end
+    if parsed.agent_id == ARGV[5] and (parsed.status == "resolved" or parsed.status == "timed_out") then
+      return {-6, "participant_state_precondition", parsed.status}
     end
   end
 end
@@ -3066,6 +3072,14 @@ export async function appendRoomEvent(
       args.ownerCheck?.field ?? "",
       result.tag2,
       args.ownerCheck?.expectedAgentId ?? "",
+    );
+  }
+  if (result.ok === -6 && typeof result.tag2 === "string") {
+    throw new RoomParticipantStatePreconditionError(
+      args.roomId,
+      args.ownerCheck?.field ?? "",
+      ["pending", "withdrew"],
+      result.tag2,
     );
   }
   // The script's success shape is `{seq}` — ScriptResult parses

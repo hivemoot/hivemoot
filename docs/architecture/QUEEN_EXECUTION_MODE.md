@@ -319,6 +319,10 @@ Replaces `/dashboard/credentials` as the umbrella config surface.
 
 Mode-toggle confirmation step (text aligned with D16's reconciled local-outage characterization): "Switching to local — the hive queen becomes the only path that synthesizes verdicts and posts actions on PRs. PR discovery and room state-bumps continue via the cloud webhook handlers (so a hive queen outage by itself does not lose new PRs), but if cloud webhook delivery has degraded independently, the hive queen has no backstop. The cloud will emit a 'rooms-stuck-older-than-N-min' alarm if the local queen falls behind, but no fallback synthesis will happen. Make sure your hive queen has uptime monitoring before flipping. Proceed?" Once flipped, the dashboard surfaces three signals: (a) the agent's self-reported heartbeat, (b) the cloud's observer-side stuck-room metric, and (c) cloud webhook delivery health (G21) — together they are the alarm surface.
 
+### Operational smoke
+
+A local-mode rollout is not complete when the runner starts. Before the smoke, confirm the runner is using a `local_queen` token scoped to the watched repo. Operators should first run a comment-only smoke (`enable_squash_merge=false`) against a tiny, ready-linked PR in a watched repo and verify three observable facts: the webhook created a room, at least one reviewer contributed, and the hive queen posted the final synthesis. If those signals do not appear before the stuck-room alarm threshold, flip `queen_mode` back to `cloud` and investigate. Only after the comment-only smoke passes should `enable_squash_merge=true` be enabled and tested with a designated low-risk automerge-eligible PR the operator controls; otherwise a broken local queen can look healthy while PRs pile up unsynthesized or the first squash-merge test can become an unintended production merge.
+
 ## Hive queen plugin shape
 
 Per ADR-002, the agent runtime uses a consolidated `plugins.hivemoot` block with feature toggles (`health`, `tasks`, `github_workflows`, `apiarist`, `war_rooms`). The queen functionality fits that pattern as a new feature block, not a standalone plugin:
