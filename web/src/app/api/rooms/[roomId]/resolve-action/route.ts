@@ -213,9 +213,9 @@ interface ClaimPayload {
   throughSequence: number;
 }
 
-function parseClaim(raw: string): ClaimPayload | null {
+function parseClaim(raw: unknown): ClaimPayload | null {
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed === null || typeof parsed !== "object") return null;
     const p = parsed as Record<string, unknown>;
     if (typeof p.runner !== "string") return null;
@@ -223,6 +223,15 @@ function parseClaim(raw: string): ClaimPayload | null {
     return { runner: p.runner, throughSequence: p.throughSequence };
   } catch {
     return null;
+  }
+}
+
+function claimLogExcerpt(raw: unknown): string {
+  if (typeof raw === "string") return raw.slice(0, 200);
+  try {
+    return JSON.stringify(raw).slice(0, 200);
+  } catch {
+    return String(raw).slice(0, 200);
   }
 }
 
@@ -379,7 +388,7 @@ export async function POST(
   // ----- verify claim (held by this runner, expected throughSequence) -----
   let rawClaim;
   try {
-    rawClaim = await auth.redis.get<string>(claimKey(roomId));
+    rawClaim = await auth.redis.get(claimKey(roomId));
   } catch (err) {
     console.error("[rooms.resolve-action] claim fetch failed", {
       installationId: auth.installationId,
@@ -407,7 +416,7 @@ export async function POST(
     console.error("[rooms.resolve-action] claim payload corrupt", {
       installationId: auth.installationId,
       roomId,
-      rawClaim: rawClaim.slice(0, 200),
+      rawClaim: claimLogExcerpt(rawClaim),
     });
     return NextResponse.json(
       {
