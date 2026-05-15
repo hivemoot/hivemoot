@@ -543,10 +543,10 @@ function makeMockRedis() {
         return [1, seq];
       }
 
-      // ROOM_CLOSE_SCRIPT — 11 keys, 6 args (D.1.a-iii.c)
+      // ROOM_CLOSE_SCRIPT — 11 keys, 7 args (D.1.a-iii.c)
       if (
         keys.length === 11 &&
-        argv.length === 6 &&
+        argv.length === 7 &&
         script.includes("claim_lost")
       ) {
         const [
@@ -569,6 +569,7 @@ function makeMockRedis() {
           closedEventTemplate,
           closedAt,
           retentionSecs,
+          expectedRunner,
         ] = argv;
 
         const claim = store.get(claimK);
@@ -586,6 +587,9 @@ function makeMockRedis() {
               : (claim as { runner: string; throughSequence: number });
         } catch {
           return [-3, "decode_error"];
+        }
+        if (expectedRunner !== "" && parsedClaim.runner !== expectedRunner) {
+          return [-3, "claim_runner_mismatch", parsedClaim.runner];
         }
         const expectedThroughSeq = Number(expectedThroughSeqStr);
         if (parsedClaim.throughSequence !== expectedThroughSeq) {
@@ -4154,6 +4158,7 @@ import {
   RoomAlreadyClosedError,
   RoomCloseClaimLostError,
   RoomCloseClaimThroughSeqMismatchError,
+  RoomCloseClaimRunnerMismatchError,
   RoomCloseDriftError,
   RoomClaimPayloadCorruptError,
   RoomRunnerFormatError,
@@ -4192,6 +4197,7 @@ describe("D.1.a-iii.c ROOM_CLOSE_SCRIPT source", () => {
   it("references claim_lost + claim_throughSeq_mismatch + drift revert + pcall decode + capped gsub", () => {
     expect(ROOM_CLOSE_SCRIPT).toContain("claim_lost");
     expect(ROOM_CLOSE_SCRIPT).toContain("claim_throughSeq_mismatch");
+    expect(ROOM_CLOSE_SCRIPT).toContain("claim_runner_mismatch");
     // pcall wrap on cjson.decode (closes #512 guard N2)
     expect(ROOM_CLOSE_SCRIPT).toContain("pcall(cjson.decode");
     expect(ROOM_CLOSE_SCRIPT).toContain("decode_error");
@@ -4661,6 +4667,33 @@ describe("closeRoomWithDecision", () => {
       const e = err as RoomCloseClaimThroughSeqMismatchError;
       expect(e.expectedThroughSequence).toBe(1);
       expect(e.actualThroughSequence).toBe(99);
+    }
+  });
+
+  it("expectedRunner mismatch: old local-queen seal cannot close a new runner's claim", async () => {
+    await redis.set(
+      claimKey(RID_A),
+      JSON.stringify({
+        runner: "queen-B.pid99",
+        throughSequence: claimResult.throughSequence,
+      }),
+    );
+    try {
+      await closeRoomWithDecision({
+        installationId: "12345",
+        roomId: RID_A,
+        expectedThroughSequence: claimResult.throughSequence,
+        expectedRunner: "queen-A.pid42",
+        decision: makeDecision(),
+        subject: { type: "pr_review", ref: "hivemoot/hivemoot#508" },
+        redis,
+      });
+      throw new Error("expected RoomCloseClaimRunnerMismatchError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoomCloseClaimRunnerMismatchError);
+      const e = err as RoomCloseClaimRunnerMismatchError;
+      expect(e.expectedRunner).toBe("queen-A.pid42");
+      expect(e.actualRunner).toBe("queen-B.pid99");
     }
   });
 

@@ -51,7 +51,12 @@
  */
 
 import { type Redis } from "@upstash/redis";
-import { auditAppend, auditAppendSync } from "./agent-token-v1-audit";
+import {
+  auditAppend,
+  auditAppendSync,
+  auditStreamKey,
+  type AuditMutationEntry,
+} from "./agent-token-v1-audit";
 import type { WorkerVerdict } from "@hivemoot/war-room";
 import type { DowngradeReason } from "./resolve-action-policy";
 
@@ -241,6 +246,25 @@ export interface QueenResolveActionDetail {
 }
 
 /**
+ * `detail` payload for `queen.intended_action_post_failed` (G20).
+ *
+ * Distinct from `queen.action_downgrade`: this is not a server-side
+ * policy override. It means the server had permitted an intended
+ * irreversible action, but the local queen could not publish the
+ * public override-window comment, so `seal-decision` downgraded the
+ * room back to comment-only/closed.
+ */
+export interface QueenIntendedActionPostFailedDetail {
+  room_id: string;
+  subject_ref: string;
+  recommended_action: "squash-merge";
+  intended_action: "squash-merge";
+  audit_id_from_resolve_action: string;
+  error_class: string | null;
+  retry_count: number | null;
+}
+
+/**
  * Emit the baseline `queen.resolve_action` audit row. Returns the
  * stream entry ID (the `audit_id` the route returns to the caller).
  *
@@ -265,6 +289,165 @@ export async function emitQueenResolveAction(
       detail: args.detail as unknown as Record<string, unknown>,
     },
   });
+}
+
+/**
+ * Emit G20 `queen.intended_action_post_failed` audit event.
+ *
+ * Fire-and-forget: the state transition at `seal-decision` remains
+ * authoritative, and this row is operator telemetry. The endpoint
+ * can safely await this wrapper without making downgrade completion
+ * depend on audit stream availability.
+ */
+export async function emitQueenIntendedActionPostFailed(
+  args: QueenAuditCallerContext & {
+    detail: QueenIntendedActionPostFailedDetail;
+  },
+): Promise<void> {
+  try {
+    await auditAppend({
+      redis: args.redis,
+      installationId: args.installationId,
+      entry: {
+        ts: new Date().toISOString(),
+        fingerprint: args.fingerprint,
+        name: args.name,
+        action: "queen.intended_action_post_failed",
+        actor: args.name,
+        detail: args.detail as unknown as Record<string, unknown>,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[queen-audit] emitQueenIntendedActionPostFailed failed for installation=${args.installationId} room=${args.detail.room_id}`,
+      err,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resolve-action audit lookup (seal-decision correlation)
+// ---------------------------------------------------------------------------
+
+export class QueenResolveActionAuditNotFoundError extends Error {
+  constructor(public readonly auditId: string) {
+    super(`resolve-action audit row ${auditId} not found.`);
+    this.name = "QueenResolveActionAuditNotFoundError";
+  }
+}
+
+export class QueenResolveActionAuditMalformedError extends Error {
+  constructor(
+    public readonly auditId: string,
+    public readonly reason: string,
+  ) {
+    super(`resolve-action audit row ${auditId} is malformed: ${reason}`);
+    this.name = "QueenResolveActionAuditMalformedError";
+  }
+}
+
+export interface QueenResolveActionAuditRow {
+  id: string;
+  ts: string;
+  fingerprint: string;
+  name: string;
+  actor: string;
+  detail: QueenResolveActionDetail;
+}
+
+const READ_AUDIT_ENTRY_SCRIPT = `
+local rows = redis.call("xrange", KEYS[1], ARGV[1], ARGV[1])
+if #rows == 0 then return nil end
+local fields = rows[1][2]
+for i = 1, #fields, 2 do
+  if fields[i] == "entry" then return fields[i + 1] end
+end
+return nil
+`;
+
+export async function readQueenResolveActionAuditRow(args: {
+  redis: Redis;
+  installationId: string;
+  auditId: string;
+}): Promise<QueenResolveActionAuditRow> {
+  const raw = await args.redis.eval(
+    READ_AUDIT_ENTRY_SCRIPT,
+    [auditStreamKey(args.installationId)],
+    [args.auditId],
+  );
+  if (raw === null || raw === undefined) {
+    throw new QueenResolveActionAuditNotFoundError(args.auditId);
+  }
+  if (typeof raw !== "string") {
+    throw new QueenResolveActionAuditMalformedError(
+      args.auditId,
+      "entry payload is not a string",
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new QueenResolveActionAuditMalformedError(
+      args.auditId,
+      "entry payload is not valid JSON",
+    );
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    throw new QueenResolveActionAuditMalformedError(
+      args.auditId,
+      "entry payload is not an object",
+    );
+  }
+  const entry = parsed as AuditMutationEntry;
+  if (entry.action !== "queen.resolve_action") {
+    throw new QueenResolveActionAuditMalformedError(
+      args.auditId,
+      `entry action is ${String((parsed as { action?: unknown }).action)}`,
+    );
+  }
+  if (
+    typeof entry.ts !== "string" ||
+    typeof entry.fingerprint !== "string" ||
+    typeof entry.name !== "string" ||
+    typeof entry.actor !== "string" ||
+    !isQueenResolveActionDetail(entry.detail)
+  ) {
+    throw new QueenResolveActionAuditMalformedError(
+      args.auditId,
+      "entry missing required resolve-action fields",
+    );
+  }
+
+  return {
+    id: args.auditId,
+    ts: entry.ts,
+    fingerprint: entry.fingerprint,
+    name: entry.name,
+    actor: entry.actor,
+    detail: entry.detail,
+  };
+}
+
+function isQueenResolveActionDetail(
+  value: unknown,
+): value is QueenResolveActionDetail {
+  if (value === null || typeof value !== "object") return false;
+  const d = value as Record<string, unknown>;
+  return (
+    typeof d.room_id === "string" &&
+    typeof d.subject_ref === "string" &&
+    (d.recommended_action === "comment" ||
+      d.recommended_action === "squash-merge") &&
+    (d.permitted_action === "comment" ||
+      d.permitted_action === "squash-merge") &&
+    typeof d.clamped_verdict === "string" &&
+    typeof d.reviewed_head_sha === "string" &&
+    typeof d.current_head_sha === "string" &&
+    (typeof d.downgrade_reason === "string" || d.downgrade_reason === null) &&
+    typeof d.floor_overridden === "boolean"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -305,12 +488,19 @@ const RESOLVE_ACTION_RATE_LIMIT_WINDOW_SECS = 60;
 const RESOLVE_ACTION_PER_BEARER_MAX = 60;
 const RESOLVE_ACTION_PER_INSTALLATION_MAX = 240;
 
-function perBearerRateLimitKey(installationId: string, fingerprint: string): string {
-  return `hive:v1:queen:rl:resolve-action:${installationId}:${fingerprint}`;
+function perBearerRateLimitKey(
+  endpoint: "resolve-action" | "seal-decision",
+  installationId: string,
+  fingerprint: string,
+): string {
+  return `hive:v1:queen:rl:${endpoint}:${installationId}:${fingerprint}`;
 }
 
-function perInstallationRateLimitKey(installationId: string): string {
-  return `hive:v1:queen:rl:resolve-action:${installationId}:_install`;
+function perInstallationRateLimitKey(
+  endpoint: "resolve-action" | "seal-decision",
+  installationId: string,
+): string {
+  return `hive:v1:queen:rl:${endpoint}:${installationId}:_install`;
 }
 
 /**
@@ -353,8 +543,54 @@ export async function checkResolveActionRateLimit(args: {
       resetAtSecs: number;
     }
 > {
-  const bearerKey = perBearerRateLimitKey(args.installationId, args.fingerprint);
-  const installKey = perInstallationRateLimitKey(args.installationId);
+  return checkQueenEndpointRateLimit({
+    ...args,
+    endpoint: "resolve-action",
+  });
+}
+
+export async function checkSealDecisionRateLimit(args: {
+  redis: Redis;
+  installationId: string;
+  fingerprint: string;
+}): Promise<
+  | { allowed: true }
+  | {
+      allowed: false;
+      scope: RateLimitScope;
+      currentCount: number;
+      resetAtSecs: number;
+    }
+> {
+  return checkQueenEndpointRateLimit({
+    ...args,
+    endpoint: "seal-decision",
+  });
+}
+
+async function checkQueenEndpointRateLimit(args: {
+  endpoint: "resolve-action" | "seal-decision";
+  redis: Redis;
+  installationId: string;
+  fingerprint: string;
+}): Promise<
+  | { allowed: true }
+  | {
+      allowed: false;
+      scope: RateLimitScope;
+      currentCount: number;
+      resetAtSecs: number;
+    }
+> {
+  const bearerKey = perBearerRateLimitKey(
+    args.endpoint,
+    args.installationId,
+    args.fingerprint,
+  );
+  const installKey = perInstallationRateLimitKey(
+    args.endpoint,
+    args.installationId,
+  );
 
   // Increment both in parallel. Order of failures: report per-bearer
   // first if both are over (queen sees "your bearer is hot" before

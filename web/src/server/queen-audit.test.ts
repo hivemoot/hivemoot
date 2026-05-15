@@ -12,6 +12,7 @@ import { auditAppend } from "./agent-token-v1-audit";
 import {
   emitQueenVerdictFloorOverride,
   emitQueenActionDowngrade,
+  emitQueenIntendedActionPostFailed,
 } from "./queen-audit";
 
 const mockedAuditAppend = vi.mocked(auditAppend);
@@ -150,6 +151,27 @@ describe("emitQueenVerdictFloorOverride", () => {
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it("emitQueenIntendedActionPostFailed also swallows underlying audit failures (same contract)", async () => {
+    mockedAuditAppend.mockRejectedValueOnce(new Error("redis down"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      emitQueenIntendedActionPostFailed({
+        ...CALLER,
+        detail: {
+          room_id: "rm-intent",
+          subject_ref: "hivemoot/colony#1",
+          recommended_action: "squash-merge",
+          intended_action: "squash-merge",
+          audit_id_from_resolve_action: "1715000000000-0",
+          error_class: "gh_comment_failed",
+          retry_count: 3,
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -261,6 +283,10 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
     expect(isMutationAction("queen.resolve_action")).toBe(true);
   });
 
+  it("accepts queen.intended_action_post_failed → routes to :audit (mutations) stream", () => {
+    expect(isMutationAction("queen.intended_action_post_failed")).toBe(true);
+  });
+
   it("still accepts existing mutation actions (no regression)", () => {
     for (const a of ["issue", "revoke", "set_capabilities", "rotate", "bootstrap"]) {
       expect(isMutationAction(a), a).toBe(true);
@@ -290,6 +316,9 @@ describe("isMutationAction runtime classifier (builder pass-1 follow-up)", () =>
 
 import {
   emitQueenResolveAction,
+  readQueenResolveActionAuditRow,
+  QueenResolveActionAuditNotFoundError,
+  QueenResolveActionAuditMalformedError,
   checkResolveActionRateLimit,
 } from "./queen-audit";
 
@@ -370,6 +399,72 @@ describe("emitQueenResolveAction — pass-1 audit_id contract", () => {
         },
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("readQueenResolveActionAuditRow — seal-decision lookup", () => {
+  function makeEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      ts: "2026-05-10T00:00:00.000Z",
+      fingerprint: "fp1",
+      name: "queen",
+      action: "queen.resolve_action",
+      actor: "queen",
+      detail: {
+        room_id: "rm-1",
+        subject_ref: "hivemoot/colony#1",
+        recommended_action: "comment",
+        permitted_action: "comment",
+        clamped_verdict: "COMMENT",
+        reviewed_head_sha: "deadbeef",
+        current_head_sha: "deadbeef",
+        downgrade_reason: null,
+        floor_overridden: false,
+      },
+      ...overrides,
+    };
+  }
+
+  it("reads and validates the exact resolve-action audit row by id", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => JSON.stringify(makeEntry())),
+    } as never;
+    const row = await readQueenResolveActionAuditRow({
+      redis: fakeRedis,
+      installationId: "12345",
+      auditId: "1715000000000-0",
+    });
+    expect(row.id).toBe("1715000000000-0");
+    expect(row.detail.room_id).toBe("rm-1");
+    expect(row.detail.permitted_action).toBe("comment");
+  });
+
+  it("throws typed not-found when the stream row is missing", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () => null),
+    } as never;
+    await expect(
+      readQueenResolveActionAuditRow({
+        redis: fakeRedis,
+        installationId: "12345",
+        auditId: "missing-0",
+      }),
+    ).rejects.toBeInstanceOf(QueenResolveActionAuditNotFoundError);
+  });
+
+  it("throws typed malformed when the row is not a resolve-action entry", async () => {
+    const fakeRedis = {
+      eval: vi.fn(async () =>
+        JSON.stringify(makeEntry({ action: "queen.action_downgrade" })),
+      ),
+    } as never;
+    await expect(
+      readQueenResolveActionAuditRow({
+        redis: fakeRedis,
+        installationId: "12345",
+        auditId: "bad-0",
+      }),
+    ).rejects.toBeInstanceOf(QueenResolveActionAuditMalformedError);
   });
 });
 

@@ -395,6 +395,9 @@ export interface RoomDecision {
   /** Sequence number this synthesis was based on. Caller compares
    * against the live `seq` at close time to detect drift. */
   sequence_closed: number;
+  /** Optional local-queen seal idempotency marker. Existing cloud
+   * close calls leave this unset. */
+  seal_audit_id?: string;
 }
 
 /**
@@ -1498,6 +1501,29 @@ export class RoomCloseClaimThroughSeqMismatchError extends Error {
 }
 
 /**
+ * Thrown by `closeRoomWithDecision` when the live synthesis claim is
+ * held by a different runner than the caller expected. Existing
+ * cloud-close callers do not pass `expectedRunner`, but the local
+ * queen's two-step `resolve-action` → `seal-decision` path does:
+ * a claim TTL expiry followed by a re-claim at the same sequence
+ * must not let the old runner seal against the new runner's claim.
+ */
+export class RoomCloseClaimRunnerMismatchError extends Error {
+  public readonly roomId: string;
+  public readonly expectedRunner: string;
+  public readonly actualRunner: string;
+  constructor(roomId: string, expectedRunner: string, actualRunner: string) {
+    super(
+      `Claim runner mismatch for room ${roomId}: expected ${expectedRunner}, got ${actualRunner}. Another runner owns the synthesis claim; abort and re-claim.`,
+    );
+    this.name = "RoomCloseClaimRunnerMismatchError";
+    this.roomId = roomId;
+    this.expectedRunner = expectedRunner;
+    this.actualRunner = actualRunner;
+  }
+}
+
+/**
  * Thrown by `closeRoomWithDecision` when new events arrived between
  * claim acquisition and close attempt — the script atomically reverts
  * status to `awaiting_contributions` AND DELs the claim, so the queen
@@ -2494,6 +2520,8 @@ return {1, seq}
  *   [4] closedEventJsonTemplate  — JSON with `__SEQ__` placeholder
  *   [5] closedAt                 — ISO 8601
  *   [6] retentionSecs            — sibling TTL
+ *   [7] expectedRunner           — optional; empty string disables
+ *                                  runner ownership check
  *
  * Returns:
  *   {1, sequence}                                    closed cleanly
@@ -2508,6 +2536,10 @@ local claim = redis.call("get", KEYS[2])
 if not claim then return {-3, "claim_lost"} end
 local ok, parsed = pcall(cjson.decode, claim)
 if not ok then return {-3, "decode_error"} end
+local expectedRunner = ARGV[7]
+if expectedRunner ~= "" and parsed.runner ~= expectedRunner then
+  return {-3, "claim_runner_mismatch", parsed.runner or ""}
+end
 local claimThroughSeq = tonumber(parsed.throughSequence)
 local expectedThroughSeq = tonumber(ARGV[2])
 if claimThroughSeq ~= expectedThroughSeq then
@@ -3801,6 +3833,8 @@ export async function terminateRoom(args: {
  *     ABORT the GitHub post and surface terminal state to operator
  *   - `RoomCloseClaimThroughSeqMismatchError` — different runner
  *     re-claimed; ABORT, do NOT post
+ *   - `RoomCloseClaimRunnerMismatchError` — local-queen seal saw a
+ *     live claim held by a different runner; ABORT, do NOT post
  *   - `RoomCloseDriftError` — sequence drift; revert is already
  *     applied, queen logs and exits, manager re-claims
  *   - `RoomClaimPayloadCorruptError` — claim payload corrupted;
@@ -3811,6 +3845,8 @@ export async function closeRoomWithDecision(args: {
   roomId: string;
   /** Captured at claim time from `claimSynthesis(...).throughSequence`. */
   expectedThroughSequence: number;
+  /** Optional guard for two-step local-queen seals. */
+  expectedRunner?: string;
   decision: RoomDecision;
   subject: SubjectRef;
   retentionSecs?: number;
@@ -3819,6 +3855,9 @@ export async function closeRoomWithDecision(args: {
 }): Promise<number> {
   validateSubjectRef(args.subject);
   validateRunnerFormat(args.decision.synthesis_runner);
+  if (args.expectedRunner !== undefined) {
+    validateRunnerFormat(args.expectedRunner);
+  }
   // BYTE length, not UTF-16 code-unit `.length`. A multi-byte
   // synthesis (emoji, non-ASCII narrative) can have `.length` < byte
   // budget while the actual storage payload exceeds 64 KiB. Closes
@@ -3878,6 +3917,7 @@ export async function closeRoomWithDecision(args: {
         luaTemplate,
         nowIso,
         String(retention),
+        args.expectedRunner ?? "",
       ],
     ),
   );
@@ -3906,6 +3946,13 @@ export async function closeRoomWithDecision(args: {
         args.roomId,
         args.expectedThroughSequence,
         actual,
+      );
+    }
+    if (result.tag1 === "claim_runner_mismatch") {
+      throw new RoomCloseClaimRunnerMismatchError(
+        args.roomId,
+        args.expectedRunner ?? "",
+        typeof result.tag2 === "string" ? result.tag2 : "",
       );
     }
   }
