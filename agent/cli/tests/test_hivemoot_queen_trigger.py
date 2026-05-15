@@ -327,6 +327,68 @@ class LocalQueenTriggerTests(unittest.TestCase):
         )
         self.assertEqual(report.call_args.kwargs["merge_commit_oid"], "feedface")
 
+    def test_dirty_success_report_queue_blocks_second_merge_attempt(self) -> None:
+        dispatcher = MagicMock()
+        report = MagicMock(
+            side_effect=[RuntimeError("api down"), RuntimeError("still down")]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue_file = os.path.join(tmpdir, "merge-reports.json")
+            first_squash = MagicMock(return_value="feedface")
+            trigger = LocalQueenSynthesisTrigger(
+                SlotPlugin(),
+                base_url="https://api.example",
+                token_resolver=lambda: "bearer",
+                runner_id="queen-a",
+                agent_id="queen-a",
+                enable_squash_merge=True,
+                merge_report_queue_file=queue_file,
+                list_ready_fn=MagicMock(return_value=[_room()]),
+                list_pending_fn=MagicMock(return_value=[_pending_room()]),
+                confirm_merge_fn=MagicMock(
+                    return_value=ConfirmMergeResult(
+                        decision_outcome="merge_approved",
+                        decision_outcome_reason=None,
+                        github_merge_status="pending",
+                        merge_attempt_id="queen-a:room-2:abc123deadbe",
+                        closed_sequence=9,
+                    ),
+                ),
+                report_merge_result_fn=report,
+                mint_token_fn=MagicMock(return_value="ghs_x"),
+                get_head_sha_fn=MagicMock(return_value="abc123deadbeef"),
+                squash_merge_fn=first_squash,
+            )
+
+            trigger._tick(dispatcher)
+            first_squash.assert_called_once()
+
+            list_pending = MagicMock(return_value=[_pending_room()])
+            confirm = MagicMock()
+            second_squash = MagicMock()
+            retry_trigger = LocalQueenSynthesisTrigger(
+                SlotPlugin(),
+                base_url="https://api.example",
+                token_resolver=lambda: "bearer",
+                runner_id="queen-a",
+                agent_id="queen-a",
+                enable_squash_merge=True,
+                merge_report_queue_file=queue_file,
+                list_ready_fn=MagicMock(return_value=[_room()]),
+                list_pending_fn=list_pending,
+                confirm_merge_fn=confirm,
+                report_merge_result_fn=report,
+                squash_merge_fn=second_squash,
+            )
+
+            retry_trigger._tick(dispatcher)
+
+        self.assertEqual(report.call_count, 2)
+        list_pending.assert_not_called()
+        confirm.assert_not_called()
+        second_squash.assert_not_called()
+
     def test_pending_merge_downgrade_does_not_run_gh_merge(self) -> None:
         squash_merge = MagicMock()
         trigger = LocalQueenSynthesisTrigger(

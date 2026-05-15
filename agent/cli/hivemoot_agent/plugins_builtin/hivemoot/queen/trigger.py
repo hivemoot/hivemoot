@@ -168,7 +168,8 @@ class LocalQueenSynthesisTrigger:
             return
 
         if self._enable_squash_merge:
-            self._flush_pending_merge_reports(bearer)
+            if self._flush_pending_merge_reports(bearer):
+                return
             if self._confirm_pending_merge(bearer):
                 return
 
@@ -399,9 +400,9 @@ class LocalQueenSynthesisTrigger:
 
         return False
 
-    def _flush_pending_merge_reports(self, bearer: str) -> None:
+    def _flush_pending_merge_reports(self, bearer: str) -> bool:
         if not self._pending_merge_reports:
-            return
+            return False
         remaining: list[PendingMergeReport] = []
         for report in self._pending_merge_reports:
             try:
@@ -432,6 +433,7 @@ class LocalQueenSynthesisTrigger:
         if len(remaining) != len(self._pending_merge_reports):
             self._pending_merge_reports = remaining
             self._save_pending_merge_reports()
+        return bool(self._pending_merge_reports)
 
     def _enqueue_pending_merge_report(self, report: PendingMergeReport) -> None:
         self._pending_merge_reports = [
