@@ -106,6 +106,11 @@ export async function processRepository(
   logger.group(`Processing ${repo.full_name}`);
 
   try {
+    if (repo.archived) {
+      logger.info(`[${repo.full_name}] Repository is archived; skipping stale PR cleanup`);
+      return;
+    }
+
     // Load per-repo configuration (returns null when no config file exists)
     const repoConfig = await loadRepositoryConfig(octokit, owner, repoName);
     if (!repoConfig) {
