@@ -72,7 +72,6 @@ class LocalQueenSynthesisTrigger:
         *,
         base_url: str,
         token_resolver: Callable[[], str],
-        runner_id: str,
         agent_id: str,
         poll_interval_secs: int = DEFAULT_POLL_INTERVAL_SECS,
         ready_limit: int = 10,
@@ -105,7 +104,6 @@ class LocalQueenSynthesisTrigger:
         self._plugin = plugin
         self._base_url = base_url
         self._token_resolver = token_resolver
-        self._runner_id = runner_id
         self._agent_id = agent_id
         self._poll_interval_secs = max(1, poll_interval_secs)
         self._ready_limit = max(1, ready_limit)
@@ -197,7 +195,7 @@ class LocalQueenSynthesisTrigger:
                     self._base_url,
                     room.room_id,
                     bearer,
-                    queen_runner=self._runner_id,
+                    queen_runner=self._agent_id,
                     claim_ttl_secs=self._claim_ttl_secs,
                 )
             except q_api.QueenAPIConflictError as exc:
@@ -305,13 +303,13 @@ class LocalQueenSynthesisTrigger:
                     timeout_secs=self._gh_timeout_secs,
                 )
                 merge_attempt_id = (
-                    f"{self._runner_id}:{room.room_id}:{current_head_sha[:12]}"
+                    f"{self._agent_id}:{room.room_id}:{current_head_sha[:12]}"
                 )
                 confirmed = self._confirm_merge(
                     self._base_url,
                     room.room_id,
                     bearer,
-                    queen_runner=self._runner_id,
+                    queen_runner=self._agent_id,
                     merge_attempt_id=merge_attempt_id,
                     current_head_sha=current_head_sha,
                 )
@@ -368,7 +366,7 @@ class LocalQueenSynthesisTrigger:
                     self._base_url,
                     room.room_id,
                     bearer,
-                    queen_runner=self._runner_id,
+                    queen_runner=self._agent_id,
                     merge_attempt_id=confirmed.merge_attempt_id,
                     github_merge_status="succeeded",
                     merge_commit_oid=merge_commit_oid,
@@ -410,7 +408,7 @@ class LocalQueenSynthesisTrigger:
                     self._base_url,
                     report.room_id,
                     bearer,
-                    queen_runner=self._runner_id,
+                    queen_runner=self._agent_id,
                     merge_attempt_id=report.merge_attempt_id,
                     github_merge_status="succeeded",
                     merge_commit_oid=report.merge_commit_oid,
@@ -510,7 +508,7 @@ class LocalQueenSynthesisTrigger:
                 self._base_url,
                 room.room_id,
                 bearer,
-                queen_runner=self._runner_id,
+                queen_runner=self._agent_id,
                 merge_attempt_id=merge_attempt_id,
                 github_merge_status="failed",
                 error_class=error_class,
@@ -610,7 +608,7 @@ class LocalQueenSynthesisTrigger:
             "subject_ref": room.subject_ref,
             "manager": room.manager,
             "sealed_through_sequence": claimed.through_sequence,
-            "queen_runner": self._runner_id,
+            "queen_runner": self._agent_id,
             "reviewed_head_sha": reviewed_head_sha,
             "coalesce_key": f"queen:{room.room_id}",
         }

@@ -55,6 +55,16 @@ def _queen_job() -> Job:
 
 
 class QueenTriggerWiringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_agent_id = os.environ.get("AGENT_ID")
+        os.environ["AGENT_ID"] = "queen-a"
+
+    def tearDown(self) -> None:
+        if self._old_agent_id is None:
+            os.environ.pop("AGENT_ID", None)
+        else:
+            os.environ["AGENT_ID"] = self._old_agent_id
+
     def test_disabled_by_default_no_trigger(self) -> None:
         plugin = HivemootPlugin()
         plugin._cfg = _mk_config().typed
@@ -64,7 +74,7 @@ class QueenTriggerWiringTests(unittest.TestCase):
     def test_enabled_instantiates_queen_trigger(self) -> None:
         plugin = HivemootPlugin()
         plugin._cfg = _mk_config(
-            queen=HivemootQueenConfig(enabled=True, runner_id="queen-a"),
+            queen=HivemootQueenConfig(enabled=True),
         ).typed
         triggers = plugin.triggers()
         self.assertEqual(len(triggers), 1)
@@ -79,7 +89,6 @@ class QueenTriggerWiringTests(unittest.TestCase):
                 base_url="https://staging.example",
                 poll_interval_secs=30,
                 synthesis_ready_limit=5,
-                runner_id="queen-a",
                 enable_squash_merge=True,
                 merge_report_queue_file="/tmp/queen-reports.json",
             ),
@@ -99,7 +108,6 @@ class QueenTriggerWiringTests(unittest.TestCase):
         config = _mk_config(
             queen=HivemootQueenConfig(
                 enabled=True,
-                runner_id="queen-a",
                 enable_squash_merge=True,
             ),
         )
@@ -108,13 +116,23 @@ class QueenTriggerWiringTests(unittest.TestCase):
 
 
 class QueenOnFinishedWiringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_agent_id = os.environ.get("AGENT_ID")
+        os.environ["AGENT_ID"] = "queen-a"
+
+    def tearDown(self) -> None:
+        if self._old_agent_id is None:
+            os.environ.pop("AGENT_ID", None)
+        else:
+            os.environ["AGENT_ID"] = self._old_agent_id
+
     def test_queen_job_dispatched_when_enabled(self) -> None:
         plugin = HivemootPlugin()
         plugin._cfg = _mk_config(
-            queen=HivemootQueenConfig(enabled=True, runner_id="queen-a"),
+            queen=HivemootQueenConfig(enabled=True),
         ).typed
         config = _mk_config(
-            queen=HivemootQueenConfig(enabled=True, runner_id="queen-a"),
+            queen=HivemootQueenConfig(enabled=True),
         )
 
         with patch.object(plugin, "_queen_on_job_finished") as bridge_mock:
@@ -131,12 +149,12 @@ class QueenOnFinishedWiringTests(unittest.TestCase):
     def test_queen_slot_released_when_bridge_raises(self) -> None:
         plugin = HivemootPlugin()
         plugin._cfg = _mk_config(
-            queen=HivemootQueenConfig(enabled=True, runner_id="queen-a"),
+            queen=HivemootQueenConfig(enabled=True),
         ).typed
         plugin.reserve_queen_slot()
         self.assertFalse(plugin._queen_inflight.is_set())
         config = _mk_config(
-            queen=HivemootQueenConfig(enabled=True, runner_id="queen-a"),
+            queen=HivemootQueenConfig(enabled=True),
         )
         with patch.object(
             plugin,
@@ -145,6 +163,40 @@ class QueenOnFinishedWiringTests(unittest.TestCase):
         ):
             plugin.on_job_finished(_queen_job(), AgentResult(0, ""), config)
         self.assertTrue(plugin._queen_inflight.is_set())
+
+    def test_completion_uses_claimed_queen_identity_after_env_change(self) -> None:
+        plugin = HivemootPlugin()
+        plugin._cfg = _mk_config(
+            queen=HivemootQueenConfig(enabled=True),
+        ).typed
+        config = _mk_config(
+            queen=HivemootQueenConfig(enabled=True),
+        )
+        os.environ.pop("AGENT_ID", None)
+
+        with (
+            patch(
+                "hivemoot_agent.plugins_builtin.hivemoot.auth.resolve_agent_token",
+                return_value="bearer",
+            ),
+            patch(
+                "hivemoot_agent.plugins_builtin.hivemoot.tasks.result_extractor.extract_result",
+                return_value=(
+                    '{"verdict":"APPROVE","recommended_action":"comment"}'
+                ),
+            ),
+            patch(
+                "hivemoot_agent.plugins_builtin.hivemoot.queen.handle_queen_job_finished",
+            ) as finished,
+        ):
+            plugin._queen_on_job_finished(
+                _queen_job(),
+                AgentResult(0, ""),
+                config,
+            )
+
+        self.assertEqual(finished.call_args.kwargs["queen_runner"], "queen-a")
+        self.assertEqual(finished.call_args.kwargs["agent_id"], "queen-a")
 
 
 if __name__ == "__main__":

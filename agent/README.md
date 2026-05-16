@@ -430,10 +430,15 @@ plugins:
     queen:
       enabled: true
       base_url: https://www.hivemoot.dev
-      runner_id: hive-queen-1
+      # Queen identity is AGENT_ID; do not set queen.runner_id.
       enable_squash_merge: false
       merge_report_queue_file: /workspace/hivemoot-queen-merge-reports.json
 ```
+
+Remove any legacy `plugins.hivemoot.queen.runner_id` key before
+upgrading: current agents reject it at startup.  The HTTP protocol still
+uses a `queenRunner` field internally, but the runner populates it from
+the same `AGENT_ID` used for every other agent-scoped action.
 
 Deploy the runner with `enable_squash_merge: false` first to verify
 the comment-close path while the cloud queen is still authoritative.

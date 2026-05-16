@@ -308,10 +308,9 @@ class HivemootPlugin:
                 "plugins.hivemoot.token_file (or HIVEMOOT_AGENT_TOKEN"
                 "{,_FILE} env) is required when queen.enabled is true"
             )
-        if not (cfg.queen.runner_id or self.resolved_agent_id()):
+        if not self.resolved_agent_id():
             errors.append(
-                "AGENT_ID env var or plugins.hivemoot.queen.runner_id "
-                "is required when queen.enabled is true"
+                "AGENT_ID env var is required when queen.enabled is true"
             )
         return errors
 
@@ -611,14 +610,12 @@ class HivemootPlugin:
             )
 
             token_path = str(cfg.token_file) if cfg.token_file else ""
-            runner_id = cfg.queen.runner_id or self.resolved_agent_id()
             self._queen_trigger = LocalQueenSynthesisTrigger(
                 self,
                 base_url=cfg.queen.base_url,
                 token_resolver=lambda _token=token_path: resolve_agent_token(
                     _token,
                 ),
-                runner_id=runner_id,
                 agent_id=self.resolved_agent_id(),
                 poll_interval_secs=cfg.queen.poll_interval_secs,
                 ready_limit=cfg.queen.synthesis_ready_limit,
@@ -929,16 +926,17 @@ class HivemootPlugin:
         markdown = result_extractor.extract_result(
             provider, log_path, sidecar_path=sidecar,
         )
-        runner_id = cfg.queen.runner_id or self.resolved_agent_id()
-
+        queen_runner = str(job.metadata.get("queen_runner") or "").strip()
+        if not queen_runner:
+            queen_runner = self.resolved_agent_id()
         handle_queen_job_finished(
             job,
             result,
             base_url=cfg.queen.base_url,
             bearer=bearer,
             extracted_markdown=markdown,
-            queen_runner=runner_id,
-            agent_id=self.resolved_agent_id() or None,
+            queen_runner=queen_runner,
+            agent_id=queen_runner or None,
             gh_timeout_secs=cfg.queen.gh_timeout_secs,
             enable_squash_merge=cfg.queen.enable_squash_merge,
         )

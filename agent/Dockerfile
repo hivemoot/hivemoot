@@ -17,6 +17,9 @@ ARG HIVEMOOT_CLI_VERSION=latest
 
 # Install system dependencies. Build gh from source with a patched Go toolchain
 # until the upstream apt package stops shipping a vulnerable Go stdlib.
+# The explicit --only-upgrade pass keeps cached base-image packages current
+# when CI's Docker layer cache predates Debian security fixes; Trivy scans the
+# final image, not the cache age.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash \
@@ -31,6 +34,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3-pip \
   ripgrep \
   tini \
+  && apt-get install -y --no-install-recommends --only-upgrade \
+  libc-bin \
+  libc6 \
+  libcap2 \
+  libpython3.11-minimal \
+  libpython3.11-stdlib \
+  libsystemd0 \
+  libudev1 \
+  openssh-client \
+  python3.11 \
+  python3.11-minimal \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=gh-builder /tmp/gh-bin/gh /usr/local/bin/gh
 
