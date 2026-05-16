@@ -5,6 +5,7 @@ import { createIssueOperations } from "../../lib/github-client.js";
 import { getLinkedIssues, getOpenPRsForIssue, disablePullRequestAutoMerge } from "../../lib/graphql-queries.js";
 import { processImplementationIntake, recalculateLeaderboardForPR } from "../../lib/implementation-intake.js";
 import { evaluateMergeReadiness, evaluateAutomerge, loadRepositoryConfig } from "../../lib/index.js";
+import { maybeCreatePrReviewRoom, maybeEmitSubjectUpdated } from "../../lib/war-room-routing.js";
 import { LABELS, MESSAGES, REQUIRED_REPOSITORY_LABELS } from "../../config.js";
 import type { IssueRef } from "../../lib/types.js";
 import type { IncomingMessage, ServerResponse } from "http";
@@ -2191,6 +2192,8 @@ describe("Queen Bot", () => {
       vi.mocked(getLinkedIssues).mockReset();
       vi.mocked(loadRepositoryConfig).mockReset();
       vi.mocked(disablePullRequestAutoMerge).mockReset().mockResolvedValue(undefined);
+      vi.mocked(maybeCreatePrReviewRoom).mockReset().mockResolvedValue({ roomId: null });
+      vi.mocked(maybeEmitSubjectUpdated).mockReset().mockResolvedValue({ sequence: null });
     });
 
     it("should call processImplementationIntake on pull_request.opened", async () => {
@@ -2214,6 +2217,34 @@ describe("Queen Bot", () => {
       );
     });
 
+    it("should create the PR war room on opened before later automation failures", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([
+        { number: 1, title: "issue", state: "OPEN", labels: { nodes: [] } },
+      ] as any);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+      vi.mocked(evaluateAutomerge).mockRejectedValueOnce(new Error("automerge failed"));
+
+      await expect(handlers.get("pull_request.opened")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 1234 },
+          pull_request: { number: 1, body: "Closes #1", base: { ref: "main" } },
+          repository: testRepo,
+        },
+      })).rejects.toThrow("automerge failed");
+
+      expect(maybeCreatePrReviewRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 1234,
+          prNumber: 1,
+        })
+      );
+    });
+
     it("should call processImplementationIntake on pull_request.synchronize", async () => {
       const { handlers } = createWebhookHarness();
       vi.mocked(getLinkedIssues).mockResolvedValue([]);
@@ -2231,6 +2262,61 @@ describe("Queen Bot", () => {
       expect(processImplementationIntake).toHaveBeenCalledWith(
         expect.objectContaining({ trigger: "updated" })
       );
+    });
+
+    it("should retry PR war-room creation on synchronize when the update finds no room", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+      vi.mocked(maybeEmitSubjectUpdated).mockResolvedValueOnce({ sequence: null, skipped: "no_room" });
+
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 1234 },
+          pull_request: { number: 1, base: { ref: "main" }, head: { sha: "abc123" } },
+          repository: testRepo,
+        },
+      });
+
+      expect(maybeEmitSubjectUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 1234,
+          prNumber: 1,
+          changeKind: "synchronize",
+          headSha: "abc123",
+        })
+      );
+      expect(maybeCreatePrReviewRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          installationId: 1234,
+          prNumber: 1,
+        })
+      );
+    });
+
+    it("should not retry PR war-room creation on synchronize when the update succeeds", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+      vi.mocked(maybeEmitSubjectUpdated).mockResolvedValueOnce({ sequence: 7 });
+
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 1234 },
+          pull_request: { number: 1, base: { ref: "main" }, head: { sha: "abc123" } },
+          repository: testRepo,
+        },
+      });
+
+      expect(maybeCreatePrReviewRoom).not.toHaveBeenCalled();
     });
 
     it("should cancel queued squash on pull_request.synchronize when the label is present", async () => {

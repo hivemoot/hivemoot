@@ -164,6 +164,24 @@ export function app(probotApp: Probot): void {
         context.log.debug(`No config in ${fullName}; skipping PR automation`);
         return;
       }
+
+      // War-room routing. Non-fatal: a failure here never breaks
+      // the existing intake / governance flow; the routing helper
+      // logs + returns gracefully on errors. Gated on
+      // `HIVEMOOT_REDIS_REST_URL/TOKEN` env vars (same vars BYOK
+      // already uses) so the integration is opt-in via the Redis
+      // env config. Idempotent on webhook re-delivery (server
+      // returns 409 subject_already_open → routing helper reuses
+      // existingRoomId). Keep this before later PR automation so
+      // post-intake failures cannot starve room creation.
+      await maybeCreatePrReviewRoom({
+        owner,
+        repo,
+        installationId: context.payload.installation?.id,
+        prNumber: number,
+        log: context.log,
+      });
+
       let linkedIssues = initialLinkedIssues;
       const hasBodyClosingKeyword = linkedIssues.length === 0
         ? hasSameRepoClosingKeywordRef(context.payload.pull_request.body, { owner, repo })
@@ -236,21 +254,6 @@ export function app(probotApp: Probot): void {
         });
       }
 
-      // War-room routing. Non-fatal: a failure here never breaks
-      // the existing intake / governance flow; the routing helper
-      // logs + returns gracefully on errors. Gated on
-      // `HIVEMOOT_REDIS_REST_URL/TOKEN` env vars (same vars BYOK
-      // already uses) so the integration is opt-in via the Redis
-      // env config. Idempotent on webhook re-delivery (server
-      // returns 409 subject_already_open → routing helper reuses
-      // existingRoomId).
-      await maybeCreatePrReviewRoom({
-        owner,
-        repo,
-        installationId: context.payload.installation?.id,
-        prNumber: number,
-        log: context.log,
-      });
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process PR");
       throw error;
@@ -355,7 +358,7 @@ export function app(probotApp: Probot): void {
       // break the existing intake flow. The deterministic roomId
       // derivation (derivePrRoomId) means we hit the same room as
       // the E.1 create call without any lookup.
-      await maybeEmitSubjectUpdated({
+      const subjectUpdate = await maybeEmitSubjectUpdated({
         owner,
         repo,
         installationId: context.payload.installation?.id,
@@ -364,6 +367,15 @@ export function app(probotApp: Probot): void {
         headSha: context.payload.pull_request.head?.sha,
         log: context.log,
       });
+      if (subjectUpdate.skipped === "no_room") {
+        await maybeCreatePrReviewRoom({
+          owner,
+          repo,
+          installationId: context.payload.installation?.id,
+          prNumber: number,
+          log: context.log,
+        });
+      }
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process PR update");
       throw error;
