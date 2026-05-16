@@ -115,7 +115,7 @@ def handle_queen_job_finished(
     if not bearer:
         raise RuntimeError("missing local queen bearer")
     if not queen_runner:
-        raise RuntimeError("missing queen runner id")
+        raise RuntimeError("missing queen agent id")
     if not room_id or not subject_ref:
         raise RuntimeError("queen job metadata missing room_id/subject_ref")
     if sealed_through_sequence < 0:

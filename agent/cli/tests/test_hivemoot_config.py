@@ -86,7 +86,6 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.poll_interval_secs, 60)
         self.assertEqual(cfg.synthesis_ready_limit, 10)
         self.assertEqual(cfg.claim_ttl_secs, 900)
-        self.assertEqual(cfg.runner_id, "")
         self.assertFalse(cfg.enable_squash_merge)
 
 
@@ -101,6 +100,10 @@ class StrictnessTests(unittest.TestCase):
     def test_unknown_nested_field_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             HivemootConfig(health={"enabled": True, "typo": "x"})
+
+    def test_queen_runner_id_override_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(runner_id="queen-a")
 
 
 class RangeTests(unittest.TestCase):

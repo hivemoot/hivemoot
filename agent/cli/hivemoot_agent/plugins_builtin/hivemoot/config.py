@@ -402,13 +402,6 @@ class HivemootQueenConfig(StrictPluginConfig):
             "Quiet period used when a room core lacks timing_config."
         ),
     )
-    runner_id: str = Field(
-        default="",
-        description=(
-            "Stable local queen runner id. Empty = AGENT_ID. This value "
-            "must match the claim and seal-decision queenRunner field."
-        ),
-    )
     gh_timeout_secs: int = Field(
         default=30,
         ge=1,
