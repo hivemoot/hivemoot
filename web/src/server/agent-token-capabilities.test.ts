@@ -533,6 +533,10 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
         },
       });
       expect(result.ok, `contents=${level} should be rejected`).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toMatch(/contents: "write"/);
+        expect(result.message).not.toMatch(/MUST be omitted/);
+      }
     }
   });
 
@@ -654,9 +658,9 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
   // as a literal string check. The mint endpoint's auth uses
   // bearerHasCapability which expands wildcards. The asymmetry meant
   // `["installation_token.*"]` and `["*"]` slipped past the gate but
-  // satisfied auth. `pull_requests.*` has the same issue for
-  // pull_requests.merge. Now both gates use the same expansion
-  // semantics.
+  // satisfied auth. Explicit `pull_requests.merge` also has to trip
+  // the same D10 policy gate, while `pull_requests.*` stays excluded
+  // by the admin-class wildcard carve-out.
 
   it("rejects capabilities ['installation_token.*'] without policy (wildcard expands to mint)", () => {
     // The literal includes() would say false; bearerHasCapability

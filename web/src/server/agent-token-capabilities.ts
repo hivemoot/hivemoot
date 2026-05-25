@@ -487,8 +487,8 @@ const MINT_GATE_LEGACY_PRESETS: ReadonlySet<string> = new Set([
  *   - `capabilities: ["installation_token.*"]` does NOT trigger the
  *     gate (no literal match) but DOES satisfy
  *     `requires: "installation_token.mint"` at mint time
- *   - `capabilities: ["pull_requests.*"]` can satisfy
- *     `pull_requests.merge` for merge-capable minting
+ *   - `capabilities: ["pull_requests.merge"]` must trigger the same
+ *     policy gate even though it is not itself installation-token minting
  *   - `capabilities: ["*"]` (with `allowWildcards: true`) has the
  *     same shape
  *
@@ -598,12 +598,12 @@ export function validateMintPolicyRequirement(
     return {
       ok: false,
       message:
-        `Tokens granting installation_token.mint must have ` +
+        `Tokens granting installation_token.mint or pull_requests.merge must have ` +
         `policy.allowedPermissions exactly equal to the RFC D10 ` +
         `local-queen scope ${expected}. Got ${got}. Notably ` +
-        `\`contents\` MUST be omitted — the local queen synthesizes ` +
-        `verdicts from war-room contributions and must not read repo ` +
-        `files.`,
+        `\`contents: "write"\` is required for GitHub squash-merge ` +
+        `execution; local verdict synthesis still comes from war-room ` +
+        `contributions, not repo-file reads.`,
     };
   }
 
