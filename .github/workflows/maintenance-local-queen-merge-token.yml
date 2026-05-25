@@ -51,6 +51,8 @@ jobs:
           const fs = require("fs");
           const crypto = require("crypto");
 
+          (async () => {
+
           const envPath = ".vercel/.env.production.local";
           const envText = fs.readFileSync(envPath, "utf8");
 
@@ -211,4 +213,8 @@ jobs:
               lockValue,
             ]);
           }
+          })().catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
           NODE
