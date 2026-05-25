@@ -53,6 +53,7 @@ describe("CAPABILITY_REGEX", () => {
       "tasks.*",
       "agent_health.report",
       "installation_token.mint",
+      "pull_requests.merge",
       "rooms.read",
       "single",            // single-segment identifier
     ]) {
@@ -170,6 +171,10 @@ describe("expandCapabilities", () => {
     expect(expandCapabilities(["*"]).has("agent_tokens.manage")).toBe(false);
   });
 
+  it("bare * does NOT include pull_requests.merge", () => {
+    expect(expandCapabilities(["*"]).has("pull_requests.merge")).toBe(false);
+  });
+
   it("tasks.* expands only tasks.* entries (and excludes admin-class even if a task admin existed)", () => {
     const out = expandCapabilities(["tasks.*"]);
     expect(out.has("tasks.claim")).toBe(true);
@@ -196,6 +201,12 @@ describe("expandCapabilities", () => {
     // KNOWN_CAPABILITIES under that prefix, so the expansion is
     // empty. That's correct — the test pins the invariant for when
     // future agent_tokens.* entries arrive.
+    expect(out.size).toBe(0);
+  });
+
+  it("pull_requests.* does NOT expand to pull_requests.merge", () => {
+    const out = expandCapabilities(["pull_requests.*"]);
+    expect(out.has("pull_requests.merge")).toBe(false);
     expect(out.size).toBe(0);
   });
 
@@ -296,6 +307,7 @@ describe("PRESETS", () => {
   it("local_queen preset has rooms.synthesize + installation_token.mint (RFC PR 3 + G16)", () => {
     expect(PRESETS.local_queen.includes("rooms.synthesize")).toBe(true);
     expect(PRESETS.local_queen.includes("installation_token.mint")).toBe(true);
+    expect(PRESETS.local_queen.includes("pull_requests.merge")).toBe(true);
   });
 
   it("local_queen preset does NOT include rooms.watch (RFC builder pass-7 §5: queen polls synthesis-ready, not /watching)", () => {
@@ -339,11 +351,15 @@ describe("PRESETS", () => {
     expect(PRESETS.admin.includes("agent_tokens.manage")).toBe(true);
   });
 
-  it("admin preset's effective capability set covers EVERY KNOWN_CAPABILITIES entry", () => {
+  it("admin preset's effective capability set covers every non-admin-class capability", () => {
     const effective = expandCapabilities(PRESETS.admin);
     for (const k of KNOWN_CAPABILITIES) {
-      expect(effective.has(k), `admin should grant ${k}`).toBe(true);
+      if (!ADMIN_CLASS_CAPABILITIES.has(k)) {
+        expect(effective.has(k), `admin should grant ${k}`).toBe(true);
+      }
     }
+    expect(effective.has("agent_tokens.manage")).toBe(true);
+    expect(effective.has("pull_requests.merge")).toBe(false);
   });
 });
 
@@ -411,16 +427,17 @@ describe("cross-invariants", () => {
     }
   });
 
-  it("KNOWN_CAPABILITIES count matches the design doc claim (21)", () => {
+  it("KNOWN_CAPABILITIES count matches the design doc claim (22)", () => {
     // R2.2 baseline: 19 capabilities.
     // R3 (D.1.b-i): added `rooms.read_all` to differentiate
     // installation-wide listing (queen / monitoring) from worker
     // self-rooms reads (`rooms.read`). +1 → 20.
     // RFC PR 3 (D14): added `rooms.synthesize` for the local-mode
     // queen synthesis-path endpoints. +1 → 21.
+    // Local queen merge execution: added `pull_requests.merge`. +1 → 22.
     // If this fails, the doc section "Total: N capabilities" needs
     // to be updated alongside the addition.
-    expect(KNOWN_CAPABILITIES.length).toBe(21);
+    expect(KNOWN_CAPABILITIES.length).toBe(22);
   });
 });
 
@@ -434,6 +451,7 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
   const D10_POLICY = {
     allowed_repos: ["hivemoot/colony"],
     allowed_permissions: {
+      contents: "write",
       pull_requests: "write",
       issues: "write",
       metadata: "read",
@@ -484,10 +502,9 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
   // ----- D10 half 2: allowed_permissions (builder pass-3) -----
 
   it("rejects local_queen with allowedRepos but NO allowedPermissions (pass-3 builder fix)", () => {
-    // Pass-2 accepted this shape; pass-3 closes it because the mint
-    // endpoint falls back to V1_PERMISSIONS (which includes
-    // contents:read) when allowedPermissions is omitted, violating
-    // RFC D10's permission scope half.
+    // Pass-2 accepted this shape; the gate now requires an explicit
+    // permission policy so merge-capable local queen tokens are
+    // issued with the intended scope.
     const result = validateMintPolicyRequirement({
       capabilities: PRESETS.local_queen,
       presetName: "local_queen",
@@ -500,11 +517,8 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     }
   });
 
-  it("rejects local_queen with allowedPermissions including 'contents' (any value)", () => {
-    // RFC D10 explicitly drops `contents` — the local queen
-    // synthesizes verdicts and posts comments; it must not read
-    // repo files.
-    for (const level of ["read", "write", "admin"]) {
+  it("rejects local_queen with contents narrower or broader than the merge scope", () => {
+    for (const level of ["read", "admin"]) {
       const result = validateMintPolicyRequirement({
         capabilities: PRESETS.local_queen,
         presetName: "local_queen",
@@ -534,6 +548,7 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
         allowed_permissions: {
           pull_requests: "read", // should be "write"
           issues: "write",
+          contents: "write",
           metadata: "read",
         },
       },
@@ -550,6 +565,7 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
         allowed_permissions: {
           pull_requests: "write",
           issues: "write",
+          contents: "write",
           metadata: "read",
           actions: "read", // not in D10's set
         },
@@ -617,12 +633,30 @@ describe("validateMintPolicyRequirement — RFC D10 + G16 + PR 645 builder pass-
     expect(result.ok).toBe(true);
   });
 
+  it("explicit pull_requests.merge also requires the full D10 policy", () => {
+    const rejected = validateMintPolicyRequirement({
+      capabilities: ["pull_requests.merge"],
+      presetName: null,
+      policy: { allowed_repos: ["hivemoot/colony"] },
+    });
+    expect(rejected.ok).toBe(false);
+
+    const accepted = validateMintPolicyRequirement({
+      capabilities: ["pull_requests.merge"],
+      presetName: null,
+      policy: D10_POLICY,
+    });
+    expect(accepted.ok).toBe(true);
+  });
+
   // ----- Wildcard-aware capability detection (pass-3 follow-up B1) -----
   // Pass-1 through pass-3 used `capabilities.includes("installation_token.mint")`
   // as a literal string check. The mint endpoint's auth uses
   // bearerHasCapability which expands wildcards. The asymmetry meant
   // `["installation_token.*"]` and `["*"]` slipped past the gate but
-  // satisfied auth. Now both gates use the same expansion semantics.
+  // satisfied auth. `pull_requests.*` has the same issue for
+  // pull_requests.merge. Now both gates use the same expansion
+  // semantics.
 
   it("rejects capabilities ['installation_token.*'] without policy (wildcard expands to mint)", () => {
     // The literal includes() would say false; bearerHasCapability

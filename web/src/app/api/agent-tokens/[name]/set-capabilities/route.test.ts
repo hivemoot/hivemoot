@@ -309,6 +309,19 @@ describe("POST /api/agent-tokens/{name}/set-capabilities", () => {
     expect(mockedSet).not.toHaveBeenCalled();
   });
 
+  it("set explicit pull_requests.merge → 400 (merge-capable transition refused)", async () => {
+    mockedAuth.mockResolvedValue(makeAuthOk());
+    const res = await POST(
+      makeRequest({
+        capabilities: ["pull_requests.merge", "rooms.read"],
+      }),
+      makeContext("worker"),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/mint-capable shape/);
+    expect(mockedSet).not.toHaveBeenCalled();
+  });
+
   it("set preset 'apiarist' → falls through to set (legacy carve-out)", async () => {
     mockedAuth.mockResolvedValue(makeAuthOk());
     mockedSet.mockResolvedValue({

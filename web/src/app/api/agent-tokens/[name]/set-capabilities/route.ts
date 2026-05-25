@@ -164,7 +164,11 @@ export async function POST(
     capabilities,
     "installation_token.mint",
   );
-  if (transitionsToMint) {
+  const transitionsToMerge = bearerHasCapability(
+    capabilities,
+    "pull_requests.merge",
+  );
+  if (transitionsToMint || transitionsToMerge) {
     const isLegacyPreset =
       body.preset === "apiarist" || body.preset === "admin";
     if (!isLegacyPreset) {
@@ -177,7 +181,7 @@ export async function POST(
           "via POST /api/agent-tokens with policy: { allowedRepos, " +
           "allowedPermissions } and revoke this one instead. (This " +
           "applies to wildcard forms like 'installation_token.*' and " +
-          "'*' too — they expand to 'installation_token.mint' at " +
+          "'*' too — they expand to mint or merge capabilities at " +
           "request time.)",
         400,
       );

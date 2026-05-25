@@ -452,6 +452,7 @@ expansion.
 | Capability | Endpoint(s) gated | Notes |
 |---|---|---|
 | `installation_token.mint` | `POST /api/github/installation-tokens` | Apiarist's only required cap |
+| `pull_requests.merge` | `POST /api/github/installation-tokens` | Allows a local_queen bearer to mint merge-capable GitHub tokens when paired with `installation_token.mint` and exact merge policy |
 | `agent_health.report` | `POST /api/agent-health` | Workers, queen, anyone reporting |
 | `agent_health.read` | `GET /api/agent-health/*` | Monitoring tools |
 | `tasks.claim` | `POST /api/tasks/claim` | Worker side |
@@ -463,18 +464,19 @@ expansion.
 | `tasks.verify` | `POST /api/tasks/{id}/verify` (future) | Future task-verifier role |
 | `rooms.watch` | `GET /api/rooms/watching` (Phase D) | Worker side |
 | `rooms.read` | `GET /api/rooms/{id}`, `GET /api/rooms/{id}/events` | Worker (own role's rooms) + queen + monitoring |
+| `rooms.read_all` | room list / monitoring endpoints | Installation-wide room read |
 | `rooms.contribute` | `POST /api/rooms/{id}/{present,withdraw,contribute}` (Phase D) | Worker side |
 | `rooms.create` | `POST /api/rooms` | Bot (queen module) |
 | `rooms.update` | `POST /api/rooms/{id}/event` | Bot (queen module) |
 | `rooms.decide` | `POST /api/rooms/{id}/decide`, `DELETE /api/rooms/{id}/claim` | Bot (queen module) |
 | `rooms.close` | `POST /api/rooms/{id}/close` | Bot (queen module) |
+| `rooms.synthesize` | local queen synthesis/merge endpoints | Local-mode queen synthesis and merge confirmation path |
 | `rooms.force_close` | `POST /api/rooms/{id}/force-close`, `POST /api/rooms/{id}/replay` | Admin |
 | `agent_tokens.manage` | `POST /api/agent-tokens`, `DELETE /api/agent-tokens/{name}`, `POST /api/agent-tokens/{name}/set-capabilities`, etc. | Token-management endpoints — see §Per-installation admin protection |
 | `*` | All capabilities (admin tokens only) | NOT included by `agent_tokens.manage` unless explicit (see §Wildcard) |
 
-**Total: 19 capabilities** + `*` wildcard. (R1 said 17, vocabulary
-table had 18 — recount yields 19 after `agent_tokens.manage` added
-and `rooms.read` carved out from worker preset.)
+**Total: 22 capabilities** + `*` wildcard. Recount includes
+`rooms.read_all`, `rooms.synthesize`, and `pull_requests.merge`.
 
 ### `tasks.create` dual-auth
 
@@ -504,6 +506,7 @@ Wildcards expand at request time against a single TypeScript `const`:
 // web/src/server/agent-token-capabilities.ts
 export const KNOWN_CAPABILITIES = [
   "installation_token.mint",
+  "pull_requests.merge",
   "agent_health.report",
   "agent_health.read",
   "tasks.claim",
@@ -515,19 +518,24 @@ export const KNOWN_CAPABILITIES = [
   "tasks.verify",
   "rooms.watch",
   "rooms.read",
+  "rooms.read_all",
   "rooms.contribute",
   "rooms.create",
   "rooms.update",
   "rooms.decide",
   "rooms.close",
+  "rooms.synthesize",
   "rooms.force_close",
   "agent_tokens.manage",
 ] as const;
 
-// Capabilities that admin classes alone can grant. Even prefix
-// wildcards must explicitly list these — never reachable by an
-// unsuspecting `agent_tokens.*` glob (closes guard R2 N3).
-const ADMIN_CLASS_CAPABILITIES = new Set<string>(["agent_tokens.manage"]);
+// Capabilities that must be listed explicitly. Even prefix wildcards
+// never reach these, so `agent_tokens.*` does not grant token
+// management and `pull_requests.*` does not grant merge execution.
+const ADMIN_CLASS_CAPABILITIES = new Set<string>([
+  "agent_tokens.manage",
+  "pull_requests.merge",
+]);
 
 export function expandWildcards(capabilities: string[]): Set<string> {
   const out = new Set<string>();
@@ -564,8 +572,9 @@ call out wildcard implication ("now grants `X` to existing
 
 **Bare `*`**: must be opted into at issue time via `--allow-wildcards`
 flag on `tokens issue`. CLI default rejects bare `*`. Excludes
-`agent_tokens.manage` unless explicitly added. Closes guard issue
-"`*` includes token management" trap.
+`agent_tokens.manage` or `pull_requests.merge` unless explicitly
+added. Closes guard issue "`*` includes token management" trap and
+keeps merge execution from appearing on old wildcard tokens.
 
 **Capability count surfacing**: the dashboard (Phase I) shows a
 "this token can call:" list expanded against current
@@ -585,6 +594,7 @@ in the issue CLI. Operators always free to bypass with explicit
 | `apiarist` | `installation_token.mint` | Host-side daemon. Single cap. Used by the apiarist UDS path; never put in a container. |
 | `worker` | `agent_health.report`, `tasks.claim`, `tasks.progress`, `tasks.complete`, `rooms.watch`, `rooms.read`, `rooms.contribute` | Containers (drone, builder, guard, etc.). **Does NOT include `installation_token.mint`** — workers always go through apiarist (closes hivemoot reviewer #3 issue 1). |
 | `queen` | worker − `tasks.claim`/`tasks.progress`/`tasks.complete` + `tasks.create`, `tasks.read`, `tasks.cancel`, `rooms.create`, `rooms.read`, `rooms.update`, `rooms.decide`, `rooms.close` | Bot's room-management token (bot-as-queen — see WAR_ROOM_DESIGN.md §V1 architecture decision). |
+| `local_queen` | `queen` + `rooms.synthesize`, `installation_token.mint`, `pull_requests.merge` | Local hive queen; requires explicit repo and merge-permission policy |
 | `dispatcher` | `tasks.create`, `tasks.read` | Dashboard or external task creator |
 | `monitoring` | `agent_health.read`, `tasks.read`, `rooms.read` | Read-only operator |
 | `admin` | `*` + `agent_tokens.manage` (explicit, opted-in) | Admin tokens; see §Per-installation admin protection |

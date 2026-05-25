@@ -292,7 +292,15 @@ describe("POST /api/agent-tokens — body validation", () => {
         name: "queen-hive-1",
         agent_role: "local_queen",
         preset: "local_queen",
-        policy: { allowedRepos: [], allowedPermissions: { contents: "read" } },
+        policy: {
+          allowedRepos: [],
+          allowedPermissions: {
+            contents: "write",
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          },
+        },
       }),
     );
     expect(res.status).toBe(400);
@@ -335,10 +343,9 @@ describe("POST /api/agent-tokens — body validation", () => {
   });
 
   it("preset 'local_queen' with allowedRepos but NO allowedPermissions → 400 (pass-3 D10 half 2)", async () => {
-    // Pass-2 accepted this shape; pass-3 rejects because the mint
-    // endpoint falls back to V1_PERMISSIONS (which includes
-    // contents:read) when allowedPermissions is omitted, violating
-    // RFC D10's permission-scope half.
+    // Pass-2 accepted this shape; the gate now requires an explicit
+    // permission policy so merge-capable local queen tokens are
+    // issued with the intended scope.
     const res = await POST(
       makeRequest("POST", {
         name: "queen-hive-1",
@@ -354,7 +361,7 @@ describe("POST /api/agent-tokens — body validation", () => {
     expect(body.message).toMatch(/contents/);
   });
 
-  it("preset 'local_queen' with allowedPermissions including contents → 400 (D10 forbids contents)", async () => {
+  it("preset 'local_queen' with contents narrower than merge scope → 400", async () => {
     const res = await POST(
       makeRequest("POST", {
         name: "queen-hive-1",
@@ -395,6 +402,7 @@ describe("POST /api/agent-tokens — body validation", () => {
         policy: {
           allowedRepos: ["hivemoot/colony"],
           allowedPermissions: {
+            contents: "write",
             pull_requests: "write",
             issues: "write",
             metadata: "read",
@@ -439,6 +447,7 @@ describe("POST /api/agent-tokens — body validation", () => {
         policy: {
           allowedRepos: ["hivemoot/colony"],
           allowedPermissions: {
+            contents: "write",
             pull_requests: "write",
             issues: "write",
             metadata: "read",
