@@ -47,7 +47,7 @@ jobs:
           GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
           GITHUB_SHA_VALUE: ${{ github.sha }}
         run: |
-          node <<'NODE'
+          node --input-type=commonjs <<'NODE'
           const fs = require("fs");
           const crypto = require("crypto");
 
