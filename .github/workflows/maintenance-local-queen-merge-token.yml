@@ -1,0 +1,214 @@
+name: Maintenance - Local Queen Merge Token
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type grant-local-queen-merge to update the hive-local-queen envelope.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  grant-local-queen-merge:
+    if: github.event.inputs.confirm == 'grant-local-queen-merge'
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "20"
+
+      - name: Verify Vercel secrets
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Missing one or more required Vercel secrets."
+            echo "Required: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID"
+            exit 1
+          fi
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Pull production environment
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Grant merge capability to hive-local-queen
+        env:
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          const envPath = ".vercel/.env.production.local";
+          const envText = fs.readFileSync(envPath, "utf8");
+
+          function parseEnv(text) {
+            const out = {};
+            for (const rawLine of text.split(/\n/)) {
+              const line = rawLine.trim();
+              if (!line || line.startsWith("#")) continue;
+              const idx = line.indexOf("=");
+              if (idx === -1) continue;
+              const key = line.slice(0, idx);
+              let value = line.slice(idx + 1);
+              if (
+                (value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))
+              ) {
+                value = value
+                  .slice(1, -1)
+                  .replace(/\\n/g, "\n")
+                  .replace(/\\"/g, '"')
+                  .replace(/\\\\/g, "\\");
+              }
+              out[key] = value;
+            }
+            return out;
+          }
+
+          const env = parseEnv(envText);
+          const redisUrl = env.HIVEMOOT_REDIS_REST_URL;
+          const redisToken = env.HIVEMOOT_REDIS_REST_TOKEN;
+          if (!redisUrl || !redisToken) {
+            throw new Error("Production Redis env is unavailable from vercel pull.");
+          }
+
+          async function redis(command) {
+            const res = await fetch(redisUrl, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${redisToken}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify(command),
+            });
+            const text = await res.text();
+            if (!res.ok) {
+              throw new Error(`Redis HTTP ${res.status}: ${text.slice(0, 300)}`);
+            }
+            const body = JSON.parse(text);
+            if (body.error) {
+              throw new Error(`Redis error: ${body.error}`);
+            }
+            return body.result;
+          }
+
+          const installationId = "107212709";
+          const tokenName = "hive-local-queen";
+          const envelopeKey = `hive:v1:agent-token:${installationId}:${tokenName}`;
+          const lockKey = `hive:v1:lock:agent-token:${installationId}:${tokenName}`;
+          const auditKey = `hive:v1:agent-token:${installationId}:audit`;
+          const lockValue = `gha:${process.env.GITHUB_RUN_ID_VALUE}:${crypto.randomUUID()}`;
+
+          const requiredRepos = ["hivemoot/colony", "hivemoot/hivemoot"];
+          const requiredPermissions = {
+            contents: "write",
+            pull_requests: "write",
+            issues: "write",
+            metadata: "read",
+          };
+
+          const acquired = await redis(["SET", lockKey, lockValue, "NX", "EX", "30"]);
+          if (acquired !== "OK") {
+            throw new Error(`Could not acquire mutation lock for ${tokenName}.`);
+          }
+
+          try {
+            const raw = await redis(["GET", envelopeKey]);
+            if (!raw) throw new Error(`${envelopeKey} is missing.`);
+
+            const envelope = JSON.parse(raw);
+            if (envelope.name !== tokenName) {
+              throw new Error(`Envelope name mismatch: ${JSON.stringify(envelope.name)}.`);
+            }
+            if (envelope.agent_role !== "local_queen") {
+              throw new Error(`Envelope role mismatch: ${JSON.stringify(envelope.agent_role)}.`);
+            }
+            if (!Array.isArray(envelope.capabilities)) {
+              throw new Error("Envelope capabilities are malformed.");
+            }
+            if (!envelope.capabilities.includes("installation_token.mint")) {
+              throw new Error("Refusing to update token without installation_token.mint.");
+            }
+
+            const fromCapabilities = [...envelope.capabilities];
+            const toCapabilities = fromCapabilities.includes("pull_requests.merge")
+              ? fromCapabilities
+              : [...fromCapabilities, "pull_requests.merge"];
+
+            const fromPolicy = envelope.policy ?? null;
+            const toPolicy = {
+              allowed_repos: requiredRepos,
+              allowed_permissions: requiredPermissions,
+            };
+
+            const updated = {
+              ...envelope,
+              capabilities: toCapabilities,
+              policy: toPolicy,
+            };
+
+            const ttlMs = await redis(["PTTL", envelopeKey]);
+            if (typeof ttlMs === "number" && ttlMs > 0) {
+              await redis(["SET", envelopeKey, JSON.stringify(updated), "PX", String(ttlMs)]);
+            } else {
+              await redis(["SET", envelopeKey, JSON.stringify(updated)]);
+            }
+
+            const auditEntry = {
+              ts: new Date().toISOString(),
+              fingerprint: envelope.fingerprint,
+              name: tokenName,
+              action: "set_capabilities",
+              actor: "github-actions:maintenance-local-queen-merge-token",
+              detail: {
+                from: fromCapabilities,
+                to: toCapabilities,
+                policy_from: fromPolicy,
+                policy_to: toPolicy,
+                reason: "Grant explicit local queen PR merge authority after pull_requests.merge rollout.",
+                github_run_id: process.env.GITHUB_RUN_ID_VALUE,
+                github_sha: process.env.GITHUB_SHA_VALUE,
+              },
+            };
+            await redis([
+              "XADD",
+              auditKey,
+              "MAXLEN",
+              "~",
+              "10000",
+              "*",
+              "entry",
+              JSON.stringify(auditEntry),
+            ]);
+
+            console.log(JSON.stringify({
+              tokenName,
+              installationId,
+              fingerprint: envelope.fingerprint,
+              addedCapability: !fromCapabilities.includes("pull_requests.merge"),
+              policyUpdated: JSON.stringify(fromPolicy) !== JSON.stringify(toPolicy),
+              ttlPreserved: typeof ttlMs === "number" && ttlMs > 0,
+            }, null, 2));
+          } finally {
+            await redis([
+              "EVAL",
+              "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+              "1",
+              lockKey,
+              lockValue,
+            ]);
+          }
+          NODE
