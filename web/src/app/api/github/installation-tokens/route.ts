@@ -266,6 +266,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const tokenResponse = await mintInstallationToken({
       ...mintOptions,
     });
+    const requestedPermissionCeiling =
+      mintOptions.permissionCeiling ?? V1_PERMISSIONS;
     // Audit log: success. Token VALUE never logged — only metadata.
     // hashed_token is the audit-correlation handle (sha256/base64 of
     // the token); operators can match this log line to apiarist's
@@ -290,21 +292,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       policyHasAllowedPermissions:
         auth.envelope.policy?.allowed_permissions !== undefined,
       mergeMint,
-      // Whether the granted permissions actually differ from V1_PERMISSIONS.
-      // True = some narrowing took effect (from token policy OR installation
-      // grant); false = mint received the V1 default scope. This is the
-      // signal operators actually want when answering "did this token
-      // narrow scope?" (closes guard G3 — `narrowedByPolicy` was misleading
-      // because it was true even for empty {} or V1_PERMISSIONS-equivalent
-      // policies).
+      // Whether GitHub granted less than the ceiling requested for this
+      // mint. The ceiling is normally V1_PERMISSIONS, but merge-capable
+      // local queen mints intentionally use LOCAL_QUEEN_REQUIRED_PERMISSIONS
+      // so an exact merge grant does not look like a reduction.
       //
       // Order-insensitive comparison: GitHub's response may emit
-      // permissions in different key order than V1_PERMISSIONS, so a
+      // permissions in different key order than the requested ceiling, so a
       // simple JSON.stringify(...)===JSON.stringify(...) would log
       // scopeReduced=true on a no-op narrowing (closes guard G3-R2 +
       // builder R2 follow-up). permissionsEqual normalizes by sorting
       // keys and comparing values per-key.
-      scopeReduced: !permissionsEqual(tokenResponse.permissions, V1_PERMISSIONS),
+      scopeReduced: !permissionsEqual(
+        tokenResponse.permissions,
+        requestedPermissionCeiling,
+      ),
       latencyMs: Date.now() - start,
     });
     return NextResponse.json(tokenResponse, { status: 200 });
