@@ -121,6 +121,9 @@ export function validateCapabilityString(value: string): void {
 export const KNOWN_CAPABILITIES = [
   // Installation-token brokerage (apiarist's only required cap).
   "installation_token.mint",
+  // PR merge execution. Additive to installation_token.mint; the
+  // broker honors it only after the bearer policy is checked.
+  "pull_requests.merge",
   // Agent health observability.
   "agent_health.report",
   "agent_health.read",
@@ -183,11 +186,13 @@ export type KnownCapability = (typeof KNOWN_CAPABILITIES)[number];
  * Without this carve-out, an operator who issued `--capabilities
  * agent_tokens.*` thinking it's "everything in the agent_tokens
  * family except admin" would silently get full token-management
- * capability. Admin-class caps are reachable only via explicit
- * single-string listing.
+ * capability. The same applies to merge execution: pull_requests.*
+ * must not silently grant PR merge rights. Admin-class caps are
+ * reachable only via explicit single-string listing.
  */
 export const ADMIN_CLASS_CAPABILITIES: ReadonlySet<string> = new Set<string>([
   "agent_tokens.manage",
+  "pull_requests.merge",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -313,8 +318,8 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
   // G16 — `installation_token.mint` is normally apiarist-only with
   // a UDS broker pattern. The local queen needs to mint installation
   // tokens directly (it runs in-container, can't go through a host
-  // broker). Blast radius is bounded by D10's token policy —
-  // `policy.allowed_repos = watched_repos` + minimal scopes.
+  // broker). Squash merge execution additionally requires
+  // `pull_requests.merge`; both are bounded by D10's token policy.
   local_queen: [
     "agent_health.report",
     "tasks.create",
@@ -328,6 +333,7 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "rooms.close",
     "rooms.synthesize",
     "installation_token.mint",
+    "pull_requests.merge",
   ],
   dispatcher: [
     "tasks.create",
@@ -376,19 +382,18 @@ export function resolvePreset(name: string): readonly string[] {
  * The exact `allowed_permissions` shape RFC D10 specifies for the
  * local_queen mint policy. Mint-capable non-apiarist tokens must be
  * issued with this set verbatim — narrower fails closed (bearer
- * cannot use a permission they didn't request), broader violates
- * D10 by exceeding the queen's needed scope.
+ * cannot use a permission it needs), broader violates D10 by
+ * exceeding the queen's needed scope.
  *
- * Notably **excludes `contents`**: the local queen synthesizes
- * verdicts from war-room contributions and posts comments; it must
- * not read repo files. The default V1_PERMISSIONS shape (used at
- * mint time when `allowed_permissions` is omitted) DOES include
- * `contents: "read"` for legacy apiarist compatibility, which is
- * exactly the gap this gate closes for local_queen.
+ * `contents: "write"` is needed for the approved squash-merge
+ * execution path. The broker's default remains `contents: "read"`;
+ * local queen has to carry `pull_requests.merge` before this scope is
+ * requested.
  */
 export const LOCAL_QUEEN_REQUIRED_PERMISSIONS: Readonly<
   Record<string, "read" | "write" | "admin">
 > = Object.freeze({
+  contents: "write",
   pull_requests: "write",
   issues: "write",
   metadata: "read",
@@ -402,17 +407,14 @@ export const LOCAL_QUEEN_REQUIRED_PERMISSIONS: Readonly<
  * the D10 policy:
  *   - `allowed_repos` — non-empty list (repo fan-out bound)
  *   - `allowed_permissions` — exactly the LOCAL_QUEEN_REQUIRED_PERMISSIONS
- *      set (permission scope bound; see RFC docs/architecture/
- *      QUEEN_EXECUTION_MODE.md:566-567)
+ *      set (permission scope bound, including the contents:write scope
+ *      GitHub requires for squash merge execution)
  *
- * The mint endpoint (web/src/app/api/github/installation-tokens)
- * intersects V1_PERMISSIONS with the bearer's allowed_permissions;
- * if allowed_permissions is omitted, the intersection is the full
- * V1_PERMISSIONS set including `contents: "read"`. Without this
- * gate enforcing both halves, a leaked allowedRepos-only
- * local_queen bearer could mint tokens with `contents: "read"`
- * scope — violating D10's intent that the local queen never reads
- * repo files.
+ * The default mint endpoint intersects V1_PERMISSIONS with the
+ * bearer's allowed_permissions; the merge-capable mint uses this
+ * exact local-queen scope as its ceiling. Without this gate enforcing
+ * both halves, a leaked allowedRepos-only local_queen bearer would
+ * have ambiguous scope at mint time.
  *
  * `apiarist` is exempt from BOTH halves: the existing host-broker
  * preset predates the policy model and tightening it would break
@@ -485,14 +487,16 @@ const MINT_GATE_LEGACY_PRESETS: ReadonlySet<string> = new Set([
  *   - `capabilities: ["installation_token.*"]` does NOT trigger the
  *     gate (no literal match) but DOES satisfy
  *     `requires: "installation_token.mint"` at mint time
+ *   - `capabilities: ["pull_requests.*"]` can satisfy
+ *     `pull_requests.merge` for merge-capable minting
  *   - `capabilities: ["*"]` (with `allowWildcards: true`) has the
  *     same shape
  *
  * Both bypasses are now closed by switching the gate to
- * `bearerHasCapability(capabilities, "installation_token.mint")` —
- * the SAME predicate authorization uses. If the bearer can EVER
- * mint at request time, the gate fires at issue time. Symmetric
- * semantics, no asymmetry to exploit.
+ * `bearerHasCapability` for every mint-capable permission — the SAME
+ * predicate authorization uses. If the bearer can EVER mint at request
+ * time, the gate fires at issue time. Symmetric semantics, no
+ * asymmetry to exploit.
  *
  * `admin` is added to the legacy carve-out alongside `apiarist`.
  * Admin tokens are the chain root and intentionally hold every
@@ -517,10 +521,9 @@ export function validateMintPolicyRequirement(
 ): { ok: true } | { ok: false; message: string } {
   // Wildcard-aware: ["installation_token.*"] and ["*"] both trigger
   // the gate, matching the request-time auth predicate exactly.
-  const grantsMint = bearerHasCapability(
-    args.capabilities,
-    "installation_token.mint",
-  );
+  const grantsMint =
+    bearerHasCapability(args.capabilities, "installation_token.mint") ||
+    bearerHasCapability(args.capabilities, "pull_requests.merge");
   if (!grantsMint) return { ok: true };
 
   // Server-resolved preset-name gate ONLY — agent_role is operator-
@@ -555,7 +558,8 @@ export function validateMintPolicyRequirement(
     return {
       ok: false,
       message:
-        "Tokens granting installation_token.mint must be issued with " +
+        "Tokens granting installation_token.mint or pull_requests.merge " +
+        "must be issued with " +
         "a non-empty policy.allowedRepos list (RFC D10 half 1: bound " +
         "the mint repo fan-out). Pass policy: { allowedRepos: " +
         "['owner/repo', ...] } at issue time. The legacy apiarist " +
@@ -569,13 +573,13 @@ export function validateMintPolicyRequirement(
     return {
       ok: false,
       message:
-        "Tokens granting installation_token.mint must be issued with " +
+        "Tokens granting installation_token.mint or pull_requests.merge " +
+        "must be issued with " +
         "policy.allowedPermissions matching the RFC D10 local-queen " +
-        "permission scope (pull_requests: write, issues: write, " +
-        "metadata: read). Omitting allowedPermissions falls back to " +
-        "V1_PERMISSIONS at mint time, which includes contents:read — " +
-        "violating D10's intent that the local queen never reads " +
-        "repo files.",
+        "permission scope (contents: write, pull_requests: write, " +
+        "issues: write, metadata: read). Omitting allowedPermissions " +
+        "falls back to the broker default at mint time, which is " +
+        "not sufficient for approved squash merge execution.",
     };
   }
 

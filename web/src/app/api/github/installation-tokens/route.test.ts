@@ -65,13 +65,19 @@ function authOk(
         allowed_permissions?: Record<string, "read" | "write" | "admin">;
       }
     | undefined = undefined,
+  roleAndCaps: {
+    agent_role?: string;
+    capabilities?: string[];
+  } = {},
 ) {
+  const agentRole = roleAndCaps.agent_role ?? "worker";
+  const capabilities = roleAndCaps.capabilities ?? ["installation_token.mint"];
   return {
     ok: true as const,
     installationId,
     name: "test-agent",
-    agent_role: "worker",
-    capabilities: ["installation_token.mint"],
+    agent_role: agentRole,
+    capabilities,
     envelope: {
       // Encryption fields required by AgentTokenEnvelopeV1 type even
       // though tests don't decrypt — vitest hoisted-mock would also
@@ -86,13 +92,26 @@ function authOk(
       createdBy: "test",
       expiresAt: null,
       name: "test-agent",
-      agent_role: "worker",
-      capabilities: ["installation_token.mint"],
+      agent_role: agentRole,
+      capabilities,
       ...(policy ? { policy } : {}),
     },
     redis: {} as never,
   };
 }
+
+const LOCAL_QUEEN_MERGE_POLICY = {
+  allowed_repos: ["owner/repo"],
+  allowed_permissions: {
+    contents: "write",
+    pull_requests: "write",
+    issues: "write",
+    metadata: "read",
+  },
+} satisfies {
+  allowed_repos: string[];
+  allowed_permissions: Record<string, "read" | "write" | "admin">;
+};
 
 function authFailure(status = 401, code = "agent_health_not_authenticated") {
   return {
@@ -380,6 +399,57 @@ describe("POST /api/github/installation-tokens — happy path", () => {
       appId: "12345",
       appPrivateKeyPem: "fake-pem",
     });
+  });
+
+  it("uses merge-capable ceiling when bearer has pull_requests.merge", async () => {
+    mockedAuth.mockResolvedValue(
+      authOk("99999", LOCAL_QUEEN_MERGE_POLICY, {
+        agent_role: "local_queen",
+        capabilities: [
+          "installation_token.mint",
+          "pull_requests.merge",
+        ],
+      }),
+    );
+    mockedMint.mockResolvedValue(
+      successMint({
+        permissions: {
+          contents: "write",
+          pull_requests: "write",
+          issues: "write",
+          metadata: "read",
+        },
+      }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(mockedMint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: "99999",
+        repo: "owner/repo",
+        allowedPermissions: LOCAL_QUEEN_MERGE_POLICY.allowed_permissions,
+        permissionCeiling: LOCAL_QUEEN_MERGE_POLICY.allowed_permissions,
+      }),
+    );
+  });
+
+  it("rejects pull_requests.merge without matching local queen policy", async () => {
+    mockedAuth.mockResolvedValue(
+      authOk("99999", { allowed_repos: ["owner/repo"] }, {
+        agent_role: "local_queen",
+        capabilities: [
+          "installation_token.mint",
+          "pull_requests.merge",
+        ],
+      }),
+    );
+
+    const res = await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).message).toMatch(/pull_requests\.merge/);
+    expect(mockedMint).not.toHaveBeenCalled();
   });
 });
 

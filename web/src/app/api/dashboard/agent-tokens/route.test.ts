@@ -420,6 +420,21 @@ describe("POST /api/dashboard/agent-tokens — mint-capable preset deny list (PR
     expect(mockedIssue).not.toHaveBeenCalled();
   });
 
+  it("explicit capabilities including pull_requests.merge → 400", async () => {
+    const res = await POST(
+      makeRequest("POST", {
+        name: "merger",
+        agent_role: "merger",
+        capabilities: ["pull_requests.merge", "rooms.read"],
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("agent_tokens_v1_invalid_capabilities");
+    expect(body.message).toMatch(/admin-class/);
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
   it("label-laundering attempt — explicit caps with role=apiarist → 400 (admin-class deny list, no preset escape)", async () => {
     // The pass-1 bypass: caller submits explicit caps with
     // `agent_role: "apiarist"` claiming the legacy-permissive
@@ -481,6 +496,7 @@ describe("GET /api/dashboard/agent-tokens — catalogs (presets + capabilities)"
     // PR 645 builder pass-2 (defense-in-depth on top of the policy
     // gate — the dashboard has no policy input surface).
     expect(body.capabilities).not.toContain("installation_token.mint");
+    expect(body.capabilities).not.toContain("pull_requests.merge");
     // Sanity: non-mint preset capabilities ARE in the catalog so the
     // UI can faithfully render preset → custom transitions.
     expect(body.capabilities).toEqual(

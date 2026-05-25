@@ -19,6 +19,11 @@ import {
   MintError,
   V1_PERMISSIONS,
 } from "@/server/github-installation-token";
+import {
+  LOCAL_QUEEN_REQUIRED_PERMISSIONS,
+  bearerHasCapability,
+} from "@/server/agent-token-capabilities";
+import type { GitHubPermissionLevel } from "@/server/agent-token-v1";
 
 const BAD_REQUEST_BODY = {
   error: "bad_request",
@@ -35,6 +40,15 @@ const SERVER_MISCONFIG_BODY = {
 const INTERNAL_BODY = {
   error: "internal_error",
   message: "Unexpected error during mint; see backend logs for details.",
+} as const;
+
+const MERGE_POLICY_VIOLATION_BODY = {
+  error: "policy_violation",
+  message:
+    "pull_requests.merge requires a local_queen bearer issued with " +
+    "policy.allowedPermissions exactly matching the local queen " +
+    "merge scope (contents: write, pull_requests: write, issues: write, " +
+    "metadata: read).",
 } as const;
 
 /**
@@ -54,8 +68,8 @@ const INTERNAL_BODY = {
  * = equal regardless of insertion order.
  */
 export function permissionsEqual(
-  a: Record<string, string>,
-  b: Record<string, string>,
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
 ): boolean {
   const aKeys = Object.keys(a);
   const bKeys = Object.keys(b);
@@ -195,16 +209,62 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // wire (apiarist's daemon parses `error` as the discriminator).
   const start = Date.now();
   try {
-    const tokenResponse = await mintInstallationToken({
+    const mintOptions: Parameters<typeof mintInstallationToken>[0] = {
       installationId: auth.installationId,
       repo,
       appId: githubAppId,
       appPrivateKeyPem: githubAppPrivateKey,
+    };
+
+    const mergeMint = bearerHasCapability(
+      auth.envelope.capabilities,
+      "pull_requests.merge",
+    );
+    if (mergeMint) {
+      if (
+        !bearerHasCapability(
+          auth.envelope.capabilities,
+          "installation_token.mint",
+        )
+      ) {
+        console.warn("[installation-tokens] merge bearer missing mint cap", {
+          installationId: auth.installationId,
+          repo,
+          agentId,
+          agentRole: auth.envelope.agent_role,
+        });
+        return NextResponse.json(MERGE_POLICY_VIOLATION_BODY, { status: 403 });
+      }
+      const policyPermissions = auth.envelope.policy?.allowed_permissions;
+      if (
+        auth.envelope.agent_role !== "local_queen" ||
+        !policyPermissions ||
+        !permissionsEqual(policyPermissions, LOCAL_QUEEN_REQUIRED_PERMISSIONS)
+      ) {
+        console.warn("[installation-tokens] merge capability policy violation", {
+          installationId: auth.installationId,
+          repo,
+          agentId,
+          agentRole: auth.envelope.agent_role,
+          hasAllowedPermissions: Boolean(policyPermissions),
+        });
+        return NextResponse.json(MERGE_POLICY_VIOLATION_BODY, { status: 403 });
+      }
+      mintOptions.permissionCeiling =
+        LOCAL_QUEEN_REQUIRED_PERMISSIONS as Readonly<
+          Record<string, GitHubPermissionLevel>
+        >;
+      mintOptions.allowedPermissions = policyPermissions;
+    } else if (auth.envelope.policy?.allowed_permissions !== undefined) {
       // V1.6: pass token's allowed_permissions through. Undefined for
       // legacy / V1.5 tokens (mint asks for V1_PERMISSIONS unchanged);
       // when set, mintInstallationToken intersects it with V1_PERMISSIONS
       // before sending to GitHub. The token can narrow scope, never raise.
-      allowedPermissions: auth.envelope.policy?.allowed_permissions,
+      mintOptions.allowedPermissions = auth.envelope.policy.allowed_permissions;
+    }
+
+    const tokenResponse = await mintInstallationToken({
+      ...mintOptions,
     });
     // Audit log: success. Token VALUE never logged — only metadata.
     // hashed_token is the audit-correlation handle (sha256/base64 of
@@ -229,6 +289,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // field is set on the envelope, regardless of effect."
       policyHasAllowedPermissions:
         auth.envelope.policy?.allowed_permissions !== undefined,
+      mergeMint,
       // Whether the granted permissions actually differ from V1_PERMISSIONS.
       // True = some narrowing took effect (from token policy OR installation
       // grant); false = mint received the V1 default scope. This is the

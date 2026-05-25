@@ -102,6 +102,7 @@ const ADMIN_CLASS_CAPABILITIES: ReadonlySet<string> = new Set([
   "*",
   "agent_tokens.manage",
   "installation_token.mint",
+  "pull_requests.merge",
 ]);
 
 // ---------------------------------------------------------------------------
