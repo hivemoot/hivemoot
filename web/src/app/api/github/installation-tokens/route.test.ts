@@ -692,6 +692,35 @@ describe("POST /api/github/installation-tokens — V1.6 allowed_permissions wiri
     );
     consoleLog.mockRestore();
   });
+
+  it("audit log: scopeReduced=false for exact merge-capable local queen scope", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue(
+      authOk("67890", LOCAL_QUEEN_MERGE_POLICY, {
+        agent_role: "local_queen",
+        capabilities: [
+          "installation_token.mint",
+          "pull_requests.merge",
+        ],
+      }),
+    );
+    mockedMint.mockResolvedValue(
+      successMint({
+        permissions: LOCAL_QUEEN_MERGE_POLICY.allowed_permissions,
+      }),
+    );
+
+    await POST(makeRequest({ repo: "owner/repo" }));
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[installation-tokens] minted",
+      expect.objectContaining({
+        mergeMint: true,
+        scopeReduced: false,
+      }),
+    );
+    consoleLog.mockRestore();
+  });
 });
 
 // ---------------------------------------------------------------------------
