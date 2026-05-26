@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libc-bin \
   libc6 \
   libcap2 \
+  libgnutls30 \
   libpython3.11-minimal \
   libpython3.11-stdlib \
   libsystemd0 \

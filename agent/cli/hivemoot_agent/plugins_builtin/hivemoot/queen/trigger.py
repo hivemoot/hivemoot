@@ -534,7 +534,17 @@ class LocalQueenSynthesisTrigger:
             )
             return False
 
+        if not participants:
+            print(
+                f"{self._log_prefix} room={room.room_id} not ready: "
+                "no participants",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
         unresolved = []
+        has_resolved = False
         for role, participant in participants.items():
             status = (
                 str(participant.get("status") or "")
@@ -543,10 +553,20 @@ class LocalQueenSynthesisTrigger:
             )
             if status not in {"resolved", "withdrew", "timed_out"}:
                 unresolved.append(role)
+            if status == "resolved":
+                has_resolved = True
         if unresolved:
             print(
                 f"{self._log_prefix} room={room.room_id} not ready: "
                 f"unresolved participants={','.join(sorted(unresolved))}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        if not has_resolved:
+            print(
+                f"{self._log_prefix} room={room.room_id} not ready: "
+                "no resolved participants",
                 file=sys.stderr,
                 flush=True,
             )

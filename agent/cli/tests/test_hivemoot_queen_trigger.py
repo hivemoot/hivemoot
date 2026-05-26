@@ -159,6 +159,55 @@ class LocalQueenTriggerTests(unittest.TestCase):
         claim_fn.assert_not_called()
         dispatcher.dispatch.assert_not_called()
 
+    def test_skips_room_with_no_participants_before_claim(self) -> None:
+        claim_fn = MagicMock(return_value=_claimed())
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(return_value={}),
+            events_fn=MagicMock(
+                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
+            ),
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="abc123"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+        trigger._tick(dispatcher)
+        claim_fn.assert_not_called()
+        dispatcher.dispatch.assert_not_called()
+
+    def test_skips_room_without_resolved_participant_before_claim(self) -> None:
+        claim_fn = MagicMock(return_value=_claimed())
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(
+                return_value={
+                    "guard": {"status": "withdrew"},
+                    "drone": {"status": "timed_out"},
+                }
+            ),
+            events_fn=MagicMock(
+                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
+            ),
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="abc123"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+        trigger._tick(dispatcher)
+        claim_fn.assert_not_called()
+        dispatcher.dispatch.assert_not_called()
+
     def test_skips_room_until_quiet_period_elapsed(self) -> None:
         claim_fn = MagicMock(return_value=_claimed())
         dispatcher = MagicMock()
