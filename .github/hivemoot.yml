@@ -171,7 +171,6 @@ governance:
               - hivemoot-forager
               - hivemoot-drone
             minCount: 4
-        - type: manual        # maintainer override retained
     voting:
       exits:
         - type: manual
