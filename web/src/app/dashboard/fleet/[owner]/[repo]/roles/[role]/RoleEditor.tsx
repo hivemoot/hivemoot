@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { Button, ErrorBanner, LoadingState, Spinner } from "@/app/dashboard/ui";
+
 interface RoleEntry {
   name: string;
   description: string;
@@ -16,14 +18,8 @@ type LoadState =
 
 type SaveState = "idle" | "saving" | "saved" | "conflict" | "error";
 
-function SpinnerIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className ?? "h-4 w-4 animate-spin"} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
+const INPUT_CLASS =
+  "w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] placeholder-zinc-600 focus:border-honey-500/30 focus:outline-none focus:ring-2 focus:ring-honey-500/10";
 
 export function RoleEditor({
   owner,
@@ -128,16 +124,11 @@ export function RoleEditor({
   }
 
   if (load.kind === "loading") {
-    return (
-      <div className="flex items-center gap-2 text-sm text-zinc-400">
-        <SpinnerIcon />
-        <span>Loading…</span>
-      </div>
-    );
+    return <LoadingState label="Loading…" />;
   }
 
   if (load.kind === "error") {
-    return <p className="text-sm text-red-400">{load.message}</p>;
+    return <ErrorBanner tone="red">{load.message}</ErrorBanner>;
   }
 
   const { source } = load;
@@ -151,11 +142,11 @@ export function RoleEditor({
       <div className="flex items-center justify-between">
         <Link
           href={`/dashboard/fleet/${owner}/${repo}/roles`}
-          className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
         >
           ← Roles
         </Link>
-        <span className="inline-flex items-center rounded-full border border-white/10 bg-zinc-900 px-2.5 py-0.5 text-xs text-zinc-400">
+        <span className="inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-xs text-zinc-400">
           {sourceBadge}
         </span>
       </div>
@@ -177,7 +168,7 @@ export function RoleEditor({
               if (saveState === "saved") setSaveState("idle");
             }}
             placeholder="Short description of this role"
-            className="w-full rounded-md border border-white/10 bg-zinc-900 px-3 py-2 text-sm text-[#fafafa] placeholder:text-zinc-600 focus:border-honey-500 focus:outline-none"
+            className={INPUT_CLASS}
           />
         </div>
 
@@ -197,42 +188,44 @@ export function RoleEditor({
             }}
             rows={14}
             placeholder="Role instructions passed to the agent at runtime"
-            className="w-full rounded-md border border-white/10 bg-zinc-900 px-3 py-2 text-sm font-mono text-[#fafafa] placeholder:text-zinc-600 focus:border-honey-500 focus:outline-none resize-y"
+            className={`${INPUT_CLASS} resize-y font-mono`}
           />
         </div>
       </div>
 
       {saveState === "conflict" && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-900/20 px-4 py-3 space-y-2">
-          <p className="text-xs text-amber-300">{conflictMessage}</p>
-          <p className="text-xs text-zinc-400">
-            Your edits are still in the fields above. After reloading the latest config, review
-            any differences and save again.
-          </p>
-          <button
-            onClick={handleConflictReload}
-            className="text-xs text-amber-400 underline hover:text-amber-300 transition-colors"
-          >
-            Reload latest config
-          </button>
-        </div>
+        <ErrorBanner tone="amber">
+          <div className="space-y-2">
+            <p className="text-xs text-amber-300">{conflictMessage}</p>
+            <p className="text-xs text-zinc-400">
+              Your edits are still in the fields above. After reloading the latest config, review
+              any differences and save again.
+            </p>
+            <button
+              onClick={handleConflictReload}
+              className="text-xs text-amber-400 underline transition-colors hover:text-amber-300"
+            >
+              Reload latest config
+            </button>
+          </div>
+        </ErrorBanner>
       )}
 
       <div className="flex items-center gap-4">
-        <button
+        <Button
+          variant="primary"
           onClick={handleSave}
           disabled={saveState === "saving"}
-          className="rounded-md bg-honey-500 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-honey-400 disabled:opacity-50 transition-colors"
         >
           {saveState === "saving" ? (
             <span className="flex items-center gap-2">
-              <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+              <Spinner className="h-3.5 w-3.5 animate-spin" />
               Saving…
             </span>
           ) : (
             "Save via PR"
           )}
-        </button>
+        </Button>
 
         {saveState === "saved" && prUrl && (
           <p className="text-xs text-emerald-400">

@@ -10,11 +10,15 @@ import {
   SETUP_SESSION_COOKIE,
 } from "@/server/setup-session";
 import ByokPanel from "./ByokPanel";
+import { PageHeader } from "@/app/dashboard/ui";
 
 export const metadata: Metadata = {
   title: "BYOK Credentials — Hivemoot Dashboard",
   description: "Manage LLM API keys and agent tokens.",
 };
+
+const CREDENTIALS_DESCRIPTION =
+  "Manage your LLM API key and agent authentication token.";
 
 export default async function ByokSettingsPage() {
   const cookieStore = await cookies();
@@ -49,14 +53,7 @@ export default async function ByokSettingsPage() {
   if (!hasInstallation) {
     return (
       <>
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-            Credentials
-          </h1>
-          <p className="mt-2 text-sm text-zinc-400">
-            Manage your LLM API key and agent authentication token.
-          </p>
-        </div>
+        <PageHeader title="Credentials" description={CREDENTIALS_DESCRIPTION} />
 
         <div className="rounded-lg border border-honey-500/20 bg-honey-500/5 p-8 text-center">
           <p className="mb-4 text-sm text-zinc-300">
@@ -78,16 +75,9 @@ export default async function ByokSettingsPage() {
   if (!fresh) {
     return (
       <>
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-            Credentials
-          </h1>
-          <p className="mt-2 text-sm text-zinc-400">
-            Manage your LLM API key and agent authentication token.
-          </p>
-        </div>
+        <PageHeader title="Credentials" description={CREDENTIALS_DESCRIPTION} />
 
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-8 text-center">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#141414] p-8 text-center">
           <p className="text-sm text-zinc-300 mb-4">
             Re-authenticate to access your credentials. This page requires a fresh login
             (within the last 15 minutes) for security.

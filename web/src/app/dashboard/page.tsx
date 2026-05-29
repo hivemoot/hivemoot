@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import AgentHealthDashboard from "./AgentHealthDashboard";
+import { PageHeader } from "@/app/dashboard/ui";
 import { SETUP_SESSION_COOKIE, getSetupSession } from "@/server/setup-session";
 import { getRedisClient } from "@/server/redis";
 import { validateEnv } from "@/server/env";
@@ -104,14 +105,10 @@ export default async function DashboardPage() {
   if (!hasInstallation) {
     return (
       <>
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-            Welcome to Hivemoot
-          </h1>
-          <p className="mt-2 text-sm text-zinc-400">
-            One step to unlock the dashboard.
-          </p>
-        </div>
+        <PageHeader
+          title="Welcome to Hivemoot"
+          description="One step to unlock the dashboard."
+        />
 
         <ConnectRepoCta />
       </>
@@ -120,14 +117,10 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-          Agent Health
-        </h1>
-        <p className="mt-2 text-sm text-zinc-400">
-          Live status of your autonomous agents. Updates every 30 seconds.
-        </p>
-      </div>
+      <PageHeader
+        title="Agent Health"
+        description="Live status of your autonomous agents. Updates every 30 seconds."
+      />
 
       <AgentHealthDashboard />
     </>

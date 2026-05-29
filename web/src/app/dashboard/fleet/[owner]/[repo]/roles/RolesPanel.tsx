@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { Card, EmptyState, LoadingState, ErrorBanner } from "@/app/dashboard/ui";
+
 interface RoleEntry {
   name: string;
   description: string;
@@ -14,11 +16,21 @@ type RolesState =
   | { kind: "data"; roles: RoleEntry[]; source: string }
   | { kind: "error"; message: string };
 
-function SpinnerIcon() {
+function DocumentIcon({ className }: { className?: string }) {
   return (
-    <svg className="h-4 w-4 animate-spin" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    <svg
+      className={className ?? "h-6 w-6"}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" />
+      <path d="M14 3v5h5" />
+      <path d="M9 13h6M9 17h6" />
     </svg>
   );
 }
@@ -54,18 +66,11 @@ export function RolesPanel({ owner, repo }: { owner: string; repo: string }) {
   }, [owner, repo]);
 
   if (state.kind === "loading") {
-    return (
-      <div className="flex items-center gap-2 text-sm text-zinc-400">
-        <SpinnerIcon />
-        <span>Loading roles…</span>
-      </div>
-    );
+    return <LoadingState label="Loading roles…" />;
   }
 
   if (state.kind === "error") {
-    return (
-      <p className="text-sm text-red-400">Failed to load roles: {state.message}</p>
-    );
+    return <ErrorBanner tone="red">Failed to load roles: {state.message}</ErrorBanner>;
   }
 
   const { roles, source } = state;
@@ -77,32 +82,34 @@ export function RolesPanel({ owner, repo }: { owner: string; repo: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center rounded-full border border-white/10 bg-zinc-900 px-2.5 py-0.5 text-xs text-zinc-400">
+        <span className="inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-xs text-zinc-400">
           {sourceBadge}
         </span>
       </div>
 
       {roles.length === 0 ? (
-        <p className="text-sm text-zinc-500">No roles found in .github/hivemoot.yml.</p>
+        <EmptyState
+          icon={<DocumentIcon />}
+          title="No roles found in .github/hivemoot.yml."
+        />
       ) : (
-        <ul className="divide-y divide-white/5 rounded-lg border border-white/5">
+        <Card padding="none" className="overflow-hidden divide-y divide-white/[0.06]">
           {roles.map((role) => (
-            <li key={role.name}>
-              <Link
-                href={`/dashboard/fleet/${owner}/${repo}/roles/${role.name}`}
-                className="group flex items-center justify-between px-4 py-4 hover:bg-white/[0.02] transition-colors"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-[#fafafa]">{role.name}</p>
-                  {role.description && (
-                    <p className="mt-0.5 truncate text-xs text-zinc-400">{role.description}</p>
-                  )}
-                </div>
-                <PencilIcon className="ml-4 h-3.5 w-3.5 flex-shrink-0 text-zinc-600 group-hover:text-honey-500 transition-colors" />
-              </Link>
-            </li>
+            <Link
+              key={role.name}
+              href={`/dashboard/fleet/${owner}/${repo}/roles/${role.name}`}
+              className="group flex items-center justify-between px-4 py-4 hover:bg-white/[0.02] transition-colors"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-[#fafafa]">{role.name}</p>
+                {role.description && (
+                  <p className="mt-0.5 truncate text-xs text-zinc-400">{role.description}</p>
+                )}
+              </div>
+              <PencilIcon className="ml-4 h-3.5 w-3.5 flex-shrink-0 text-zinc-600 group-hover:text-honey-500 transition-colors" />
+            </Link>
           ))}
-        </ul>
+        </Card>
       )}
     </div>
   );

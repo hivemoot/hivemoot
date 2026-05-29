@@ -4,6 +4,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  LoadingState,
+  PageHeader,
+  StatusBadge,
+  type StatusTone,
+} from "@/app/dashboard/ui";
+import {
   countRoomsByFilter,
   extractDecisionVerdict,
   hasDiffDriftedPostVerdict,
@@ -13,15 +23,56 @@ import {
   roomMatchesSubjectQuery,
   sortRoomsByStuckness,
   statusLabel,
-  statusPillClass,
   subjectLabel,
   timeUntilDeadline,
   verdictPillClass,
   type RoomStatusFilter,
 } from "./room-helpers";
-import type { RoomCoreWithId } from "./types";
+import type { RoomCoreWithId, RoomStatus } from "./types";
+
+// Map a room's lifecycle status onto the shared UI kit's semantic
+// tones so room pills read with the same dot+label vocabulary as the
+// Tasks screens. The label text itself still comes from
+// `statusLabel()` so the wording stays unchanged:
+//   awaiting_contributions → amber (waiting on contributions)
+//   deciding               → blue  (active synthesis in progress)
+//   closed                 → green (decided / terminal-clean)
+//   expired                → red   (timed out / terminal-error)
+function statusTone(status: RoomStatus): StatusTone {
+  switch (status) {
+    case "awaiting_contributions":
+      return "amber";
+    case "deciding":
+      return "blue";
+    case "closed":
+      return "green";
+    case "expired":
+      return "red";
+    default:
+      return "zinc";
+  }
+}
 
 const REFRESH_INTERVAL_MS = 30_000;
+
+// Inline chat-bubble glyph for the empty-state icon slot. Kept local
+// (the shared kit only ships a Spinner) and sized via `className`.
+function RoomIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 0 1-.9-3.8A8.38 8.38 0 0 1 12.5 3a8.38 8.38 0 0 1 8.5 8.5z" />
+    </svg>
+  );
+}
 
 type FetchState =
   | { status: "loading" }
@@ -113,25 +164,21 @@ export default function RoomsList() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-            War Rooms
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Active and past governance synthesis rooms for this installation.
-            Refreshes every 30 seconds.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setCreatorOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-honey-500/15 px-3 py-1.5 text-sm font-medium text-honey-300 ring-1 ring-honey-500/40 transition-colors hover:bg-honey-500/25"
-        >
-          <span aria-hidden="true">+</span>
-          <span>New war-room</span>
-        </button>
-      </header>
+      <PageHeader
+        title="War Rooms"
+        description="Active and past governance synthesis rooms for this installation. Refreshes every 30 seconds."
+        actions={
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={() => setCreatorOpen(true)}
+          >
+            <span aria-hidden="true">+</span>
+            <span>New war-room</span>
+          </Button>
+        }
+      />
 
       {creatorOpen && (
         <CreateRoomModal
@@ -158,41 +205,52 @@ export default function RoomsList() {
         </div>
       )}
 
-      {state.status === "loading" && (
-        <p className="text-sm text-zinc-500">Loading rooms…</p>
-      )}
+      {state.status === "loading" && <LoadingState label="Loading rooms…" />}
 
       {state.status === "error" && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
-          <p className="text-sm text-red-300">{state.message}</p>
-          <button
+        <ErrorBanner tone="red">
+          <p>{state.message}</p>
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={fetchRooms}
-            className="mt-2 text-xs text-red-300 underline hover:text-red-200"
+            className="mt-2"
           >
             Retry
-          </button>
-        </div>
+          </Button>
+        </ErrorBanner>
       )}
 
       {state.status === "ready" && state.rooms.length === 0 && (
-        <div className="rounded-lg border border-white/5 bg-zinc-900/50 p-6 text-center">
-          <p className="text-sm text-zinc-400">
-            No war rooms yet. Rooms appear when the bot creates one for a
-            PR review or @hivemoot mention.
-          </p>
-        </div>
+        <EmptyState
+          icon={<RoomIcon className="h-6 w-6" />}
+          title="No war rooms yet"
+          description="Rooms appear when the bot creates one for a PR review or @hivemoot mention."
+          action={
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={() => setCreatorOpen(true)}
+            >
+              <span aria-hidden="true">+</span>
+              <span>New war-room</span>
+            </Button>
+          }
+        />
       )}
 
       {state.status === "ready" &&
         state.rooms.length > 0 &&
         visibleRooms.length === 0 && (
-          <div className="rounded-lg border border-white/5 bg-zinc-900/50 p-6 text-center">
-            <p className="text-sm text-zinc-400">
-              No rooms match the current filter
-              {search.trim() !== "" && ` and search "${search.trim()}"`}.
-            </p>
-          </div>
+          <EmptyState
+            icon={<RoomIcon className="h-6 w-6" />}
+            title="No matching rooms"
+            description={`No rooms match the current filter${
+              search.trim() !== "" ? ` and search "${search.trim()}"` : ""
+            }.`}
+          />
         )}
 
       {state.status === "ready" && visibleRooms.length > 0 && (
@@ -200,11 +258,14 @@ export default function RoomsList() {
         // then terminal rooms by opened_at DESC. Per
         // WAR_ROOM_DESIGN.md L1247 — operators see rooms that
         // need attention without filtering. Closes #553 builder R1.
-        <ul className="divide-y divide-white/5 overflow-hidden rounded-lg border border-white/5 bg-zinc-900/50">
+        <Card
+          padding="none"
+          className="overflow-hidden divide-y divide-white/[0.06]"
+        >
           {visibleRooms.map((room) => (
             <RoomRow key={room.roomId} room={room} />
           ))}
-        </ul>
+        </Card>
       )}
     </div>
   );
@@ -339,18 +400,17 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
     room.timing_config,
   );
   return (
-    <li className={stuckHighlight}>
+    <div className={stuckHighlight}>
       <Link
         href={`/dashboard/rooms/${room.roomId}`}
         className="block px-4 py-3 transition-colors hover:bg-white/5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span
-              className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusPillClass(room.status)}`}
-            >
-              {statusLabel(room.status)}
-            </span>
+            <StatusBadge
+              tone={statusTone(room.status)}
+              label={statusLabel(room.status)}
+            />
             {verdict && (
               <span
                 className={`rounded-full px-2 py-0.5 text-xs font-medium ${verdictPillClass(verdict)}`}
@@ -395,7 +455,7 @@ function RoomRow({ room }: { room: RoomCoreWithId }) {
           </span>
         </div>
       </Link>
-    </li>
+    </div>
   );
 }
 
