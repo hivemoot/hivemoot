@@ -34,6 +34,7 @@ import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   listRooms,
   getRoomParticipants,
+  listRoomEvents,
   canRoleRsvpToRoom,
   seqKey,
   type RoomCoreWithId,
@@ -76,15 +77,16 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ rooms: [] }, { status: 200 });
   }
 
-  // Fan out per-room participants + currentSequence reads in
+  // Fan out per-room participants + currentSequence + event reads in
   // parallel. For typical fleet sizes (<20 open rooms) this is one
   // round-trip; the filter cuts almost all the data fetched on a
   // typical tick where the worker has nothing to do.
   const fanout = await Promise.all(
     openRooms.map(async (room) => {
-      const [participants, seqRaw] = await Promise.all([
+      const [participants, seqRaw, events] = await Promise.all([
         getRoomParticipants({ roomId: room.roomId, redis: auth.redis }),
         auth.redis.get<string | number>(seqKey(room.roomId)),
+        listRoomEvents({ roomId: room.roomId, redis: auth.redis, limit: 500 }),
       ]);
       const currentSequence =
         typeof seqRaw === "number"
@@ -92,17 +94,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           : typeof seqRaw === "string"
             ? Number.parseInt(seqRaw, 10)
             : 0;
-      return { room, participants, currentSequence };
+      return { room, participants, currentSequence, events };
     }),
   );
 
   const watching: WatchingRoom[] = [];
-  for (const { room, participants, currentSequence } of fanout) {
+  for (const { room, participants, currentSequence, events } of fanout) {
     if (
       canRoleRsvpToRoom({
         participants,
         bearerRole: auth.agent_role,
         currentSequence,
+        events,
       })
     ) {
       watching.push({ core: room, participants, currentSequence });

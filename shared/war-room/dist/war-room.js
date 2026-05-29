@@ -3255,7 +3255,13 @@ export function canRoleRsvpToRoom(args) {
             // Still in the contribution window — visible.
             return true;
         case "resolved":
-            // Already contributed — done, hide from watching.
+            if (resolvedContributionPredatesSubjectUpdate({
+                events: args.events ?? [],
+                role: args.bearerRole,
+            })) {
+                return true;
+            }
+            // Already contributed to the latest known subject — done, hide from watching.
             return false;
         case "timed_out":
             // Terminal for this role — watchdog already moved on.
@@ -3275,4 +3281,23 @@ export function canRoleRsvpToRoom(args) {
             // excluded the room, but belt + braces.
             return false;
     }
+}
+function resolvedContributionPredatesSubjectUpdate(args) {
+    let latestSubjectUpdateSeq = 0;
+    let latestContributionSeq = 0;
+    for (const event of args.events) {
+        if (event.event_type === "subject_updated") {
+            const changeKind = event.body?.change_kind;
+            if (changeKind === "synchronize") {
+                latestSubjectUpdateSeq = Math.max(latestSubjectUpdateSeq, event.seq);
+            }
+            continue;
+        }
+        if (event.event_type === "contribution_submitted"
+            && event.actor_role === args.role) {
+            latestContributionSeq = Math.max(latestContributionSeq, event.seq);
+        }
+    }
+    return (latestSubjectUpdateSeq > 0
+        && latestSubjectUpdateSeq > latestContributionSeq);
 }

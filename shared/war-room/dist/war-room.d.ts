@@ -2072,6 +2072,7 @@ export declare function canRoleRsvpToRoom(args: {
     participants: Record<string, RoomParticipant>;
     bearerRole: string;
     currentSequence: number;
+    events?: RoomEvent[];
 }): boolean;
 export {};
 //# sourceMappingURL=war-room.d.ts.map

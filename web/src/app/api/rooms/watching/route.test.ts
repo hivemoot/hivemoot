@@ -17,6 +17,7 @@ vi.mock("@hivemoot/war-room", async () => {
     ...real,
     listRooms: vi.fn(),
     getRoomParticipants: vi.fn(),
+    listRoomEvents: vi.fn(),
   };
 });
 
@@ -24,7 +25,9 @@ import { authenticateAgentRequestV1 } from "@/server/agent-token-v1-auth";
 import {
   listRooms,
   getRoomParticipants,
+  listRoomEvents,
   type RoomCoreWithId,
+  type RoomEvent,
   type RoomParticipant,
 } from "@hivemoot/war-room";
 import { GET } from "./route";
@@ -32,6 +35,7 @@ import { GET } from "./route";
 const mockedAuth = vi.mocked(authenticateAgentRequestV1);
 const mockedListRooms = vi.mocked(listRooms);
 const mockedGetParticipants = vi.mocked(getRoomParticipants);
+const mockedListEvents = vi.mocked(listRoomEvents);
 
 const RID_A = "01234567-89ab-4cde-9012-3456789abcde";
 const RID_B = "fedcba98-7654-4321-89ab-fedcba987654";
@@ -92,11 +96,38 @@ function participant(
   };
 }
 
+function contributionEvent(
+  role: string,
+  seq = 4,
+): RoomEvent {
+  return {
+    seq,
+    timestamp: "2026-04-28T07:00:00.000Z",
+    event_type: "contribution_submitted",
+    actor_role: role,
+    actor_id: `${role}-1`,
+    body: {},
+  };
+}
+
+function subjectUpdatedEvent(seq = 5): RoomEvent {
+  return {
+    seq,
+    timestamp: "2026-04-28T07:00:01.000Z",
+    event_type: "subject_updated",
+    actor_role: "local_queen",
+    actor_id: "queen-a",
+    body: { change_kind: "synchronize", head_sha: "head-b" },
+  };
+}
+
 describe("GET /api/rooms/watching", () => {
   beforeEach(() => {
     mockedAuth.mockReset();
     mockedListRooms.mockReset();
     mockedGetParticipants.mockReset();
+    mockedListEvents.mockReset();
+    mockedListEvents.mockResolvedValue([]);
   });
 
   it("requires rooms.watch capability", async () => {
@@ -120,6 +151,7 @@ describe("GET /api/rooms/watching", () => {
     expect((await res.json()).rooms).toEqual([]);
     // Closed room → never read participants
     expect(mockedGetParticipants).not.toHaveBeenCalled();
+    expect(mockedListEvents).not.toHaveBeenCalled();
   });
 
   it("excludes deciding rooms — workers shouldn't act on synthesis-in-progress", async () => {
@@ -129,6 +161,7 @@ describe("GET /api/rooms/watching", () => {
     const body = await res.json();
     expect(body.rooms).toEqual([]);
     expect(mockedGetParticipants).not.toHaveBeenCalled();
+    expect(mockedListEvents).not.toHaveBeenCalled();
   });
 
   it("includes awaiting_contributions room when role has no participant slot", async () => {
@@ -160,6 +193,38 @@ describe("GET /api/rooms/watching", () => {
       drone: participant("drone", "resolved"),
     });
     const res = await GET(makeRequest());
+    expect((await res.json()).rooms).toEqual([]);
+  });
+
+  it("INCLUDES resolved role when subject changed after its contribution", async () => {
+    mockedAuth.mockResolvedValue(makeWorkerAuth("drone"));
+    mockedListRooms.mockResolvedValue([room(RID_A, "awaiting_contributions")]);
+    mockedGetParticipants.mockResolvedValue({
+      drone: participant("drone", "resolved"),
+    });
+    mockedListEvents.mockResolvedValue([
+      contributionEvent("drone", 4),
+      subjectUpdatedEvent(5),
+    ]);
+
+    const res = await GET(makeRequest());
+
+    expect((await res.json()).rooms).toHaveLength(1);
+  });
+
+  it("EXCLUDES resolved role when it contributed after latest subject change", async () => {
+    mockedAuth.mockResolvedValue(makeWorkerAuth("drone"));
+    mockedListRooms.mockResolvedValue([room(RID_A, "awaiting_contributions")]);
+    mockedGetParticipants.mockResolvedValue({
+      drone: participant("drone", "resolved"),
+    });
+    mockedListEvents.mockResolvedValue([
+      subjectUpdatedEvent(4),
+      contributionEvent("drone", 5),
+    ]);
+
+    const res = await GET(makeRequest());
+
     expect((await res.json()).rooms).toEqual([]);
   });
 
