@@ -111,6 +111,10 @@ jobs:
         run: python3 cli/tests/test_hivemoot_health_api.py
       - name: Verify hivemoot health heartbeat trigger
         run: python3 cli/tests/test_hivemoot_health_trigger.py
+      - name: Verify hivemoot queen synthesis trigger (eligibility gate + claim race)
+        run: python3 cli/tests/test_hivemoot_queen_trigger.py
+      - name: Verify hivemoot queen trigger wiring (squash-merge flag plumbing)
+        run: python3 cli/tests/test_hivemoot_queen_wiring.py
       - name: Verify dual-source plugin discovery (builtin + external)
         run: python3 cli/tests/test_plugin_discovery.py
       - name: Verify messaging inbound media handling
