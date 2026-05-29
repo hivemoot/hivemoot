@@ -71,6 +71,7 @@ def _room_summary(
     room_id: str = "room-1",
     status: str = "awaiting_contributions",
     subject_ref: str = "owner/repo#42",
+    opened_at: str = "2026-05-15T00:00:00Z",
     closed_at: str = "",
 ) -> RoomSummary:
     return RoomSummary(
@@ -79,7 +80,7 @@ def _room_summary(
         subject_type="pr_review",
         subject_ref=subject_ref,
         manager="queen-a",
-        opened_at="2026-05-15T00:00:00Z",
+        opened_at=opened_at,
         timing_config={"quiet_period_secs": 180},
         closed_at=closed_at,
     )
@@ -455,6 +456,131 @@ class LocalQueenTriggerTests(unittest.TestCase):
             ),
         )
 
+    def test_pr_discovery_emits_head_update_from_room_event_after_restart(
+        self,
+    ) -> None:
+        append_update = MagicMock(return_value=3)
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            watched_repos=["owner/repo"],
+            list_rooms_fn=MagicMock(return_value=[_room_summary()]),
+            events_fn=MagicMock(
+                return_value=[
+                    {
+                        "seq": 2,
+                        "event_type": "subject_updated",
+                        "body": {
+                            "change_kind": "synchronize",
+                            "head_sha": "old-head",
+                        },
+                    },
+                ],
+            ),
+            append_subject_updated_fn=append_update,
+            list_pull_requests_fn=MagicMock(
+                return_value=[_pr_snapshot(head_sha="new-head")]
+            ),
+            list_ready_fn=MagicMock(return_value=[]),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(MagicMock())
+
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "room-1",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="new-head",
+            idempotency_key=(
+                "local-queen.subject_updated.room-1.synchronize.new-head"
+            ),
+        )
+
+    def test_pr_discovery_emits_head_update_for_existing_room_without_head(
+        self,
+    ) -> None:
+        append_update = MagicMock(return_value=3)
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            watched_repos=["owner/repo"],
+            list_rooms_fn=MagicMock(return_value=[_room_summary()]),
+            events_fn=MagicMock(return_value=[]),
+            append_subject_updated_fn=append_update,
+            list_pull_requests_fn=MagicMock(
+                return_value=[_pr_snapshot(head_sha="current-head")]
+            ),
+            list_ready_fn=MagicMock(return_value=[]),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(MagicMock())
+
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "room-1",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="current-head",
+            idempotency_key=(
+                "local-queen.subject_updated.room-1.synchronize.current-head"
+            ),
+        )
+
+    def test_pr_discovery_prefers_active_room_for_duplicate_subject(self) -> None:
+        append_update = MagicMock(return_value=3)
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            watched_repos=["owner/repo"],
+            list_rooms_fn=MagicMock(
+                return_value=[
+                    _room_summary(
+                        room_id="new-active",
+                        status="awaiting_contributions",
+                        opened_at="2026-05-15T00:02:00Z",
+                    ),
+                    _room_summary(
+                        room_id="old-closed",
+                        status="closed",
+                        opened_at="2026-05-15T00:00:00Z",
+                        closed_at="2026-05-15T00:01:00Z",
+                    ),
+                ],
+            ),
+            append_subject_updated_fn=append_update,
+            list_pull_requests_fn=MagicMock(
+                return_value=[_pr_snapshot(head_sha="new-head")]
+            ),
+            list_ready_fn=MagicMock(return_value=[]),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+        trigger._known_pr_heads["owner/repo#42"] = "old-head"
+
+        trigger._tick(MagicMock())
+
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "new-active",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="new-head",
+            idempotency_key=(
+                "local-queen.subject_updated.new-active.synchronize.new-head"
+            ),
+        )
+
     def test_pr_discovery_emits_closed_update_for_known_open_pr(self) -> None:
         append_update = MagicMock(return_value=4)
         list_pull_requests = MagicMock(
@@ -474,6 +600,41 @@ class LocalQueenTriggerTests(unittest.TestCase):
             now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
         )
         trigger._known_pr_states["owner/repo#42"] = "open"
+
+        trigger._tick(MagicMock())
+
+        self.assertEqual(list_pull_requests.call_args_list[0].kwargs["state"], "open")
+        self.assertEqual(list_pull_requests.call_args_list[1].kwargs["state"], "closed")
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "room-1",
+            "bearer",
+            change_kind="closed",
+            head_sha=None,
+            idempotency_key="local-queen.subject_updated.room-1.closed.no-sha",
+        )
+        self.assertEqual(trigger._known_pr_states["owner/repo#42"], "closed")
+
+    def test_pr_discovery_emits_closed_update_for_active_room_after_restart(
+        self,
+    ) -> None:
+        append_update = MagicMock(return_value=4)
+        list_pull_requests = MagicMock(
+            side_effect=[[], [_pr_snapshot(state="closed", head_sha="old-head")]]
+        )
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            watched_repos=["owner/repo"],
+            list_rooms_fn=MagicMock(return_value=[_room_summary()]),
+            append_subject_updated_fn=append_update,
+            list_pull_requests_fn=list_pull_requests,
+            list_ready_fn=MagicMock(return_value=[]),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
 
         trigger._tick(MagicMock())
 

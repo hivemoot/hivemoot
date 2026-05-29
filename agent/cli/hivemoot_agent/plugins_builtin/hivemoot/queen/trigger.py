@@ -367,11 +367,7 @@ class LocalQueenSynthesisTrigger:
             bearer,
             limit=self._pr_discovery_room_limit,
         )
-        rooms_by_subject = {
-            room.subject_ref: room
-            for room in rooms
-            if room.subject_type == "pr_review" and room.subject_ref
-        }
+        rooms_by_subject = self._index_pr_rooms_by_subject(rooms)
 
         created_count = 0
         updated_count = 0
@@ -391,7 +387,10 @@ class LocalQueenSynthesisTrigger:
                     state="open",
                     timeout_secs=self._gh_timeout_secs,
                 )
-                if self._has_known_open_prs(repo):
+                if (
+                    self._has_known_open_prs(repo)
+                    or self._has_active_pr_room(repo, rooms_by_subject)
+                ):
                     prs = [
                         *prs,
                         *self._list_pull_requests(
@@ -490,7 +489,13 @@ class LocalQueenSynthesisTrigger:
                             updated_count += 1
                     continue
 
-                if room is not None and self._known_pr_states.get(subject_ref) == "open":
+                if (
+                    room is not None
+                    and (
+                        self._known_pr_states.get(subject_ref) == "open"
+                        or self._room_is_active(room)
+                    )
+                ):
                     emitted_closed = self._maybe_emit_closed_update(
                         bearer=bearer,
                         room=room,
@@ -509,6 +514,42 @@ class LocalQueenSynthesisTrigger:
                 file=sys.stderr,
                 flush=True,
             )
+
+    def _index_pr_rooms_by_subject(
+        self,
+        rooms: list[q_api.RoomSummary],
+    ) -> dict[str, q_api.RoomSummary]:
+        rooms_by_subject: dict[str, q_api.RoomSummary] = {}
+        for room in rooms:
+            if room.subject_type != "pr_review" or not room.subject_ref:
+                continue
+            current = rooms_by_subject.get(room.subject_ref)
+            if current is None or self._prefer_room(room, current):
+                rooms_by_subject[room.subject_ref] = room
+        return rooms_by_subject
+
+    def _prefer_room(
+        self,
+        candidate: q_api.RoomSummary,
+        current: q_api.RoomSummary,
+    ) -> bool:
+        candidate_active = self._room_is_active(candidate)
+        current_active = self._room_is_active(current)
+        if candidate_active != current_active:
+            return candidate_active
+        return self._room_sort_time(candidate) >= self._room_sort_time(current)
+
+    @staticmethod
+    def _room_is_active(room: q_api.RoomSummary) -> bool:
+        return room.status not in {"closed", "expired"}
+
+    @staticmethod
+    def _room_sort_time(room: q_api.RoomSummary) -> datetime:
+        return (
+            _parse_iso(room.closed_at)
+            or _parse_iso(room.opened_at)
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
 
     def _room_blocks_create(
         self,
@@ -537,8 +578,23 @@ class LocalQueenSynthesisTrigger:
     ) -> bool:
         previous_head = self._known_pr_heads.get(subject_ref)
         if previous_head is None:
-            self._known_pr_heads[subject_ref] = head_sha
-            return False
+            previous_head = self._latest_recorded_room_head(
+                bearer=bearer,
+                room=room,
+                subject_ref=subject_ref,
+            )
+            if previous_head is None:
+                emitted = self._emit_subject_updated(
+                    bearer=bearer,
+                    room=room,
+                    subject_ref=subject_ref,
+                    change_kind="synchronize",
+                    head_sha=head_sha,
+                )
+                if emitted:
+                    self._known_pr_heads[subject_ref] = head_sha
+                return emitted
+            self._known_pr_heads[subject_ref] = previous_head
         if previous_head == head_sha:
             return False
         emitted = self._emit_subject_updated(
@@ -551,6 +607,43 @@ class LocalQueenSynthesisTrigger:
         if emitted:
             self._known_pr_heads[subject_ref] = head_sha
         return emitted
+
+    def _latest_recorded_room_head(
+        self,
+        *,
+        bearer: str,
+        room: q_api.RoomSummary,
+        subject_ref: str,
+    ) -> str | None:
+        try:
+            events = self._events(
+                self._base_url,
+                room.room_id,
+                bearer,
+                limit=500,
+            )
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} room-event scan failed "
+                f"subject={subject_ref}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+
+        latest_head: str | None = None
+        for event in sorted(events, key=_event_sort_key):
+            if event.get("event_type") != "subject_updated":
+                continue
+            body = event.get("body")
+            if not isinstance(body, dict):
+                continue
+            if body.get("change_kind") != "synchronize":
+                continue
+            head_sha = str(body.get("head_sha") or "").strip()
+            if head_sha:
+                latest_head = head_sha
+        return latest_head
 
     def _maybe_emit_closed_update(
         self,
@@ -615,6 +708,17 @@ class LocalQueenSynthesisTrigger:
         return any(
             subject_ref.startswith(prefix) and state == "open"
             for subject_ref, state in self._known_pr_states.items()
+        )
+
+    def _has_active_pr_room(
+        self,
+        repo: str,
+        rooms_by_subject: dict[str, q_api.RoomSummary],
+    ) -> bool:
+        prefix = f"{repo}#"
+        return any(
+            subject_ref.startswith(prefix) and self._room_is_active(room)
+            for subject_ref, room in rooms_by_subject.items()
         )
 
     def _confirm_pending_merge(self, bearer: str) -> bool:
@@ -1007,3 +1111,20 @@ def _parse_iso(value: str) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+def _event_sort_key(event: dict[str, Any]) -> tuple[int, str]:
+    seq = event.get("seq", event.get("sequence", 0))
+    if isinstance(seq, bool):
+        seq_value = 0
+    elif isinstance(seq, int):
+        seq_value = seq
+    elif isinstance(seq, str):
+        try:
+            seq_value = int(seq)
+        except ValueError:
+            seq_value = 0
+    else:
+        seq_value = 0
+    timestamp = str(event.get("timestamp") or "")
+    return (seq_value, timestamp)
