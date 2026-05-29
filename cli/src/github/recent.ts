@@ -1,6 +1,7 @@
 import type { RepoRef } from "../config/types.js";
 import { CliError, type RecentClosedItem } from "../config/types.js";
 import { gh } from "./client.js";
+import { hasGovernanceLabel } from "../summary/utils.js";
 
 interface RawIssue {
   number: number;
@@ -30,13 +31,6 @@ function parseArray<T>(json: string, parseError: string, formatError: string): T
     throw new CliError(formatError, "GH_ERROR", 1);
   }
   return parsed as T[];
-}
-
-function isRejected(labels: Array<{ name: string }>): boolean {
-  return labels.some((label) => {
-    const normalized = label.name.toLowerCase();
-    return normalized === "rejected" || normalized === "hivemoot:rejected";
-  });
 }
 
 export async function fetchRecentClosedByAuthor(
@@ -104,7 +98,7 @@ export async function fetchRecentClosedByAuthor(
       title: issue.title,
       url: issue.url,
       itemType: "issue" as const,
-      outcome: isRejected(issue.labels) ? "rejected" : "closed",
+      outcome: hasGovernanceLabel(issue.labels, "REJECTED") ? "rejected" : "closed",
       closedAt: issue.closedAt,
     }));
 
@@ -115,7 +109,7 @@ export async function fetchRecentClosedByAuthor(
       title: pr.title,
       url: pr.url,
       itemType: "pr" as const,
-      outcome: pr.mergedAt ? "merged" : isRejected(pr.labels) ? "rejected" : "closed",
+      outcome: pr.mergedAt ? "merged" : hasGovernanceLabel(pr.labels, "REJECTED") ? "rejected" : "closed",
       closedAt: pr.closedAt,
     }));
 
