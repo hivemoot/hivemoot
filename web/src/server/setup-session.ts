@@ -161,3 +161,14 @@ export async function getSetupSession(
     iat: data.iat ?? 0,
   };
 }
+
+/**
+ * Revoke a setup session server-side so the token cannot be reused after
+ * sign-out. Idempotent — deleting an already-absent key is a no-op.
+ */
+export async function deleteSetupSession(
+  token: string,
+  redis: Redis,
+): Promise<void> {
+  await redis.del(`${SESSION_KEY_PREFIX}${token}`);
+}
