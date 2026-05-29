@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  Card,
+  ErrorBanner,
+  LoadingState,
+  SectionHeader,
+  StatusBadge,
+  type StatusTone,
+} from "@/app/dashboard/ui";
 import { MarkdownContent } from "../../MarkdownContent";
 import {
   heartbeatFreshnessDotClass,
@@ -10,7 +18,6 @@ import {
   participantStatusCounts,
   relativeTime,
   statusLabel,
-  statusPillClass,
   subjectGithubUrl,
   subjectLabel,
 } from "../room-helpers";
@@ -19,7 +26,29 @@ import type {
   RoomDetailResponse,
   RoomEvent,
   RoomParticipant,
+  RoomStatus,
 } from "../types";
+
+/**
+ * Map a room status to a shared-kit StatusBadge tone. Mirrors the
+ * dashboard's color vocabulary (was `statusPillClass`): honey while
+ * awaiting contributions, blue while synthesizing, green when closed,
+ * red when expired. Unknown statuses fall back to a neutral zinc.
+ */
+function statusTone(status: RoomStatus): StatusTone {
+  switch (status) {
+    case "awaiting_contributions":
+      return "honey";
+    case "deciding":
+      return "blue";
+    case "closed":
+      return "green";
+    case "expired":
+      return "red";
+    default:
+      return "zinc";
+  }
+}
 
 const REFRESH_INTERVAL_MS = 30_000;
 
@@ -79,12 +108,10 @@ export default function RoomDetail({ roomId }: { roomId: string }) {
         </Link>
       </nav>
 
-      {state.status === "loading" && (
-        <p className="text-sm text-zinc-500">Loading room…</p>
-      )}
+      {state.status === "loading" && <LoadingState label="Loading room…" />}
 
       {state.status === "not_found" && (
-        <div className="rounded-lg border border-white/5 bg-zinc-900/50 p-6">
+        <Card padding="md">
           <p className="text-sm text-zinc-300">
             Room <span className="font-mono">{roomId}</span> not found.
           </p>
@@ -92,20 +119,20 @@ export default function RoomDetail({ roomId }: { roomId: string }) {
             It may have expired (30-day retention after close), or it
             belongs to a different installation.
           </p>
-        </div>
+        </Card>
       )}
 
       {state.status === "error" && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
-          <p className="text-sm text-red-300">{state.message}</p>
+        <ErrorBanner tone="red">
+          <p>{state.message}</p>
           <button
             type="button"
             onClick={fetchDetail}
-            className="mt-2 text-xs text-red-300 underline hover:text-red-200"
+            className="mt-2 text-xs underline hover:text-red-300"
           >
             Retry
           </button>
-        </div>
+        </ErrorBanner>
       )}
 
       {state.status === "ready" && (
@@ -130,16 +157,15 @@ function RoomDetailContent({
     <>
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <span
-            className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusPillClass(core.status)}`}
-          >
-            {statusLabel(core.status)}
-          </span>
+          <StatusBadge
+            tone={statusTone(core.status)}
+            label={statusLabel(core.status)}
+          />
           <span className="text-xs uppercase tracking-wide text-zinc-500">
             {subjectLabel(core.subject_type)}
           </span>
         </div>
-        <h1 className="text-xl font-semibold text-zinc-100">
+        <h1 className="text-xl font-semibold text-[#fafafa]">
           {githubUrl ? (
             <a
               href={githubUrl}
@@ -178,13 +204,15 @@ function RoomDetailContent({
       </header>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-300">
-          Participants ({partCounts.total})
-        </h2>
+        <SectionHeader
+          title={`Participants (${partCounts.total})`}
+          className="mb-2"
+        />
         {partCounts.total === 0 ? (
-          <p className="text-sm text-zinc-500">
-            No participants have RSVP&apos;d yet.
-          </p>
+          <SubsectionEmpty
+            icon={<ParticipantsIcon />}
+            label="No participants have RSVP'd yet."
+          />
         ) : (
           <p className="mb-3 text-xs text-zinc-500">
             {partCounts.resolved} resolved · {partCounts.pending} pending ·{" "}
@@ -195,11 +223,15 @@ function RoomDetailContent({
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-300">
-          Contributions ({Object.keys(contributions).length})
-        </h2>
+        <SectionHeader
+          title={`Contributions (${Object.keys(contributions).length})`}
+          className="mb-2"
+        />
         {Object.keys(contributions).length === 0 ? (
-          <p className="text-sm text-zinc-500">No contributions submitted.</p>
+          <SubsectionEmpty
+            icon={<ContributionsIcon />}
+            label="No contributions submitted."
+          />
         ) : (
           <ContributionsList contributions={contributions} />
         )}
@@ -207,17 +239,18 @@ function RoomDetailContent({
 
       {core.decision && (
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-zinc-300">Decision</h2>
+          <SectionHeader title="Decision" className="mb-2" />
           <DecisionBlock decision={core.decision} />
         </section>
       )}
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-zinc-300">
-          Recent events ({events.length})
-        </h2>
+        <SectionHeader
+          title={`Recent events (${events.length})`}
+          className="mb-2"
+        />
         {events.length === 0 ? (
-          <p className="text-sm text-zinc-500">No events yet.</p>
+          <SubsectionEmpty icon={<EventsIcon />} label="No events yet." />
         ) : (
           <EventsList events={events} />
         )}
@@ -325,7 +358,7 @@ function ContributionsList({
               >
                 {initial}
               </div>
-              <div className="min-w-0 flex-1 rounded-2xl border border-white/5 bg-zinc-900/60 px-4 py-3">
+              <Card padding="none" className="min-w-0 flex-1 px-4 py-3">
                 {/* Header: role · verdict · timestamp. Time pushed
                     to the right via ml-auto so the visual rhythm
                     is consistent with chat clients (sender top-left,
@@ -368,7 +401,7 @@ function ContributionsList({
                     )}
                   </>
                 )}
-              </div>
+              </Card>
             </li>
           );
         })}
@@ -382,10 +415,13 @@ function DecisionBlock({
   decision: NonNullable<RoomDetailResponse["core"]["decision"]>;
 }) {
   return (
-    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3">
+    // Card with a green accent override — the decision block is
+    // semantically "decided", so it keeps a green-tinted border/bg
+    // (kit's green tone) instead of the neutral panel surface.
+    <Card padding="none" className="border-green-500/20 bg-green-500/[0.04] px-4 py-3">
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
         <span>
-          <span className="text-emerald-400">●</span> synthesized{" "}
+          <span className="text-green-400">●</span> synthesized{" "}
           {relativeTime(decision.synthesized_at)}
         </span>
         <span>·</span>
@@ -394,7 +430,7 @@ function DecisionBlock({
         <span>through seq {decision.sequence_closed}</span>
       </div>
       <MarkdownContent>{decision.content}</MarkdownContent>
-    </div>
+    </Card>
   );
 }
 
@@ -402,23 +438,104 @@ function EventsList({ events }: { events: RoomEvent[] }) {
   return (
     <ol className="space-y-1 text-xs">
       {events.map((e) => (
-        <li
-          key={e.seq}
-          className="flex items-baseline gap-3 rounded border border-white/5 bg-zinc-900/30 px-2 py-1"
-        >
-          <span className="font-mono text-zinc-600">#{e.seq}</span>
-          <span className="font-medium text-zinc-300">{e.event_type}</span>
-          <span className="text-zinc-500">
-            by{" "}
-            <span className="font-mono">
-              {e.actor_role}/{e.actor_id}
+        <li key={e.seq}>
+          <Card
+            padding="none"
+            className="flex items-baseline gap-3 px-2 py-1"
+          >
+            <span className="font-mono text-zinc-600">#{e.seq}</span>
+            <span className="font-medium text-zinc-300">{e.event_type}</span>
+            <span className="text-zinc-500">
+              by{" "}
+              <span className="font-mono">
+                {e.actor_role}/{e.actor_id}
+              </span>
             </span>
-          </span>
-          <span className="ml-auto text-zinc-600">
-            {relativeTime(e.timestamp)}
-          </span>
+            <span className="ml-auto text-zinc-600">
+              {relativeTime(e.timestamp)}
+            </span>
+          </Card>
         </li>
       ))}
     </ol>
+  );
+}
+
+/**
+ * Lighter inline empty-state for the room's subsections. A full
+ * EmptyState Card (centered, py-14) is too heavy stacked three times
+ * inside this single page, so each subsection gets a compact muted
+ * icon + label instead. Kept consistent across Participants /
+ * Contributions / Events.
+ */
+function SubsectionEmpty({
+  icon,
+  label,
+}: {
+  icon: ReactNode;
+  label: string;
+}) {
+  return (
+    <p className="flex items-center gap-2 text-sm text-zinc-500">
+      <span className="text-zinc-600">{icon}</span>
+      {label}
+    </p>
+  );
+}
+
+function ParticipantsIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="6" cy="5" r="2.5" />
+      <path d="M1.5 13.5a4.5 4.5 0 0 1 9 0" />
+      <path d="M11 3.2a2.5 2.5 0 0 1 0 4.6" />
+      <path d="M12.5 13.5a4.5 4.5 0 0 0-2.2-3.8" />
+    </svg>
+  );
+}
+
+function ContributionsIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 3.5h11v8h-7l-3 2.5z" />
+      <path d="M5 6.5h6" />
+      <path d="M5 8.8h4" />
+    </svg>
+  );
+}
+
+function EventsIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5V8l2.2 2.2" />
+    </svg>
   );
 }

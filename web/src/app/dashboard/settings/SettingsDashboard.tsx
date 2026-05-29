@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { Button, Card, ErrorBanner, LoadingState, PageHeader } from "@/app/dashboard/ui";
+
 type QueenMode = "cloud" | "local";
 
 interface QueenSettings {
@@ -141,28 +143,26 @@ export default function SettingsDashboard() {
   );
 
   if (load.kind === "loading") {
-    return (
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-8 text-center">
-        <p className="text-sm text-zinc-400">Loading settings…</p>
-      </div>
-    );
+    return <LoadingState label="Loading settings…" />;
   }
 
   if (load.kind === "error") {
     return (
-      <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-8">
-        <h2 className="mb-2 text-lg font-semibold text-rose-300">
+      <Card padding="lg">
+        <h2 className="mb-2 text-lg font-semibold text-red-400">
           Couldn&apos;t load settings
         </h2>
-        <p className="text-sm text-zinc-400">{load.message}</p>
-        <button
+        <ErrorBanner tone="red">{load.message}</ErrorBanner>
+        <Button
+          variant="secondary"
+          size="sm"
           type="button"
           onClick={() => void fetchSettings()}
-          className="mt-4 inline-flex items-center gap-2 rounded-md bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700"
+          className="mt-4"
         >
           Retry
-        </button>
-      </div>
+        </Button>
+      </Card>
     );
   }
 
@@ -175,20 +175,20 @@ export default function SettingsDashboard() {
 
   return (
     <>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight text-[#fafafa]">
-          Settings
-        </h1>
-        <p className="mt-2 text-sm text-zinc-400">
-          Per-installation configuration. See also{" "}
-          <Link href="/dashboard/settings/byok" className="text-honey-400 hover:underline">
-            BYOK credentials
-          </Link>
-          .
-        </p>
-      </div>
+      <PageHeader
+        title="Settings"
+        description={
+          <>
+            Per-installation configuration. See also{" "}
+            <Link href="/dashboard/settings/byok" className="text-honey-400 hover:underline">
+              BYOK credentials
+            </Link>
+            .
+          </>
+        }
+      />
 
-      <section className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900 p-6">
+      <Card padding="lg" className="mb-8">
         <h2 className="text-lg font-semibold text-[#fafafa]">Queen execution mode</h2>
         <p className="mt-1 text-sm text-zinc-400">
           Where war-room synthesis runs for installation{" "}
@@ -238,39 +238,39 @@ export default function SettingsDashboard() {
         </details>
 
         <div className="mt-6 flex items-center gap-3">
-          <button
+          <Button
+            variant="primary"
             type="button"
             disabled={!dirty || save.kind === "saving"}
             onClick={() => {
               if (modeChanged) setConfirmFlip(draftMode);
               else void handleSave();
             }}
-            className="inline-flex items-center gap-2 rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] transition-colors hover:bg-honey-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
           >
             {save.kind === "saving" ? "Saving…" : "Save"}
-          </button>
+          </Button>
           {dirty && save.kind !== "saving" && (
-            <button
+            <Button
+              variant="secondary"
               type="button"
               onClick={() => {
                 setDraftMode(settings.queen_mode);
                 setDraftOverride(settings.queen_prompt_override ?? "");
                 setSave({ kind: "idle" });
               }}
-              className="text-sm text-zinc-400 hover:text-zinc-200"
             >
               Cancel
-            </button>
+            </Button>
           )}
           {save.kind === "error" && (
-            <p className="text-sm text-rose-300">{save.message}</p>
+            <p className="text-sm text-red-400">{save.message}</p>
           )}
         </div>
 
         {save.kind === "blocked" && (
           <BlockedRoomsBanner blocked={save.blocked} />
         )}
-      </section>
+      </Card>
 
       {confirmFlip !== null && (
         <FlipConfirmModal
@@ -417,30 +417,30 @@ function FlipConfirmModal({
       aria-modal="true"
       aria-labelledby="flip-modal-title"
     >
-      <div className="w-full max-w-lg rounded-lg border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
+      <Card padding="lg" className="w-full max-w-lg shadow-2xl">
         <h3 id="flip-modal-title" className="text-lg font-semibold text-[#fafafa]">
           Confirm mode flip: {currentMode} → {targetMode}
         </h3>
         <p className="mt-3 text-sm text-zinc-300">{message}</p>
         <div className="mt-6 flex justify-end gap-3">
-          <button
+          <Button
+            variant="secondary"
             type="button"
             onClick={onCancel}
-            className="rounded-md px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
             disabled={saving}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
             type="button"
             onClick={onConfirm}
             disabled={saving}
-            className="rounded-md bg-honey-500 px-4 py-2 text-sm font-semibold text-[#111114] hover:bg-honey-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? "Flipping…" : "Confirm flip"}
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

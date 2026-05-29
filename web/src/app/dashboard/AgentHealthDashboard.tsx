@@ -10,6 +10,13 @@ import {
   type GroupStatus,
 } from "./agent-health-grouping";
 import { MarkdownContent } from "./MarkdownContent";
+import {
+  EmptyState,
+  ErrorBanner,
+  LoadingState,
+  StatusBadge,
+  type StatusTone,
+} from "@/app/dashboard/ui";
 
 // ---------------------------------------------------------------------------
 // Types (matches server-side HealthOverviewEntry and HealthReport)
@@ -132,6 +139,19 @@ function statusLabel(status: GroupStatus): string {
       return "Late";
     case "unknown":
       return "Unknown";
+  }
+}
+
+function statusTone(status: GroupStatus): StatusTone {
+  switch (status) {
+    case "ok":
+      return "green";
+    case "failed":
+      return "red";
+    case "late":
+      return "amber";
+    case "unknown":
+      return "zinc";
   }
 }
 
@@ -468,9 +488,7 @@ export default function AgentHealthDashboard() {
         {historyLoading ? (
           <p className="text-sm text-zinc-500">Loading history…</p>
         ) : historyError ? (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4">
-            <p className="text-sm text-red-400">{historyError}</p>
-          </div>
+          <ErrorBanner tone="red">{historyError}</ErrorBanner>
         ) : history.length === 0 ? (
           <p className="text-sm text-zinc-500">No run history available.</p>
         ) : (
@@ -562,36 +580,20 @@ export default function AgentHealthDashboard() {
   // -------------------------------------------------------------------------
 
   if (loading) {
-    return (
-      <div className="flex items-center gap-3 text-sm text-zinc-500">
-        <PulseIcon className="h-4 w-4 animate-pulse" />
-        Loading agent status…
-      </div>
-    );
+    return <LoadingState label="Loading agent status…" />;
   }
 
   if (error) {
-    return (
-      <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-6">
-        <p className="text-sm text-red-400">{error}</p>
-      </div>
-    );
+    return <ErrorBanner tone="red">{error}</ErrorBanner>;
   }
 
   if (agents.length === 0) {
     return (
-      <div className="rounded-xl border border-white/[0.06] bg-[#141414] p-8 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-honey-500/10">
-          <PulseIcon className="h-5 w-5 text-honey-500" />
-        </div>
-        <h3 className="mt-4 text-sm font-semibold text-[#fafafa]">
-          No agents reporting
-        </h3>
-        <p className="mt-2 text-sm text-zinc-400">
-          Once your agents start sending health reports, they&apos;ll appear
-          here.
-        </p>
-      </div>
+      <EmptyState
+        icon={<PulseIcon className="h-5 w-5" />}
+        title="No agents reporting"
+        description="Once your agents start sending health reports, they'll appear here."
+      />
     );
   }
 
@@ -639,17 +641,11 @@ export default function AgentHealthDashboard() {
                   if (count === 0) return null;
 
                   return (
-                    <span
+                    <StatusBadge
                       key={status}
-                      className="inline-flex items-center gap-1.5 text-xs text-zinc-300"
-                    >
-                      <span
-                        className={`inline-block h-2 w-2 rounded-full ${
-                          GROUP_STATUS_META[status].colorClass
-                        }`}
-                      />
-                      {count} {GROUP_STATUS_META[status].label}
-                    </span>
+                      tone={statusTone(status)}
+                      label={`${count} ${GROUP_STATUS_META[status].label}`}
+                    />
                   );
                 })}
               </div>
@@ -663,7 +659,7 @@ export default function AgentHealthDashboard() {
                   <button
                     key={`${group.name}:${agent.agent_id}:${agent.repo}`}
                     onClick={() => viewHistory(agent.agent_id, agent.repo)}
-                    className="group rounded-xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
+                    className="group rounded-2xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5">
