@@ -1140,14 +1140,24 @@ class LocalQueenSynthesisTrigger:
         events: list[dict[str, Any]],
     ) -> tuple[bool, str | None]:
         latest_head_seq = 0
+        latest_subject_update_seq = 0
+        latest_subject_update_kind = ""
         for event in events:
             if event.get("event_type") != "subject_updated":
                 continue
             body = event.get("body")
             if not isinstance(body, dict):
                 continue
-            if body.get("change_kind") == "synchronize":
-                latest_head_seq = max(latest_head_seq, _event_seq(event))
+            change_kind = str(body.get("change_kind") or "")
+            event_seq = _event_seq(event)
+            if event_seq >= latest_subject_update_seq:
+                latest_subject_update_seq = event_seq
+                latest_subject_update_kind = change_kind
+            if change_kind == "synchronize":
+                latest_head_seq = max(latest_head_seq, event_seq)
+
+        if latest_subject_update_kind == "closed":
+            return False, "PR is closed"
 
         if latest_head_seq <= 0:
             return False, "no recorded PR head"
