@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type Redis } from "@upstash/redis";
 import {
+  addTaskArtifacts,
   addUserMessage,
   appendTaskMessage,
   checkTaskCreateRateLimit,
@@ -10,6 +11,7 @@ import {
   DEFAULT_TASK_TIMEOUT_SECONDS,
   deleteTask,
   getTaskMessages,
+  MAX_ARTIFACTS_PER_TASK,
   MAX_CONCURRENT_TASKS,
   heartbeatTask,
   markTaskRunning,
@@ -23,6 +25,7 @@ import {
   listRecentTasks,
   TASK_CREATE_RATE_LIMIT_PER_MINUTE,
   validateCreateTaskRequest,
+  validateTaskArtifacts,
   COMPLETED_TASK_TTL_SECONDS,
   FAILED_TASK_TTL_SECONDS,
 } from "./task-store";
@@ -1906,5 +1909,222 @@ describe("addUserMessage", () => {
     const userMsg = messages[messages.length - 2];
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Do more");
+  });
+});
+
+describe("validateTaskArtifacts", () => {
+  const PR = "https://github.com/hivemoot/hivemoot/pull/312";
+  const ISSUE = "https://github.com/hivemoot/hivemoot/issues/45";
+  const COMMENT = "https://github.com/hivemoot/hivemoot/issues/45#issuecomment-987";
+  const COMMIT = "https://github.com/hivemoot/hivemoot/commit/a1b2c3d4e5f6a7b8";
+
+  it("accepts each artifact type and derives the number from the url", () => {
+    const result = validateTaskArtifacts([
+      { type: "pull_request", url: PR },
+      { type: "issue", url: ISSUE },
+      { type: "issue_comment", url: COMMENT },
+      { type: "commit", url: COMMIT },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts[0]).toEqual({ type: "pull_request", url: PR, number: 312 });
+    expect(result.artifacts[1].number).toBe(45);
+    expect(result.artifacts[2].number).toBe(45);
+    expect(result.artifacts[3].number).toBeUndefined();
+  });
+
+  it("rejects a non-array, empty array, and over-limit batch", () => {
+    expect(validateTaskArtifacts({}).ok).toBe(false);
+    expect(validateTaskArtifacts([]).ok).toBe(false);
+    const tooMany = Array.from({ length: MAX_ARTIFACTS_PER_TASK + 1 }, (_, i) => ({
+      type: "issue" as const,
+      url: `https://github.com/hivemoot/hivemoot/issues/${i + 1}`,
+    }));
+    expect(validateTaskArtifacts(tooMany).ok).toBe(false);
+  });
+
+  it("rejects non-github hosts and dangerous schemes", () => {
+    expect(validateTaskArtifacts([{ type: "pull_request", url: "https://evil.example/hivemoot/hivemoot/pull/1" }]).ok).toBe(false);
+    expect(validateTaskArtifacts([{ type: "pull_request", url: "https://github.com.attacker.test/a/b/pull/1" }]).ok).toBe(false);
+    expect(validateTaskArtifacts([{ type: "pull_request", url: "http://github.com/a/b/pull/1" }]).ok).toBe(false);
+    expect(validateTaskArtifacts([{ type: "issue", url: "javascript:alert(1)" }]).ok).toBe(false);
+    expect(validateTaskArtifacts([{ type: "pull_request", url: "https://user:pass@github.com/a/b/pull/1" }]).ok).toBe(false);
+  });
+
+  it("rejects a path shape that does not match the declared type", () => {
+    // issue url declared as a pull_request
+    expect(validateTaskArtifacts([{ type: "pull_request", url: ISSUE }]).ok).toBe(false);
+    // pull url declared as an issue
+    expect(validateTaskArtifacts([{ type: "issue", url: PR }]).ok).toBe(false);
+    // issue_comment without a comment anchor
+    expect(validateTaskArtifacts([{ type: "issue_comment", url: ISSUE }]).ok).toBe(false);
+    // commit with a non-hex sha
+    expect(validateTaskArtifacts([{ type: "commit", url: "https://github.com/a/b/commit/zzzz" }]).ok).toBe(false);
+  });
+
+  it("rejects a supplied number that disagrees with the url", () => {
+    expect(validateTaskArtifacts([{ type: "pull_request", url: PR, number: 999 }]).ok).toBe(false);
+    expect(validateTaskArtifacts([{ type: "pull_request", url: PR, number: 312 }]).ok).toBe(true);
+    // commits carry no number
+    expect(validateTaskArtifacts([{ type: "commit", url: COMMIT, number: 1 }]).ok).toBe(false);
+  });
+
+  it("rejects unknown fields", () => {
+    expect(validateTaskArtifacts([{ type: "issue", url: ISSUE, titel: "typo" }]).ok).toBe(false);
+  });
+
+  it("sanitizes and caps the title, dropping an empty one", () => {
+    const longTitle = "x".repeat(500);
+    const result = validateTaskArtifacts([
+      { type: "issue", url: ISSUE, title: `  Fix the\tbug\n  ${longTitle}` },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifacts[0].title!.length).toBeLessThanOrEqual(200);
+    expect(result.artifacts[0].title).not.toContain("\t");
+
+    const empty = validateTaskArtifacts([{ type: "issue", url: ISSUE, title: "   " }]);
+    expect(empty.ok).toBe(true);
+    if (empty.ok) expect(empty.artifacts[0].title).toBeUndefined();
+  });
+
+  it("scopes to allowed_repos when the token declares them", () => {
+    const inScope = validateTaskArtifacts([{ type: "pull_request", url: PR }], {
+      allowedRepos: ["HiveMoot/Hivemoot"], // case-insensitive match
+    });
+    expect(inScope.ok).toBe(true);
+
+    const outOfScope = validateTaskArtifacts([{ type: "pull_request", url: PR }], {
+      allowedRepos: ["someone/else"],
+    });
+    expect(outOfScope.ok).toBe(false);
+
+    // Empty/absent policy → no repo scoping (installation boundary only).
+    expect(validateTaskArtifacts([{ type: "pull_request", url: PR }], { allowedRepos: [] }).ok).toBe(true);
+  });
+});
+
+describe("addTaskArtifacts", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  async function seedRunningTask(): Promise<string> {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Build it", timeout_secs: 300 },
+      redis,
+    );
+    if (!created.ok) throw new Error("seed failed");
+    await markTaskRunning("inst-1", created.task.task_id, redis);
+    return created.task.task_id;
+  }
+
+  const PR = "https://github.com/hivemoot/hivemoot/pull/312";
+  const ISSUE = "https://github.com/hivemoot/hivemoot/issues/45";
+
+  it("appends artifacts to a running task and exposes them via getTask", async () => {
+    const taskId = await seedRunningTask();
+    const result = await addTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "pull_request", url: PR, number: 312 }],
+      redis,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.added).toBe(1);
+    expect(result.task.artifacts).toHaveLength(1);
+    expect(result.task.artifacts![0].url).toBe(PR);
+    expect(result.task.artifacts![0].created_at).toBeTruthy();
+
+    const fetched = await getTask("inst-1", taskId, redis);
+    expect(fetched?.artifacts).toHaveLength(1);
+  });
+
+  it("dedupes repeated URLs across calls (idempotent retries)", async () => {
+    const taskId = await seedRunningTask();
+    await addTaskArtifacts("inst-1", taskId, [{ type: "pull_request", url: PR, number: 312 }], redis);
+    const second = await addTaskArtifacts(
+      "inst-1",
+      taskId,
+      [
+        { type: "pull_request", url: PR, number: 312 }, // duplicate
+        { type: "issue", url: ISSUE, number: 45 },
+      ],
+      redis,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.added).toBe(1);
+    expect(second.task.artifacts).toHaveLength(2);
+  });
+
+  it("rejects when the running total would exceed the cap", async () => {
+    const taskId = await seedRunningTask();
+    const batch = Array.from({ length: MAX_ARTIFACTS_PER_TASK }, (_, i) => ({
+      type: "issue" as const,
+      url: `https://github.com/hivemoot/hivemoot/issues/${i + 1}`,
+      number: i + 1,
+    }));
+    const first = await addTaskArtifacts("inst-1", taskId, batch, redis);
+    expect(first.ok).toBe(true);
+
+    const overflow = await addTaskArtifacts(
+      "inst-1",
+      taskId,
+      [{ type: "pull_request", url: PR, number: 312 }],
+      redis,
+    );
+    expect(overflow.ok).toBe(false);
+    if (overflow.ok) return;
+    expect(overflow.reason).toBe("limit_exceeded");
+  });
+
+  it("returns not_found for an unknown task", async () => {
+    const result = await addTaskArtifacts(
+      "inst-1",
+      "ffffffffffffffffffffffff",
+      [{ type: "pull_request", url: PR, number: 312 }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("not_found");
+  });
+
+  it("rejects artifacts when the task is not running", async () => {
+    const created = await createTask(
+      "inst-1",
+      "queen",
+      { prompt: "Build it", timeout_secs: 300 },
+      redis,
+    );
+    if (!created.ok) throw new Error("seed failed");
+    // Still pending — never marked running.
+    const result = await addTaskArtifacts(
+      "inst-1",
+      created.task.task_id,
+      [{ type: "pull_request", url: PR, number: 312 }],
+      redis,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_transition");
+  });
+
+  it("preserves artifacts through completion", async () => {
+    const taskId = await seedRunningTask();
+    await addTaskArtifacts("inst-1", taskId, [{ type: "pull_request", url: PR, number: 312 }], redis);
+    const completed = await completeTask("inst-1", taskId, "all done", redis);
+    expect(completed.ok).toBe(true);
+
+    const fetched = await getTask("inst-1", taskId, redis);
+    expect(fetched?.status).toBe("completed");
+    expect(fetched?.artifacts).toHaveLength(1);
+    expect(fetched?.artifacts![0].url).toBe(PR);
   });
 });
