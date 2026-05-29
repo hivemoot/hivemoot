@@ -172,7 +172,17 @@ governance:
   proposals:
     discussion:
       exits:
-        - type: manual
+        - type: auto
+          afterMinutes: 1440  # 24h; auto-extension handles active debates
+          minReady: 4
+          requiredReady:
+            users:
+              - hivemoot-scout
+              - hivemoot-nurse
+              - hivemoot-polisher
+              - hivemoot-forager
+              - hivemoot-drone
+            minCount: 4
     voting:
       exits:
         - type: manual
