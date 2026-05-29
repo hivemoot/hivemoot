@@ -149,6 +149,12 @@ def _ready_events(
                 "head_sha": head_sha,
             },
         },
+        {
+            "seq": 3,
+            "timestamp": timestamp,
+            "event_type": "contribution_submitted",
+            "actor_role": "guard",
+        },
     ]
 
 
@@ -361,7 +367,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             list_ready_fn=MagicMock(return_value=[_room()]),
             participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
             events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:01:30Z"}],
+                return_value=_ready_events(timestamp="2026-05-15T00:01:30Z"),
             ),
             claim_fn=claim_fn,
             mint_token_fn=MagicMock(return_value="ghs_x"),
@@ -426,6 +432,48 @@ class LocalQueenTriggerTests(unittest.TestCase):
                 "local-queen.subject_updated.room-1.synchronize.new-head"
             ),
         )
+
+    def test_synthesis_skips_when_resolved_contribution_predates_head(
+        self,
+    ) -> None:
+        claim_fn = MagicMock(return_value=_claimed())
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
+            events_fn=MagicMock(
+                return_value=[
+                    {
+                        "seq": 3,
+                        "timestamp": "2026-05-15T00:00:00Z",
+                        "event_type": "contribution_submitted",
+                        "actor_role": "guard",
+                    },
+                    {
+                        "seq": 4,
+                        "timestamp": "2026-05-15T00:00:10Z",
+                        "event_type": "subject_updated",
+                        "body": {
+                            "change_kind": "synchronize",
+                            "head_sha": "new-head",
+                        },
+                    },
+                ],
+            ),
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="new-head"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 4, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(dispatcher)
+
+        claim_fn.assert_not_called()
+        dispatcher.dispatch.assert_not_called()
 
     def test_synthesis_skips_when_head_changes_during_claim(self) -> None:
         append_update = MagicMock(return_value=3)

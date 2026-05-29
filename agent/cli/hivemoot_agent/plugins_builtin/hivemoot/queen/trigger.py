@@ -1096,6 +1096,20 @@ class LocalQueenSynthesisTrigger:
             )
             return False
 
+        if room.subject_type == "pr_review":
+            ok, reason = self._pr_review_contributions_fresh(
+                participants,
+                events,
+            )
+            if not ok:
+                print(
+                    f"{self._log_prefix} room={room.room_id} not ready: "
+                    f"{reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return False
+
         quiet_period = self._quiet_period_for(room)
         if quiet_period <= 0:
             return True
@@ -1113,6 +1127,51 @@ class LocalQueenSynthesisTrigger:
             )
             return False
         return True
+
+    def _pr_review_contributions_fresh(
+        self,
+        participants: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> tuple[bool, str | None]:
+        latest_head_seq = 0
+        for event in events:
+            if event.get("event_type") != "subject_updated":
+                continue
+            body = event.get("body")
+            if not isinstance(body, dict):
+                continue
+            if body.get("change_kind") == "synchronize":
+                latest_head_seq = max(latest_head_seq, _event_seq(event))
+
+        if latest_head_seq <= 0:
+            return False, "no recorded PR head"
+
+        resolved_roles = {
+            role
+            for role, participant in participants.items()
+            if (
+                isinstance(participant, dict)
+                and str(participant.get("status") or "") == "resolved"
+            )
+        }
+        if not resolved_roles:
+            return False, "no resolved participants"
+
+        fresh_roles: set[str] = set()
+        for event in events:
+            if event.get("event_type") != "contribution_submitted":
+                continue
+            if _event_seq(event) <= latest_head_seq:
+                continue
+            actor_role = str(
+                event.get("actor_role") or event.get("actorRole") or ""
+            )
+            if actor_role in resolved_roles:
+                fresh_roles.add(actor_role)
+
+        if fresh_roles:
+            return True, None
+        return False, "no resolved contributions after latest PR head"
 
     def _quiet_period_for(self, room: q_api.SynthesisReadyRoom) -> int:
         value = room.timing_config.get("quiet_period_secs")
@@ -1181,17 +1240,20 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def _event_sort_key(event: dict[str, Any]) -> tuple[int, str]:
-    seq = event.get("seq", event.get("sequence", 0))
-    if isinstance(seq, bool):
-        seq_value = 0
-    elif isinstance(seq, int):
-        seq_value = seq
-    elif isinstance(seq, str):
-        try:
-            seq_value = int(seq)
-        except ValueError:
-            seq_value = 0
-    else:
-        seq_value = 0
+    seq_value = _event_seq(event)
     timestamp = str(event.get("timestamp") or "")
     return (seq_value, timestamp)
+
+
+def _event_seq(event: dict[str, Any]) -> int:
+    seq = event.get("seq", event.get("sequence", 0))
+    if isinstance(seq, bool):
+        return 0
+    if isinstance(seq, int):
+        return seq
+    if isinstance(seq, str):
+        try:
+            return int(seq)
+        except ValueError:
+            return 0
+    return 0
