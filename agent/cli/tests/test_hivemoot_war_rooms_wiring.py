@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
 from hivemoot_agent.plugins_builtin.hivemoot import HivemootPlugin
 from hivemoot_agent.plugins_builtin.hivemoot.config import (
     HivemootConfig,
+    HivemootGithubWorkflowsConfig,
     HivemootWarRoomsConfig,
 )
 from hivemoot_agent.plugins_builtin.hivemoot.war_rooms import (
@@ -43,13 +45,16 @@ def _ensure_token_file() -> Path:
 
 def _mk_config(
     *,
+    github_workflows: HivemootGithubWorkflowsConfig | None = None,
+    settings: dict | None = None,
     war_rooms: HivemootWarRoomsConfig | None = None,
 ) -> PluginConfig:
     typed = HivemootConfig(
         token_file=_ensure_token_file(),
+        github_workflows=github_workflows or HivemootGithubWorkflowsConfig(),
         war_rooms=war_rooms or HivemootWarRoomsConfig(),
     )
-    return PluginConfig(name="hivemoot", settings={}, typed=typed)
+    return PluginConfig(name="hivemoot", settings=settings or {}, typed=typed)
 
 
 def _war_room_job(
@@ -191,6 +196,63 @@ class OnJobFinishedDispatchTests(unittest.TestCase):
         ):
             # Must not raise.
             plugin.on_job_finished(_war_room_job(), AgentResult(0, ""), config)
+
+
+# ── on_job_started Codex sidecar wiring ───────────────────────────
+
+
+class OnJobStartedSidecarTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._saved_sidecar = os.environ.get("CODEX_ANSWER_FILE")
+        os.environ.pop("CODEX_ANSWER_FILE", None)
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+        if self._saved_sidecar is None:
+            os.environ.pop("CODEX_ANSWER_FILE", None)
+        else:
+            os.environ["CODEX_ANSWER_FILE"] = self._saved_sidecar
+
+    def _config(self, *, provider: str = "codex") -> PluginConfig:
+        return _mk_config(
+            github_workflows=HivemootGithubWorkflowsConfig(
+                workspace=Path(self.tmp.name),
+            ),
+            settings={"AGENT_PROVIDER": provider},
+            war_rooms=HivemootWarRoomsConfig(enabled=True),
+        )
+
+    def test_war_room_job_sets_codex_answer_sidecar(self) -> None:
+        config = self._config()
+        plugin = HivemootPlugin()
+        plugin._cfg = config.typed
+        plugin.triggers()
+
+        plugin.on_job_started(_war_room_job(sequence=5), config)
+
+        expected = os.path.join(
+            self.tmp.name,
+            "war-room-output",
+            "01234567-89ab-4cde-9012-3456789abcde",
+            "5",
+            "codex-answer.md",
+        )
+        self.assertEqual(os.environ["CODEX_ANSWER_FILE"], expected)
+        self.assertEqual(plugin._codex_sidecar_path, expected)
+        self.assertTrue(os.path.isdir(os.path.dirname(expected)))
+
+    def test_non_codex_war_room_job_clears_stale_sidecar(self) -> None:
+        os.environ["CODEX_ANSWER_FILE"] = "/tmp/stale-answer.md"
+        config = self._config(provider="claude")
+        plugin = HivemootPlugin()
+        plugin._cfg = config.typed
+        plugin.triggers()
+
+        plugin.on_job_started(_war_room_job(sequence=5), config)
+
+        self.assertNotIn("CODEX_ANSWER_FILE", os.environ)
+        self.assertEqual(plugin._codex_sidecar_path, "")
 
 
 # ── Trigger evict_seen_key (handler ↔ trigger feedback channel) ──

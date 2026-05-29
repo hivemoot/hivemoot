@@ -717,6 +717,21 @@ class HivemootPlugin:
                         file=sys.stderr, flush=True,
                     )
 
+        if cfg.queen.enabled:
+            from hivemoot_agent.plugins_builtin.hivemoot.queen import (
+                is_queen_job,
+            )
+            if is_queen_job(job):
+                try:
+                    self._queen_on_job_started(job, config)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-queen] on_job_started raised "
+                        f"room={job.metadata.get('room_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+
         # War-rooms early-/present + heartbeat thread (PR C). Wraps
         # independently from tasks/health — one feature failing must
         # not skip the others. The multiplexer may be None when
@@ -726,6 +741,15 @@ class HivemootPlugin:
                 is_war_room_job_for_lifecycle,
             )
             if is_war_room_job_for_lifecycle(job):
+                try:
+                    self._war_room_on_job_started(job, config)
+                except Exception as exc:
+                    print(
+                        f"[hivemoot-war-rooms] on_job_started raised "
+                        f"room={job.metadata.get('room_id')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
                 try:
                     self._lifecycle_mux.on_job_start(job)
                 except Exception as exc:
@@ -1168,7 +1192,7 @@ class HivemootPlugin:
         execute_base = cfg.tasks.execute_base_url if cfg else ""
 
         if not task_id or not claim_token or not execute_base:
-            self._codex_sidecar_path = ""
+            self._clear_codex_sidecar()
             return
 
         # Codex writes its final markdown to a sidecar when invoked
@@ -1182,19 +1206,93 @@ class HivemootPlugin:
         # ``TaskLifecycleReporter.on_start`` and the substrate's
         # multiplexer respectively. ``on_job_started`` calls
         # ``mux.on_job_start(job)`` after this method returns.
+        workspace = str(cfg.tasks.workspace) if cfg else "/workspace"
+        self._configure_codex_sidecar(
+            config,
+            workspace,
+            "task-output",
+            task_id,
+            "codex-answer.md",
+        )
+
+    def _war_room_on_job_started(
+        self, job: Job, config: PluginConfig,
+    ) -> None:
+        cfg = self._cfg
+        if cfg is None:
+            self._clear_codex_sidecar()
+            return
+
+        room_id = str(job.metadata.get("room_id") or "")
+        sequence = str(job.metadata.get("current_sequence") or "")
+        if not room_id or not sequence:
+            self._clear_codex_sidecar()
+            return
+
+        workspace = self._job_output_workspace(cfg)
+        self._configure_codex_sidecar(
+            config,
+            workspace,
+            "war-room-output",
+            room_id,
+            sequence,
+            "codex-answer.md",
+        )
+
+    def _queen_on_job_started(self, job: Job, config: PluginConfig) -> None:
+        cfg = self._cfg
+        if cfg is None:
+            self._clear_codex_sidecar()
+            return
+
+        room_id = str(job.metadata.get("room_id") or "")
+        if not room_id:
+            self._clear_codex_sidecar()
+            return
+
+        workspace = self._job_output_workspace(cfg)
+        self._configure_codex_sidecar(
+            config,
+            workspace,
+            "queen-output",
+            room_id,
+            self._safe_path_segment(job.session_key or "job"),
+            "codex-answer.md",
+        )
+
+    def _job_output_workspace(self, cfg: "HivemootConfig") -> str:
+        workspace = str(cfg.github_workflows.workspace)
+        if workspace:
+            return workspace
+        return os.environ.get("WORKSPACE_ROOT", "") or "/workspace"
+
+    def _configure_codex_sidecar(
+        self,
+        config: PluginConfig,
+        workspace: str,
+        *parts: str,
+    ) -> None:
         provider = config.get("AGENT_PROVIDER", "claude")
-        if provider == "codex":
-            workspace = str(cfg.tasks.workspace) if cfg else "/workspace"
-            self._codex_sidecar_path = os.path.join(
-                workspace, "task-output", task_id, "codex-answer.md",
-            )
-            os.makedirs(
-                os.path.dirname(self._codex_sidecar_path), exist_ok=True,
-            )
-            os.environ["CODEX_ANSWER_FILE"] = self._codex_sidecar_path
-        else:
-            self._codex_sidecar_path = ""
-            os.environ.pop("CODEX_ANSWER_FILE", None)
+        if provider != "codex":
+            self._clear_codex_sidecar()
+            return
+
+        safe_parts = [self._safe_path_segment(part) for part in parts]
+        self._codex_sidecar_path = os.path.join(workspace, *safe_parts)
+        os.makedirs(os.path.dirname(self._codex_sidecar_path), exist_ok=True)
+        os.environ["CODEX_ANSWER_FILE"] = self._codex_sidecar_path
+
+    def _clear_codex_sidecar(self) -> None:
+        self._codex_sidecar_path = ""
+        os.environ.pop("CODEX_ANSWER_FILE", None)
+
+    @staticmethod
+    def _safe_path_segment(value: str) -> str:
+        safe = "".join(
+            c if c.isalnum() or c in "._-" else "_"
+            for c in str(value)
+        ).strip("._")
+        return safe or "unknown"
 
     def _task_on_job_finished(
         self, job: Job, result: AgentResult, config: PluginConfig,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
 from hivemoot_agent.plugins_builtin.hivemoot import HivemootPlugin
 from hivemoot_agent.plugins_builtin.hivemoot.config import (
     HivemootConfig,
+    HivemootGithubWorkflowsConfig,
     HivemootQueenConfig,
 )
 from hivemoot_agent.plugins_builtin.hivemoot.queen import (
@@ -31,12 +33,18 @@ def _ensure_token_file() -> Path:
     return _TOKEN_FILE
 
 
-def _mk_config(*, queen: HivemootQueenConfig | None = None) -> PluginConfig:
+def _mk_config(
+    *,
+    github_workflows: HivemootGithubWorkflowsConfig | None = None,
+    queen: HivemootQueenConfig | None = None,
+    settings: dict | None = None,
+) -> PluginConfig:
     typed = HivemootConfig(
         token_file=_ensure_token_file(),
+        github_workflows=github_workflows or HivemootGithubWorkflowsConfig(),
         queen=queen or HivemootQueenConfig(),
     )
-    return PluginConfig(name="hivemoot", settings={}, typed=typed)
+    return PluginConfig(name="hivemoot", settings=settings or {}, typed=typed)
 
 
 def _queen_job() -> Job:
@@ -203,6 +211,51 @@ class QueenOnFinishedWiringTests(unittest.TestCase):
 
         self.assertEqual(finished.call_args.kwargs["queen_runner"], "queen-a")
         self.assertEqual(finished.call_args.kwargs["agent_id"], "queen-a")
+
+
+class QueenOnStartedSidecarTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_agent_id = os.environ.get("AGENT_ID")
+        self._saved_sidecar = os.environ.get("CODEX_ANSWER_FILE")
+        os.environ["AGENT_ID"] = "queen-a"
+        os.environ.pop("CODEX_ANSWER_FILE", None)
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+        if self._old_agent_id is None:
+            os.environ.pop("AGENT_ID", None)
+        else:
+            os.environ["AGENT_ID"] = self._old_agent_id
+        if self._saved_sidecar is None:
+            os.environ.pop("CODEX_ANSWER_FILE", None)
+        else:
+            os.environ["CODEX_ANSWER_FILE"] = self._saved_sidecar
+
+    def test_queen_job_sets_codex_answer_sidecar(self) -> None:
+        config = _mk_config(
+            github_workflows=HivemootGithubWorkflowsConfig(
+                workspace=Path(self.tmp.name),
+            ),
+            queen=HivemootQueenConfig(enabled=True),
+            settings={"AGENT_PROVIDER": "codex"},
+        )
+        plugin = HivemootPlugin()
+        plugin._cfg = config.typed
+        plugin.triggers()
+
+        plugin.on_job_started(_queen_job(), config)
+
+        expected = os.path.join(
+            self.tmp.name,
+            "queen-output",
+            "room-1",
+            "queen_room-1_12",
+            "codex-answer.md",
+        )
+        self.assertEqual(os.environ["CODEX_ANSWER_FILE"], expected)
+        self.assertEqual(plugin._codex_sidecar_path, expected)
+        self.assertTrue(os.path.isdir(os.path.dirname(expected)))
 
 
 if __name__ == "__main__":
