@@ -576,6 +576,8 @@ class LocalQueenSynthesisTrigger:
     ) -> bool:
         if room is None:
             return False
+        if room.status == "expired":
+            return False
         if room.status != "closed":
             return True
         if self._pr_room_recent_closed_secs <= 0:

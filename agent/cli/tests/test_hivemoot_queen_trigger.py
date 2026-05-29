@@ -501,6 +501,40 @@ class LocalQueenTriggerTests(unittest.TestCase):
         list_ready.assert_called_once()
         dispatcher.dispatch.assert_not_called()
 
+    def test_pr_discovery_creates_new_room_when_existing_room_expired(self) -> None:
+        create_room = MagicMock(
+            return_value=type(
+                "Created",
+                (),
+                {
+                    "room_id": "fresh-room",
+                    "subject_ref": "owner/repo#42",
+                    "status": "awaiting_contributions",
+                },
+            )()
+        )
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            watched_repos=["owner/repo"],
+            list_rooms_fn=MagicMock(
+                return_value=[
+                    _room_summary(room_id="expired-room", status="expired"),
+                ],
+            ),
+            create_room_fn=create_room,
+            list_pull_requests_fn=MagicMock(return_value=[_pr_snapshot()]),
+            list_ready_fn=MagicMock(return_value=[]),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(MagicMock())
+
+        create_room.assert_called_once()
+
     def test_pr_discovery_emits_subject_update_on_known_head_change(self) -> None:
         append_update = MagicMock(return_value=3)
         trigger = LocalQueenSynthesisTrigger(
