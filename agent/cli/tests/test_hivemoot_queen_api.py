@@ -80,6 +80,106 @@ class QueenApiTests(unittest.TestCase):
         )
         self.assertEqual(rooms[0].status, "decided_pending_action")
 
+    def test_list_rooms_parses_room_summary(self) -> None:
+        with patch.object(
+            q_api,
+            "get_json",
+            return_value=(
+                200,
+                {
+                    "rooms": [
+                        {
+                            "roomId": "room-1",
+                            "status": "closed",
+                            "subject_type": "pr_review",
+                            "subject_ref": "owner/repo#42",
+                            "manager": "queen-a",
+                            "opened_at": "2026-05-15T00:00:00Z",
+                            "closed_at": "2026-05-15T00:10:00Z",
+                        },
+                    ],
+                },
+                b"",
+            ),
+        ) as get_mock:
+            rooms = q_api.list_rooms("https://api.example", "bearer", limit=200)
+        get_mock.assert_called_once_with(
+            "https://api.example/api/rooms?limit=200",
+            "bearer",
+            timeout=10,
+        )
+        self.assertEqual(rooms[0].room_id, "room-1")
+        self.assertEqual(rooms[0].closed_at, "2026-05-15T00:10:00Z")
+
+    def test_create_pr_review_room_payload_and_conflict(self) -> None:
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(
+                201,
+                {
+                    "roomId": "11111111-1111-4111-8111-111111111111",
+                    "status": "awaiting_contributions",
+                },
+                b"",
+            ),
+        ) as post_mock:
+            result = q_api.create_pr_review_room(
+                "https://api.example",
+                "bearer",
+                subject_ref="owner/repo#42",
+                manager="queen-a",
+                quiet_period_secs=180,
+                room_id="11111111-1111-4111-8111-111111111111",
+            )
+        self.assertEqual(result.room_id, "11111111-1111-4111-8111-111111111111")
+        url, body, bearer = post_mock.call_args[0][:3]
+        self.assertEqual(url, "https://api.example/api/rooms")
+        self.assertEqual(bearer, "bearer")
+        self.assertEqual(body["manager"], "queen-a")
+        self.assertEqual(body["subject"], {"type": "pr_review", "ref": "owner/repo#42"})
+        self.assertEqual(body["timing"]["quiet_period_secs"], 180)
+
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(
+                409,
+                {"code": "subject_already_open"},
+                b'{"code":"subject_already_open"}',
+            ),
+        ):
+            with self.assertRaises(q_api.QueenAPIConflictError) as ctx:
+                q_api.create_pr_review_room(
+                    "https://api.example",
+                    "bearer",
+                    subject_ref="owner/repo#42",
+                    manager="queen-a",
+                )
+        self.assertEqual(ctx.exception.code, "subject_already_open")
+
+    def test_append_subject_updated_event_payload(self) -> None:
+        with patch.object(
+            q_api,
+            "post_json",
+            return_value=(200, {"sequence": 9}, b""),
+        ) as post_mock:
+            seq = q_api.append_subject_updated_event(
+                "https://api.example",
+                "room-1",
+                "bearer",
+                change_kind="synchronize",
+                head_sha="abc",
+                idempotency_key="idem-1",
+            )
+        self.assertEqual(seq, 9)
+        url, body, bearer = post_mock.call_args[0][:3]
+        self.assertEqual(url, "https://api.example/api/rooms/room-1/event")
+        self.assertEqual(bearer, "bearer")
+        self.assertEqual(body["event_type"], "subject_updated")
+        self.assertEqual(body["idempotencyKey"], "idem-1")
+        self.assertEqual(body["body"], {"change_kind": "synchronize", "head_sha": "abc"})
+
     def test_claim_synthesis_maps_conflict(self) -> None:
         with patch.object(
             q_api,

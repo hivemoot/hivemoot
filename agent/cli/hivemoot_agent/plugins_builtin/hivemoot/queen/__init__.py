@@ -5,9 +5,11 @@ from __future__ import annotations
 from hivemoot_agent.plugins_builtin.hivemoot.queen.api import (
     ClaimedSynthesis,
     ConfirmMergeResult,
+    CreatedRoom,
     MergeReportResult,
     QueenAPIConflictError,
     ResolveActionResult,
+    RoomSummary,
     SealDecisionResult,
     SynthesisReadyRoom,
 )
@@ -26,11 +28,13 @@ from hivemoot_agent.plugins_builtin.hivemoot.queen.trigger import (
 __all__ = (
     "ClaimedSynthesis",
     "ConfirmMergeResult",
+    "CreatedRoom",
     "JOB_KIND_SYNTHESIS",
     "LocalQueenSynthesisTrigger",
     "MergeReportResult",
     "QueenAPIConflictError",
     "ResolveActionResult",
+    "RoomSummary",
     "SealDecisionResult",
     "SynthesisReadyRoom",
     "build_seal_header",

@@ -13,6 +13,7 @@ import {
   maybeCreatePrReviewRoom,
   maybeEmitSubjectUpdated,
 } from "../../lib/war-room-routing.js";
+import { getQueenModeCached } from "../../lib/queen-mode.js";
 
 // Mock probot to prevent actual initialization
 vi.mock("../../lib/war-room-routing.js", () => ({
@@ -22,6 +23,14 @@ vi.mock("../../lib/war-room-routing.js", () => ({
   commentHasHivemootMention: () => false,
   derivePrRoomId: ({ owner, repo, prNumber }) => `derived-${owner}-${repo}-${prNumber}`,
   deriveMentionRoomId: ({ owner, repo, issueOrPrNumber, commentId }) => `derived-mention-${owner}-${repo}-${issueOrPrNumber}-${commentId}`,
+}));
+
+vi.mock("../../lib/redis.js", () => ({
+  getRedisClient: vi.fn(() => ({})),
+}));
+
+vi.mock("../../lib/queen-mode.js", () => ({
+  getQueenModeCached: vi.fn(async () => "cloud"),
 }));
 
 vi.mock("probot", () => ({
@@ -1514,6 +1523,8 @@ describe("Queen Bot", () => {
     beforeEach(() => {
       vi.mocked(getLinkedIssues).mockReset();
       vi.mocked(getOpenPRsForIssue).mockReset();
+      vi.mocked(getQueenModeCached).mockReset().mockResolvedValue("cloud");
+      vi.mocked(maybeEmitSubjectUpdated).mockReset().mockResolvedValue({ sequence: null });
     });
 
     it("should close competing PR before posting superseded comment", async () => {
@@ -1567,6 +1578,68 @@ describe("Queen Bot", () => {
           ]
         : Number.MAX_SAFE_INTEGER;
       expect(closeCallOrder).toBeLessThan(supersededCallOrder);
+    });
+
+    it("skips cloud subject update for closed-unmerged PRs when queen_mode is local", async () => {
+      const { handlers } = createWebhookHarness();
+      const handler = handlers.get("pull_request.closed");
+      const octokit = createClosedPROctokit();
+      const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
+      vi.mocked(getQueenModeCached).mockResolvedValue("local");
+
+      await handler!({
+        octokit,
+        log,
+        payload: {
+          installation: { id: 12345 },
+          pull_request: { number: 22, merged: false },
+          repository: {
+            name: "test-repo",
+            full_name: "hivemoot/test-repo",
+            owner: { login: "hivemoot" },
+          },
+        },
+      });
+
+      expect(maybeEmitSubjectUpdated).not.toHaveBeenCalled();
+      expect(recalculateLeaderboardForPR).toHaveBeenCalledWith(
+        octokit,
+        log,
+        "hivemoot",
+        "test-repo",
+        22,
+      );
+    });
+
+    it("skips cloud subject update for merged PRs when queen_mode is local", async () => {
+      const { handlers } = createWebhookHarness();
+      const handler = handlers.get("pull_request.closed");
+      const octokit = createClosedPROctokit();
+      const log = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
+      vi.mocked(getQueenModeCached).mockResolvedValue("local");
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+
+      await handler!({
+        octokit,
+        log,
+        payload: {
+          installation: { id: 12345 },
+          pull_request: { number: 22, merged: true },
+          repository: {
+            name: "test-repo",
+            full_name: "hivemoot/test-repo",
+            owner: { login: "hivemoot" },
+          },
+        },
+      });
+
+      expect(maybeEmitSubjectUpdated).not.toHaveBeenCalled();
+      expect(getLinkedIssues).toHaveBeenCalledWith(
+        octokit,
+        "hivemoot",
+        "test-repo",
+        22,
+      );
     });
   });
 
@@ -2197,6 +2270,7 @@ describe("Queen Bot", () => {
       vi.mocked(disablePullRequestAutoMerge).mockReset().mockResolvedValue(undefined);
       vi.mocked(maybeCreatePrReviewRoom).mockReset().mockResolvedValue({ roomId: null });
       vi.mocked(maybeEmitSubjectUpdated).mockReset().mockResolvedValue({ sequence: null });
+      vi.mocked(getQueenModeCached).mockReset().mockResolvedValue("cloud");
     });
 
     it("should call processImplementationIntake on pull_request.opened", async () => {
@@ -2247,6 +2321,64 @@ describe("Queen Bot", () => {
           installationId: 12345,
           prNumber: 690,
         }),
+      );
+    });
+
+    it("skips cloud PR review room creation on opened when queen_mode is local", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getQueenModeCached).mockResolvedValue("local");
+      vi.mocked(getLinkedIssues).mockResolvedValue([
+        { number: 689, title: "issue", state: "OPEN", labels: { nodes: [] } },
+      ] as any);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+
+      await handlers.get("pull_request.opened")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 12345 },
+          pull_request: { number: 690, body: "Fixes #689", base: { ref: "main" } },
+          repository: testRepo,
+        },
+      });
+
+      expect(getQueenModeCached).toHaveBeenCalledWith("12345", expect.anything());
+      expect(maybeCreatePrReviewRoom).not.toHaveBeenCalled();
+      expect(processImplementationIntake).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger: "opened" }),
+      );
+    });
+
+    it("defaults PR room creation to cloud ownership when queen mode lookup fails", async () => {
+      const { handlers } = createWebhookHarness();
+      const log = mkLog();
+      vi.mocked(getQueenModeCached).mockRejectedValueOnce(new Error("redis down"));
+      vi.mocked(getLinkedIssues).mockResolvedValue([
+        { number: 689, title: "issue", state: "OPEN", labels: { nodes: [] } },
+      ] as any);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+
+      await handlers.get("pull_request.opened")!({
+        octokit: mkOctokit(),
+        log,
+        payload: {
+          installation: { id: 12345 },
+          pull_request: { number: 690, body: "Fixes #689", base: { ref: "main" } },
+          repository: testRepo,
+        },
+      });
+
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: "hivemoot",
+          repo: "test-repo",
+          pr: 690,
+          installationId: "12345",
+        }),
+        expect.stringContaining("defaulting to cloud ownership"),
+      );
+      expect(maybeCreatePrReviewRoom).toHaveBeenCalledWith(
+        expect.objectContaining({ prNumber: 690 }),
       );
     });
 
@@ -2313,6 +2445,33 @@ describe("Queen Bot", () => {
           headSha: "new-head-sha",
         }),
       );
+    });
+
+    it("skips cloud PR room updates on synchronize when queen_mode is local", async () => {
+      const { handlers } = createWebhookHarness();
+      vi.mocked(getQueenModeCached).mockResolvedValue("local");
+      vi.mocked(getLinkedIssues).mockResolvedValue([]);
+      vi.mocked(loadRepositoryConfig).mockResolvedValue(prConfig as any);
+
+      await handlers.get("pull_request.synchronize")!({
+        octokit: mkOctokit(),
+        log: mkLog(),
+        payload: {
+          installation: { id: 12345 },
+          pull_request: {
+            number: 688,
+            base: { ref: "main" },
+            head: { sha: "new-head-sha" },
+          },
+          repository: testRepo,
+        },
+      });
+
+      expect(processImplementationIntake).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger: "updated" }),
+      );
+      expect(maybeEmitSubjectUpdated).not.toHaveBeenCalled();
+      expect(maybeCreatePrReviewRoom).not.toHaveBeenCalled();
     });
 
     it("should cancel queued squash on pull_request.synchronize when the label is present", async () => {

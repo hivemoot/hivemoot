@@ -37,6 +37,8 @@ import {
   maybeCreatePrReviewRoom,
   maybeEmitSubjectUpdated,
 } from "../../lib/war-room-routing.js";
+import { getRedisClient } from "../../lib/redis.js";
+import { getQueenModeCached } from "../../lib/queen-mode.js";
 
 /**
  * Hivemoot Bot - Governance Automation
@@ -103,6 +105,54 @@ function getRepoContext(repository: RepoPayload): RepoContext {
   };
 }
 
+async function cloudOwnsPrRoomLifecycle(args: {
+  installationId: number | string | undefined;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  log: {
+    info: (obj: Record<string, unknown>, msg: string) => void;
+    warn: (obj: Record<string, unknown>, msg: string) => void;
+  };
+}): Promise<boolean> {
+  const rawInstallationId = args.installationId;
+  if (
+    rawInstallationId === undefined ||
+    rawInstallationId === null ||
+    rawInstallationId === ""
+  ) {
+    return true;
+  }
+  const installationId = String(rawInstallationId);
+  try {
+    const mode = await getQueenModeCached(installationId, getRedisClient());
+    if (mode === "local") {
+      args.log.info(
+        {
+          owner: args.owner,
+          repo: args.repo,
+          pr: args.prNumber,
+          installationId,
+        },
+        "Skipping cloud PR war-room lifecycle because queen_mode=local",
+      );
+      return false;
+    }
+  } catch (err) {
+    args.log.warn(
+      {
+        err,
+        owner: args.owner,
+        repo: args.repo,
+        pr: args.prNumber,
+        installationId,
+      },
+      "Unable to resolve queen_mode for PR war-room lifecycle; defaulting to cloud ownership",
+    );
+  }
+  return true;
+}
+
 export function app(probotApp: Probot): void {
   probotApp.log.info("Queen bot initialized");
   registerHandlerDispatcher(probotApp, { eventMap: handlerEventMap });
@@ -166,14 +216,25 @@ export function app(probotApp: Probot): void {
       }
       // War-room routing is intentionally early: intake/automerge may
       // post comments or mutate labels before throwing, and the review
-      // room must still exist for the fleet to inspect the PR.
-      await maybeCreatePrReviewRoom({
+      // room must still exist for the fleet to inspect the PR. In
+      // local queen mode this whole PR room lifecycle moves to the
+      // hive runner, so the cloud webhook path leaves room creation
+      // alone.
+      if (await cloudOwnsPrRoomLifecycle({
         owner,
         repo,
-        installationId: context.payload.installation?.id,
         prNumber: number,
+        installationId: context.payload.installation?.id,
         log: context.log,
-      });
+      })) {
+        await maybeCreatePrReviewRoom({
+          owner,
+          repo,
+          installationId: context.payload.installation?.id,
+          prNumber: number,
+          log: context.log,
+        });
+      }
 
       let linkedIssues = initialLinkedIssues;
       const hasBodyClosingKeyword = linkedIssues.length === 0
@@ -351,33 +412,41 @@ export function app(probotApp: Probot): void {
       // break the existing intake flow. The deterministic roomId
       // derivation (derivePrRoomId) means we hit the same room as
       // the E.1 create call without any lookup.
-      const subjectUpdated = await maybeEmitSubjectUpdated({
+      if (await cloudOwnsPrRoomLifecycle({
         owner,
         repo,
-        installationId: context.payload.installation?.id,
         prNumber: number,
-        changeKind: "synchronize",
-        headSha: context.payload.pull_request.head?.sha,
+        installationId: context.payload.installation?.id,
         log: context.log,
-      });
-      if (subjectUpdated.skipped === "no_room") {
-        const created = await maybeCreatePrReviewRoom({
+      })) {
+        const subjectUpdated = await maybeEmitSubjectUpdated({
           owner,
           repo,
           installationId: context.payload.installation?.id,
           prNumber: number,
+          changeKind: "synchronize",
+          headSha: context.payload.pull_request.head?.sha,
           log: context.log,
         });
-        if (created.roomId) {
-          await maybeEmitSubjectUpdated({
+        if (subjectUpdated.skipped === "no_room") {
+          const created = await maybeCreatePrReviewRoom({
             owner,
             repo,
             installationId: context.payload.installation?.id,
             prNumber: number,
-            changeKind: "synchronize",
-            headSha: context.payload.pull_request.head?.sha,
             log: context.log,
           });
+          if (created.roomId) {
+            await maybeEmitSubjectUpdated({
+              owner,
+              repo,
+              installationId: context.payload.installation?.id,
+              prNumber: number,
+              changeKind: "synchronize",
+              headSha: context.payload.pull_request.head?.sha,
+              log: context.log,
+            });
+          }
         }
       }
     } catch (error) {
@@ -722,14 +791,22 @@ export function app(probotApp: Probot): void {
         // room via max_age. Explicit terminate-on-close lands in a
         // future slice (capability scoping needed — bot doesn't
         // have rooms.force_close in the queen preset).
-        await maybeEmitSubjectUpdated({
+        if (await cloudOwnsPrRoomLifecycle({
           owner,
           repo,
-          installationId: context.payload.installation?.id,
           prNumber: number,
-          changeKind: "closed",
+          installationId: context.payload.installation?.id,
           log: context.log,
-        });
+        })) {
+          await maybeEmitSubjectUpdated({
+            owner,
+            repo,
+            installationId: context.payload.installation?.id,
+            prNumber: number,
+            changeKind: "closed",
+            log: context.log,
+          });
+        }
       } catch (error) {
         context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process closed PR");
         throw error;
@@ -776,14 +853,22 @@ export function app(probotApp: Probot): void {
       // Phase E.2 — subject_updated for merged PRs. Same rationale
       // as the closed-without-merge path: workers see the event
       // and short-circuit. Watchdog handles eventual room expiry.
-      await maybeEmitSubjectUpdated({
+      if (await cloudOwnsPrRoomLifecycle({
         owner,
         repo,
-        installationId: context.payload.installation?.id,
         prNumber: number,
-        changeKind: "closed",
+        installationId: context.payload.installation?.id,
         log: context.log,
-      });
+      })) {
+        await maybeEmitSubjectUpdated({
+          owner,
+          repo,
+          installationId: context.payload.installation?.id,
+          prNumber: number,
+          changeKind: "closed",
+          log: context.log,
+        });
+      }
     } catch (error) {
       context.log.error({ err: error, pr: number, repo: fullName }, "Failed to process merged PR");
       throw error;

@@ -87,6 +87,10 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.synthesis_ready_limit, 10)
         self.assertEqual(cfg.claim_ttl_secs, 900)
         self.assertFalse(cfg.enable_squash_merge)
+        self.assertEqual(cfg.watched_repos, [])
+        self.assertTrue(cfg.pr_discovery_enabled)
+        self.assertEqual(cfg.pr_discovery_interval_secs, 900)
+        self.assertEqual(cfg.pr_discovery_create_limit, 20)
 
 
 class StrictnessTests(unittest.TestCase):
@@ -144,6 +148,20 @@ class RangeTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             HivemootQueenConfig(claim_ttl_secs=901)
         HivemootQueenConfig(claim_ttl_secs=900)
+
+    def test_queen_pr_discovery_ranges(self) -> None:
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(pr_discovery_interval_secs=59)
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(pr_discovery_create_limit=101)
+        with self.assertRaises(ValidationError):
+            HivemootQueenConfig(pr_discovery_room_limit=1001)
+        HivemootQueenConfig(
+            watched_repos=["owner/repo"],
+            pr_discovery_interval_secs=60,
+            pr_discovery_create_limit=100,
+            pr_discovery_room_limit=1000,
+        )
 
 
 if __name__ == "__main__":

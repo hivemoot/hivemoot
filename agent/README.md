@@ -379,8 +379,10 @@ subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
   apiarist Unix socket.
 - `war_rooms` — reviewer-side room watching, RSVP/contribution
   lifecycle, and per-room heartbeat reporting.
-- `queen` — local queen synthesis runner.  When enabled on exactly
-  one hive runner for an installation, it polls
+- `queen` — local queen PR review-room owner and synthesis runner.
+  When enabled on exactly one hive runner for an installation, it
+  periodically scans `watched_repos`, creates missing `pr_review`
+  rooms, emits observed `subject_updated` events, polls
   `/api/rooms/synthesis-ready`, verifies all participants are
   non-pending and the room quiet period has elapsed, claims synthesis,
   captures a fresh PR head SHA with a minted GitHub App token, runs a
@@ -394,8 +396,8 @@ subsystems (see `plugins.hivemoot` in `hivemoot.yaml`):
   Successful merges whose result report fails are retried from the
   local `merge_report_queue_file`.  It is disabled by
   default; keep cloud `queen_mode=cloud` until the web endpoints,
-  runner image, token policy, and fleet config are deployed and
-  observed healthy.
+  runner image, token policy, watched repo list, and fleet config are
+  deployed and observed healthy.
 
 Task claim flow: the trigger polls `plugins.hivemoot.tasks.claim_url`
 every `poll_interval_secs` (default 10s).  On a successful claim it
@@ -431,6 +433,9 @@ plugins:
       enabled: true
       base_url: https://www.hivemoot.dev
       # Queen identity is AGENT_ID; do not set queen.runner_id.
+      watched_repos:
+        - hivemoot/hivemoot
+      pr_discovery_interval_secs: 900
       enable_squash_merge: false
       merge_report_queue_file: /workspace/hivemoot-queen-merge-reports.json
 ```
@@ -440,11 +445,13 @@ upgrading: current agents reject it at startup.  The HTTP protocol still
 uses a `queenRunner` field internally, but the runner populates it from
 the same `AGENT_ID` used for every other agent-scoped action.
 
-Deploy the runner with `enable_squash_merge: false` first to verify
-the comment-close path while the cloud queen is still authoritative.
-After the confirm/report endpoints are live and the runner is healthy,
-set `enable_squash_merge: true`, then flip the installation's
-`queen_mode` from `cloud` to `local`.
+Deploy the runner with `enable_squash_merge: false` first while
+`queen_mode=cloud`, then flip the installation to `queen_mode=local`
+and verify the local sweep creates the PR review room and the
+comment-close path completes. After the confirm/report endpoints are
+live and the runner is healthy, set `enable_squash_merge: true` and
+test a low-risk automerge-eligible PR. In local mode, the cloud bot
+does not create or update PR review rooms; ownership is exclusive.
 
 Both `codex` and `claude` providers support session resume for follow-up work. GitHub mention triggers store one session per notification thread, and delegated task jobs use `task:<task_id>` keys so follow-up work can reuse provider context when `SESSION_RESUME=1`. For Codex the UUID comes from `--json` output (`thread.started.thread_id`) and is resumed via `codex exec resume <SESSION_ID>`. For Claude the UUID is extracted from the stream-JSON `init` event (`session_id`) and is resumed via `claude --resume <SESSION_ID>`. Session maps are persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/<provider>/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + session key) to avoid cross-config reuse. Cron ticks (empty session key) always start fresh by design. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session. To disable resume, set `SESSION_RESUME=0`.
 

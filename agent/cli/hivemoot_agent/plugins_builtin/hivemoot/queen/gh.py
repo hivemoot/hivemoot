@@ -19,9 +19,11 @@ from typing import Sequence
 
 __all__ = (
     "GHCommandError",
+    "PullRequestSnapshot",
     "PullRequestRef",
     "get_pr_head_sha",
     "get_pr_merge_commit_sha",
+    "list_pull_requests",
     "parse_subject_ref",
     "post_pr_comment",
     "squash_merge_pr",
@@ -37,6 +39,24 @@ class PullRequestRef:
     @property
     def full_repo(self) -> str:
         return f"{self.owner}/{self.repo}"
+
+
+@dataclass(frozen=True)
+class PullRequestSnapshot:
+    number: int
+    title: str
+    author: str
+    state: str
+    draft: bool
+    head_sha: str
+    base_ref: str
+    default_branch: str
+
+    @property
+    def targets_default_branch(self) -> bool:
+        if not self.default_branch:
+            return True
+        return self.base_ref == self.default_branch
 
 
 class GHCommandError(RuntimeError):
@@ -143,6 +163,65 @@ def get_pr_head_sha(
     if not out:
         raise GHCommandError(f"gh pr view returned empty head SHA for {pr.full_repo}#{pr.number}")
     return out
+
+
+def list_pull_requests(
+    repo: str,
+    *,
+    token: str,
+    state: str = "open",
+    timeout_secs: int = 30,
+) -> list[PullRequestSnapshot]:
+    repo_name = repo.strip()
+    if not repo_name or "/" not in repo_name:
+        raise ValueError("repo must have owner/name shape")
+    state_value = state.strip().lower()
+    if state_value not in {"open", "closed", "all"}:
+        raise ValueError("state must be one of open, closed, all")
+    out = _run_gh(
+        [
+            "api",
+            (
+                f"repos/{repo_name}/pulls?state={state_value}"
+                "&sort=updated&direction=desc&per_page=100"
+            ),
+        ],
+        token=token,
+        timeout_secs=timeout_secs,
+    )
+    if not out:
+        return []
+    try:
+        parsed = json.loads(out)
+    except json.JSONDecodeError as exc:
+        raise GHCommandError("gh api returned invalid JSON for pull list") from exc
+    if not isinstance(parsed, list):
+        raise GHCommandError("gh api pull list response was not a JSON array")
+
+    snapshots: list[PullRequestSnapshot] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        number = entry.get("number")
+        if isinstance(number, bool) or not isinstance(number, int):
+            continue
+        user = entry.get("user") if isinstance(entry.get("user"), dict) else {}
+        head = entry.get("head") if isinstance(entry.get("head"), dict) else {}
+        base = entry.get("base") if isinstance(entry.get("base"), dict) else {}
+        base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+        snapshots.append(
+            PullRequestSnapshot(
+                number=number,
+                title=str(entry.get("title") or ""),
+                author=str(user.get("login") or ""),
+                state=str(entry.get("state") or ""),
+                draft=bool(entry.get("draft") or False),
+                head_sha=str(head.get("sha") or ""),
+                base_ref=str(base.get("ref") or ""),
+                default_branch=str(base_repo.get("default_branch") or ""),
+            )
+        )
+    return snapshots
 
 
 def get_pr_merge_commit_sha(

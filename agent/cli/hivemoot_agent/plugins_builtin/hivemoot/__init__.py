@@ -624,6 +624,17 @@ class HivemootPlugin:
                 gh_timeout_secs=cfg.queen.gh_timeout_secs,
                 enable_squash_merge=cfg.queen.enable_squash_merge,
                 merge_report_queue_file=str(cfg.queen.merge_report_queue_file),
+                watched_repos=cfg.queen.watched_repos,
+                pr_discovery_enabled=cfg.queen.pr_discovery_enabled,
+                pr_discovery_interval_secs=cfg.queen.pr_discovery_interval_secs,
+                pr_discovery_room_limit=cfg.queen.pr_discovery_room_limit,
+                pr_discovery_create_limit=cfg.queen.pr_discovery_create_limit,
+                pr_room_quiet_period_secs=cfg.queen.pr_room_quiet_period_secs,
+                pr_room_max_age_secs=cfg.queen.pr_room_max_age_secs,
+                pr_room_drop_threshold_secs=(
+                    cfg.queen.pr_room_drop_threshold_secs
+                ),
+                pr_room_recent_closed_secs=cfg.queen.pr_room_recent_closed_secs,
             )
             triggers.append(self._queen_trigger)  # type: ignore[arg-type]
 

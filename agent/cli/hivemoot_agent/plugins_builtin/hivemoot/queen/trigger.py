@@ -28,6 +28,13 @@ from hivemoot_agent.plugins_builtin.hivemoot.queen.prompts import (
 
 
 DEFAULT_POLL_INTERVAL_SECS = 60
+DEFAULT_PR_DISCOVERY_INTERVAL_SECS = 900
+DEFAULT_PR_DISCOVERY_ROOM_LIMIT = 200
+DEFAULT_PR_DISCOVERY_CREATE_LIMIT = 20
+DEFAULT_PR_ROOM_QUIET_PERIOD_SECS = 180
+DEFAULT_PR_ROOM_MAX_AGE_SECS = 3600
+DEFAULT_PR_ROOM_DROP_THRESHOLD_SECS = 1200
+DEFAULT_PR_ROOM_RECENT_CLOSED_SECS = 6 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -80,7 +87,25 @@ class LocalQueenSynthesisTrigger:
         gh_timeout_secs: int = 30,
         enable_squash_merge: bool = False,
         merge_report_queue_file: str = "",
+        watched_repos: list[str] | tuple[str, ...] = (),
+        pr_discovery_enabled: bool = True,
+        pr_discovery_interval_secs: int = DEFAULT_PR_DISCOVERY_INTERVAL_SECS,
+        pr_discovery_room_limit: int = DEFAULT_PR_DISCOVERY_ROOM_LIMIT,
+        pr_discovery_create_limit: int = DEFAULT_PR_DISCOVERY_CREATE_LIMIT,
+        pr_room_quiet_period_secs: int = DEFAULT_PR_ROOM_QUIET_PERIOD_SECS,
+        pr_room_max_age_secs: int = DEFAULT_PR_ROOM_MAX_AGE_SECS,
+        pr_room_drop_threshold_secs: int = DEFAULT_PR_ROOM_DROP_THRESHOLD_SECS,
+        pr_room_recent_closed_secs: int = DEFAULT_PR_ROOM_RECENT_CLOSED_SECS,
         log_prefix: str = "[hivemoot-queen]",
+        list_rooms_fn: Callable[
+            ..., list[q_api.RoomSummary]
+        ] = q_api.list_rooms,
+        create_room_fn: Callable[
+            ..., q_api.CreatedRoom
+        ] = q_api.create_pr_review_room,
+        append_subject_updated_fn: Callable[
+            ..., int
+        ] = q_api.append_subject_updated_event,
         list_ready_fn: Callable[
             ..., list[q_api.SynthesisReadyRoom]
         ] = q_api.list_synthesis_ready_rooms,
@@ -97,6 +122,9 @@ class LocalQueenSynthesisTrigger:
             ..., q_api.MergeReportResult
         ] = q_api.report_merge_result,
         mint_token_fn: Callable[..., str] = q_api.mint_installation_token,
+        list_pull_requests_fn: Callable[
+            ..., list[gh.PullRequestSnapshot]
+        ] = gh.list_pull_requests,
         get_head_sha_fn: Callable[..., str] = gh.get_pr_head_sha,
         squash_merge_fn: Callable[..., str] = gh.squash_merge_pr,
         now_fn: Callable[[], datetime] | None = None,
@@ -114,6 +142,25 @@ class LocalQueenSynthesisTrigger:
         self._log_prefix = log_prefix
         self._merge_report_queue_file = merge_report_queue_file
         self._pending_merge_reports = self._load_pending_merge_reports()
+        self._watched_repos = [
+            repo.strip()
+            for repo in watched_repos
+            if isinstance(repo, str) and repo.strip()
+        ]
+        self._pr_discovery_enabled = pr_discovery_enabled
+        self._pr_discovery_interval_secs = max(1, pr_discovery_interval_secs)
+        self._pr_discovery_room_limit = max(1, pr_discovery_room_limit)
+        self._pr_discovery_create_limit = max(0, pr_discovery_create_limit)
+        self._pr_room_quiet_period_secs = max(0, pr_room_quiet_period_secs)
+        self._pr_room_max_age_secs = max(1, pr_room_max_age_secs)
+        self._pr_room_drop_threshold_secs = max(0, pr_room_drop_threshold_secs)
+        self._pr_room_recent_closed_secs = max(0, pr_room_recent_closed_secs)
+        self._last_pr_discovery_at: datetime | None = None
+        self._known_pr_heads: dict[str, str] = {}
+        self._known_pr_states: dict[str, str] = {}
+        self._list_rooms = list_rooms_fn
+        self._create_room = create_room_fn
+        self._append_subject_updated = append_subject_updated_fn
         self._list_ready = list_ready_fn
         self._list_pending = list_pending_fn
         self._participants = participants_fn
@@ -122,6 +169,7 @@ class LocalQueenSynthesisTrigger:
         self._confirm_merge = confirm_merge_fn
         self._report_merge_result = report_merge_result_fn
         self._mint_token = mint_token_fn
+        self._list_pull_requests = list_pull_requests_fn
         self._get_head_sha = get_head_sha_fn
         self._squash_merge = squash_merge_fn
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
@@ -164,6 +212,8 @@ class LocalQueenSynthesisTrigger:
         bearer = self._token_resolver()
         if not bearer:
             return
+
+        self._maybe_discover_pr_rooms(bearer)
 
         if self._enable_squash_merge:
             if self._flush_pending_merge_reports(bearer):
@@ -286,6 +336,286 @@ class LocalQueenSynthesisTrigger:
                 flush=True,
             )
             return
+
+    def _maybe_discover_pr_rooms(self, bearer: str) -> None:
+        if (
+            not self._pr_discovery_enabled
+            or not self._watched_repos
+        ):
+            return
+
+        now = self._now_fn()
+        if self._last_pr_discovery_at is not None:
+            elapsed = (now - self._last_pr_discovery_at).total_seconds()
+            if elapsed < self._pr_discovery_interval_secs:
+                return
+        self._last_pr_discovery_at = now
+
+        try:
+            self._discover_pr_rooms(bearer, now)
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} PR discovery failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _discover_pr_rooms(self, bearer: str, now: datetime) -> None:
+        rooms = self._list_rooms(
+            self._base_url,
+            bearer,
+            limit=self._pr_discovery_room_limit,
+        )
+        rooms_by_subject = {
+            room.subject_ref: room
+            for room in rooms
+            if room.subject_type == "pr_review" and room.subject_ref
+        }
+
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+        error_count = 0
+        for repo in self._watched_repos:
+            try:
+                gh_token = self._mint_token(
+                    self._base_url,
+                    bearer,
+                    repo=repo,
+                    agent_id=self._agent_id or None,
+                )
+                prs = self._list_pull_requests(
+                    repo,
+                    token=gh_token,
+                    state="open",
+                    timeout_secs=self._gh_timeout_secs,
+                )
+                if self._has_known_open_prs(repo):
+                    prs = [
+                        *prs,
+                        *self._list_pull_requests(
+                            repo,
+                            token=gh_token,
+                            state="closed",
+                            timeout_secs=self._gh_timeout_secs,
+                        ),
+                    ]
+            except Exception as exc:
+                error_count += 1
+                print(
+                    f"{self._log_prefix} PR discovery repo={repo} failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+
+            for pr in prs:
+                if not pr.targets_default_branch:
+                    skipped_count += 1
+                    continue
+                subject_ref = f"{repo}#{pr.number}"
+                room = rooms_by_subject.get(subject_ref)
+
+                if pr.state == "open":
+                    self._known_pr_states[subject_ref] = "open"
+                    if not self._room_blocks_create(room, now):
+                        if created_count >= self._pr_discovery_create_limit:
+                            skipped_count += 1
+                            continue
+                        try:
+                            created = self._create_room(
+                                self._base_url,
+                                bearer,
+                                subject_ref=subject_ref,
+                                manager=self._agent_id or "local-queen",
+                                quiet_period_secs=self._pr_room_quiet_period_secs,
+                                max_age_secs=self._pr_room_max_age_secs,
+                                drop_threshold_secs=(
+                                    self._pr_room_drop_threshold_secs
+                                ),
+                            )
+                            created_count += 1
+                            room = q_api.RoomSummary(
+                                room_id=created.room_id,
+                                status=created.status,
+                                subject_type="pr_review",
+                                subject_ref=subject_ref,
+                                manager=self._agent_id or "local-queen",
+                                opened_at=now.isoformat(),
+                                timing_config={
+                                    "quiet_period_secs": (
+                                        self._pr_room_quiet_period_secs
+                                    ),
+                                    "max_age_secs": self._pr_room_max_age_secs,
+                                    "drop_threshold_secs": (
+                                        self._pr_room_drop_threshold_secs
+                                    ),
+                                },
+                            )
+                            rooms_by_subject[subject_ref] = room
+                        except q_api.QueenAPIConflictError as exc:
+                            if exc.code == "subject_already_open":
+                                skipped_count += 1
+                                continue
+                            error_count += 1
+                            print(
+                                f"{self._log_prefix} create room conflict "
+                                f"subject={subject_ref}: {exc.code}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        except Exception as exc:
+                            error_count += 1
+                            print(
+                                f"{self._log_prefix} create room failed "
+                                f"subject={subject_ref}: "
+                                f"{type(exc).__name__}: {exc}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        finally:
+                            if pr.head_sha:
+                                self._known_pr_heads[subject_ref] = pr.head_sha
+                        continue
+
+                    if room is not None and pr.head_sha:
+                        if self._maybe_emit_head_update(
+                            bearer=bearer,
+                            room=room,
+                            subject_ref=subject_ref,
+                            head_sha=pr.head_sha,
+                        ):
+                            updated_count += 1
+                    continue
+
+                if room is not None and self._known_pr_states.get(subject_ref) == "open":
+                    emitted_closed = self._maybe_emit_closed_update(
+                        bearer=bearer,
+                        room=room,
+                        subject_ref=subject_ref,
+                    )
+                    if emitted_closed:
+                        updated_count += 1
+                    if emitted_closed or room.status in {"closed", "expired"}:
+                        self._known_pr_states[subject_ref] = pr.state or "closed"
+
+        if created_count or updated_count or error_count:
+            print(
+                f"{self._log_prefix} PR discovery "
+                f"created={created_count} updated={updated_count} "
+                f"skipped={skipped_count} errors={error_count}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _room_blocks_create(
+        self,
+        room: q_api.RoomSummary | None,
+        now: datetime,
+    ) -> bool:
+        if room is None:
+            return False
+        if room.status != "closed":
+            return True
+        if self._pr_room_recent_closed_secs <= 0:
+            return False
+        closed_at = _parse_iso(room.closed_at) or _parse_iso(room.opened_at)
+        if closed_at is None:
+            return True
+        age = (now - closed_at).total_seconds()
+        return age < self._pr_room_recent_closed_secs
+
+    def _maybe_emit_head_update(
+        self,
+        *,
+        bearer: str,
+        room: q_api.RoomSummary,
+        subject_ref: str,
+        head_sha: str,
+    ) -> bool:
+        previous_head = self._known_pr_heads.get(subject_ref)
+        if previous_head is None:
+            self._known_pr_heads[subject_ref] = head_sha
+            return False
+        if previous_head == head_sha:
+            return False
+        emitted = self._emit_subject_updated(
+            bearer=bearer,
+            room=room,
+            subject_ref=subject_ref,
+            change_kind="synchronize",
+            head_sha=head_sha,
+        )
+        if emitted:
+            self._known_pr_heads[subject_ref] = head_sha
+        return emitted
+
+    def _maybe_emit_closed_update(
+        self,
+        *,
+        bearer: str,
+        room: q_api.RoomSummary,
+        subject_ref: str,
+    ) -> bool:
+        return self._emit_subject_updated(
+            bearer=bearer,
+            room=room,
+            subject_ref=subject_ref,
+            change_kind="closed",
+            head_sha=None,
+        )
+
+    def _emit_subject_updated(
+        self,
+        *,
+        bearer: str,
+        room: q_api.RoomSummary,
+        subject_ref: str,
+        change_kind: str,
+        head_sha: str | None,
+    ) -> bool:
+        if room.status != "awaiting_contributions":
+            return False
+        key_head = head_sha or "no-sha"
+        idempotency_key = (
+            f"local-queen.subject_updated.{room.room_id}."
+            f"{change_kind}.{key_head}"
+        )
+        try:
+            self._append_subject_updated(
+                self._base_url,
+                room.room_id,
+                bearer,
+                change_kind=change_kind,
+                head_sha=head_sha,
+                idempotency_key=idempotency_key,
+            )
+            return True
+        except q_api.QueenAPIConflictError as exc:
+            print(
+                f"{self._log_prefix} subject_updated skipped "
+                f"subject={subject_ref}: {exc.code}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+        except Exception as exc:
+            print(
+                f"{self._log_prefix} subject_updated failed "
+                f"subject={subject_ref}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
+    def _has_known_open_prs(self, repo: str) -> bool:
+        prefix = f"{repo}#"
+        return any(
+            subject_ref.startswith(prefix) and state == "open"
+            for subject_ref, state in self._known_pr_states.items()
+        )
 
     def _confirm_pending_merge(self, bearer: str) -> bool:
         try:

@@ -344,13 +344,13 @@ class HivemootWarRoomsConfig(StrictPluginConfig):
 
 
 class HivemootQueenConfig(StrictPluginConfig):
-    """Local queen runner — claims synthesis-ready rooms and posts
-    verified GitHub comments through the local hive container.
+    """Local queen runner — owns PR review-room lifecycle in local mode.
 
-    Disabled by default. Operators should enable this only after the
-    web-side local-queen endpoints are deployed and the installation is
-    still in cloud mode; the final ``queen_mode=local`` flip is a
-    separate rollout step.
+    Disabled by default. When an installation's ``queen_mode`` is set
+    to ``local``, one hive runner should enable this block with
+    ``watched_repos`` so it creates PR review rooms, watches those
+    rooms, and posts/seals decisions without the cloud bot owning the
+    PR war-room path.
     """
 
     enabled: bool = Field(
@@ -415,6 +415,65 @@ class HivemootQueenConfig(StrictPluginConfig):
             "``gh pr merge --squash``, and report the GitHub outcome. "
             "Keep false until the web confirm/report endpoints are deployed."
         ),
+    )
+    watched_repos: list[str] = Field(
+        default_factory=list,
+        description=(
+            "owner/name repositories whose open PRs the local queen "
+            "periodically discovers. Required for queen_mode=local to "
+            "create PR review rooms without cloud webhook ownership."
+        ),
+    )
+    pr_discovery_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable periodic PR discovery for watched_repos. Leave true "
+            "in local queen mode; set false only for synthesis-only tests."
+        ),
+    )
+    pr_discovery_interval_secs: int = Field(
+        default=900,
+        ge=60,
+        description=(
+            "Seconds between local queen PR sweeps. The sweep is a "
+            "polling backstop for webhook/listener gaps and creates "
+            "missing PR review rooms idempotently."
+        ),
+    )
+    pr_discovery_room_limit: int = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="Max rooms fetched from /api/rooms during each PR sweep.",
+    )
+    pr_discovery_create_limit: int = Field(
+        default=20,
+        ge=0,
+        le=100,
+        description="Max missing PR review rooms created in one sweep.",
+    )
+    pr_room_recent_closed_secs: int = Field(
+        default=21600,
+        ge=0,
+        description=(
+            "Cooldown after a closed room before the PR sweep may open "
+            "another room for the same PR. 0 disables the cooldown."
+        ),
+    )
+    pr_room_quiet_period_secs: int = Field(
+        default=180,
+        ge=0,
+        description="quiet_period_secs for PR review rooms created locally.",
+    )
+    pr_room_max_age_secs: int = Field(
+        default=3600,
+        ge=60,
+        description="max_age_secs for PR review rooms created locally.",
+    )
+    pr_room_drop_threshold_secs: int = Field(
+        default=1200,
+        ge=0,
+        description="drop_threshold_secs for PR review rooms created locally.",
     )
     merge_report_queue_file: Path = Field(
         default=Path("/tmp/hivemoot-queen-merge-reports.json"),

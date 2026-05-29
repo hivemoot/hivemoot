@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
 from hivemoot_agent.plugins_builtin.hivemoot.http import (
     DEFAULT_TIMEOUT_SECS,
@@ -22,16 +23,21 @@ from hivemoot_agent.plugins_builtin.hivemoot.http import (
 __all__ = (
     "ClaimedSynthesis",
     "ConfirmMergeResult",
+    "CreatedRoom",
     "MergeReportResult",
     "QueenAPIConflictError",
     "ResolveActionResult",
+    "RoomSummary",
     "SealDecisionResult",
     "SynthesisReadyRoom",
+    "append_subject_updated_event",
     "claim_synthesis",
     "confirm_merge",
+    "create_pr_review_room",
     "get_room_participants",
     "list_room_events",
     "list_decided_pending_ready_rooms",
+    "list_rooms",
     "list_synthesis_ready_rooms",
     "mint_installation_token",
     "report_merge_result",
@@ -64,6 +70,26 @@ class SynthesisReadyRoom:
     manager: str
     opened_at: str
     timing_config: dict[str, Any] = field(default_factory=dict)
+    closed_at: str = ""
+
+
+@dataclass
+class RoomSummary:
+    room_id: str
+    status: str
+    subject_type: str
+    subject_ref: str
+    manager: str
+    opened_at: str
+    timing_config: dict[str, Any] = field(default_factory=dict)
+    closed_at: str = ""
+
+
+@dataclass
+class CreatedRoom:
+    room_id: str
+    subject_ref: str
+    status: str
 
 
 @dataclass
@@ -154,6 +180,25 @@ def _parse_ready_room(entry: dict[str, Any]) -> SynthesisReadyRoom:
         timing_config=_as_dict(
             entry.get("timing_config") or entry.get("timingConfig"),
         ),
+        closed_at=str(entry.get("closed_at") or entry.get("closedAt") or ""),
+    )
+
+
+def _parse_room_summary(entry: dict[str, Any]) -> RoomSummary:
+    room_id = str(entry.get("roomId") or entry.get("room_id") or "").strip()
+    if not room_id:
+        raise RuntimeError(f"room summary missing roomId: {str(entry)[:200]}")
+    return RoomSummary(
+        room_id=room_id,
+        status=str(entry.get("status") or ""),
+        subject_type=str(entry.get("subject_type") or entry.get("subjectType") or ""),
+        subject_ref=str(entry.get("subject_ref") or entry.get("subjectRef") or ""),
+        manager=str(entry.get("manager") or ""),
+        opened_at=str(entry.get("opened_at") or entry.get("openedAt") or ""),
+        timing_config=_as_dict(
+            entry.get("timing_config") or entry.get("timingConfig"),
+        ),
+        closed_at=str(entry.get("closed_at") or entry.get("closedAt") or ""),
     )
 
 
@@ -215,6 +260,118 @@ def list_decided_pending_ready_rooms(
         if isinstance(entry, dict):
             rooms.append(_parse_ready_room(entry))
     return rooms
+
+
+def list_rooms(
+    base_url: str,
+    bearer: str,
+    *,
+    limit: int = 200,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> list[RoomSummary]:
+    url = f"{base_url.rstrip('/')}/api/rooms?limit={max(1, int(limit))}"
+    status, parsed, raw = get_json(url, bearer, timeout=timeout)
+    if status != 200:
+        raise RuntimeError(f"rooms returned status {status}: {_body_excerpt(raw)}")
+    if not isinstance(parsed, dict):
+        raise RuntimeError("rooms response was not a JSON object")
+    rooms_raw = parsed.get("rooms")
+    if rooms_raw is None:
+        return []
+    if not isinstance(rooms_raw, list):
+        raise RuntimeError("rooms response `rooms` must be a list")
+    rooms: list[RoomSummary] = []
+    for entry in rooms_raw:
+        if isinstance(entry, dict):
+            rooms.append(_parse_room_summary(entry))
+    return rooms
+
+
+def create_pr_review_room(
+    base_url: str,
+    bearer: str,
+    *,
+    subject_ref: str,
+    manager: str,
+    quiet_period_secs: int = 180,
+    max_age_secs: int = 3600,
+    drop_threshold_secs: int = 1200,
+    room_id: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> CreatedRoom:
+    created_room_id = room_id or str(uuid4())
+    url = f"{base_url.rstrip('/')}/api/rooms"
+    status, parsed, raw = post_json(
+        url,
+        {
+            "roomId": created_room_id,
+            "manager": manager,
+            "subject": {"type": "pr_review", "ref": subject_ref},
+            "timing": {
+                "quiet_period_secs": max(0, int(quiet_period_secs)),
+                "max_age_secs": max(1, int(max_age_secs)),
+                "drop_threshold_secs": max(0, int(drop_threshold_secs)),
+            },
+        },
+        bearer,
+        timeout=timeout,
+    )
+    if status == 409 and isinstance(parsed, dict):
+        raise QueenAPIConflictError(
+            "create-room",
+            str(parsed.get("code") or "conflict"),
+            _body_excerpt(raw),
+        )
+    if status != 201:
+        raise RuntimeError(
+            f"create-room returned status {status}: {_body_excerpt(raw)}"
+        )
+    if not isinstance(parsed, dict):
+        raise RuntimeError("create-room response was not a JSON object")
+    return CreatedRoom(
+        room_id=str(parsed.get("roomId") or parsed.get("room_id") or created_room_id),
+        subject_ref=str(parsed.get("subject_ref") or parsed.get("subjectRef") or subject_ref),
+        status=str(parsed.get("status") or "awaiting_contributions"),
+    )
+
+
+def append_subject_updated_event(
+    base_url: str,
+    room_id: str,
+    bearer: str,
+    *,
+    change_kind: str,
+    head_sha: str | None = None,
+    idempotency_key: str,
+    timeout: int = DEFAULT_TIMEOUT_SECS,
+) -> int:
+    url = f"{base_url.rstrip('/')}/api/rooms/{_room_path(room_id)}/event"
+    body: dict[str, Any] = {"change_kind": change_kind}
+    if head_sha:
+        body["head_sha"] = head_sha
+    status, parsed, raw = post_json(
+        url,
+        {
+            "event_type": "subject_updated",
+            "body": body,
+            "idempotencyKey": idempotency_key,
+        },
+        bearer,
+        timeout=timeout,
+    )
+    if status == 409 and isinstance(parsed, dict):
+        raise QueenAPIConflictError(
+            "subject-updated",
+            str(parsed.get("code") or "conflict"),
+            _body_excerpt(raw),
+        )
+    if status != 200:
+        raise RuntimeError(
+            f"subject-updated returned status {status}: {_body_excerpt(raw)}"
+        )
+    if not isinstance(parsed, dict):
+        raise RuntimeError("subject-updated response was not a JSON object")
+    return _as_int(parsed.get("sequence"))
 
 
 def get_room_participants(
