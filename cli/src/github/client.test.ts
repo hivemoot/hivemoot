@@ -17,7 +17,7 @@ import { promisify } from "util";
 const execFilePromisified = promisify(execFile) as unknown as ReturnType<typeof vi.fn>;
 
 // Dynamic import so the module picks up our mock
-const { gh, setGhToken, ghWithHeaders, parseHeadersAndBody } = await import("./client.js");
+const { gh, setGhToken, ghWithHeaders, parseHeadersAndBody, ghPaginatedList } = await import("./client.js");
 
 function mockSuccess(stdout: string) {
   execFilePromisified.mockResolvedValue({ stdout, stderr: "" });
@@ -221,6 +221,7 @@ describe("parseHeadersAndBody()", () => {
 });
 
 describe("ghWithHeaders()", () => {
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -274,6 +275,64 @@ describe("ghWithHeaders()", () => {
     );
 
     await expect(ghWithHeaders(["api", "-i", "/repos/foo/bar/notifications"])).rejects.toMatchObject({
+      code: "GH_ERROR",
+    });
+  });
+});
+
+describe("ghPaginatedList()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls gh with --paginate --slurp and the given api path", async () => {
+    mockSuccess(JSON.stringify([[{ id: 1 }]]));
+
+    await ghPaginatedList("/repos/foo/bar/notifications");
+
+    expect(execFilePromisified.mock.calls[0][1]).toEqual([
+      "api", "--paginate", "--slurp", "/repos/foo/bar/notifications",
+    ]);
+  });
+
+  it("returns flattened items from a single page", async () => {
+    mockSuccess(JSON.stringify([[{ id: 1 }, { id: 2 }]]));
+
+    const result = await ghPaginatedList<{ id: number }>("/repos/foo/bar/items");
+
+    expect(result).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it("returns flattened items from multiple pages", async () => {
+    mockSuccess(JSON.stringify([[{ id: 1 }], [{ id: 2 }, { id: 3 }]]));
+
+    const result = await ghPaginatedList<{ id: number }>("/repos/foo/bar/items");
+
+    expect(result).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  it("returns empty array for empty response", async () => {
+    mockSuccess(JSON.stringify([[]]));
+
+    const result = await ghPaginatedList("/repos/foo/bar/items");
+
+    expect(result).toEqual([]);
+  });
+
+  it("throws CliError on invalid JSON response", async () => {
+    mockSuccess("this is not json");
+
+    await expect(ghPaginatedList("/repos/foo/bar/items")).rejects.toThrow(CliError);
+    await expect(ghPaginatedList("/repos/foo/bar/items")).rejects.toMatchObject({
+      code: "GH_ERROR",
+    });
+  });
+
+  it("throws CliError when response is a non-array (e.g. object)", async () => {
+    mockSuccess(JSON.stringify({ unexpected: true }));
+
+    await expect(ghPaginatedList("/repos/foo/bar/items")).rejects.toThrow(CliError);
+    await expect(ghPaginatedList("/repos/foo/bar/items")).rejects.toMatchObject({
       code: "GH_ERROR",
     });
   });

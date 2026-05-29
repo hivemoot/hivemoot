@@ -1,20 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CliError } from "../config/types.js";
 
-vi.mock("./client.js", () => ({
-  gh: vi.fn(),
-}));
+vi.mock("./client.js", async (importActual) => {
+  const actual = await importActual<typeof import("./client.js")>();
+  return { ...actual, ghPaginatedList: vi.fn() };
+});
 
 vi.mock("../watch/state.js", () => ({
   loadState: vi.fn(),
   buildLatestProcessedByThread: vi.fn(),
 }));
 
-import { gh } from "./client.js";
+import { ghPaginatedList } from "./client.js";
 import { loadState, buildLatestProcessedByThread } from "../watch/state.js";
 import { fetchNotificationsPull } from "./fetch-notifications.js";
 
-const mockedGh = vi.mocked(gh);
+const mockedGhPaginatedList = vi.mocked(ghPaginatedList);
 const mockedLoadState = vi.mocked(loadState);
 const mockedBuildLatest = vi.mocked(buildLatestProcessedByThread);
 
@@ -52,20 +53,17 @@ beforeEach(() => {
 
 describe("fetchNotificationsPull()", () => {
   describe("basic fetching", () => {
-    it("calls gh with --paginate --slurp on the notifications endpoint", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[]]));
+    it("calls ghPaginatedList with the notifications endpoint path", async () => {
+      mockedGhPaginatedList.mockResolvedValue([]);
       mockedLoadState.mockResolvedValue({ lastChecked: "", processedThreadIds: [] });
       await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
-      expect(mockedGh).toHaveBeenCalledWith([
-        "api",
-        "--paginate",
-        "--slurp",
-        "/repos/hivemoot/hivemoot/notifications?all=false",
-      ]);
+      expect(mockedGhPaginatedList).toHaveBeenCalledWith(
+        "/repos/hivemoot/hivemoot/notifications?all=false"
+      );
     });
 
     it("returns schema-versioned result with kind notifications_pull", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[]]));
+      mockedGhPaginatedList.mockResolvedValue([]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.schemaVersion).toBe(1);
       expect(result.kind).toBe("notifications_pull");
@@ -73,15 +71,15 @@ describe("fetchNotificationsPull()", () => {
     });
 
     it("returns empty notifications array when no notifications", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[]]));
+      mockedGhPaginatedList.mockResolvedValue([]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications).toHaveLength(0);
     });
 
-    it("handles multi-page responses (array of arrays)", async () => {
+    it("handles multi-page responses (already flattened by ghPaginatedList)", async () => {
       const page1 = [makeRawNotification({ id: "thread-1" })];
       const page2 = [makeRawNotification({ id: "thread-2", updated_at: "2026-03-03T11:00:00Z" })];
-      mockedGh.mockResolvedValue(JSON.stringify([page1, page2]));
+      mockedGhPaginatedList.mockResolvedValue([...page1, ...page2]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications).toHaveLength(2);
     });
@@ -89,16 +87,16 @@ describe("fetchNotificationsPull()", () => {
 
   describe("filtering", () => {
     it("skips non-unread notifications", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[
+      mockedGhPaginatedList.mockResolvedValue([
         makeRawNotification({ unread: false }),
-      ]]));
+      ]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications).toHaveLength(0);
     });
 
     it("skips non-Issue/PR notification types", async () => {
       const n = makeRawNotification({ type: "Release" });
-      mockedGh.mockResolvedValue(JSON.stringify([[n]]));
+      mockedGhPaginatedList.mockResolvedValue([n]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications).toHaveLength(0);
     });
@@ -106,7 +104,7 @@ describe("fetchNotificationsPull()", () => {
     it("applies reason filter when reasons does not include *", async () => {
       const mention = makeRawNotification({ reason: "mention" });
       const author = makeRawNotification({ id: "thread-2", reason: "author" });
-      mockedGh.mockResolvedValue(JSON.stringify([[mention, author]]));
+      mockedGhPaginatedList.mockResolvedValue([mention, author]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["mention"]);
       expect(result.notifications).toHaveLength(1);
       expect(result.notifications[0]!.reason).toBe("mention");
@@ -115,19 +113,19 @@ describe("fetchNotificationsPull()", () => {
     it("returns all reasons when reasons includes *", async () => {
       const mention = makeRawNotification({ reason: "mention" });
       const author = makeRawNotification({ id: "thread-2", reason: "author" });
-      mockedGh.mockResolvedValue(JSON.stringify([[mention, author]]));
+      mockedGhPaginatedList.mockResolvedValue([mention, author]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications).toHaveLength(2);
     });
 
     it("sets reasons field to [*] when unfiltered", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[]]));
+      mockedGhPaginatedList.mockResolvedValue([]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.reasons).toEqual(["*"]);
     });
 
     it("sets reasons field to applied filter when filtered", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[]]));
+      mockedGhPaginatedList.mockResolvedValue([]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["mention", "review_requested"]);
       expect(result.reasons).toEqual(["mention", "review_requested"]);
     });
@@ -141,9 +139,9 @@ describe("fetchNotificationsPull()", () => {
         lastChecked: "2026-03-03T09:00:00Z",
         processedThreadIds: ["thread-1:2026-03-03T10:00:00Z"],
       });
-      mockedGh.mockResolvedValue(JSON.stringify([[
+      mockedGhPaginatedList.mockResolvedValue([
         makeRawNotification({ id: "thread-1", updated_at: "2026-03-03T10:00:00Z" }),
-      ]]));
+      ]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"], ".hivemoot-watch.json");
       expect(result.notifications).toHaveLength(0);
     });
@@ -155,15 +153,15 @@ describe("fetchNotificationsPull()", () => {
         lastChecked: "2026-03-03T09:00:00Z",
         processedThreadIds: ["thread-1:2026-03-03T09:00:00Z"],
       });
-      mockedGh.mockResolvedValue(JSON.stringify([[
+      mockedGhPaginatedList.mockResolvedValue([
         makeRawNotification({ id: "thread-1", updated_at: "2026-03-03T10:00:00Z" }),
-      ]]));
+      ]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"], ".hivemoot-watch.json");
       expect(result.notifications).toHaveLength(1);
     });
 
     it("proceeds without cursor when stateFilePath is not provided", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[makeRawNotification()]]));
+      mockedGhPaginatedList.mockResolvedValue([makeRawNotification()]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(mockedLoadState).not.toHaveBeenCalled();
       expect(result.notifications).toHaveLength(1);
@@ -171,7 +169,7 @@ describe("fetchNotificationsPull()", () => {
 
     it("proceeds without cursor when state file load fails", async () => {
       mockedLoadState.mockRejectedValue(new Error("file not found"));
-      mockedGh.mockResolvedValue(JSON.stringify([[makeRawNotification()]]));
+      mockedGhPaginatedList.mockResolvedValue([makeRawNotification()]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"], ".hivemoot-watch.json");
       expect(result.notifications).toHaveLength(1);
     });
@@ -179,9 +177,9 @@ describe("fetchNotificationsPull()", () => {
 
   describe("notification item shape", () => {
     it("includes correct fields for Issue notification", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[
+      mockedGhPaginatedList.mockResolvedValue([
         makeRawNotification({ id: "t1", reason: "mention", type: "Issue", title: "My issue" }),
-      ]]));
+      ]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       const n = result.notifications[0]!;
       expect(n.threadId).toBe("t1");
@@ -193,9 +191,9 @@ describe("fetchNotificationsPull()", () => {
     });
 
     it("includes correct fields for PullRequest notification", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify([[
+      mockedGhPaginatedList.mockResolvedValue([
         makeRawNotification({ type: "PullRequest" }),
-      ]]));
+      ]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       const n = result.notifications[0]!;
       expect(n.itemType).toBe("PullRequest");
@@ -205,7 +203,7 @@ describe("fetchNotificationsPull()", () => {
     it("sets number to null when subject URL has no parseable number", async () => {
       const n = makeRawNotification();
       n.subject.url = "https://api.github.com/repos/hivemoot/hivemoot/issues/not-a-number";
-      mockedGh.mockResolvedValue(JSON.stringify([[n]]));
+      mockedGhPaginatedList.mockResolvedValue([n]);
       const result = await fetchNotificationsPull("hivemoot/hivemoot", ["*"]);
       expect(result.notifications[0]!.number).toBeNull();
       expect(result.notifications[0]!.url).toBeNull();
@@ -213,16 +211,20 @@ describe("fetchNotificationsPull()", () => {
   });
 
   describe("error handling", () => {
-    it("throws CliError on invalid JSON response", async () => {
-      mockedGh.mockResolvedValue("not json");
+    it("propagates CliError from ghPaginatedList (e.g. parse failure)", async () => {
+      mockedGhPaginatedList.mockRejectedValue(
+        new CliError("Failed to parse paginated response", "GH_ERROR", 1)
+      );
       await expect(fetchNotificationsPull("hivemoot/hivemoot", ["*"])).rejects.toMatchObject({
         code: "GH_ERROR",
         message: expect.stringContaining("Failed to parse"),
       });
     });
 
-    it("throws CliError when response is not an array", async () => {
-      mockedGh.mockResolvedValue(JSON.stringify({ error: "bad" }));
+    it("propagates CliError from ghPaginatedList (e.g. unexpected shape)", async () => {
+      mockedGhPaginatedList.mockRejectedValue(
+        new CliError("Unexpected paginated response shape", "GH_ERROR", 1)
+      );
       await expect(fetchNotificationsPull("hivemoot/hivemoot", ["*"])).rejects.toMatchObject({
         code: "GH_ERROR",
         message: expect.stringContaining("Unexpected"),
@@ -230,7 +232,7 @@ describe("fetchNotificationsPull()", () => {
     });
 
     it("propagates gh CliError as-is", async () => {
-      mockedGh.mockRejectedValue(new CliError("HTTP 403", "GH_ERROR", 1));
+      mockedGhPaginatedList.mockRejectedValue(new CliError("HTTP 403", "GH_ERROR", 1));
       await expect(fetchNotificationsPull("hivemoot/hivemoot", ["*"])).rejects.toMatchObject({
         code: "GH_ERROR",
         message: "HTTP 403",

@@ -1,5 +1,4 @@
-import { CliError } from "../config/types.js";
-import { gh } from "./client.js";
+import { ghPaginatedList } from "./client.js";
 import { parseSubjectNumber } from "./notifications.js";
 import { buildLatestProcessedByThread, loadState } from "../watch/state.js";
 
@@ -69,33 +68,9 @@ export async function fetchNotificationsPull(
     }
   }
 
-  const raw = await gh([
-    "api",
-    "--paginate",
-    "--slurp",
+  const allNotifications = await ghPaginatedList<RawNotification>(
     `/repos/${repo}/notifications?all=false`,
-  ]);
-
-  let pages: RawNotification[][];
-  try {
-    pages = JSON.parse(raw) as RawNotification[][];
-  } catch {
-    throw new CliError(
-      "Failed to parse GitHub notifications API response",
-      "GH_ERROR",
-      1,
-    );
-  }
-
-  if (!Array.isArray(pages)) {
-    throw new CliError(
-      "Unexpected GitHub notifications API response shape",
-      "GH_ERROR",
-      1,
-    );
-  }
-
-  const allNotifications = pages.flat();
+  );
   const filterByReason = reasons.length > 0 && !reasons.includes("*");
 
   const items: NotificationItem[] = [];

@@ -138,3 +138,35 @@ export async function ghWithHeaders(args: string[]): Promise<GhHeadersResult> {
     handleGhError(err);
   }
 }
+
+/**
+ * Fetch a paginated GitHub API endpoint and return all items as a flat array.
+ *
+ * Uses `--paginate --slurp` to collect all pages into an outer array, then
+ * flattens them. Throws a typed CliError on parse failure or unexpected shape
+ * rather than silently returning an empty list.
+ */
+export async function ghPaginatedList<T>(apiPath: string): Promise<T[]> {
+  const raw = await gh(["api", "--paginate", "--slurp", apiPath]);
+
+  let pages: unknown;
+  try {
+    pages = JSON.parse(raw);
+  } catch {
+    throw new CliError(
+      `Failed to parse paginated response for ${apiPath}`,
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  if (!Array.isArray(pages)) {
+    throw new CliError(
+      `Unexpected non-array response from GitHub API: ${apiPath}`,
+      "GH_ERROR",
+      1,
+    );
+  }
+
+  return (pages as T[][]).flat();
+}

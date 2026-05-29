@@ -1,6 +1,6 @@
 import type { RepoRef, MentionEvent } from "../config/types.js";
 import { CliError } from "../config/types.js";
-import { gh, ghWithHeaders } from "./client.js";
+import { gh, ghPaginatedList, ghWithHeaders } from "./client.js";
 
 export interface NotificationInfo {
   threadId: string;   // GitHub notification thread ID — needed for ack
@@ -85,15 +85,9 @@ function subjectHtmlUrl(
  * When multiple notifications exist for the same item, keeps the most recent.
  */
 export async function fetchNotifications(repo: RepoRef): Promise<NotificationMap> {
-  const raw = await gh([
-    "api",
-    "--paginate",
-    "--slurp",
+  const notifications = await ghPaginatedList<RawNotification>(
     `/repos/${repo.owner}/${repo.repo}/notifications`,
-  ]);
-
-  const pages: RawNotification[][] = JSON.parse(raw);
-  const notifications: RawNotification[] = pages.flat();
+  );
   const map: NotificationMap = new Map();
 
   for (const n of notifications) {
@@ -137,17 +131,9 @@ export async function fetchMentionNotifications(
     params.set("since", since);
   }
 
-  const args = [
-    "api",
-    "--paginate",
-    "--slurp",
+  const notifications = await ghPaginatedList<RawNotification>(
     `/repos/${repo}/notifications?${params}`,
-  ];
-
-  const raw = await gh(args);
-
-  const pages: RawNotification[][] = JSON.parse(raw);
-  const notifications: RawNotification[] = pages.flat();
+  );
 
   return notifications.filter((n) => {
     if (!n.unread) return false;
