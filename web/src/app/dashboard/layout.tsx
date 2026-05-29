@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { DashboardNav } from "./DashboardNav";
+import DashboardAccount from "./DashboardAccount";
 
 export default function DashboardLayout({
   children,
@@ -10,17 +11,20 @@ export default function DashboardLayout({
     <div className="relative min-h-screen">
       <nav className="border-b border-white/5">
         <div className="mx-auto max-w-5xl px-6">
-          <div className="flex items-center gap-2 py-4">
-            <Link
-              href="/"
-              className="text-sm font-semibold text-honey-500 transition-colors hover:text-honey-400"
-            >
-              Hivemoot
-            </Link>
-            <span className="text-zinc-600" aria-hidden="true">
-              /
-            </span>
-            <span className="text-sm text-zinc-400">Dashboard</span>
+          <div className="flex items-center justify-between gap-2 py-4">
+            <div className="flex items-center gap-2">
+              <Link
+                href="/"
+                className="text-sm font-semibold text-honey-500 transition-colors hover:text-honey-400"
+              >
+                Hivemoot
+              </Link>
+              <span className="text-zinc-600" aria-hidden="true">
+                /
+              </span>
+              <span className="text-sm text-zinc-400">Dashboard</span>
+            </div>
+            <DashboardAccount />
           </div>
           <DashboardNav />
         </div>
