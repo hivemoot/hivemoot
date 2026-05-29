@@ -133,6 +133,25 @@ def _claimed_with(participants: dict[str, object]) -> ClaimedSynthesis:
     )
 
 
+def _ready_events(
+    *,
+    head_sha: str = "abc123",
+    timestamp: str = "2026-05-15T00:00:00Z",
+) -> list[dict[str, object]]:
+    return [
+        {"seq": 1, "timestamp": timestamp, "event_type": "room_opened"},
+        {
+            "seq": 2,
+            "timestamp": timestamp,
+            "event_type": "subject_updated",
+            "body": {
+                "change_kind": "synchronize",
+                "head_sha": head_sha,
+            },
+        },
+    ]
+
+
 class LocalQueenTriggerTests(unittest.TestCase):
     def test_dispatches_claimed_ready_room_with_head_sha(self) -> None:
         plugin = SlotPlugin()
@@ -146,9 +165,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             agent_id="queen-a",
             list_ready_fn=MagicMock(return_value=[_room()]),
             participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
-            events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
-            ),
+            events_fn=MagicMock(return_value=_ready_events()),
             claim_fn=MagicMock(return_value=_claimed()),
             mint_token_fn=MagicMock(return_value="ghs_x"),
             get_head_sha_fn=MagicMock(return_value="abc123"),
@@ -180,9 +197,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             enable_squash_merge=True,
             list_ready_fn=MagicMock(return_value=[_room()]),
             participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
-            events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
-            ),
+            events_fn=MagicMock(return_value=_ready_events()),
             claim_fn=MagicMock(return_value=_claimed()),
             mint_token_fn=MagicMock(return_value="ghs_x"),
             get_head_sha_fn=MagicMock(return_value="abc123"),
@@ -289,9 +304,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             participants_fn=MagicMock(
                 return_value={"guard": {"status": "resolved"}}
             ),
-            events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
-            ),
+            events_fn=MagicMock(return_value=_ready_events()),
             claim_fn=claim_fn,
             mint_token_fn=MagicMock(return_value="ghs_x"),
             get_head_sha_fn=get_head_sha,
@@ -300,8 +313,10 @@ class LocalQueenTriggerTests(unittest.TestCase):
         trigger._tick(dispatcher)
         claim_fn.assert_called_once()
         dispatcher.dispatch.assert_not_called()
-        # Fail-fast: bail before the head-SHA capture network call.
-        get_head_sha.assert_not_called()
+        # The synthesis-time freshness gate captures the head before
+        # claim, then bails before dispatch when the claimed snapshot
+        # is no longer eligible.
+        get_head_sha.assert_called_once()
 
     def test_skips_when_claim_snapshot_has_pending_participant(self) -> None:
         # Read-then-claim race: a participant re-RSVPs to pending between the
@@ -325,9 +340,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             participants_fn=MagicMock(
                 return_value={"guard": {"status": "resolved"}}
             ),
-            events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
-            ),
+            events_fn=MagicMock(return_value=_ready_events()),
             claim_fn=claim_fn,
             mint_token_fn=MagicMock(return_value="ghs_x"),
             get_head_sha_fn=MagicMock(return_value="abc123"),
@@ -370,9 +383,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             agent_id="queen-a",
             list_ready_fn=MagicMock(return_value=[_room()]),
             participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
-            events_fn=MagicMock(
-                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
-            ),
+            events_fn=MagicMock(return_value=_ready_events()),
             claim_fn=MagicMock(return_value=_claimed()),
             mint_token_fn=MagicMock(return_value="ghs_x"),
             get_head_sha_fn=MagicMock(return_value="abc123"),
@@ -381,6 +392,72 @@ class LocalQueenTriggerTests(unittest.TestCase):
         trigger._tick(dispatcher)
         self.assertEqual(plugin.reserved, 1)
         self.assertEqual(plugin.released, 1)
+
+    def test_synthesis_skips_and_updates_when_head_is_stale(self) -> None:
+        append_update = MagicMock(return_value=3)
+        claim_fn = MagicMock(return_value=_claimed())
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
+            events_fn=MagicMock(return_value=_ready_events(head_sha="old-head")),
+            append_subject_updated_fn=append_update,
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="new-head"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(dispatcher)
+
+        claim_fn.assert_not_called()
+        dispatcher.dispatch.assert_not_called()
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "room-1",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="new-head",
+            idempotency_key=(
+                "local-queen.subject_updated.room-1.synchronize.new-head"
+            ),
+        )
+
+    def test_synthesis_skips_when_head_changes_during_claim(self) -> None:
+        append_update = MagicMock(return_value=3)
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(return_value={"guard": {"status": "resolved"}}),
+            events_fn=MagicMock(return_value=_ready_events(head_sha="old-head")),
+            append_subject_updated_fn=append_update,
+            claim_fn=MagicMock(return_value=_claimed()),
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(side_effect=["old-head", "new-head"]),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+
+        trigger._tick(dispatcher)
+
+        dispatcher.dispatch.assert_not_called()
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "room-1",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="new-head",
+            idempotency_key=(
+                "local-queen.subject_updated.room-1.synchronize.new-head"
+            ),
+        )
 
     def test_pr_discovery_creates_missing_review_room(self) -> None:
         dispatcher = MagicMock()

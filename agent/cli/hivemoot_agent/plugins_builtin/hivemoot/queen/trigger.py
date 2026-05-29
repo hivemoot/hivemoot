@@ -241,6 +241,19 @@ class LocalQueenSynthesisTrigger:
                 continue
 
             try:
+                reviewed_head_sha = self._ensure_room_head_fresh(room, bearer)
+            except Exception as exc:
+                print(
+                    f"{self._log_prefix} head freshness check failed "
+                    f"room={room.room_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
+            if not reviewed_head_sha:
+                continue
+
+            try:
                 claimed = self._claim(
                     self._base_url,
                     room.room_id,
@@ -281,31 +294,36 @@ class LocalQueenSynthesisTrigger:
                 continue
 
             try:
-                pr = gh.parse_subject_ref(room.subject_ref)
-                gh_token = self._mint_token(
-                    self._base_url,
-                    bearer,
-                    repo=pr.full_repo,
-                    agent_id=self._agent_id or None,
-                )
-                reviewed_head_sha = self._get_head_sha(
-                    pr,
-                    token=gh_token,
-                    timeout_secs=self._gh_timeout_secs,
-                )
+                current_head_sha = self._current_pr_head(room, bearer)
             except Exception as exc:
                 print(
-                    f"{self._log_prefix} head-sha capture failed "
+                    f"{self._log_prefix} post-claim head-sha capture failed "
                     f"room={room.room_id}: {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
                 return
 
+            if current_head_sha != reviewed_head_sha:
+                self._emit_subject_updated(
+                    bearer=bearer,
+                    room=room,
+                    subject_ref=room.subject_ref,
+                    change_kind="synchronize",
+                    head_sha=current_head_sha,
+                )
+                print(
+                    f"{self._log_prefix} room={room.room_id} skipped: "
+                    "PR head changed during claim; requested fresh reviews",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+
             job = self._build_job(
                 room=room,
                 claimed=claimed,
-                reviewed_head_sha=reviewed_head_sha,
+                reviewed_head_sha=current_head_sha,
             )
 
             self._plugin.reserve_queen_slot()
@@ -572,7 +590,7 @@ class LocalQueenSynthesisTrigger:
         self,
         *,
         bearer: str,
-        room: q_api.RoomSummary,
+        room: q_api.RoomSummary | q_api.SynthesisReadyRoom,
         subject_ref: str,
         head_sha: str,
     ) -> bool:
@@ -612,7 +630,7 @@ class LocalQueenSynthesisTrigger:
         self,
         *,
         bearer: str,
-        room: q_api.RoomSummary,
+        room: q_api.RoomSummary | q_api.SynthesisReadyRoom,
         subject_ref: str,
     ) -> str | None:
         try:
@@ -645,11 +663,58 @@ class LocalQueenSynthesisTrigger:
                 latest_head = head_sha
         return latest_head
 
+    def _ensure_room_head_fresh(
+        self,
+        room: q_api.SynthesisReadyRoom,
+        bearer: str,
+    ) -> str:
+        current_head = self._current_pr_head(room, bearer)
+        recorded_head = self._latest_recorded_room_head(
+            bearer=bearer,
+            room=room,
+            subject_ref=room.subject_ref,
+        )
+        if recorded_head == current_head:
+            return current_head
+
+        self._emit_subject_updated(
+            bearer=bearer,
+            room=room,
+            subject_ref=room.subject_ref,
+            change_kind="synchronize",
+            head_sha=current_head,
+        )
+        print(
+            f"{self._log_prefix} room={room.room_id} skipped: "
+            "PR head is not recorded on the room; requested fresh reviews",
+            file=sys.stderr,
+            flush=True,
+        )
+        return ""
+
+    def _current_pr_head(
+        self,
+        room: q_api.SynthesisReadyRoom,
+        bearer: str,
+    ) -> str:
+        pr = gh.parse_subject_ref(room.subject_ref)
+        gh_token = self._mint_token(
+            self._base_url,
+            bearer,
+            repo=pr.full_repo,
+            agent_id=self._agent_id or None,
+        )
+        return self._get_head_sha(
+            pr,
+            token=gh_token,
+            timeout_secs=self._gh_timeout_secs,
+        )
+
     def _maybe_emit_closed_update(
         self,
         *,
         bearer: str,
-        room: q_api.RoomSummary,
+        room: q_api.RoomSummary | q_api.SynthesisReadyRoom,
         subject_ref: str,
     ) -> bool:
         return self._emit_subject_updated(
@@ -664,7 +729,7 @@ class LocalQueenSynthesisTrigger:
         self,
         *,
         bearer: str,
-        room: q_api.RoomSummary,
+        room: q_api.RoomSummary | q_api.SynthesisReadyRoom,
         subject_ref: str,
         change_kind: str,
         head_sha: str | None,
