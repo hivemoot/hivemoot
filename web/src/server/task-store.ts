@@ -31,6 +31,53 @@ export interface TaskMessage {
 const MAX_MESSAGE_CONTENT_CHARS = 128_000;
 const MAX_MESSAGES_PER_TASK = 200;
 
+// ---------------------------------------------------------------------------
+// Task artifacts (#332) — structured GitHub outputs an agent produced while
+// working a task (PRs opened, issues filed, comments posted, commits pushed).
+// Surfaced on the dashboard so a reviewer can jump straight to the result
+// instead of scrubbing the chat log.
+// ---------------------------------------------------------------------------
+
+export type TaskArtifactType =
+  | "pull_request"
+  | "issue"
+  | "issue_comment"
+  | "commit";
+
+const TASK_ARTIFACT_TYPES = new Set<TaskArtifactType>([
+  "pull_request",
+  "issue",
+  "issue_comment",
+  "commit",
+]);
+
+export interface TaskArtifact {
+  type: TaskArtifactType;
+  url: string;
+  /** PR or issue number when the type implies one (absent for commits). */
+  number?: number;
+  /** Display name, sanitized + capped. */
+  title?: string;
+  /** Server-stamped when the artifact was first recorded. */
+  created_at: string;
+}
+
+/** Artifact shape after validation but before the store stamps `created_at`. */
+export type NormalizedTaskArtifact = Omit<TaskArtifact, "created_at">;
+
+// 20 is generous for any real task and bounds both storage growth and the
+// blast radius of a misbehaving agent spamming the append endpoint.
+export const MAX_ARTIFACTS_PER_TASK = 20;
+const MAX_ARTIFACT_TITLE_CHARS = 200;
+
+// GitHub owner logins: alphanumeric + single hyphens, ≤39 chars, no leading
+// hyphen. Repos: alphanumeric plus `.`, `_`, `-`, ≤100 chars. These mirror
+// GitHub's own naming rules closely enough to reject path-traversal and
+// obviously-malformed slugs without a network round-trip.
+const GITHUB_OWNER_REGEX = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const GITHUB_REPO_REGEX = /^[A-Za-z0-9._-]{1,100}$/;
+const GITHUB_COMMIT_SHA_REGEX = /^[0-9a-fA-F]{7,40}$/;
+
 export interface TaskRecord {
   task_id: string;
   status: TaskStatus;
@@ -43,6 +90,7 @@ export interface TaskRecord {
   finished_at?: string;
   error?: string;
   progress?: string;
+  artifacts?: TaskArtifact[];
 }
 
 export interface ClaimedTask {
@@ -61,6 +109,10 @@ interface StoredTaskRecord {
   started_at?: string;
   finished_at?: string;
   error?: string;
+  // Artifacts ride on the stored record so they carry through finalize/retry
+  // (which spread `...stored`) and inherit the record's terminal TTL — no
+  // separate key to TTL-manage. See addTaskArtifacts.
+  artifacts?: TaskArtifact[];
 }
 
 export interface CreateTaskRequest {
@@ -174,6 +226,41 @@ function sanitizeText(input: string, maxLength: number): string {
   return trimmed.slice(0, maxLength);
 }
 
+// Lenient: drop individual malformed artifacts rather than failing the whole
+// task parse (which would trip cleanupMissingTask and delete a live task).
+function parseStoredArtifacts(raw: unknown): TaskArtifact[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const out: TaskArtifact[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const o = entry as Record<string, unknown>;
+    if (
+      typeof o.type !== "string"
+      || !TASK_ARTIFACT_TYPES.has(o.type as TaskArtifactType)
+      || typeof o.url !== "string"
+      || typeof o.created_at !== "string"
+    ) {
+      continue;
+    }
+
+    const artifact: TaskArtifact = {
+      type: o.type as TaskArtifactType,
+      url: o.url,
+      created_at: o.created_at,
+    };
+    if (typeof o.number === "number" && Number.isInteger(o.number)) {
+      artifact.number = o.number;
+    }
+    if (typeof o.title === "string") {
+      artifact.title = o.title;
+    }
+    out.push(artifact);
+  }
+
+  return out.length > 0 ? out : undefined;
+}
+
 function parseStoredTask(raw: unknown): StoredTaskRecord | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 
@@ -206,6 +293,9 @@ function parseStoredTask(raw: unknown): StoredTaskRecord | null {
   if (typeof obj.started_at === "string") parsed.started_at = obj.started_at;
   if (typeof obj.finished_at === "string") parsed.finished_at = obj.finished_at;
   if (typeof obj.error === "string") parsed.error = obj.error;
+
+  const artifacts = parseStoredArtifacts(obj.artifacts);
+  if (artifacts) parsed.artifacts = artifacts;
 
   return parsed;
 }
@@ -1379,6 +1469,334 @@ export async function addUserMessage(
         taskId,
       });
       return { ok: false, reason: "concurrency_limited" };
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Task artifacts (#332)
+// ---------------------------------------------------------------------------
+
+const ARTIFACT_ALLOWED_KEYS = new Set(["type", "url", "number", "title"]);
+
+export type ValidateTaskArtifactsResult =
+  | { ok: true; artifacts: NormalizedTaskArtifact[] }
+  | { ok: false; message: string };
+
+function sanitizeArtifactTitle(value: string): string {
+  // Replace control characters (the value is rendered in the dashboard)
+  // with spaces, collapse whitespace runs, then cap length. The \u escapes
+  // keep the source pure-ASCII (no literal control bytes in the regex).
+  const cleaned = value
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, MAX_ARTIFACT_TITLE_CHARS);
+}
+
+function parsePositiveInt(segment: string): number | null {
+  if (!/^\d{1,9}$/.test(segment)) return null;
+  const n = Number.parseInt(segment, 10);
+  return n > 0 ? n : null;
+}
+
+type ParsedArtifactUrl =
+  | { ok: true; owner: string; repo: string; number?: number }
+  | { ok: false; message: string };
+
+// Strict, network-free validation: the URL must be an https github.com link
+// whose path shape matches the declared artifact type. This is the primary
+// defense against an agent attaching unrelated/external/`javascript:` URLs.
+function parseGitHubArtifactUrl(
+  rawUrl: string,
+  type: TaskArtifactType,
+): ParsedArtifactUrl {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { ok: false, message: "url must be a valid absolute URL" };
+  }
+
+  if (parsed.protocol !== "https:") {
+    return { ok: false, message: "url must use https" };
+  }
+  // Exact host match — blocks gist.github.com, look-alikes, and
+  // `github.com.attacker.example` style suffixes.
+  if (parsed.hostname.toLowerCase() !== "github.com") {
+    return { ok: false, message: "url must be on github.com" };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, message: "url must not embed credentials" };
+  }
+
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length < 4) {
+    return { ok: false, message: "url must point to a specific GitHub resource" };
+  }
+
+  const [owner, repo, kind, id] = segments;
+  if (!GITHUB_OWNER_REGEX.test(owner)) {
+    return { ok: false, message: "url has an invalid repository owner" };
+  }
+  if (!GITHUB_REPO_REGEX.test(repo) || repo === "." || repo === "..") {
+    return { ok: false, message: "url has an invalid repository name" };
+  }
+
+  switch (type) {
+    case "pull_request": {
+      if (kind !== "pull") {
+        return { ok: false, message: "pull_request url must look like /{owner}/{repo}/pull/{number}" };
+      }
+      const number = parsePositiveInt(id);
+      if (number === null) {
+        return { ok: false, message: "pull_request url must end in a positive PR number" };
+      }
+      return { ok: true, owner, repo, number };
+    }
+    case "issue": {
+      if (kind !== "issues") {
+        return { ok: false, message: "issue url must look like /{owner}/{repo}/issues/{number}" };
+      }
+      const number = parsePositiveInt(id);
+      if (number === null) {
+        return { ok: false, message: "issue url must end in a positive issue number" };
+      }
+      return { ok: true, owner, repo, number };
+    }
+    case "issue_comment": {
+      // Comments live under issues/ or pull/; the comment id is in the
+      // fragment (e.g. #issuecomment-123), so require a non-empty hash.
+      if (kind !== "issues" && kind !== "pull") {
+        return { ok: false, message: "issue_comment url must reference an issue or pull request" };
+      }
+      const number = parsePositiveInt(id);
+      if (number === null) {
+        return { ok: false, message: "issue_comment url must include the issue or PR number" };
+      }
+      if (parsed.hash.length <= 1) {
+        return { ok: false, message: "issue_comment url must include a comment anchor (e.g. #issuecomment-123)" };
+      }
+      return { ok: true, owner, repo, number };
+    }
+    case "commit": {
+      if (kind !== "commit") {
+        return { ok: false, message: "commit url must look like /{owner}/{repo}/commit/{sha}" };
+      }
+      if (!GITHUB_COMMIT_SHA_REGEX.test(id)) {
+        return { ok: false, message: "commit url must end in a valid commit sha" };
+      }
+      return { ok: true, owner, repo };
+    }
+  }
+}
+
+function validateSingleArtifact(
+  entry: unknown,
+  allowedRepos: Set<string> | null,
+): { ok: true; artifact: NormalizedTaskArtifact } | { ok: false; message: string } {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return { ok: false, message: "must be an object" };
+  }
+  const o = entry as Record<string, unknown>;
+
+  for (const key of Object.keys(o)) {
+    if (!ARTIFACT_ALLOWED_KEYS.has(key)) {
+      return { ok: false, message: `unknown field: ${key}` };
+    }
+  }
+
+  if (typeof o.type !== "string" || !TASK_ARTIFACT_TYPES.has(o.type as TaskArtifactType)) {
+    return {
+      ok: false,
+      message: "type must be one of: pull_request, issue, issue_comment, commit",
+    };
+  }
+  const type = o.type as TaskArtifactType;
+
+  if (typeof o.url !== "string" || o.url.trim().length === 0) {
+    return { ok: false, message: "url is required" };
+  }
+
+  const parsedUrl = parseGitHubArtifactUrl(o.url.trim(), type);
+  if (!parsedUrl.ok) {
+    return { ok: false, message: parsedUrl.message };
+  }
+
+  // Additive repo scoping: when the agent token declares allowed_repos,
+  // the artifact must point at one of them. Tokens without a repo policy
+  // fall back to the installation boundary already enforced by the caller.
+  if (allowedRepos) {
+    const slug = `${parsedUrl.owner}/${parsedUrl.repo}`.toLowerCase();
+    if (!allowedRepos.has(slug)) {
+      return {
+        ok: false,
+        message: `url repository ${parsedUrl.owner}/${parsedUrl.repo} is outside this token's allowed repositories`,
+      };
+    }
+  }
+
+  const artifact: NormalizedTaskArtifact = {
+    type,
+    url: o.url.trim(),
+  };
+
+  // Number: derive from the URL as the source of truth. If the caller also
+  // supplied one, it must agree (catches copy-paste/format drift); commits
+  // carry no number so any supplied value is rejected.
+  if (parsedUrl.number !== undefined) {
+    if (o.number !== undefined) {
+      if (typeof o.number !== "number" || !Number.isInteger(o.number)) {
+        return { ok: false, message: "number must be an integer" };
+      }
+      if (o.number !== parsedUrl.number) {
+        return {
+          ok: false,
+          message: `number ${o.number} does not match the number in the url (${parsedUrl.number})`,
+        };
+      }
+    }
+    artifact.number = parsedUrl.number;
+  } else if (o.number !== undefined) {
+    return { ok: false, message: "commit artifacts must not include a number" };
+  }
+
+  if (o.title !== undefined) {
+    if (typeof o.title !== "string") {
+      return { ok: false, message: "title must be a string" };
+    }
+    const title = sanitizeArtifactTitle(o.title);
+    if (title.length > 0) artifact.title = title;
+  }
+
+  return { ok: true, artifact };
+}
+
+/**
+ * Validate + normalize a batch of artifact inputs from an agent.
+ *
+ * Pure (no Redis) so it is exhaustively unit-testable. `allowedRepos` is the
+ * agent token's `policy.allowed_repos` (optional); when present and non-empty
+ * it bounds artifacts to those repositories.
+ */
+export function validateTaskArtifacts(
+  input: unknown,
+  options: { allowedRepos?: readonly string[] } = {},
+): ValidateTaskArtifactsResult {
+  if (!Array.isArray(input)) {
+    return { ok: false, message: "artifacts must be an array" };
+  }
+  if (input.length === 0) {
+    return { ok: false, message: "artifacts must contain at least one entry" };
+  }
+  if (input.length > MAX_ARTIFACTS_PER_TASK) {
+    return {
+      ok: false,
+      message: `artifacts must not exceed ${MAX_ARTIFACTS_PER_TASK} entries per request`,
+    };
+  }
+
+  const allowedRepos = normalizeAllowedRepos(options.allowedRepos);
+  const artifacts: NormalizedTaskArtifact[] = [];
+  for (let i = 0; i < input.length; i += 1) {
+    const result = validateSingleArtifact(input[i], allowedRepos);
+    if (!result.ok) {
+      return { ok: false, message: `artifacts[${i}]: ${result.message}` };
+    }
+    artifacts.push(result.artifact);
+  }
+
+  return { ok: true, artifacts };
+}
+
+function normalizeAllowedRepos(
+  allowedRepos: readonly string[] | undefined,
+): Set<string> | null {
+  if (!allowedRepos || allowedRepos.length === 0) return null;
+  const set = new Set<string>();
+  for (const repo of allowedRepos) {
+    if (typeof repo === "string" && repo.includes("/")) {
+      set.add(repo.toLowerCase());
+    }
+  }
+  return set.size > 0 ? set : null;
+}
+
+export type AddTaskArtifactsResult =
+  | { ok: true; task: TaskRecord; added: number }
+  | {
+      ok: false;
+      reason: "not_found" | "invalid_transition" | "limit_exceeded" | "lock_timeout";
+    };
+
+/**
+ * Append artifacts to a running task (append-only, deduped by URL).
+ *
+ * Only valid while the task is `running` — that is the exact window the
+ * per-task claim token is live (it is deleted on finalize/follow-up), so the
+ * caller's claim-token check already gates this to the agent currently
+ * working the task. Re-reporting the same URL is a no-op (idempotent retries),
+ * and the write doubles as a liveness signal like a heartbeat.
+ */
+export async function addTaskArtifacts(
+  installationId: string,
+  taskId: string,
+  artifacts: NormalizedTaskArtifact[],
+  redis: Redis,
+): Promise<AddTaskArtifactsResult> {
+  try {
+    return await withTaskInstallationLock(installationId, redis, async () => {
+      const stored = await loadStoredTask(installationId, taskId, redis);
+      if (!stored) return { ok: false, reason: "not_found" };
+
+      if (stored.status !== "running") {
+        return { ok: false, reason: "invalid_transition" };
+      }
+
+      const existing = stored.artifacts ?? [];
+      const seen = new Set(existing.map((a) => a.url.toLowerCase()));
+      const timestamp = nowIso();
+
+      const additions: TaskArtifact[] = [];
+      for (const candidate of artifacts) {
+        const key = candidate.url.toLowerCase();
+        if (seen.has(key)) continue; // dedup vs existing + within-batch
+        seen.add(key);
+        additions.push({ ...candidate, created_at: timestamp });
+      }
+
+      const merged = [...existing, ...additions];
+      if (merged.length > MAX_ARTIFACTS_PER_TASK) {
+        return { ok: false, reason: "limit_exceeded" };
+      }
+
+      const nextStored: StoredTaskRecord = {
+        ...stored,
+        artifacts: merged,
+        updated_at: timestamp,
+      };
+
+      await redis
+        .multi()
+        .set(taskKey(installationId, taskId), nextStored)
+        .zadd(runningKey(installationId), { score: Date.now(), member: taskId })
+        .zadd(recentKey(installationId), { score: Date.now(), member: taskId })
+        .exec();
+
+      return {
+        ok: true,
+        task: await buildTaskRecord(installationId, nextStored, redis),
+        added: additions.length,
+      };
+    });
+  } catch (error) {
+    if (error instanceof LockTimeoutError) {
+      console.warn("[tasks] Task artifacts lock timeout", {
+        installationId,
+        taskId,
+      });
+      return { ok: false, reason: "lock_timeout" };
     }
     throw error;
   }

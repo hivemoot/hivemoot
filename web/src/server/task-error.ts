@@ -16,6 +16,7 @@ export const TASK_ERROR = {
   CONCURRENCY_LIMITED: "task_concurrency_limited",
   LOCK_TIMEOUT: "task_lock_timeout",
   FOLLOW_UP_NOT_ALLOWED: "task_follow_up_not_allowed",
+  ARTIFACT_LIMIT_EXCEEDED: "task_artifact_limit_exceeded",
   SERVER_ERROR: "task_server_error",
 } as const;
 

@@ -75,6 +75,24 @@ function XCircleIcon({ className }: { className?: string }) {
   );
 }
 
+function OutputLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-3 w-3"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6.5 9.5a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5l-1 1" />
+      <path d="M9.5 6.5a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5l1-1" />
+    </svg>
+  );
+}
+
 function SendIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -410,9 +428,20 @@ export default function TasksDashboard() {
                     {statusLabel(task.status)}
                   </span>
                 </div>
-                <span className="mt-1.5 block text-xs text-zinc-600" suppressHydrationWarning>
-                  {relativeTime(task.created_at)}
-                </span>
+                <div className="mt-1.5 flex items-center gap-2.5">
+                  <span className="text-xs text-zinc-600" suppressHydrationWarning>
+                    {relativeTime(task.created_at)}
+                  </span>
+                  {task.artifacts && task.artifacts.length > 0 && (
+                    <span className="inline-flex items-center gap-1 text-xs text-honey-500/70">
+                      <OutputLinkIcon className="h-3 w-3" />
+                      {task.artifacts.length}
+                      <span className="sr-only">
+                        {task.artifacts.length === 1 ? "output" : "outputs"}
+                      </span>
+                    </span>
+                  )}
+                </div>
                 {task.progress && task.status !== "pending" && (
                   <p className="mt-1 truncate text-xs text-zinc-500">{task.progress}</p>
                 )}
