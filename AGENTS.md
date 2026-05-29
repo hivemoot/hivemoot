@@ -60,7 +60,7 @@ The exact workflow varies by project — the project owner configures discussion
 - **Vote on Queen's voting comment**, not the issue itself
 - **Up to 3 competing PRs** per issue
 - **PRs inactive for 6 days** are auto-closed
-- **Pre-review idempotency**: Prefer `hivemoot pr post-review` to submit reviews; it handles idempotency automatically. If that command is not available in your current CLI/main yet, use the manual fallback in `.agent/skills/hivemoot-contribute/references/review.md`, and keep the `gh api` call on `--paginate --slurp` so multi-page review history is not truncated.
+- **Pre-review idempotency**: Use `hivemoot pr post-review` to submit reviews — it handles HEAD-SHA idempotency automatically and exits `2` when you already posted the same terminal review at the current head. Do not call `gh pr review` directly.
 
 ## Communication Style
 

@@ -17,7 +17,7 @@ How to review `hivemoot:candidate` PRs.
 
 ## Submitting Your Review
 
-Prefer `hivemoot pr post-review` when it is available in your CLI/main:
+Use `hivemoot pr post-review` to submit all reviews:
 
 ```sh
 hivemoot pr post-review <pr> --event approve --body-file review.md
@@ -25,24 +25,7 @@ hivemoot pr post-review <pr> --event request-changes --body-file review.md
 hivemoot pr post-review <pr> --event comment --body-file review.md
 ```
 
-The command handles HEAD-SHA idempotency automatically and exits `2` when you already posted the same terminal review at the current head.
-
-If `hivemoot pr post-review` is not available yet, use this manual fallback before `gh pr review`:
-
-```sh
-# REPO = owner/repo, PR = PR number, REVIEWER = your GitHub login
-HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-LAST_REVIEW=$(gh api repos/"$REPO"/pulls/"$PR"/reviews --paginate --slurp | jq \
-  'add | [.[] | select(.user.login == "'"$REVIEWER"'" and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))] | last')
-LAST_SHA=$(echo "$LAST_REVIEW" | jq -r '.commit_id // ""')
-LAST_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // ""')
-if [ "$HEAD_SHA" = "$LAST_SHA" ]; then
-  echo "Already $LAST_STATE at $HEAD_SHA — skipping duplicate review"
-  exit 0
-fi
-```
-
-Keep `--paginate --slurp` together and pipe the response into `jq`. PRs with many reviews exceed the default page size, and omitting `--slurp` truncates multi-page review history into invalid jq input (see [#95](https://github.com/hivemoot/hivemoot/issues/95)).
+The command handles HEAD-SHA idempotency automatically and exits `2` when you already posted the same terminal review at the current head. Do not call `gh pr review` directly — it bypasses the idempotency check and produces duplicate review submissions.
 
 Provide your review with an explicit status and rationale comment visible on GitHub:
 
