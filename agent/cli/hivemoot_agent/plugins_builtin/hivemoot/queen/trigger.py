@@ -215,6 +215,21 @@ class LocalQueenSynthesisTrigger:
                 )
                 continue
 
+            # Re-gate on the claim's own participant snapshot. The pre-claim
+            # check read participants separately; a participant can change
+            # state in that window, so the claimed snapshot is authoritative.
+            # Bailing here is safe: the claim is a TTL lease that expires and
+            # returns the room to the ready pool, so nothing is stranded.
+            ok, reason = self._participants_eligible(claimed.participants)
+            if not ok:
+                print(
+                    f"{self._log_prefix} room={room.room_id} "
+                    f"not ready after claim: {reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+
             try:
                 pr = gh.parse_subject_ref(room.subject_ref)
                 gh_token = self._mint_token(
@@ -521,28 +536,24 @@ class LocalQueenSynthesisTrigger:
                 flush=True,
             )
 
-    def _is_room_ready(self, room: q_api.SynthesisReadyRoom, bearer: str) -> bool:
-        try:
-            participants = self._participants(self._base_url, room.room_id, bearer)
-            events = self._events(self._base_url, room.room_id, bearer, limit=500)
-        except Exception as exc:
-            print(
-                f"{self._log_prefix} eligibility read failed "
-                f"room={room.room_id}: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return False
+    def _participants_eligible(
+        self, participants: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        """Apply the synthesis participant gate, returning (eligible, reason).
 
+        A room is eligible only when at least one participant exists, none are
+        still unresolved, and at least one has actually resolved. This mirrors
+        the bot-side queen so the local queen never synthesizes an empty or
+        fully-withdrawn room.
+
+        Called both before claiming (against the live participants read) and
+        after claiming (against the claim's own snapshot). The post-claim call
+        closes the read-then-claim race: a participant can change state between
+        the eligibility read and the claim, so the claimed snapshot is the
+        authoritative one to gate on.
+        """
         if not participants:
-            print(
-                f"{self._log_prefix} room={room.room_id} not ready: "
-                "no participants",
-                file=sys.stderr,
-                flush=True,
-            )
-            return False
-
+            return False, "no participants"
         unresolved = []
         has_resolved = False
         for role, participant in participants.items():
@@ -556,17 +567,29 @@ class LocalQueenSynthesisTrigger:
             if status == "resolved":
                 has_resolved = True
         if unresolved:
+            joined = ",".join(sorted(unresolved))
+            return False, f"unresolved participants={joined}"
+        if not has_resolved:
+            return False, "no resolved participants"
+        return True, None
+
+    def _is_room_ready(self, room: q_api.SynthesisReadyRoom, bearer: str) -> bool:
+        try:
+            participants = self._participants(self._base_url, room.room_id, bearer)
+            events = self._events(self._base_url, room.room_id, bearer, limit=500)
+        except Exception as exc:
             print(
-                f"{self._log_prefix} room={room.room_id} not ready: "
-                f"unresolved participants={','.join(sorted(unresolved))}",
+                f"{self._log_prefix} eligibility read failed "
+                f"room={room.room_id}: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
             return False
-        if not has_resolved:
+
+        ok, reason = self._participants_eligible(participants)
+        if not ok:
             print(
-                f"{self._log_prefix} room={room.room_id} not ready: "
-                "no resolved participants",
+                f"{self._log_prefix} room={room.room_id} not ready: {reason}",
                 file=sys.stderr,
                 flush=True,
             )

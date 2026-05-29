@@ -75,6 +75,22 @@ def _claimed() -> ClaimedSynthesis:
     )
 
 
+def _claimed_with(participants: dict[str, object]) -> ClaimedSynthesis:
+    """A claimed snapshot with caller-supplied participants.
+
+    Simulates the read-then-claim race: the pre-claim participants read looks
+    eligible, but the claim returns a different (ineligible) snapshot.
+    """
+    return ClaimedSynthesis(
+        room_id="room-1",
+        through_sequence=12,
+        claim_ttl_secs=900,
+        room={"subject_ref": "owner/repo#42"},
+        participants=participants,
+        contributions={},
+    )
+
+
 class LocalQueenTriggerTests(unittest.TestCase):
     def test_dispatches_claimed_ready_room_with_head_sha(self) -> None:
         plugin = SlotPlugin()
@@ -206,6 +222,77 @@ class LocalQueenTriggerTests(unittest.TestCase):
         )
         trigger._tick(dispatcher)
         claim_fn.assert_not_called()
+        dispatcher.dispatch.assert_not_called()
+
+    def test_skips_when_claim_snapshot_loses_resolved_participant(self) -> None:
+        # Read-then-claim race: the pre-claim read is eligible, but by the time
+        # the claim lands every participant has withdrawn or timed out, so the
+        # claimed snapshot has no resolved participant. Synthesis must not fire.
+        claim_fn = MagicMock(
+            return_value=_claimed_with(
+                {
+                    "guard": {"status": "withdrew"},
+                    "drone": {"status": "timed_out"},
+                }
+            )
+        )
+        get_head_sha = MagicMock(return_value="abc123")
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(
+                return_value={"guard": {"status": "resolved"}}
+            ),
+            events_fn=MagicMock(
+                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
+            ),
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=get_head_sha,
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+        trigger._tick(dispatcher)
+        claim_fn.assert_called_once()
+        dispatcher.dispatch.assert_not_called()
+        # Fail-fast: bail before the head-SHA capture network call.
+        get_head_sha.assert_not_called()
+
+    def test_skips_when_claim_snapshot_has_pending_participant(self) -> None:
+        # Read-then-claim race: a participant re-RSVPs to pending between the
+        # eligibility read and the claim, so the claimed snapshot is no longer
+        # fully resolved. Synthesis must not fire.
+        claim_fn = MagicMock(
+            return_value=_claimed_with(
+                {
+                    "guard": {"status": "resolved"},
+                    "drone": {"status": "pending"},
+                }
+            )
+        )
+        dispatcher = MagicMock()
+        trigger = LocalQueenSynthesisTrigger(
+            SlotPlugin(),
+            base_url="https://api.example",
+            token_resolver=lambda: "bearer",
+            agent_id="queen-a",
+            list_ready_fn=MagicMock(return_value=[_room()]),
+            participants_fn=MagicMock(
+                return_value={"guard": {"status": "resolved"}}
+            ),
+            events_fn=MagicMock(
+                return_value=[{"timestamp": "2026-05-15T00:00:00Z"}],
+            ),
+            claim_fn=claim_fn,
+            mint_token_fn=MagicMock(return_value="ghs_x"),
+            get_head_sha_fn=MagicMock(return_value="abc123"),
+            now_fn=lambda: datetime(2026, 5, 15, 0, 2, tzinfo=timezone.utc),
+        )
+        trigger._tick(dispatcher)
+        claim_fn.assert_called_once()
         dispatcher.dispatch.assert_not_called()
 
     def test_skips_room_until_quiet_period_elapsed(self) -> None:
