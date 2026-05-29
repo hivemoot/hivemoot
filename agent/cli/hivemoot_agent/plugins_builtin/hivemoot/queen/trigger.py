@@ -472,6 +472,15 @@ class LocalQueenSynthesisTrigger:
                                 },
                             )
                             rooms_by_subject[subject_ref] = room
+                            if pr.head_sha and self._emit_subject_updated(
+                                bearer=bearer,
+                                room=room,
+                                subject_ref=subject_ref,
+                                change_kind="synchronize",
+                                head_sha=pr.head_sha,
+                            ):
+                                updated_count += 1
+                                self._known_pr_heads[subject_ref] = pr.head_sha
                         except q_api.QueenAPIConflictError as exc:
                             if exc.code == "subject_already_open":
                                 skipped_count += 1
@@ -492,9 +501,6 @@ class LocalQueenSynthesisTrigger:
                                 file=sys.stderr,
                                 flush=True,
                             )
-                        finally:
-                            if pr.head_sha:
-                                self._known_pr_heads[subject_ref] = pr.head_sha
                         continue
 
                     if room is not None and pr.head_sha:

@@ -509,6 +509,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
 
     def test_pr_discovery_creates_missing_review_room(self) -> None:
         dispatcher = MagicMock()
+        append_update = MagicMock(return_value=2)
         create_room = MagicMock(
             return_value=type(
                 "Created",
@@ -529,6 +530,7 @@ class LocalQueenTriggerTests(unittest.TestCase):
             watched_repos=["owner/repo"],
             list_rooms_fn=MagicMock(return_value=[]),
             create_room_fn=create_room,
+            append_subject_updated_fn=append_update,
             list_pull_requests_fn=MagicMock(return_value=[_pr_snapshot()]),
             list_ready_fn=list_ready,
             mint_token_fn=MagicMock(return_value="ghs_x"),
@@ -546,6 +548,17 @@ class LocalQueenTriggerTests(unittest.TestCase):
             max_age_secs=3600,
             drop_threshold_secs=1200,
         )
+        append_update.assert_called_once_with(
+            "https://api.example",
+            "created-room",
+            "bearer",
+            change_kind="synchronize",
+            head_sha="abc123",
+            idempotency_key=(
+                "local-queen.subject_updated.created-room.synchronize.abc123"
+            ),
+        )
+        self.assertEqual(trigger._known_pr_heads["owner/repo#42"], "abc123")
         list_ready.assert_called_once()
         dispatcher.dispatch.assert_not_called()
 
