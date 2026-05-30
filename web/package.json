@@ -15,9 +15,9 @@
     "@hivemoot/war-room": "file:../shared/war-room",
     "@lottiefiles/dotlottie-react": "^0.18.1",
     "@upstash/redis": "^1.37.0",
-    "next": "^16.1.6",
+    "next": "^16.2.4",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
     "yaml": "^2.8.2"
   },
@@ -25,12 +25,12 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "autoprefixer": "^10.4.24",
+    "autoprefixer": "^10.5.0",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.6",
-    "postcss": "^8.4.0",
+    "postcss": "^8.5.10",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.6.0",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.5"
   }
 }

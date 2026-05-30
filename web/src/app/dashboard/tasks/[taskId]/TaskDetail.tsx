@@ -11,7 +11,7 @@ import {
   taskComposerPlaceholder,
 } from "../task-helpers";
 import { MarkdownContent } from "../../MarkdownContent";
-import { type TaskMessage, type TaskRecord } from "../types";
+import { type TaskArtifact, type TaskMessage, type TaskRecord } from "../types";
 
 // ---------------------------------------------------------------------------
 // Icons
@@ -175,6 +175,84 @@ function ClockIcon({ className }: { className?: string }) {
   );
 }
 
+function GitPullRequestIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="4" cy="4" r="2" />
+      <circle cx="4" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <line x1="4" y1="6" x2="4" y2="10" />
+      <path d="M12 10V7a2 2 0 0 0-2-2H7.5" />
+      <polyline points="9 3 7 5 9 7" />
+    </svg>
+  );
+}
+
+function IssueIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function GitCommitIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-4 w-4"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="3" />
+      <line x1="1" y1="8" x2="5" y2="8" />
+      <line x1="11" y1="8" x2="15" y2="8" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-3.5 w-3.5"}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9 2h5v5" />
+      <path d="M14 2L7 9" />
+      <path d="M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -293,6 +371,84 @@ function canSendMessage(status: string): boolean {
 
 function messageEndpoint(status: string): "messages" | "follow-up" {
   return status === "needs_follow_up" ? "follow-up" : "messages";
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+function ArtifactTypeIcon({ type, className }: { type: TaskArtifact["type"]; className?: string }) {
+  switch (type) {
+    case "pull_request":
+      return <GitPullRequestIcon className={className} />;
+    case "issue":
+      return <IssueIcon className={className} />;
+    case "issue_comment":
+      return <MessageSquareIcon className={className} />;
+    case "commit":
+      return <GitCommitIcon className={className} />;
+  }
+}
+
+// Short, human ref for an artifact (e.g. "PR #312", "Commit a1b2c3d"). The
+// number is derived server-side from the URL, so it is safe to trust here.
+function artifactRef(artifact: TaskArtifact): string {
+  switch (artifact.type) {
+    case "pull_request":
+      return artifact.number ? `PR #${artifact.number}` : "Pull request";
+    case "issue":
+      return artifact.number ? `Issue #${artifact.number}` : "Issue";
+    case "issue_comment":
+      return artifact.number ? `Comment on #${artifact.number}` : "Comment";
+    case "commit": {
+      const sha = artifact.url.split("/").pop() ?? "";
+      return sha ? `Commit ${sha.slice(0, 7)}` : "Commit";
+    }
+  }
+}
+
+function ArtifactsPanel({ artifacts }: { artifacts: TaskArtifact[] }) {
+  if (artifacts.length === 0) return null;
+
+  return (
+    <div className="mt-4 border-t border-white/[0.06] pt-4">
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          Outputs
+        </span>
+        <span className="rounded-full bg-white/[0.04] px-1.5 py-0.5 text-[11px] font-medium text-zinc-500">
+          {artifacts.length}
+        </span>
+      </div>
+
+      <ul className="space-y-1.5">
+        {artifacts.map((artifact, i) => (
+          <li key={`${artifact.url}-${i}`}>
+            <a
+              href={artifact.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex items-center gap-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 transition-colors hover:border-honey-500/30 hover:bg-white/[0.04]"
+            >
+              <ArtifactTypeIcon
+                type={artifact.type}
+                className="h-4 w-4 shrink-0 text-honey-500/80 transition-colors group-hover:text-honey-500"
+              />
+              <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                <span className="shrink-0 text-sm font-medium text-zinc-200">
+                  {artifactRef(artifact)}
+                </span>
+                {artifact.title && (
+                  <span className="truncate text-xs text-zinc-500">{artifact.title}</span>
+                )}
+              </span>
+              <ExternalLinkIcon className="h-3.5 w-3.5 shrink-0 text-zinc-600 transition-colors group-hover:text-honey-500" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +782,11 @@ export default function TaskDetail({ taskId }: { taskId: string }) {
           <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5">
             <p className="text-sm text-red-400">{task.error}</p>
           </div>
+        )}
+
+        {/* Outputs — structured GitHub artifacts the agent produced (#332) */}
+        {task.artifacts && task.artifacts.length > 0 && (
+          <ArtifactsPanel artifacts={task.artifacts} />
         )}
       </div>
 

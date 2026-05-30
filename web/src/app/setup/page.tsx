@@ -230,6 +230,19 @@ export default async function SetupPage({
   const isAuthorized = auth === "ok" && hasSession;
   const STEPS = buildSteps(isAuthorized);
 
+  // When a signed-in user lands on /setup directly (not mid-OAuth and not the
+  // post-auth wizard), surface a shortcut back to the dashboard so they aren't
+  // pushed through onboarding again.
+  let signedInLogin: string | null = null;
+  if (hasSession && !isAuthorized && !auth && sessionToken) {
+    const env = validateEnv();
+    if (env.ok && env.config.redisRestUrl && env.config.redisRestToken) {
+      const redis = getRedisClient(env.config.redisRestUrl, env.config.redisRestToken);
+      const session = await getSetupSession(sessionToken, redis);
+      if (session) signedInLogin = session.userLogin;
+    }
+  }
+
   // Resolve actual session expiry from Redis so the client countdown is accurate.
   // Falls back to a freshly-computed window if Redis is unavailable.
   // eslint-disable-next-line react-hooks/purity -- Date.now() is safe in a Next.js async server component
@@ -298,6 +311,20 @@ export default async function SetupPage({
           />
         ) : (
           /* Step 1: static server-rendered */
+          <>
+          {signedInLogin && (
+            <div className="mb-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-honey-500/20 bg-honey-500/5 px-4 py-3">
+              <p className="text-sm text-honey-400">
+                You&apos;re already signed in as @{signedInLogin}.
+              </p>
+              <Link
+                href="/dashboard"
+                className="shrink-0 text-sm font-semibold text-honey-400 transition-colors hover:text-honey-300"
+              >
+                Go to dashboard →
+              </Link>
+            </div>
+          )}
           <div className="flex flex-col gap-8 sm:flex-row sm:gap-12">
             <aside className="shrink-0 sm:w-56">
               <ol className="flex flex-col" aria-label="Setup progress">
@@ -385,6 +412,7 @@ export default async function SetupPage({
               </div>
             </section>
           </div>
+          </>
         )}
       </main>
 

@@ -22,15 +22,15 @@
   "dependencies": {
     "@actions/core": "^3.0.0",
     "@ai-sdk/anthropic": "^3.0.46",
-    "@ai-sdk/google": "^3.0.30",
-    "@ai-sdk/mistral": "^3.0.20",
+    "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/mistral": "^3.0.35",
     "@ai-sdk/openai": "^3.0.30",
     "@hivemoot/war-room": "file:../shared/war-room",
     "@openrouter/ai-sdk-provider": "^2.3.0",
     "@upstash/redis": "1.37.0",
-    "ai": "^6.0.97",
+    "ai": "^6.0.175",
     "js-yaml": "^4.1.1",
-    "minimatch": "10.2.4",
+    "minimatch": "10.2.5",
     "octokit": "^5.0.5",
     "probot": "^13.0.0",
     "zod": "^3.25.76"
@@ -41,7 +41,7 @@
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
     "@vitest/coverage-v8": "^4.0.18",
-    "eslint": "^10.0.0",
+    "eslint": "^10.3.0",
     "flatted": "^3.4.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
@@ -50,7 +50,7 @@
     "node": "22.x"
   },
   "overrides": {
-    "minimatch": "10.2.4",
+    "minimatch": "10.2.5",
     "@probot/octokit-plugin-config": {
       "@octokit/core": "^5.2.2"
     },

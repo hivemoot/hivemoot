@@ -472,11 +472,12 @@ expansion.
 | `rooms.close` | `POST /api/rooms/{id}/close` | Bot (queen module) |
 | `rooms.synthesize` | local queen synthesis/merge endpoints | Local-mode queen synthesis and merge confirmation path |
 | `rooms.force_close` | `POST /api/rooms/{id}/force-close`, `POST /api/rooms/{id}/replay` | Admin |
+| `fleet.read` | `GET /api/fleet/desired-state` | Reconciler / monitoring — reads the installation's agent roster + config. Never auto-granted to an agent |
 | `agent_tokens.manage` | `POST /api/agent-tokens`, `DELETE /api/agent-tokens/{name}`, `POST /api/agent-tokens/{name}/set-capabilities`, etc. | Token-management endpoints — see §Per-installation admin protection |
 | `*` | All capabilities (admin tokens only) | NOT included by `agent_tokens.manage` unless explicit (see §Wildcard) |
 
-**Total: 22 capabilities** + `*` wildcard. Recount includes
-`rooms.read_all`, `rooms.synthesize`, and `pull_requests.merge`.
+**Total: 23 capabilities** + `*` wildcard. Recount includes
+`rooms.read_all`, `rooms.synthesize`, `pull_requests.merge`, and `fleet.read`.
 
 ### `tasks.create` dual-auth
 

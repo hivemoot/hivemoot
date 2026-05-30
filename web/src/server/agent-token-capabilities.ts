@@ -173,6 +173,13 @@ export const KNOWN_CAPABILITIES = [
   "rooms.synthesize",
   // War rooms — admin.
   "rooms.force_close",
+  // Fleet desired-state read (the reconciler / monitoring tokens). Sensitive:
+  // it returns every agent's config + system prompt for the installation, so
+  // it is NEVER auto-granted to an agent — only the on-prem reconciler poll
+  // token (and read-only monitoring) carries it. Not admin-class (read-only,
+  // no mutation), so wildcard expansion MAY include it; keep that in mind when
+  // issuing a bare `*` token.
+  "fleet.read",
   // Token management (admin only — see ADMIN_CLASS_CAPABILITIES).
   "agent_tokens.manage",
 ] as const;
@@ -345,6 +352,15 @@ export const PRESETS: Readonly<Record<string, readonly string[]>> = {
     "rooms.read",
     "rooms.read_all",
   ],
+  // On-prem reconciler poll token. Smallest possible surface: read the
+  // installation's desired fleet state and nothing else. Deliberately does NOT
+  // include `agent_tokens.manage` — a compromised hive must not be able to
+  // mint/rotate/revoke the tenant's tokens (it reads agent bearers from its own
+  // local secret store, never over the API). See the fleet feature security
+  // model. Mint-incapable, so it is dashboard-issuable.
+  reconciler: [
+    "fleet.read",
+  ],
   admin: [
     "*",
     "agent_tokens.manage",
@@ -371,6 +387,80 @@ export function resolvePreset(name: string): readonly string[] {
     );
   }
   return PRESETS[name];
+}
+
+// ---------------------------------------------------------------------------
+// Fleet agent capability derivation (closed allowlist)
+// ---------------------------------------------------------------------------
+
+/**
+ * The five v1 trigger flags an agent can enable. War-room *creation/synthesis*
+ * (the "queen" capability) is deliberately NOT here — it requires mint/merge
+ * caps + an explicit repo-scoped policy the dashboard has no surface for, so it
+ * is rejected at the create route and must be issued via the admin token path.
+ */
+export interface DerivableTriggerFlags {
+  schedule: boolean;
+  pull_requests: boolean;
+  mentions: boolean;
+  tasks: boolean;
+  war_rooms: boolean;
+  /** When `war_rooms` is enabled: true ⇒ the agent may post (`rooms.contribute`);
+   * false/omitted ⇒ observe-only (`rooms.watch` + `rooms.read` only). Mirrors the
+   * `war_rooms.settings.contribute` flag — least privilege for observe-only agents. */
+  war_rooms_contribute?: boolean;
+}
+
+/**
+ * Derive the minimal capability set for an agent from its enabled triggers.
+ *
+ * This is a CLOSED allowlist: the fleet create/update path NEVER accepts a
+ * caller-supplied capability list — capabilities are a pure function of the
+ * structured (enum-validated) trigger flags. That makes privilege escalation
+ * via agent registration structurally impossible.
+ *
+ * Mapping rationale:
+ *   - every agent reports health (`agent_health.report`) so it is observable;
+ *   - `tasks` → claim/progress/complete (the worker task lifecycle);
+ *   - `war_rooms` → watch/read always; contribute ONLY when not observe-only;
+ *   - `schedule` / `pull_requests` / `mentions` need NO hivemoot capability:
+ *     those agents act on GitHub through the apiarist-brokered installation
+ *     token (bounded by the token's `allowed_repos` policy), not a hivemoot
+ *     bearer capability.
+ *
+ * The result is asserted to contain no wildcard and no admin/mint/merge
+ * capability and to be a subset of `KNOWN_CAPABILITIES` — a belt-and-suspenders
+ * guard so a mis-edit of the map can never emit a privileged capability.
+ */
+export function deriveCapabilities(triggers: DerivableTriggerFlags): string[] {
+  const caps = new Set<string>(["agent_health.report"]);
+  if (triggers.tasks) {
+    caps.add("tasks.claim");
+    caps.add("tasks.progress");
+    caps.add("tasks.complete");
+  }
+  if (triggers.war_rooms) {
+    caps.add("rooms.watch");
+    caps.add("rooms.read");
+    // Observe-only agents (contribute=false) get watch+read but NOT the ability
+    // to post — least privilege matching the documented observe-only setting.
+    if (triggers.war_rooms_contribute) {
+      caps.add("rooms.contribute");
+    }
+  }
+  const out = [...caps].sort();
+  for (const c of out) {
+    if (
+      c.includes("*") ||
+      ADMIN_CLASS_CAPABILITIES.has(c) ||
+      !KNOWN_CAPABILITIES.includes(c as KnownCapability)
+    ) {
+      throw new Error(
+        `deriveCapabilities produced a disallowed capability ${JSON.stringify(c)} — the trigger→capability map must only emit non-admin known capabilities.`,
+      );
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

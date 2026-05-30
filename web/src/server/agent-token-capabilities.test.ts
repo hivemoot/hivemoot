@@ -427,7 +427,7 @@ describe("cross-invariants", () => {
     }
   });
 
-  it("KNOWN_CAPABILITIES count matches the design doc claim (22)", () => {
+  it("KNOWN_CAPABILITIES count matches the design doc claim (23)", () => {
     // R2.2 baseline: 19 capabilities.
     // R3 (D.1.b-i): added `rooms.read_all` to differentiate
     // installation-wide listing (queen / monitoring) from worker
@@ -435,9 +435,11 @@ describe("cross-invariants", () => {
     // RFC PR 3 (D14): added `rooms.synthesize` for the local-mode
     // queen synthesis-path endpoints. +1 → 21.
     // Local queen merge execution: added `pull_requests.merge`. +1 → 22.
+    // Dynamic agent management (fleet feature): added `fleet.read` for the
+    // desired-state poll (reconciler / monitoring only). +1 → 23.
     // If this fails, the doc section "Total: N capabilities" needs
     // to be updated alongside the addition.
-    expect(KNOWN_CAPABILITIES.length).toBe(22);
+    expect(KNOWN_CAPABILITIES.length).toBe(23);
   });
 });
 
