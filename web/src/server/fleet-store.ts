@@ -28,9 +28,9 @@ import { isKnownEngine } from "@/server/engine-catalog";
 // Limits / bounds (all tenant-controlled fields are bounded; see security model)
 // ---------------------------------------------------------------------------
 
-/** Hard cap on agents per installation. Kept ≤ the 20-token cap in
- * `agent-token-v1.ts` because every agent auto-issues one token — the token cap
- * is the binding backstop, this is the clearer-errored primary guard. */
+/** Hard cap on agents per installation — an independent per-installation guard
+ * (agents LINK an existing token rather than minting one, and several agents may
+ * share one token, so this is decoupled from the token cap). */
 export const MAX_AGENTS_PER_INSTALLATION = 20;
 
 const MAX_DISPLAY_NAME_CHARS = 80;
@@ -59,8 +59,6 @@ const CONTROL_CHARS_PATTERN = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export type AgentDuty = "standing" | "dispatch";
 
 export interface ScheduleTriggerSettings {
   interval_secs: number;
@@ -99,13 +97,14 @@ export interface AgentTriggers {
 
 export interface FleetAgent {
   /** Identifier: matches NAME_REGEX, unique per installation. Doubles as the
-   * agent_token_name, the container AGENT_ID, and the health-join key. */
+   * container AGENT_ID and the health-join key. */
   name: string;
   display_name?: string;
-  /** owner/name — the repo the agent operates on. Immutable after create. */
-  repo: string;
+  /** owner/name repos the agent operates on — a snapshot of the linked token's
+   * `allowed_repos` policy at create/link time. The token is the single source
+   * of truth for both auth (capabilities) AND repo scope. */
+  repos: string[];
   engine: string;
-  duty: AgentDuty;
   skills: string[];
   system_prompt: string;
   triggers: AgentTriggers;
@@ -113,7 +112,8 @@ export interface FleetAgent {
   enabled: boolean;
   /** true = the on-prem reconciler owns this agent's lifecycle. */
   managed: boolean;
-  /** The auto-issued V1 token name (== `name`). */
+  /** The existing V1 capability token this agent authenticates as (operator-selected,
+   * NOT minted by the agent flow). Its policy provides `repos`. */
   agent_token_name: string;
   created_at: string;
   created_by: string;
@@ -125,23 +125,23 @@ export interface FleetAgent {
 export interface CreateAgentInput {
   name: string;
   display_name?: string;
-  repo: string;
   engine: string;
-  duty: AgentDuty;
   skills: string[];
   system_prompt: string;
   triggers: AgentTriggers;
+  /** The existing capability token to link (carries capabilities + repo scope). */
+  agent_token_name: string;
 }
 
-/** PATCH input. `name` and `repo` are immutable (repo change would require a
- * token-policy rewrite + GitHub re-coverage; delete+recreate instead). */
+/** PATCH input. `name` is immutable; `repos` are not set directly — they follow
+ * the linked token (re-point `agent_token_name` to change scope). */
 export interface UpdateAgentInput {
   display_name?: string | null;
   engine?: string;
-  duty?: AgentDuty;
   skills?: string[];
   system_prompt?: string;
   triggers?: AgentTriggers;
+  agent_token_name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +352,14 @@ export function validateTriggers(raw: unknown): FleetValidation<AgentTriggers> {
   };
 }
 
-function validateDuty(value: unknown): FleetValidation<AgentDuty> {
-  if (value === "standing" || value === "dispatch") return { ok: true, value };
-  return fail("duty", "duty must be 'standing' or 'dispatch'.");
+function validateLinkedTokenName(value: unknown): FleetValidation<string> {
+  if (typeof value !== "string" || !NAME_REGEX.test(value)) {
+    return fail(
+      "agent_token_name",
+      "agent_token_name must reference an existing capability token (lowercase identifier).",
+    );
+  }
+  return { ok: true, value };
 }
 
 function validateEngine(value: unknown): FleetValidation<string> {
@@ -390,12 +395,8 @@ function validateSystemPrompt(value: unknown): FleetValidation<string> {
 export function validateCreateAgentInput(raw: Record<string, unknown>): FleetValidation<CreateAgentInput> {
   const name = validateAgentName(raw.name);
   if (!name.ok) return name;
-  const repo = validateRepo(raw.repo);
-  if (!repo.ok) return repo;
   const engine = validateEngine(raw.engine);
   if (!engine.ok) return engine;
-  const duty = validateDuty(raw.duty ?? "standing");
-  if (!duty.ok) return duty;
   const skills = validateSkills(raw.skills ?? []);
   if (!skills.ok) return skills;
   const system_prompt = validateSystemPrompt(raw.system_prompt);
@@ -404,17 +405,18 @@ export function validateCreateAgentInput(raw: Record<string, unknown>): FleetVal
   if (!triggers.ok) return triggers;
   const display_name = validateDisplayName(raw.display_name);
   if (!display_name.ok) return display_name;
+  const token = validateLinkedTokenName(raw.agent_token_name);
+  if (!token.ok) return token;
 
   return {
     ok: true,
     value: {
       name: name.value,
-      repo: repo.value,
       engine: engine.value,
-      duty: duty.value,
       skills: skills.value,
       system_prompt: system_prompt.value,
       triggers: triggers.value,
+      agent_token_name: token.value,
       ...(display_name.value !== undefined ? { display_name: display_name.value } : {}),
     },
   };
@@ -423,8 +425,11 @@ export function validateCreateAgentInput(raw: Record<string, unknown>): FleetVal
 /** Validate a PATCH body — only present fields are validated/returned. */
 export function validateUpdateAgentInput(raw: Record<string, unknown>): FleetValidation<UpdateAgentInput> {
   const patch: UpdateAgentInput = {};
-  if ("name" in raw || "repo" in raw) {
-    return fail("name", "name and repo are immutable; delete and recreate to change them.");
+  if ("name" in raw || "repo" in raw || "repos" in raw) {
+    return fail(
+      "name",
+      "name is immutable; repos follow the linked token (re-point agent_token_name to change scope).",
+    );
   }
   if ("display_name" in raw) {
     const r = validateDisplayName(raw.display_name);
@@ -436,10 +441,10 @@ export function validateUpdateAgentInput(raw: Record<string, unknown>): FleetVal
     if (!r.ok) return r;
     patch.engine = r.value;
   }
-  if ("duty" in raw) {
-    const r = validateDuty(raw.duty);
+  if ("agent_token_name" in raw) {
+    const r = validateLinkedTokenName(raw.agent_token_name);
     if (!r.ok) return r;
-    patch.duty = r.value;
+    patch.agent_token_name = r.value;
   }
   if ("skills" in raw) {
     const r = validateSkills(raw.skills);
@@ -543,7 +548,7 @@ function isTriggerStateShape(v: unknown): v is { enabled: boolean; settings: Rec
 function parseStoredAgent(raw: unknown): FleetAgent | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.name !== "string" || typeof r.repo !== "string" || typeof r.engine !== "string") return null;
+  if (typeof r.name !== "string" || !Array.isArray(r.repos) || typeof r.engine !== "string") return null;
   if (typeof r.system_prompt !== "string" || !Array.isArray(r.skills)) return null;
   const tr = r.triggers as Record<string, unknown> | undefined;
   if (
@@ -583,12 +588,13 @@ export async function countAgents(installationId: string, redis: Redis): Promise
 /**
  * Persist a new agent record. Serialized per-installation via a create lock so
  * the `MAX_AGENTS_PER_INSTALLATION` cap check is race-free (TOCTOU-safe). The
- * caller (route) has already issued the V1 token named `agent_token_name`;
- * if this throws, the route revokes that token so no orphan remains.
+ * agent LINKS an existing token (`agentTokenName`) — this flow never mints,
+ * mutates, or revokes it. `repos` is a snapshot of that token's `allowed_repos`.
  */
 export async function createAgent(args: {
   installationId: string;
   input: CreateAgentInput;
+  repos: string[];
   createdBy: string;
   agentTokenName: string;
   managed?: boolean;
@@ -608,9 +614,8 @@ export async function createAgent(args: {
     const record: FleetAgent = {
       name: input.name,
       ...(input.display_name !== undefined ? { display_name: input.display_name } : {}),
-      repo: input.repo,
+      repos: args.repos,
       engine: input.engine,
-      duty: input.duty,
       skills: input.skills,
       system_prompt: input.system_prompt,
       triggers: input.triggers,
@@ -631,7 +636,7 @@ export async function createAgent(args: {
       action: "create",
       name: input.name,
       actor: args.createdBy,
-      detail: { repo: input.repo, engine: input.engine },
+      detail: { repos: args.repos, engine: input.engine, token: args.agentTokenName },
     });
     return record;
   });
@@ -679,6 +684,9 @@ export async function updateAgent(args: {
   installationId: string;
   name: string;
   patch: UpdateAgentInput;
+  /** When the linked token changes, the route re-derives its allowed_repos and
+   * passes them here so the agent's repo snapshot stays in sync with the token. */
+  repos?: string[];
   actor: string;
   redis: Redis;
 }): Promise<FleetAgent> {
@@ -689,10 +697,11 @@ export async function updateAgent(args: {
     const updated: FleetAgent = {
       ...existing,
       ...(patch.engine !== undefined ? { engine: patch.engine } : {}),
-      ...(patch.duty !== undefined ? { duty: patch.duty } : {}),
       ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
       ...(patch.system_prompt !== undefined ? { system_prompt: patch.system_prompt } : {}),
       ...(patch.triggers !== undefined ? { triggers: patch.triggers } : {}),
+      ...(patch.agent_token_name !== undefined ? { agent_token_name: patch.agent_token_name } : {}),
+      ...(args.repos !== undefined ? { repos: args.repos } : {}),
       updated_at: new Date().toISOString(),
       config_version: existing.config_version + 1,
     };
@@ -733,9 +742,9 @@ export async function setAgentEnabled(args: {
 }
 
 /**
- * Delete the agent RECORD only. Token revocation is the route's responsibility
- * and MUST happen first (fail-closed): the route revokes the token, then calls
- * this. Returns true if a record existed.
+ * Delete the agent RECORD only. The linked capability token is intentionally
+ * NOT revoked — it is shared and managed independently on the Credentials
+ * screen, and may back other agents. Returns true if a record existed.
  */
 export async function deleteAgent(args: {
   installationId: string;

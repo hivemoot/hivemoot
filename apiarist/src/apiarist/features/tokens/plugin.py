@@ -111,17 +111,13 @@ def register(
             # for the duration measurement (monotonic, sub-ms precision).
             start = time.perf_counter()
             try:
-                result = await backend.mint_installation_token(
-                    repo, agent_id=agent_id_raw
-                )
+                result = await backend.mint_installation_token(repo, agent_id=agent_id_raw)
             except Exception as exc:
                 roundtrip_ms = (time.perf_counter() - start) * 1000
                 # Status string is the BackendError class name (or other
                 # exception type) — gives operators an immediate hint
                 # what failed without leaking the message.
-                health_state.record(
-                    status=type(exc).__name__, roundtrip_ms=roundtrip_ms
-                )
+                health_state.record(status=type(exc).__name__, roundtrip_ms=roundtrip_ms)
                 raise
             roundtrip_ms = (time.perf_counter() - start) * 1000
             health_state.record(status="ok", roundtrip_ms=roundtrip_ms)
@@ -139,9 +135,7 @@ def register(
             "expires_at": token.expires_at.isoformat().replace("+00:00", "Z"),
             "installation_id": token.installation_id,
             "permissions": token.permissions,
-            "repositories": [
-                {"full_name": r.full_name, "id": r.id} for r in token.repositories
-            ],
+            "repositories": [{"full_name": r.full_name, "id": r.id} for r in token.repositories],
         }
 
     registry.register("mint_token", mint_token)

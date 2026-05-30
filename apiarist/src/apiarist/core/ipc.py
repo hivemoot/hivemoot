@@ -146,9 +146,7 @@ def encode_message(payload: dict[str, Any]) -> bytes:
     """
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(body) > MAX_PAYLOAD_BYTES:
-        raise FramingError(
-            f"encoded payload {len(body)} bytes exceeds cap {MAX_PAYLOAD_BYTES}"
-        )
+        raise FramingError(f"encoded payload {len(body)} bytes exceeds cap {MAX_PAYLOAD_BYTES}")
     return struct.pack(LENGTH_PREFIX_FORMAT, len(body)) + body
 
 
@@ -167,9 +165,7 @@ def decode_request(raw: bytes) -> Request:
         raise ProtocolError(f"request body is not valid UTF-8 JSON: {exc}") from exc
 
     if not isinstance(payload, dict):
-        raise ProtocolError(
-            f"request must be a JSON object (got {type(payload).__name__})"
-        )
+        raise ProtocolError(f"request must be a JSON object (got {type(payload).__name__})")
 
     op = payload.get("op")
     request_id = payload.get("request_id")
@@ -180,8 +176,6 @@ def decode_request(raw: bytes) -> Request:
     if not isinstance(request_id, str) or not request_id:
         raise ProtocolError("request missing required string field 'request_id'")
     if not isinstance(params_raw, dict):
-        raise ProtocolError(
-            f"request 'params' must be an object (got {type(params_raw).__name__})"
-        )
+        raise ProtocolError(f"request 'params' must be an object (got {type(params_raw).__name__})")
 
     return Request(op=op, params=params_raw, request_id=request_id)

@@ -23,12 +23,11 @@ function baseTriggers(over: Record<string, unknown> = {}) {
 function baseBody(over: Record<string, unknown> = {}) {
   return {
     name: "builder",
-    repo: "hivemoot/hivemoot",
     engine: "claude",
-    duty: "standing",
     skills: ["code-reviewer"],
     system_prompt: "Be helpful.",
     triggers: baseTriggers(),
+    agent_token_name: "builder-token",
     ...over,
   };
 }
@@ -71,7 +70,7 @@ describe("validateCreateAgentInput", () => {
     if (r.ok) {
       expect(r.value.name).toBe("builder");
       expect(r.value.skills).toEqual(["code-reviewer"]);
-      expect(r.value.duty).toBe("standing");
+      expect(r.value.agent_token_name).toBe("builder-token");
     }
   });
 
@@ -79,6 +78,13 @@ describe("validateCreateAgentInput", () => {
     const r = validateCreateAgentInput(baseBody({ engine: "gpt-9000" }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.field).toBe("engine");
+  });
+
+  it("requires a valid agent_token_name (the linked token)", () => {
+    expect(validateCreateAgentInput(baseBody({ agent_token_name: undefined })).ok).toBe(false);
+    const bad = validateCreateAgentInput(baseBody({ agent_token_name: "BAD NAME" }));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.field).toBe("agent_token_name");
   });
 
   it("rejects unknown / malformed skills (no path traversal)", () => {

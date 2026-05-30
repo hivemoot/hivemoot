@@ -31,9 +31,7 @@ def test_defaults_when_no_overrides(tmp_path: Path) -> None:
 
 def test_file_overrides_defaults(tmp_path: Path) -> None:
     cfg_file = tmp_path / "apiarist.yaml"
-    cfg_file.write_text(
-        "socket_path: /tmp/apiarist.sock\nlog_level: debug\n"
-    )
+    cfg_file.write_text("socket_path: /tmp/apiarist.sock\nlog_level: debug\n")
     cfg = load_config(env={}, config_path=cfg_file)
     assert cfg.socket_path == Path("/tmp/apiarist.sock")
     assert cfg.log_level == "debug"

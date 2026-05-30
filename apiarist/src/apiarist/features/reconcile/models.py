@@ -64,7 +64,7 @@ class DesiredAgent:
     """One agent from the backend's desired-state roster."""
 
     name: str
-    repo: str
+    repos: tuple[str, ...]
     enabled: bool
     managed: bool
     config_version: int

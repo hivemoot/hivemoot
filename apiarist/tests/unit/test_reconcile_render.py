@@ -37,7 +37,7 @@ def make_triggers(**over: Any) -> Triggers:
 def make_agent(**over: Any) -> DesiredAgent:
     base: dict[str, Any] = dict(
         name="builder",
-        repo="hivemoot/hivemoot",
+        repos=("hivemoot/hivemoot",),
         enabled=True,
         managed=True,
         config_version=1,
@@ -120,3 +120,14 @@ def test_config_hash_is_deterministic_and_sensitive() -> None:
         make_agent(system_prompt="different prompt"), backend_url=BACKEND, image=IMAGE
     )
     assert r3.config_hash != r1.config_hash
+
+
+def test_render_multi_repo_fan_out() -> None:
+    # github watches ALL the token's repos; single-repo fields use the primary.
+    r = render_agent(make_agent(repos=("a/b", "c/d")), backend_url=BACKEND, image=IMAGE)
+    doc = yaml.safe_load(r.hivemoot_yaml)
+    assert doc["plugins"]["github"]["repos"] == ["a/b", "c/d"]
+    assert doc["plugins"]["hivemoot"]["health"]["repo"] == "a/b"
+    assert doc["plugins"]["hivemoot"]["apiarist"]["repo"] == "a/b"
+    assert "Repositories: a/b, c/d" in r.identity_md
+    assert r.repo == "a/b"  # container label uses the primary repo

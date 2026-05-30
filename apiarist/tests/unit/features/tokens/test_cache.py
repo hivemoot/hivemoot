@@ -37,16 +37,20 @@ async def test_cache_miss_then_hit() -> None:
 
     # First call → miss → fetch.
     t1 = await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert t1 is fetched
     assert calls == 1
 
     # Second call same key → hit → no fetch.
     t2 = await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert t2 is fetched
     assert calls == 1
@@ -61,18 +65,23 @@ async def test_different_repos_use_different_cache_slots() -> None:
         async def fetch() -> InstallationAccessToken:
             calls.append(repo_label)
             return _token(installation_id=repo_label)
+
         return fetch
 
     f_a = await fetch_factory("a")
     f_b = await fetch_factory("b")
 
     await cache.get_or_fetch(
-        installation_id="same", repo="owner/a",
-        permissions={"contents": "read"}, fetch=f_a,
+        installation_id="same",
+        repo="owner/a",
+        permissions={"contents": "read"},
+        fetch=f_a,
     )
     await cache.get_or_fetch(
-        installation_id="same", repo="owner/b",
-        permissions={"contents": "read"}, fetch=f_b,
+        installation_id="same",
+        repo="owner/b",
+        permissions={"contents": "read"},
+        fetch=f_b,
     )
 
     assert calls == ["a", "b"]
@@ -90,12 +99,16 @@ async def test_different_permissions_use_different_cache_slots() -> None:
         return _token()
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "write"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "write"},
+        fetch=fetch,
     )
     # Different permissions → different cache slot → second fetch happens.
     assert fetch_count == 2
@@ -123,8 +136,10 @@ async def test_single_flight_per_installation() -> None:
     # serialize the underlying fetches.
     tasks = [
         cache.get_or_fetch(
-            installation_id="i1", repo=f"owner/repo-{i}",
-            permissions={"contents": "read"}, fetch=fetch,
+            installation_id="i1",
+            repo=f"owner/repo-{i}",
+            permissions={"contents": "read"},
+            fetch=fetch,
         )
         for i in range(5)
     ]
@@ -147,12 +162,15 @@ async def test_different_installations_run_in_parallel() -> None:
             await asyncio.sleep(0.05)
             in_flight -= 1
             return _token(installation_id=inst_id)
+
         return fetch
 
     tasks = [
         cache.get_or_fetch(
-            installation_id=f"inst-{i}", repo="owner/repo",
-            permissions={"contents": "read"}, fetch=await fetch_factory(f"inst-{i}"),
+            installation_id=f"inst-{i}",
+            repo="owner/repo",
+            permissions={"contents": "read"},
+            fetch=await fetch_factory(f"inst-{i}"),
         )
         for i in range(5)
     ]
@@ -178,8 +196,10 @@ async def test_eviction_uses_expires_at_minus_safety_margin(
         return fetched
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert calls == 1
 
@@ -189,8 +209,10 @@ async def test_eviction_uses_expires_at_minus_safety_margin(
     monkeypatch.setattr(cache_mod, "_now_utc", lambda: fixed_now)
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert calls == 2
 
@@ -208,8 +230,10 @@ async def test_max_seconds_caps_eviction(monkeypatch: pytest.MonkeyPatch) -> Non
         return fetched
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert calls == 1
 
@@ -218,8 +242,10 @@ async def test_max_seconds_caps_eviction(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(cache_mod, "_now_utc", lambda: fixed_now)
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert calls == 2  # cap forced re-fetch
 
@@ -238,14 +264,18 @@ async def test_already_expired_token_not_cached() -> None:
         return fetched
 
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     # First fetch happens.
     assert calls == 1
     # Cache rejected the entry; second call re-fetches.
     await cache.get_or_fetch(
-        installation_id="i1", repo="owner/repo",
-        permissions={"contents": "read"}, fetch=fetch,
+        installation_id="i1",
+        repo="owner/repo",
+        permissions={"contents": "read"},
+        fetch=fetch,
     )
     assert calls == 2

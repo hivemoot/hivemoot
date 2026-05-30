@@ -5,9 +5,8 @@ import type { FleetAgent } from "@/server/fleet-store";
 function agent(over: Partial<FleetAgent> = {}): FleetAgent {
   return {
     name: "builder",
-    repo: "hivemoot/hivemoot",
+    repos: ["hivemoot/hivemoot"],
     engine: "claude",
-    duty: "standing",
     skills: ["code-reviewer"],
     system_prompt: "Be helpful.",
     triggers: {
@@ -65,7 +64,7 @@ describe("buildDesiredState (wire contract)", () => {
   it("carries the full resolved config a sidecar needs to render a container", () => {
     const ds = buildDesiredState({ agents: [agent()], rosterVersion: 1, generatedAt });
     const a = ds.agents[0];
-    expect(a.repo).toBe("hivemoot/hivemoot");
+    expect(a.repos).toEqual(["hivemoot/hivemoot"]);
     expect(a.skills).toEqual(["code-reviewer"]);
     expect(a.system_prompt).toBe("Be helpful.");
     expect(a.config_version).toBe(3);

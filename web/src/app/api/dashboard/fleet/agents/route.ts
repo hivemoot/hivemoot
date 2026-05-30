@@ -1,13 +1,12 @@
 /**
  * Fleet agent registry — list + create (cookie-auth dashboard surface).
  *
- * GET  /api/dashboard/fleet/agents  → registered agents (+ health) and
- *      observed-only (unregistered) agents for adoption.
- * POST /api/dashboard/fleet/agents  → register an agent. Auto-issues a
- *      least-privilege, repo-scoped V1 token (bearer shown ONCE). Fail-closed
- *      on repo coverage; rolls back the token if the record write fails.
- *
- * installationId always comes from the authenticated session — never the body.
+ * GET  → registered agents (+ latest health) and observed-only (unregistered)
+ *        agents for adoption.
+ * POST → register an agent that LINKS an existing capability token. The flow
+ *        never mints/mutates/revokes a token — it validates the selected token
+ *        exists and is repo-scoped, and snapshots its `allowed_repos` as the
+ *        agent's repos. installationId always comes from the session.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -19,6 +18,7 @@ import {
   readJsonObject,
   mapFleetStorageError,
   checkFleetCreateRateLimit,
+  resolveTokenRepos,
 } from "@/server/fleet-routes";
 import {
   createAgent,
@@ -26,16 +26,7 @@ import {
   countAgents,
   validateCreateAgentInput,
   MAX_AGENTS_PER_INSTALLATION,
-  type FleetAgent,
 } from "@/server/fleet-store";
-import { deriveCapabilities } from "@/server/agent-token-capabilities";
-import {
-  issueAgentToken,
-  revokeAgentToken,
-  TokenNameTakenError,
-  TokenLimitReachedError,
-} from "@/server/agent-token-v1";
-import { assertRepoCoveredByInstallation } from "@/server/github-installation-repos";
 import { getOverview, type HealthOverviewEntry } from "@/server/agent-health-store";
 
 interface AgentHealthView {
@@ -57,10 +48,6 @@ function projectHealth(h: HealthOverviewEntry | undefined): AgentHealthView | nu
   };
 }
 
-function healthKey(agentId: string, repo: string): string {
-  return `${agentId}:${repo}`;
-}
-
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const auth = await authenticateByokRequest(request, { requireFresh: false });
   if (!auth.ok) return auth.response;
@@ -74,14 +61,16 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       getOverview(installationId, auth.redis),
     ]);
 
-    const healthBy = new Map<string, HealthOverviewEntry>();
-    for (const h of overview) healthBy.set(healthKey(h.agent_id, h.repo), h);
+    // An agent may operate on several repos and report health per repo — join by
+    // agent_id and keep the most recent health entry.
+    const latestByAgent = new Map<string, HealthOverviewEntry>();
+    for (const h of overview) {
+      const prev = latestByAgent.get(h.agent_id);
+      if (!prev || h.received_at > prev.received_at) latestByAgent.set(h.agent_id, h);
+    }
 
     const registeredNames = new Set(agents.map((a) => a.name));
-    const view = agents.map((a) => ({
-      ...a,
-      health: projectHealth(healthBy.get(healthKey(a.name, a.repo))),
-    }));
+    const view = agents.map((a) => ({ ...a, health: projectHealth(latestByAgent.get(a.name)) }));
 
     // Observed-only: a health record whose agent_id has no registry record yet
     // (e.g. statically-deployed agents during migration). Offered for adoption.
@@ -119,7 +108,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   const input = validation.value;
 
-  // Cheap pre-check for a clear error; createAgent re-checks atomically.
   const count = await countAgents(installationId, auth.redis);
   if (count >= MAX_AGENTS_PER_INSTALLATION) {
     return fleetError(
@@ -129,93 +117,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Fail-closed repo-coverage authorization.
-  const coverage = await assertRepoCoveredByInstallation({ installationId, repo: input.repo });
-  if (!coverage.ok) {
-    return coverage.reason === "not_covered"
-      ? fleetError(FLEET_ERROR.REPO_NOT_COVERED, coverage.message, 403, { repo: input.repo })
-      : fleetError(FLEET_ERROR.COVERAGE_CHECK_FAILED, coverage.message, 503);
-  }
+  // Link an EXISTING capability token. The token (managed on Credentials) is the
+  // source of truth for BOTH capabilities and repo scope — validate it exists and
+  // is repo-scoped, then snapshot its allowed_repos.
+  const repos = await resolveTokenRepos(installationId, input.agent_token_name, auth.redis);
+  if (!repos.ok) return repos.response;
 
-  // Least-privilege capabilities derived purely from the enabled triggers.
-  const capabilities = deriveCapabilities({
-    schedule: input.triggers.schedule.enabled,
-    pull_requests: input.triggers.pull_requests.enabled,
-    mentions: input.triggers.mentions.enabled,
-    tasks: input.triggers.tasks.enabled,
-    war_rooms: input.triggers.war_rooms.enabled,
-    war_rooms_contribute: input.triggers.war_rooms.settings.contribute,
-  });
-
-  // Issue the agent's token first (enforces token-name uniqueness + token cap).
-  let issued;
   try {
-    issued = await issueAgentToken({
-      installationId,
-      name: input.name,
-      agent_role: input.name,
-      capabilities,
-      policy: { allowed_repos: [input.repo] },
-      createdBy: auth.session.userLogin,
-      expiresAt: null,
-      keyring: auth.keyring,
-      keyVersion: auth.activeKeyVersion,
-      redis: auth.redis,
-      auditContext: {
-        operator: { fingerprint: "", name: "dashboard" },
-        detailExtras: { issued_by: auth.session.userLogin, source: "fleet" },
-      },
-    });
-  } catch (err) {
-    if (err instanceof TokenNameTakenError) {
-      return fleetError(FLEET_ERROR.NAME_TAKEN, `An agent or token named '${input.name}' already exists.`, 409, {
-        name: input.name,
-      });
-    }
-    if (err instanceof TokenLimitReachedError) {
-      return fleetError(FLEET_ERROR.AGENT_LIMIT_REACHED, err.message, 409);
-    }
-    return mapFleetStorageError(err, { route: "POST /api/dashboard/fleet/agents", installationId, name: input.name });
-  }
-
-  // Persist the record; on failure revoke the just-issued token (no orphan).
-  let record: FleetAgent;
-  try {
-    record = await createAgent({
+    const record = await createAgent({
       installationId,
       input,
+      repos: repos.repos,
       createdBy: auth.session.userLogin,
-      agentTokenName: issued.name,
+      agentTokenName: input.agent_token_name,
       redis: auth.redis,
     });
+    return NextResponse.json({ agent: record }, { status: 201 });
   } catch (err) {
-    try {
-      await revokeAgentToken({
-        installationId,
-        name: issued.name,
-        redis: auth.redis,
-        auditContext: {
-          operator: { fingerprint: "", name: "dashboard" },
-          detailExtras: { reason: "fleet_create_rollback" },
-        },
-      });
-    } catch (revokeErr) {
-      console.error("[fleet] token revoke after create-failure also failed", {
-        installationId,
-        name: issued.name,
-        revokeErr,
-      });
-    }
     return mapFleetStorageError(err, { route: "POST /api/dashboard/fleet/agents", installationId, name: input.name });
   }
-
-  return NextResponse.json(
-    {
-      agent: record,
-      token: issued.token,
-      token_fingerprint: issued.fingerprint,
-      message: "Agent created. The token below is shown ONCE — store it securely (it provisions the agent on the hive).",
-    },
-    { status: 201 },
-  );
 }

@@ -36,22 +36,17 @@ _REDACTED = "[REDACTED]"
 # ``Bearer`` keyword that the first rule preserves for diagnostics).
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Bearer / Authorization headers echoed in error text.
-    (re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
-     f"Bearer {_REDACTED}"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE), f"Bearer {_REDACTED}"),
     # Anthropic-prefixed (sk-ant-) MUST run before the generic sk- rule
     # because both regexes match the same prefix.
-    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{16,}\b"),
-     f"sk-ant-{_REDACTED}"),
-    (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
-     f"sk-{_REDACTED}"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{16,}\b"), f"sk-ant-{_REDACTED}"),
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"), f"sk-{_REDACTED}"),
     # GitHub classic + installation tokens (ghp/ghs/gho/ghu/ghr).
-    (re.compile(r"\bgh[psuor]_[A-Za-z0-9]{20,}\b"),
-     f"gh*_{_REDACTED}"),
+    (re.compile(r"\bgh[psuor]_[A-Za-z0-9]{20,}\b"), f"gh*_{_REDACTED}"),
     # GitHub fine-grained PATs (apiarist-specific addition vs the
     # agent/cli sanitize patterns; fine-grained PATs are how the
     # foxstoria-style per-repo identities are issued).
-    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-     f"github_pat_{_REDACTED}"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), f"github_pat_{_REDACTED}"),
     # Apiarist agent tokens (hm_ prefix). The current
     # apiary.secrets.yaml `health_token` is a 64-char hex without the
     # hm_ prefix — that bare-hex shape is intentionally NOT redacted
@@ -59,15 +54,15 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # blobs. Operators rotating tokens to the prefixed form get
     # redaction; the bare-hex value relies on file permissions
     # (chmod 640) for protection.
-    (re.compile(r"\bhm_[A-Za-z0-9]{16,}\b"),
-     f"hm_{_REDACTED}"),
+    (re.compile(r"\bhm_[A-Za-z0-9]{16,}\b"), f"hm_{_REDACTED}"),
     # Generic ``token=<val>`` / ``api_key: <val>`` / ``api-key: "<val>"``
     # in URL query strings, YAML/JSON config snippets, or inline error
     # text. Optional surrounding quotes so ``api_key: "sk_..."`` scrubs
     # the value without leaving the quoted secret intact.
-    (re.compile(
-        r"(?i)\b(token|api[_-]?key)\s*[=:]\s*[\"']?[A-Za-z0-9._\-]+[\"']?"),
-     rf"\1={_REDACTED}"),
+    (
+        re.compile(r"(?i)\b(token|api[_-]?key)\s*[=:]\s*[\"']?[A-Za-z0-9._\-]+[\"']?"),
+        rf"\1={_REDACTED}",
+    ),
 )
 
 

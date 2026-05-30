@@ -36,9 +36,7 @@ def test_plain_string_unchanged() -> None:
 
 
 def test_bearer_header_redacted() -> None:
-    out = redact_string(
-        "curl: Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxx rejected"
-    )
+    out = redact_string("curl: Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxx rejected")
     assert "ghp_xxxx" not in out
     assert "Bearer [REDACTED]" in out
 
@@ -83,9 +81,7 @@ def test_apiarist_hm_token_redacted() -> None:
 
 
 def test_token_query_param_redacted() -> None:
-    out = redact_string(
-        "POST failed: url=https://api.example/x?token=abcdef1234567890 rejected"
-    )
+    out = redact_string("POST failed: url=https://api.example/x?token=abcdef1234567890 rejected")
     assert "token=abcdef1234567890" not in out
     assert "[REDACTED]" in out
 

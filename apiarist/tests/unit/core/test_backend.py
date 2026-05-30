@@ -34,10 +34,7 @@ from apiarist.core.backend import (
 
 
 def _future_iso(seconds: int = 3600) -> str:
-    return (
-        (datetime.now(UTC) + timedelta(seconds=seconds))
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _client_with_handler(
@@ -66,9 +63,7 @@ def _success_body() -> dict[str, object]:
             "issues": "write",
             "metadata": "read",
         },
-        "repositories": [
-            {"full_name": "dkjazz/the-storytimes-firebase", "id": 12345}
-        ],
+        "repositories": [{"full_name": "dkjazz/the-storytimes-firebase", "id": 12345}],
     }
 
 
@@ -96,15 +91,14 @@ async def test_success_returns_typed_token() -> None:
         "issues": "write",
         "metadata": "read",
     }
-    assert result.repositories == [
-        Repository(full_name="dkjazz/the-storytimes-firebase", id=12345)
-    ]
+    assert result.repositories == [Repository(full_name="dkjazz/the-storytimes-firebase", id=12345)]
 
 
 @pytest.mark.asyncio
 async def test_success_with_omitted_scope_fields_returns_empty() -> None:
     """Backend stub may omit permissions/repositories before the real
     minting lands; client treats absence as empty rather than failing."""
+
     def handler(_: httpx.Request) -> httpx.Response:
         body = _success_body()
         del body["permissions"]
@@ -121,6 +115,7 @@ async def test_success_with_omitted_scope_fields_returns_empty() -> None:
 @pytest.mark.asyncio
 async def test_success_with_multi_repo_scope() -> None:
     """A token narrowed to multiple repos comes back with all of them."""
+
     def handler(_: httpx.Request) -> httpx.Response:
         body = _success_body()
         body["repositories"] = [
@@ -176,6 +171,7 @@ async def test_repository_entry_missing_id_raises_protocol_error() -> None:
 @pytest.mark.asyncio
 async def test_repository_entry_with_bool_id_rejected() -> None:
     """bool is a subtype of int — explicit reject avoids `True == 1` slips."""
+
     def handler(_: httpx.Request) -> httpx.Response:
         body = _success_body()
         body["repositories"] = [{"full_name": "owner/repo", "id": True}]
@@ -424,10 +420,7 @@ async def test_200_with_already_expired_token_raises_protocol_error() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         body = _success_body()
         # 1 hour in the past — the cache would otherwise serve a dead token.
-        body["expires_at"] = (
-            (datetime.now(UTC) - timedelta(hours=1))
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
+        body["expires_at"] = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         return httpx.Response(200, json=body)
 
     async with _client_with_handler(handler) as client:
@@ -452,14 +445,14 @@ async def test_200_with_naive_timestamp_raises_protocol_error() -> None:
     """A backend bug that drops the trailing 'Z' would yield a naive
     datetime; cache eviction (tz-aware comparisons) would then crash
     with TypeError. Reject at parse time so the failure is named."""
+
     def handler(_: httpx.Request) -> httpx.Response:
         body = _success_body()
         # Future date but no timezone — naive datetime would slip through
         # without the explicit tz check in _parse_iso8601.
-        body["expires_at"] = (
-            (datetime.now(UTC) + timedelta(hours=1))
-            .strftime("%Y-%m-%dT%H:%M:%S")  # no trailing Z
-        )
+        body["expires_at"] = (datetime.now(UTC) + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )  # no trailing Z
         return httpx.Response(200, json=body)
 
     async with _client_with_handler(handler) as client:

@@ -55,7 +55,7 @@ def render_agent(
     return RenderedContainer(
         container_name=container_name_for(agent.name),
         agent_name=agent.name,
-        repo=agent.repo,
+        repo=agent.repos[0],  # primary repo — label/observability only
         engine_id=agent.engine.id,
         image=image,
         hivemoot_yaml=hivemoot_yaml,
@@ -70,9 +70,11 @@ def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
     base = backend_url.rstrip("/")
 
     # hivemoot plugin (emitted FIRST — load-bearing order for the broker path).
+    # health + apiarist are single-repo config fields; use the primary repo.
+    primary_repo = agent.repos[0]
     hivemoot: dict[str, Any] = {
         "token_file": "/run/secrets/hivemoot-agent-token",
-        "health": {"enabled": True, "repo": agent.repo},
+        "health": {"enabled": True, "repo": primary_repo},
         "github_workflows": {
             "enabled": True,
             "role_name": agent.name,
@@ -81,7 +83,7 @@ def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
         "apiarist": {
             "enabled": True,
             "socket_path": "/run/apiarist.sock",
-            "repo": agent.repo,
+            "repo": primary_repo,
         },
     }
     if t.tasks_enabled:
@@ -96,7 +98,7 @@ def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
 
     # github plugin (brokered installation token via apiarist subscriber).
     github: dict[str, Any] = {
-        "repos": [agent.repo],
+        "repos": list(agent.repos),
         "token_source": "subscriber",
         "workspace": "/data/workspace",
         "watch_mentions": t.mentions_enabled,
@@ -128,7 +130,7 @@ def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
 def _render_identity(agent: DesiredAgent) -> str:
     # The image's root_system_prompt.md provides the non-negotiable baseline;
     # identity.md carries this agent's persona + operator system prompt.
-    header = f"# Agent: {agent.name}\n\nRepository: {agent.repo}\n"
+    header = f"# Agent: {agent.name}\n\nRepositories: {', '.join(agent.repos)}\n"
     if agent.skills:
         header += f"Skills: {', '.join(agent.skills)}\n"
     body = agent.system_prompt.strip()

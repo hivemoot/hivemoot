@@ -22,7 +22,7 @@ VALID_PAYLOAD: dict[str, Any] = {
     "agents": [
         {
             "name": "builder",
-            "repo": "hivemoot/hivemoot",
+            "repos": ["hivemoot/hivemoot"],
             "enabled": True,
             "managed": True,
             "config_version": 3,
@@ -116,6 +116,29 @@ async def test_malformed_agent_raises_protocol_error() -> None:
     client = _client(lambda request: httpx.Response(200, json=bad))
     with pytest.raises(FleetProtocolError):
         await client.fetch_desired_state()
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "bad_repos",
+    [[], "not-a-list", ["owner"], ["owner/../x"], ["owner name"], [123], ["a/b", "bad"]],
+)
+async def test_invalid_repos_fail_closed(bad_repos: object) -> None:
+    # repos come from the token policy; the apiarist trust boundary must reject a
+    # missing/empty/malformed list before any path/yaml use → whole cycle fails.
+    payload = {**VALID_PAYLOAD, "agents": [{**VALID_PAYLOAD["agents"][0], "repos": bad_repos}]}
+    client = _client(lambda request: httpx.Response(200, json=payload))
+    with pytest.raises(FleetProtocolError):
+        await client.fetch_desired_state()
+    await client.aclose()
+
+
+async def test_multi_repo_is_parsed() -> None:
+    payload = {**VALID_PAYLOAD, "agents": [{**VALID_PAYLOAD["agents"][0], "repos": ["a/b", "c/d"]}]}
+    client = _client(lambda request: httpx.Response(200, json=payload))
+    ds = await client.fetch_desired_state()
+    assert not isinstance(ds, NotModified)
+    assert ds.agents[0].repos == ("a/b", "c/d")
     await client.aclose()
 
 

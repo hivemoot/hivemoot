@@ -12,19 +12,23 @@ import {
   Spinner,
 } from "@/app/dashboard/ui";
 import {
+  type AgentTokensResponse,
   type AgentTriggers,
+  type CreateAgentPayload,
   type CreateAgentResponse,
   type EngineCatalogEntry,
   type FleetAgent,
   type FleetErrorBody,
   type FleetMetaResponse,
   type SkillCatalogEntry,
+  type TokenSummary,
   type TriggerKey,
+  type UpdateAgentPayload,
   type UpdateAgentResponse,
   defaultTriggers,
   FLEET_ERROR_CODE,
 } from "./types";
-import { previewCapabilities } from "./capabilities";
+import { previewCapabilities, tokenCoversCapabilities } from "./capabilities";
 import { TRIGGER_LABELS, TRIGGER_ORDER } from "./shared";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +38,6 @@ import { TRIGGER_LABELS, TRIGGER_ORDER } from "./shared";
 const MAX_SYSTEM_PROMPT_CHARS = 16_000;
 const MAX_SCHEDULE_PROMPT_CHARS = 2_000;
 const NAME_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
-const REPO_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const INPUT_CLASS =
   "w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-60";
@@ -74,6 +77,16 @@ function friendlyFleetError(status: number, body: FleetErrorBody): string {
       );
     case FLEET_ERROR_CODE.QUEEN_NOT_SUPPORTED:
       return body.message;
+    case FLEET_ERROR_CODE.INVALID_TOKEN:
+      return (
+        body.message ||
+        "The selected token no longer exists. Pick another token, or create one on Credentials."
+      );
+    case FLEET_ERROR_CODE.TOKEN_NOT_SCOPED:
+      return (
+        body.message ||
+        "The selected token isn't scoped to any repo. Scope it on Credentials first, then link it here."
+      );
     case FLEET_ERROR_CODE.AGENT_LIMIT_REACHED:
       return "You've hit the per-installation agent limit. Delete an agent before creating another.";
     case FLEET_ERROR_CODE.RATE_LIMITED:
@@ -187,7 +200,6 @@ function SkillsPicker({
 }) {
   const groups: { source: SkillCatalogEntry["source"]; label: string }[] = [
     { source: "builtin", label: "Built-in" },
-    { source: "apiary", label: "Custom (apiary)" },
   ];
 
   return (
@@ -463,73 +475,162 @@ function PullRequestsSettings({
 }
 
 // ---------------------------------------------------------------------------
-// Issued-token dialog (one-time copy, ByokPanel-style)
+// Token picker — link an EXISTING capability token (nothing is minted)
 // ---------------------------------------------------------------------------
 
-function IssuedTokenDialog({
-  issued,
-  onClose,
-}: {
-  issued: CreateAgentResponse;
-  onClose: () => void;
-}) {
-  const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
+/** Loading state for the linkable-token catalog (fetched on mount). */
+type TokensState =
+  | { kind: "loading" }
+  | { kind: "loaded"; tokens: TokenSummary[] }
+  | { kind: "error"; message: string };
 
-  function handleCopy() {
-    if (!navigator.clipboard?.writeText) {
-      setCopyState("fail");
-      return;
-    }
-    navigator.clipboard.writeText(issued.token).then(
-      () => {
-        setCopyState("ok");
-        setTimeout(() => setCopyState("idle"), 2000);
-      },
-      () => setCopyState("fail"),
+function CapabilityChips({ caps }: { caps: string[] }) {
+  if (caps.length === 0) {
+    return <span className="text-xs text-zinc-600">No capabilities</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {caps.map((cap) => (
+        <span
+          key={cap}
+          className="rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-zinc-400"
+        >
+          {cap}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function TokenPicker({
+  tokensState,
+  selectedName,
+  onSelect,
+  selectedToken,
+  scoped,
+  capabilityWarning,
+  onRetry,
+}: {
+  tokensState: TokensState;
+  selectedName: string;
+  onSelect: (name: string) => void;
+  /** The resolved summary for `selectedName`, or undefined when none is picked. */
+  selectedToken: TokenSummary | undefined;
+  /** True when the selected token has ≥1 allowed repo. */
+  scoped: boolean;
+  /** Non-blocking warning when the token can't cover the agent's triggers. */
+  capabilityWarning: string | null;
+  onRetry: () => void;
+}) {
+  if (tokensState.kind === "loading") {
+    return <LoadingState label="Loading tokens…" />;
+  }
+
+  if (tokensState.kind === "error") {
+    return (
+      <div className="space-y-3">
+        <ErrorBanner tone="red">{tokensState.message}</ErrorBanner>
+        <Button variant="secondary" size="sm" type="button" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
     );
   }
 
+  const { tokens } = tokensState;
+
+  if (tokens.length === 0) {
+    return (
+      <ErrorBanner tone="amber">
+        No agent tokens yet. Create a repo-scoped token on{" "}
+        <a href="/dashboard/settings/byok" className="underline hover:text-amber-300">
+          Credentials
+        </a>{" "}
+        first, then link it here.
+      </ErrorBanner>
+    );
+  }
+
+  const repos = selectedToken?.policy?.allowed_repos ?? [];
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="issued-token-title"
-    >
-      <Card padding="lg" className="w-full max-w-lg border-honey-500/30 shadow-2xl">
-        <h3 id="issued-token-title" className="text-lg font-semibold text-honey-500">
-          Agent created — copy the token now
-        </h3>
-        <p className="mt-2 text-sm text-zinc-300">{issued.message}</p>
-        <p className="mt-2 text-xs text-amber-400/90">
-          Shown ONCE. Store it where the agent can read it (it provisions the agent on the hive).
-          After you close this dialog, only the fingerprint is recoverable.
+    <div className="space-y-4">
+      <div>
+        <label htmlFor="agent-token" className={LABEL_CLASS}>
+          Token <span className="text-red-400/70">(required)</span>
+        </label>
+        <select
+          id="agent-token"
+          value={selectedName}
+          onChange={(e) => onSelect(e.target.value)}
+          className={INPUT_CLASS}
+        >
+          <option value="">Select a token…</option>
+          {tokens.map((t) => (
+            <option key={t.name} value={t.name}>
+              {t.name} ({t.agent_role})
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-zinc-600">
+          The agent acts through this existing token. Its repo policy defines where the agent
+          operates. Manage tokens on{" "}
+          <a href="/dashboard/settings/byok" className="underline hover:text-zinc-400">
+            Credentials
+          </a>
+          .
         </p>
+      </div>
 
-        <div className="mt-4 flex items-center gap-2">
-          <input
-            type="text"
-            readOnly
-            value={issued.token}
-            onFocus={(e) => e.target.select()}
-            className="w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 font-mono text-xs text-[#fafafa]"
-          />
-          <Button type="button" variant="secondary" size="sm" onClick={handleCopy} className="shrink-0">
-            {copyState === "ok" ? "Copied" : copyState === "fail" ? "Copy failed" : "Copy"}
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">
-          Fingerprint: <span className="font-mono text-zinc-400">····{issued.token_fingerprint}</span>
-        </p>
+      {selectedToken && (
+        <div className="space-y-4 rounded-lg border border-white/[0.04] bg-white/[0.02] p-4">
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-zinc-400">Token capabilities</p>
+            <CapabilityChips caps={selectedToken.capabilities} />
+          </div>
 
-        <div className="mt-6 flex justify-end">
-          <Button type="button" variant="primary" size="md" onClick={onClose}>
-            I&apos;ve stored it — continue
-          </Button>
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-zinc-400">Repo scope</p>
+            {scoped ? (
+              <p className="text-sm text-zinc-300">
+                This agent will operate on:{" "}
+                <span className="font-mono text-zinc-200">{repos.join(", ")}</span>
+              </p>
+            ) : (
+              <ErrorBanner tone="amber">
+                This token isn&apos;t scoped to any repo — scope it on{" "}
+                <a href="/dashboard/settings/byok" className="underline hover:text-amber-300">
+                  Credentials
+                </a>{" "}
+                first. The agent can&apos;t be created until then.
+              </ErrorBanner>
+            )}
+          </div>
+
+          {capabilityWarning && <ErrorBanner tone="amber">{capabilityWarning}</ErrorBanner>}
         </div>
-      </Card>
+      )}
     </div>
   );
+}
+
+/**
+ * Map missing capabilities back to the human-facing trigger they belong to so
+ * the warning reads in operator terms ("Tasks trigger enabled but this token
+ * can't claim tasks") instead of raw capability strings.
+ */
+function describeMissingCapabilityTriggers(missing: string[]): string {
+  const notes: string[] = [];
+  if (missing.some((c) => c.startsWith("tasks."))) {
+    notes.push("Tasks trigger enabled but this token can't claim tasks.");
+  }
+  if (missing.some((c) => c.startsWith("rooms."))) {
+    notes.push("War-rooms trigger enabled but this token can't participate in rooms.");
+  }
+  if (missing.includes("agent_health.report")) {
+    notes.push("This token can't report agent health.");
+  }
+  return notes.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -548,18 +649,18 @@ export function AgentConfigForm({
   const searchParams = useSearchParams();
   const isEdit = mode === "edit";
 
-  // Prefill (create-only) from ?name=&repo= for the "Adopt" flow.
+  // Prefill (create-only) from ?name= for the "Adopt" flow. ?repo= is gone —
+  // the repo now comes from the linked token's policy.
   const prefillName = !isEdit ? (searchParams.get("name") ?? "") : "";
-  const prefillRepo = !isEdit ? (searchParams.get("repo") ?? "") : "";
 
   const [meta, setMeta] = useState<MetaState>({ kind: "loading" });
+  const [tokensState, setTokensState] = useState<TokensState>({ kind: "loading" });
 
   // ---- form fields ----
   const [name, setName] = useState(initial?.name ?? prefillName);
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
-  const [repo, setRepo] = useState(initial?.repo ?? prefillRepo);
   const [engine, setEngine] = useState(initial?.engine ?? "");
-  const [duty, setDuty] = useState<FleetAgent["duty"]>(initial?.duty ?? "standing");
+  const [agentTokenName, setAgentTokenName] = useState(initial?.agent_token_name ?? "");
   const [skills, setSkills] = useState<Set<string>>(() => new Set(initial?.skills ?? []));
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? "");
   const [triggers, setTriggers] = useState<AgentTriggers>(initial?.triggers ?? defaultTriggers());
@@ -567,7 +668,6 @@ export function AgentConfigForm({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const [issuedToken, setIssuedToken] = useState<CreateAgentResponse | null>(null);
 
   // Seed create-mode defaults exactly once when the catalog first arrives:
   // pre-check standard skills + default the engine to the first catalog entry.
@@ -618,6 +718,39 @@ export function AgentConfigForm({
     run();
   }, [loadMeta]);
 
+  // ---- load linkable tokens ----
+  // Same request-id guard pattern as loadMeta — a Retry mid-flight or an unmount
+  // discards the stale response. Cookie-auth GET, no fresh-session needed.
+  const tokensRequestRef = useRef(0);
+  const loadTokens = useCallback(async () => {
+    const requestId = ++tokensRequestRef.current;
+    setTokensState({ kind: "loading" });
+    try {
+      const res = await fetch("/api/dashboard/agent-tokens", { cache: "no-store" });
+      if (requestId !== tokensRequestRef.current) return;
+      if (!res.ok) {
+        if (res.status === 401) {
+          setSessionExpired(true);
+          setTokensState({ kind: "error", message: "Session expired." });
+          return;
+        }
+        setTokensState({ kind: "error", message: "Failed to load tokens." });
+        return;
+      }
+      const data = (await res.json()) as AgentTokensResponse;
+      if (requestId !== tokensRequestRef.current) return;
+      setTokensState({ kind: "loaded", tokens: data.tokens ?? [] });
+    } catch {
+      if (requestId !== tokensRequestRef.current) return;
+      setTokensState({ kind: "error", message: "Network error — could not reach server." });
+    }
+  }, []);
+
+  useEffect(() => {
+    const run = () => void loadTokens();
+    run();
+  }, [loadTokens]);
+
   const toggleSkill = useCallback((id: string) => {
     setSkills((prev) => {
       const next = new Set(prev);
@@ -640,15 +773,42 @@ export function AgentConfigForm({
     [triggers],
   );
 
+  // The token the operator linked (resolved against the loaded catalog).
+  const selectedToken = useMemo<TokenSummary | undefined>(() => {
+    if (tokensState.kind !== "loaded" || !agentTokenName) return undefined;
+    return tokensState.tokens.find((t) => t.name === agentTokenName);
+  }, [tokensState, agentTokenName]);
+
+  // A token must be scoped to ≥1 repo — that's where the agent operates. An
+  // unscoped token blocks submit (the server rejects it with TOKEN_NOT_SCOPED).
+  const tokenScoped = (selectedToken?.policy?.allowed_repos?.length ?? 0) > 0;
+
+  // Non-blocking warning when the linked token can't grant what the enabled
+  // triggers need (e.g. the tasks trigger is on but the token can't claim
+  // tasks). Surfaced as guidance — the server is the authority and may still
+  // refuse, but we never hard-block on a coverage gap here.
+  const capabilityWarning = useMemo<string | null>(() => {
+    if (!selectedToken) return null;
+    const { covered, missing } = tokenCoversCapabilities(selectedToken.capabilities, capabilities);
+    if (covered) return null;
+    const missingTriggers = describeMissingCapabilityTriggers(missing);
+    return `This token is missing ${missing.join(", ")}. ${missingTriggers}`;
+  }, [selectedToken, capabilities]);
+
   // ---- client-side validation (fast feedback; server re-validates) ----
   function clientValidate(): string | null {
     if (!isEdit) {
       if (!NAME_REGEX.test(name)) {
         return "Name must be a lowercase identifier starting with a letter (≤32 chars, a–z 0–9 _ -).";
       }
-      if (!REPO_REGEX.test(repo.trim())) {
-        return "Repo must be in 'owner/name' form.";
-      }
+    }
+    if (!agentTokenName) return "Pick a token for this agent.";
+    // The token must be scoped to a repo — that's where the agent works. We
+    // block here for fast feedback; the server enforces the same rule
+    // (TOKEN_NOT_SCOPED). Only enforce when the catalog has loaded and resolved
+    // the selection, so a slow token fetch never blocks a valid submit.
+    if (selectedToken && !tokenScoped) {
+      return "The selected token isn't scoped to any repo. Scope it on Credentials first, then link it here.";
     }
     if (!engine) return "Pick an engine.";
     if (displayName.trim().length > 80) return "Display name must be ≤80 characters.";
@@ -686,14 +846,16 @@ export function AgentConfigForm({
     try {
       let res: Response;
       if (isEdit) {
-        // PATCH only mutable fields. display_name can be cleared via null.
-        const body = {
+        // PATCH only mutable fields. display_name can be cleared via null. The
+        // linked token is editable — re-pointing an agent at a different scoped
+        // token is allowed.
+        const body: UpdateAgentPayload = {
           display_name: trimmedDisplay.length > 0 ? trimmedDisplay : null,
           engine,
-          duty,
           skills: Array.from(skills),
           system_prompt: systemPrompt,
           triggers,
+          agent_token_name: agentTokenName,
         };
         res = await fetch(`/api/dashboard/fleet/agents/${encodeURIComponent(initial!.name)}`, {
           method: "PATCH",
@@ -701,15 +863,14 @@ export function AgentConfigForm({
           body: JSON.stringify(body),
         });
       } else {
-        const body = {
+        const body: CreateAgentPayload = {
           name,
           ...(trimmedDisplay.length > 0 ? { display_name: trimmedDisplay } : {}),
-          repo: repo.trim(),
           engine,
-          duty,
           skills: Array.from(skills),
           system_prompt: systemPrompt,
           triggers,
+          agent_token_name: agentTokenName,
         };
         res = await fetch("/api/dashboard/fleet/agents", {
           method: "POST",
@@ -744,19 +905,13 @@ export function AgentConfigForm({
       }
 
       const data = (await res.json()) as CreateAgentResponse;
-      // Show the once-only token; routing happens when the dialog closes.
-      setIssuedToken(data);
+      // Nothing is minted anymore — go straight to the new agent's detail page.
+      router.refresh();
+      router.push(`/dashboard/agents/${encodeURIComponent(data.agent.name)}`);
     } catch {
       setFormError("Could not reach the server. Check your connection and try again.");
       setSubmitting(false);
     }
-  }
-
-  function handleTokenDialogClose() {
-    if (!issuedToken) return;
-    const created = issuedToken.agent.name;
-    setIssuedToken(null);
-    router.push(`/dashboard/agents/${encodeURIComponent(created)}`);
   }
 
   // -------------------------------------------------------------------------
@@ -807,7 +962,7 @@ export function AgentConfigForm({
 
       {/* Identity */}
       <Card padding="md" className="space-y-5">
-        <SectionHeader title="Identity" description="Who this agent is and where it works." />
+        <SectionHeader title="Identity" description="Who this agent is." />
 
         {isEdit ? (
           <ReadOnlyField label="Name" value={initial!.name} hint="Immutable after creation." />
@@ -827,7 +982,7 @@ export function AgentConfigForm({
             />
             <p className="mt-1 text-xs text-zinc-600">
               Lowercase id, starts with a letter, ≤32 chars (a–z 0–9 _ -). Used as the agent&apos;s
-              stable identity and token name.
+              stable identity.
             </p>
           </div>
         )}
@@ -846,33 +1001,28 @@ export function AgentConfigForm({
             className={INPUT_CLASS}
           />
         </div>
+      </Card>
 
-        {isEdit ? (
-          <ReadOnlyField label="Repo" value={initial!.repo} hint="Immutable after creation." />
-        ) : (
-          <div>
-            <label htmlFor="agent-repo" className={LABEL_CLASS}>
-              Repo <span className="text-red-400/70">(required)</span>
-            </label>
-            <input
-              id="agent-repo"
-              type="text"
-              value={repo}
-              onChange={(e) => setRepo(e.target.value)}
-              placeholder="owner/name"
-              autoComplete="off"
-              className={`${INPUT_CLASS} font-mono`}
-            />
-            <p className="mt-1 text-xs text-zinc-600">
-              The repo the agent operates on. The Hivemoot Bot must be installed there.
-            </p>
-          </div>
-        )}
+      {/* Token — links an existing scoped capability token. */}
+      <Card padding="md" className="space-y-4">
+        <SectionHeader
+          title="Token"
+          description="The existing capability token this agent acts through. Its repo policy defines where the agent operates."
+        />
+        <TokenPicker
+          tokensState={tokensState}
+          selectedName={agentTokenName}
+          onSelect={setAgentTokenName}
+          selectedToken={selectedToken}
+          scoped={tokenScoped}
+          capabilityWarning={capabilityWarning}
+          onRetry={loadTokens}
+        />
       </Card>
 
       {/* Runtime */}
       <Card padding="md" className="space-y-5">
-        <SectionHeader title="Runtime" description="The engine and dispatch model." />
+        <SectionHeader title="Runtime" description="The engine this agent runs on." />
 
         <div>
           <label htmlFor="agent-engine" className={LABEL_CLASS}>
@@ -891,32 +1041,6 @@ export function AgentConfigForm({
               </option>
             ))}
           </select>
-        </div>
-
-        <div>
-          <span className={LABEL_CLASS}>Duty</span>
-          <div className="inline-flex rounded-lg border border-white/[0.06] p-1">
-            {(["standing", "dispatch"] as const).map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setDuty(d)}
-                aria-pressed={duty === d}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  duty === d
-                    ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
-                    : "border border-transparent text-zinc-400 hover:text-zinc-300"
-                }`}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-          <p className="mt-1.5 text-xs text-zinc-600">
-            {duty === "standing"
-              ? "Standing agents run continuously on their own triggers."
-              : "Dispatch agents are activated to claim specific dispatched work."}
-          </p>
         </div>
       </Card>
 
@@ -978,7 +1102,15 @@ export function AgentConfigForm({
 
       {/* Actions */}
       <div className="flex items-center gap-3">
-        <Button type="submit" variant="primary" size="md" disabled={submitting}>
+        <Button
+          type="submit"
+          variant="primary"
+          size="md"
+          // An unscoped token can never produce a valid agent (no repos to
+          // operate on) — the server rejects it, so block the submit. Coverage
+          // warnings, by contrast, never disable the button.
+          disabled={submitting || (selectedToken !== undefined && !tokenScoped)}
+        >
           {submitting ? (
             <span className="flex items-center gap-2">
               <Spinner className="h-3.5 w-3.5 animate-spin" />
@@ -1004,8 +1136,6 @@ export function AgentConfigForm({
           Cancel
         </Button>
       </div>
-
-      {issuedToken && <IssuedTokenDialog issued={issuedToken} onClose={handleTokenDialogClose} />}
     </form>
   );
 }

@@ -1,10 +1,11 @@
 /**
  * Fleet agent — detail / update / delete (cookie-auth dashboard surface).
  *
- * GET    → agent config + recent runs (joined from agent-health).
- * PATCH  → update config; RESYNC the token's capabilities when triggers change
- *          (snap-to, so removing a trigger drops its privilege).
- * DELETE → REVOKE the token first (fail-closed), then delete the record.
+ * GET    → agent config + recent runs (joined from agent-health across its repos).
+ * PATCH  → update config; re-point `agent_token_name` to change the linked token
+ *          (which re-derives the agent's repos). Never mutates token capabilities.
+ * DELETE → delete the record. Does NOT revoke the linked token — tokens are
+ *          managed independently on the Credentials screen.
  *
  * A name belonging to another tenant resolves to 404 in the caller's namespace
  * (no cross-tenant existence oracle).
@@ -13,31 +14,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { requireInstallation } from "@/server/require-installation";
-import { FLEET_ERROR, fleetError, readJsonObject, mapFleetStorageError } from "@/server/fleet-routes";
+import {
+  FLEET_ERROR,
+  fleetError,
+  readJsonObject,
+  mapFleetStorageError,
+  resolveTokenRepos,
+} from "@/server/fleet-routes";
 import {
   getAgent,
   updateAgent,
   deleteAgent,
   validateUpdateAgentInput,
   validateAgentName,
-  type AgentTriggers,
 } from "@/server/fleet-store";
-import { deriveCapabilities } from "@/server/agent-token-capabilities";
-import { setAgentTokenCapabilities, revokeAgentToken } from "@/server/agent-token-v1";
-import { getHistory } from "@/server/agent-health-store";
-
-const DASHBOARD_AUDIT = { operator: { fingerprint: "", name: "dashboard" } } as const;
-
-function triggerFlags(t: AgentTriggers) {
-  return {
-    schedule: t.schedule.enabled,
-    pull_requests: t.pull_requests.enabled,
-    mentions: t.mentions.enabled,
-    tasks: t.tasks.enabled,
-    war_rooms: t.war_rooms.enabled,
-    war_rooms_contribute: t.war_rooms.settings.contribute,
-  };
-}
+import { getHistory, type HealthReport } from "@/server/agent-health-store";
 
 export async function GET(
   request: NextRequest,
@@ -57,7 +48,13 @@ export async function GET(
   try {
     const agent = await getAgent({ installationId, name, redis: auth.redis });
     if (!agent) return fleetError(FLEET_ERROR.NOT_FOUND, "Agent not found.", 404);
-    const runs = await getHistory(installationId, name, agent.repo, auth.redis);
+    // The agent may span multiple repos — merge run history across them, newest first.
+    const perRepo = await Promise.all(
+      agent.repos.map((repo) => getHistory(installationId, name, repo, auth.redis)),
+    );
+    const runs: HealthReport[] = perRepo
+      .flat()
+      .sort((a, b) => (a.received_at < b.received_at ? 1 : a.received_at > b.received_at ? -1 : 0));
     return NextResponse.json({ agent, runs });
   } catch (err) {
     return mapFleetStorageError(err, { route: "GET /api/dashboard/fleet/agents/[name]", installationId, name });
@@ -87,28 +84,23 @@ export async function PATCH(
     return fleetError(code, validation.message, 400, { field: validation.field });
   }
 
+  // Re-pointing the token re-derives the agent's repo scope from the new token.
+  let repos: string[] | undefined;
+  if (validation.value.agent_token_name !== undefined) {
+    const resolved = await resolveTokenRepos(installationId, validation.value.agent_token_name, auth.redis);
+    if (!resolved.ok) return resolved.response;
+    repos = resolved.repos;
+  }
+
   try {
     const updated = await updateAgent({
       installationId,
       name,
       patch: validation.value,
+      repos,
       actor: auth.session.userLogin,
       redis: auth.redis,
     });
-
-    // Resync token capabilities when triggers changed (snap-to: a downgrade
-    // drops privilege). Idempotent — a transient failure here returns 500 so
-    // the operator retries and the system converges.
-    if (validation.value.triggers !== undefined) {
-      await setAgentTokenCapabilities({
-        installationId,
-        name: updated.agent_token_name,
-        capabilities: deriveCapabilities(triggerFlags(updated.triggers)),
-        redis: auth.redis,
-        auditContext: { ...DASHBOARD_AUDIT, detailExtras: { reason: "fleet_trigger_resync", issued_by: auth.session.userLogin } },
-      });
-    }
-
     return NextResponse.json({ agent: updated });
   } catch (err) {
     return mapFleetStorageError(err, { route: "PATCH /api/dashboard/fleet/agents/[name]", installationId, name });
@@ -133,17 +125,8 @@ export async function DELETE(
   try {
     const agent = await getAgent({ installationId, name, redis: auth.redis });
     if (!agent) return fleetError(FLEET_ERROR.NOT_FOUND, "Agent not found.", 404);
-
-    // Fail-closed: revoke the token FIRST. If revoke throws, abort the delete so
-    // we never leave a live bearer for a deleted agent. `revoke` returning false
-    // (already gone) is fine — the goal state "no live token" is met.
-    await revokeAgentToken({
-      installationId,
-      name: agent.agent_token_name,
-      redis: auth.redis,
-      auditContext: { ...DASHBOARD_AUDIT, detailExtras: { reason: "fleet_agent_delete", issued_by: auth.session.userLogin } },
-    });
-
+    // Delete the record only — the linked token is shared and managed
+    // independently on the Credentials screen, so we never revoke it here.
     await deleteAgent({ installationId, name, actor: auth.session.userLogin, redis: auth.redis });
     return NextResponse.json({ deleted: true, name });
   } catch (err) {

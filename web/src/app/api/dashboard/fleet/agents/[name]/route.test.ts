@@ -1,9 +1,9 @@
 /**
- * Route tests for the per-agent fleet surface. The load-bearing properties here
- * are MULTITENANT: a name belonging to another installation must resolve to 404
- * in the caller's namespace (no cross-tenant read/mutate, no existence oracle),
- * installationId must come only from the session, and DELETE must revoke the
- * token BEFORE deleting the record (fail-closed — never orphan a live bearer).
+ * Route tests for the per-agent fleet surface (v2). Load-bearing properties:
+ * MULTITENANT (a foreign name 404s in the caller's namespace; installationId
+ * only from the session), DELETE deletes the record but does NOT revoke the
+ * linked token (tokens are managed independently), and re-pointing the token on
+ * PATCH re-derives the agent's repos via resolveTokenRepos.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -11,32 +11,31 @@ import { NextRequest } from "next/server";
 
 vi.mock("@/server/byok-auth", () => ({ authenticateByokRequest: vi.fn() }));
 vi.mock("@/server/require-installation", () => ({ requireInstallation: vi.fn() }));
+vi.mock("@/server/agent-health-store", () => ({ getHistory: vi.fn() }));
+
+vi.mock("@/server/fleet-routes", async () => {
+  const real = await vi.importActual<typeof import("@/server/fleet-routes")>("@/server/fleet-routes");
+  return { ...real, resolveTokenRepos: vi.fn() };
+});
 
 vi.mock("@/server/fleet-store", async () => {
   const real = await vi.importActual<typeof import("@/server/fleet-store")>("@/server/fleet-store");
   return { ...real, getAgent: vi.fn(), updateAgent: vi.fn(), deleteAgent: vi.fn() };
 });
 
-vi.mock("@/server/agent-token-v1", async () => {
-  const real = await vi.importActual<typeof import("@/server/agent-token-v1")>("@/server/agent-token-v1");
-  return { ...real, revokeAgentToken: vi.fn(), setAgentTokenCapabilities: vi.fn() };
-});
-
-vi.mock("@/server/agent-health-store", () => ({ getHistory: vi.fn() }));
-
 import { authenticateByokRequest } from "@/server/byok-auth";
 import { requireInstallation } from "@/server/require-installation";
+import { resolveTokenRepos } from "@/server/fleet-routes";
 import { getAgent, updateAgent, deleteAgent, AgentNotFoundError, type FleetAgent } from "@/server/fleet-store";
-import { revokeAgentToken } from "@/server/agent-token-v1";
 import { getHistory } from "@/server/agent-health-store";
 import { GET, PATCH, DELETE } from "./route";
 
 const mockedAuth = vi.mocked(authenticateByokRequest);
 const mockedRequireInstallation = vi.mocked(requireInstallation);
+const mockedResolveRepos = vi.mocked(resolveTokenRepos);
 const mockedGetAgent = vi.mocked(getAgent);
 const mockedUpdateAgent = vi.mocked(updateAgent);
 const mockedDeleteAgent = vi.mocked(deleteAgent);
-const mockedRevoke = vi.mocked(revokeAgentToken);
 const mockedGetHistory = vi.mocked(getHistory);
 
 const ATTACKER = "attacker-install";
@@ -56,9 +55,8 @@ function authForInstallation(installationId: string) {
 function victimAgent(): FleetAgent {
   return {
     name: "victim",
-    repo: "owner/repo",
+    repos: ["owner/repo"],
     engine: "claude",
-    duty: "standing",
     skills: [],
     system_prompt: "",
     triggers: {
@@ -70,7 +68,7 @@ function victimAgent(): FleetAgent {
     },
     enabled: true,
     managed: true,
-    agent_token_name: "victim",
+    agent_token_name: "victim-token",
     created_at: "2026-05-29T00:00:00.000Z",
     created_by: "owner",
     updated_at: "2026-05-29T00:00:00.000Z",
@@ -78,19 +76,17 @@ function victimAgent(): FleetAgent {
   };
 }
 
-function req(method: string): NextRequest {
+function req(method: string, body?: unknown): NextRequest {
   return new NextRequest("https://www.hivemoot.dev/api/dashboard/fleet/agents/victim", {
     method,
     headers: { cookie: "session=mock", "content-type": "application/json" },
-    ...(method === "PATCH" ? { body: JSON.stringify({ skills: [] }) } : {}),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
 const params = { params: Promise.resolve({ name: "victim" }) };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Store only knows "victim" under OWNER. A caller scoped to any other
-  // installation gets a miss / not-found — the namespace isolation.
   mockedGetAgent.mockImplementation(async ({ installationId }) =>
     installationId === OWNER ? victimAgent() : null,
   );
@@ -99,8 +95,8 @@ beforeEach(() => {
     return victimAgent();
   });
   mockedDeleteAgent.mockResolvedValue(true);
-  mockedRevoke.mockResolvedValue(true);
   mockedGetHistory.mockResolvedValue([]);
+  mockedResolveRepos.mockResolvedValue({ ok: true, repos: ["new/repo"] });
 });
 
 describe("cross-tenant isolation (IDOR)", () => {
@@ -108,23 +104,32 @@ describe("cross-tenant isolation (IDOR)", () => {
     authForInstallation(ATTACKER);
     const res = await GET(req("GET"), params);
     expect(res.status).toBe(404);
-    // Resolved ONLY under the attacker's namespace — never the owner's.
     expect(mockedGetAgent).toHaveBeenCalledWith(expect.objectContaining({ installationId: ATTACKER, name: "victim" }));
     expect(mockedGetAgent).not.toHaveBeenCalledWith(expect.objectContaining({ installationId: OWNER }));
   });
 
-  it("PATCH another tenant's agent → 404, scoped to the session installationId", async () => {
+  it("PATCH another tenant's agent → 404", async () => {
     authForInstallation(ATTACKER);
-    const res = await PATCH(req("PATCH"), params);
+    const res = await PATCH(req("PATCH", { skills: [] }), params);
     expect(res.status).toBe(404);
     expect(mockedUpdateAgent).toHaveBeenCalledWith(expect.objectContaining({ installationId: ATTACKER }));
   });
 
-  it("DELETE another tenant's agent → 404, and NEITHER revoke NOR delete is called", async () => {
+  it("PATCH re-linking a token as another tenant → 404; token resolution scoped to the attacker", async () => {
+    authForInstallation(ATTACKER);
+    const res = await PATCH(req("PATCH", { agent_token_name: "attacker-token" }), params);
+    expect(res.status).toBe(404);
+    // The token re-link runs FIRST and is scoped to the attacker's own namespace,
+    // never the owner's; the ownership 404 still gates the write.
+    expect(mockedResolveRepos).toHaveBeenCalledWith(ATTACKER, "attacker-token", expect.anything());
+    expect(mockedResolveRepos).not.toHaveBeenCalledWith(OWNER, expect.anything(), expect.anything());
+    expect(mockedUpdateAgent).toHaveBeenCalledWith(expect.objectContaining({ installationId: ATTACKER }));
+  });
+
+  it("DELETE another tenant's agent → 404, deleteAgent NOT called", async () => {
     authForInstallation(ATTACKER);
     const res = await DELETE(req("DELETE"), params);
     expect(res.status).toBe(404);
-    expect(mockedRevoke).not.toHaveBeenCalled();
     expect(mockedDeleteAgent).not.toHaveBeenCalled();
   });
 
@@ -138,29 +143,28 @@ describe("cross-tenant isolation (IDOR)", () => {
   });
 });
 
-describe("DELETE fail-closed ordering", () => {
-  it("revokes the token BEFORE deleting the record", async () => {
+describe("DELETE — record only, token untouched", () => {
+  it("deletes the record and never revokes the linked token", async () => {
     authForInstallation(OWNER);
-    const order: string[] = [];
-    mockedRevoke.mockImplementation(async () => {
-      order.push("revoke");
-      return true;
-    });
-    mockedDeleteAgent.mockImplementation(async () => {
-      order.push("delete");
-      return true;
-    });
     const res = await DELETE(req("DELETE"), params);
     expect(res.status).toBe(200);
-    expect(order).toEqual(["revoke", "delete"]);
-    expect(mockedRevoke).toHaveBeenCalledWith(expect.objectContaining({ installationId: OWNER, name: "victim" }));
+    expect(mockedDeleteAgent).toHaveBeenCalledWith(expect.objectContaining({ installationId: OWNER, name: "victim" }));
+  });
+});
+
+describe("PATCH — re-linking the token re-derives repos", () => {
+  it("resolves the new token's repos and passes them to updateAgent", async () => {
+    authForInstallation(OWNER);
+    const res = await PATCH(req("PATCH", { agent_token_name: "new-token" }), params);
+    expect(res.status).toBe(200);
+    expect(mockedResolveRepos).toHaveBeenCalledWith(OWNER, "new-token", expect.anything());
+    expect(mockedUpdateAgent).toHaveBeenCalledWith(expect.objectContaining({ repos: ["new/repo"] }));
   });
 
-  it("if token revoke throws, the record is NOT deleted (no orphaned bearer)", async () => {
+  it("a config-only patch (no token change) does not resolve repos", async () => {
     authForInstallation(OWNER);
-    mockedRevoke.mockRejectedValue(new Error("revoke failed"));
-    const res = await DELETE(req("DELETE"), params);
-    expect(res.status).toBe(500);
-    expect(mockedDeleteAgent).not.toHaveBeenCalled();
+    const res = await PATCH(req("PATCH", { skills: [] }), params);
+    expect(res.status).toBe(200);
+    expect(mockedResolveRepos).not.toHaveBeenCalled();
   });
 });

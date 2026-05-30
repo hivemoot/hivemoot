@@ -28,6 +28,7 @@ import {
   outcomeTone,
   relativeTime,
   RepoIcon,
+  TokenIcon,
   TRIGGER_LABELS,
 } from "../shared";
 
@@ -152,7 +153,7 @@ export function AgentDetail({ name }: { name: string }) {
     if (deleting) return;
     if (
       !confirm(
-        `Delete agent "${name}"? This revokes its token immediately and removes it from the registry. This cannot be undone.`,
+        `Delete agent "${name}"? This removes it from the registry. The linked token is NOT revoked — manage or revoke it on Credentials. This cannot be undone.`,
       )
     ) {
       return;
@@ -265,7 +266,7 @@ export function AgentDetail({ name }: { name: string }) {
             {agent.display_name && <span className="font-mono text-zinc-500">{agent.name}</span>}
             <span className="inline-flex items-center gap-1.5">
               <RepoIcon className="h-3.5 w-3.5 text-zinc-600" />
-              {agent.repo}
+              {agent.repos.length > 0 ? agent.repos.join(", ") : "No repos"}
             </span>
             <span className="inline-flex items-center gap-1.5">
               <EngineIcon className="h-3.5 w-3.5 text-zinc-600" />
@@ -352,9 +353,26 @@ function OverviewTab({
       <Card padding="md">
         <SectionHeader title="Details" className="mb-4" />
         <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-          <Detail label="Repo" value={<span className="font-mono">{agent.repo}</span>} />
+          <Detail
+            label="Repos"
+            value={
+              agent.repos.length > 0 ? (
+                <span className="font-mono">{agent.repos.join(", ")}</span>
+              ) : (
+                <span className="text-zinc-500">No repos</span>
+              )
+            }
+          />
           <Detail label="Engine" value={<span className="font-mono">{agent.engine}</span>} />
-          <Detail label="Duty" value={<span className="capitalize">{agent.duty}</span>} />
+          <Detail
+            label="Token"
+            value={
+              <span className="inline-flex items-center gap-1.5 font-mono">
+                <TokenIcon className="h-3.5 w-3.5 text-zinc-600" />
+                {agent.agent_token_name}
+              </span>
+            }
+          />
           <Detail
             label="Last run"
             value={

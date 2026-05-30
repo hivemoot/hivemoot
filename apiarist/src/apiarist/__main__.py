@@ -57,10 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help=(
-            "Path to apiarist.yaml "
-            "(default: /etc/apiarist/apiarist.yaml if it exists)"
-        ),
+        help=("Path to apiarist.yaml (default: /etc/apiarist/apiarist.yaml if it exists)"),
     )
     parser.add_argument("--socket-path", type=Path, default=None)
     parser.add_argument("--socket-group", default=None)
@@ -236,9 +233,7 @@ async def _run(config: Config, agent_token: str, fleet_token: str) -> int:
         else None
     )
 
-    done, pending = await asyncio.wait(
-        {serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-    )
+    done, pending = await asyncio.wait({serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
     # Whichever finished first, tear down the rest cleanly.
     if stop_task in done:

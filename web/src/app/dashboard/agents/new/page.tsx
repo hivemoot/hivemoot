@@ -27,7 +27,7 @@ export default function NewAgentPage() {
         description="Register an agent, pick its skills and engine, and wire up the triggers that activate it."
       />
 
-      {/* AgentConfigForm reads ?name=&repo= (adopt flow) via useSearchParams,
+      {/* AgentConfigForm reads ?name= (adopt flow) via useSearchParams,
           which requires a Suspense boundary in the App Router. */}
       <Suspense fallback={<LoadingState label="Loading…" />}>
         <AgentConfigForm mode="create" />

@@ -11,11 +11,15 @@ import {
   AgentNameTakenError,
   AgentNotFoundError,
   AgentLimitReachedError,
+  validateRepo,
 } from "@/server/fleet-store";
+import { getAgentTokenSummary, TokenNotFoundError } from "@/server/agent-token-v1";
 
 export const FLEET_ERROR = {
   INVALID_BODY: "fleet_invalid_body",
   VALIDATION: "fleet_validation",
+  INVALID_TOKEN: "fleet_invalid_token",
+  TOKEN_NOT_SCOPED: "fleet_token_not_scoped",
   REPO_NOT_COVERED: "fleet_repo_not_covered",
   COVERAGE_CHECK_FAILED: "fleet_coverage_check_failed",
   NAME_TAKEN: "fleet_name_taken",
@@ -85,6 +89,77 @@ export function mapFleetStorageError(
 
 // ---------------------------------------------------------------------------
 // Create rate limit (per installation+user, per minute) — mirrors task-store.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Linked-token resolution
+// ---------------------------------------------------------------------------
+
+export type ResolveTokenReposResult =
+  | { ok: true; repos: string[] }
+  | { ok: false; response: NextResponse };
+
+/**
+ * Validate that a linked capability token exists for this installation and is
+ * repo-scoped, returning its `allowed_repos`. The token (managed on Credentials)
+ * is the source of truth for the agent's repo scope — an agent can't be created
+ * against a token that isn't scoped to any repo.
+ */
+export async function resolveTokenRepos(
+  installationId: string,
+  tokenName: string,
+  redis: Redis,
+): Promise<ResolveTokenReposResult> {
+  let summary;
+  try {
+    summary = await getAgentTokenSummary({ installationId, name: tokenName, redis });
+  } catch (err) {
+    if (err instanceof TokenNotFoundError) {
+      return {
+        ok: false,
+        response: fleetError(
+          FLEET_ERROR.INVALID_TOKEN,
+          `No capability token named '${tokenName}' exists. Create it on the Credentials screen first.`,
+          400,
+          { field: "agent_token_name" },
+        ),
+      };
+    }
+    throw err;
+  }
+  const repos = summary.policy?.allowed_repos ?? [];
+  if (repos.length === 0) {
+    return {
+      ok: false,
+      response: fleetError(
+        FLEET_ERROR.TOKEN_NOT_SCOPED,
+        `Token '${tokenName}' isn't scoped to any repo. Set its allowed repos on the Credentials screen, then try again.`,
+        400,
+        { field: "agent_token_name" },
+      ),
+    };
+  }
+  // Defense in depth: token policies are typeof-checked but not format-validated
+  // at issue time, and these repos flow to the reconciler's hivemoot.yaml. Reject
+  // any malformed (non-`owner/name`, traversal, whitespace) repo, fail-closed.
+  for (const r of repos) {
+    if (!validateRepo(r).ok) {
+      return {
+        ok: false,
+        response: fleetError(
+          FLEET_ERROR.INVALID_TOKEN,
+          `Token '${tokenName}' has a malformed repo (${JSON.stringify(r)}). Fix its allowed repos on the Credentials screen.`,
+          400,
+          { field: "agent_token_name" },
+        ),
+      };
+    }
+  }
+  return { ok: true, repos: [...repos] };
+}
+
+// ---------------------------------------------------------------------------
+// Create rate limit
 // ---------------------------------------------------------------------------
 
 export const FLEET_CREATE_RATE_LIMIT_PER_MINUTE = 10;
