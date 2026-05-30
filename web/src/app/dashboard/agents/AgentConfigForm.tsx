@@ -13,7 +13,6 @@ import {
 } from "@/app/dashboard/ui";
 import {
   type AgentTokensResponse,
-  type AgentTriggers,
   type CreateAgentPayload,
   type CreateAgentResponse,
   type EngineCatalogEntry,
@@ -22,22 +21,26 @@ import {
   type FleetMetaResponse,
   type SkillCatalogEntry,
   type TokenSummary,
-  type TriggerKey,
   type UpdateAgentPayload,
   type UpdateAgentResponse,
-  defaultTriggers,
+  defaultPlugins,
   FLEET_ERROR_CODE,
 } from "./types";
-import { previewCapabilities, tokenCoversCapabilities } from "./capabilities";
-import { TRIGGER_LABELS, TRIGGER_ORDER } from "./shared";
+import { detectCapabilityGaps, describeCapabilityGaps } from "./capabilities";
+import {
+  type PluginsFormState,
+  MAX_SCHEDULE_PROMPT_CHARS,
+  MAX_SYSTEM_PROMPT_CHARS,
+  buildPluginsPayload,
+  githubHasWatch,
+  hydratePluginsState,
+  parseAuthorList,
+  validateForm,
+} from "./form-logic";
 
 // ---------------------------------------------------------------------------
-// Constants (mirror backend bounds in @/server/fleet-store)
+// Shared input styling
 // ---------------------------------------------------------------------------
-
-const MAX_SYSTEM_PROMPT_CHARS = 16_000;
-const MAX_SCHEDULE_PROMPT_CHARS = 2_000;
-const NAME_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
 
 const INPUT_CLASS =
   "w-full rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-sm text-[#fafafa] placeholder-zinc-600 transition-colors focus:border-honey-500/50 focus:outline-none focus:ring-1 focus:ring-honey-500/20 disabled:cursor-not-allowed disabled:opacity-60";
@@ -45,13 +48,14 @@ const LABEL_CLASS = "mb-1.5 block text-xs font-medium text-zinc-400";
 
 type FormMode = "create" | "edit";
 
-// ---------------------------------------------------------------------------
-// Meta loading (skills + engine catalogs)
-// ---------------------------------------------------------------------------
-
 type MetaState =
   | { kind: "loading" }
   | { kind: "loaded"; meta: FleetMetaResponse }
+  | { kind: "error"; message: string };
+
+type TokensState =
+  | { kind: "loading" }
+  | { kind: "loaded"; tokens: TokenSummary[] }
   | { kind: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -65,12 +69,10 @@ function friendlyFleetError(status: number, body: FleetErrorBody): string {
   }
   switch (body.code) {
     case FLEET_ERROR_CODE.REPO_NOT_COVERED:
-      return "The Hivemoot Bot isn't installed on that repo. Install it on the repo first, then try again.";
-    case FLEET_ERROR_CODE.COVERAGE_CHECK_FAILED:
-      return "Couldn't verify repo access right now. Please retry in a moment.";
+      return "One of the selected repos isn't accessible to the Hivemoot Bot. Install the bot on that repo (or deselect it), then try again.";
+    case FLEET_ERROR_CODE.REPOS_UNAVAILABLE:
+      return "Couldn't list the installation's repos right now. Please retry in a moment.";
     case FLEET_ERROR_CODE.NAME_TAKEN:
-      // The backend message already names the conflict ("An agent or token
-      // named 'X' already exists."); fall back to a generic line otherwise.
       return (
         body.message ||
         `The name "${body.name ?? ""}" is taken — an agent or token already uses it. Pick another name.`
@@ -81,11 +83,6 @@ function friendlyFleetError(status: number, body: FleetErrorBody): string {
       return (
         body.message ||
         "The selected token no longer exists. Pick another token, or create one on Credentials."
-      );
-    case FLEET_ERROR_CODE.TOKEN_NOT_SCOPED:
-      return (
-        body.message ||
-        "The selected token isn't scoped to any repo. Scope it on Credentials first, then link it here."
       );
     case FLEET_ERROR_CODE.AGENT_LIMIT_REACHED:
       return "You've hit the per-installation agent limit. Delete an agent before creating another.";
@@ -114,7 +111,7 @@ function ReadOnlyField({ label, value, hint }: { label: string; value: string; h
   );
 }
 
-function ToggleRow({
+function CheckRow({
   checked,
   onChange,
   label,
@@ -185,8 +182,17 @@ function NumberField({
   );
 }
 
+function InlineWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-amber-400">
+      <span aria-hidden="true">⚠</span>
+      <span>{children}</span>
+    </p>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Skills multi-select
+// Skills multi-select (builtin grid)
 // ---------------------------------------------------------------------------
 
 function SkillsPicker({
@@ -198,54 +204,43 @@ function SkillsPicker({
   selected: Set<string>;
   onToggle: (id: string) => void;
 }) {
-  const groups: { source: SkillCatalogEntry["source"]; label: string }[] = [
-    { source: "builtin", label: "Built-in" },
-  ];
-
+  const entries = catalog.filter((s) => s.source === "builtin");
+  if (entries.length === 0) {
+    return <p className="text-sm text-zinc-500">No skills available.</p>;
+  }
   return (
-    <div className="space-y-4">
-      {groups.map(({ source, label }) => {
-        const entries = catalog.filter((s) => s.source === source);
-        if (entries.length === 0) return null;
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {entries.map((skill) => {
+        const isChecked = selected.has(skill.id);
         return (
-          <div key={source}>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">{label}</p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {entries.map((skill) => {
-                const isChecked = selected.has(skill.id);
-                return (
-                  <label
-                    key={skill.id}
-                    className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors ${
-                      isChecked
-                        ? "border-honey-500/40 bg-honey-500/[0.06]"
-                        : "border-white/[0.06] bg-white/[0.02] hover:border-white/10"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => onToggle(skill.id)}
-                      className="mt-0.5 h-4 w-4 accent-honey-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs font-medium text-[#fafafa]">{skill.name}</span>
-                        {skill.standard && (
-                          <span className="rounded bg-white/[0.06] px-1 py-0.5 text-[9px] uppercase tracking-wide text-zinc-500">
-                            standard
-                          </span>
-                        )}
-                      </span>
-                      <span className="mt-0.5 block text-[11px] leading-snug text-zinc-500">
-                        {skill.description}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
+          <label
+            key={skill.id}
+            className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors ${
+              isChecked
+                ? "border-honey-500/40 bg-honey-500/[0.06]"
+                : "border-white/[0.06] bg-white/[0.02] hover:border-white/10"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={isChecked}
+              onChange={() => onToggle(skill.id)}
+              className="mt-0.5 h-4 w-4 accent-honey-500"
+            />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span className="font-mono text-xs font-medium text-[#fafafa]">{skill.name}</span>
+                {skill.standard && (
+                  <span className="rounded bg-white/[0.06] px-1 py-0.5 text-[9px] uppercase tracking-wide text-zinc-500">
+                    standard
+                  </span>
+                )}
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-snug text-zinc-500">
+                {skill.description}
+              </span>
+            </span>
+          </label>
         );
       })}
     </div>
@@ -253,101 +248,334 @@ function SkillsPicker({
 }
 
 // ---------------------------------------------------------------------------
-// Trigger panel
+// Plugin shell — the toggle + revealed config
 // ---------------------------------------------------------------------------
 
-function TriggerPanel({
-  triggers,
-  setTriggers,
+function PluginShell({
+  enabled,
+  onToggle,
+  title,
+  description,
+  children,
 }: {
-  triggers: AgentTriggers;
-  setTriggers: (next: AgentTriggers) => void;
+  enabled: boolean;
+  onToggle: (next: boolean) => void;
+  title: string;
+  description: string;
+  children?: React.ReactNode;
 }) {
-  function patch<K extends TriggerKey>(key: K, next: Partial<AgentTriggers[K]>) {
-    setTriggers({ ...triggers, [key]: { ...triggers[key], ...next } });
+  return (
+    <div
+      className={`rounded-xl border p-4 transition-colors ${
+        enabled ? "border-honey-500/30 bg-honey-500/[0.03]" : "border-white/[0.06] bg-white/[0.02]"
+      }`}
+    >
+      <CheckRow checked={enabled} onChange={onToggle} label={title} description={description} />
+      {enabled && children && (
+        <div className="mt-4 space-y-4 border-t border-white/[0.04] pt-4">{children}</div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GitHub plugin config — repos multi-select + watches + author list + poll
+// ---------------------------------------------------------------------------
+
+function ReposPicker({
+  available,
+  selected,
+  onChange,
+}: {
+  available: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  if (available.length === 0) {
+    return (
+      <div className="space-y-1.5">
+        <span className={LABEL_CLASS + " mb-0"}>
+          Repositories <span className="text-red-400/70">(required)</span>
+        </span>
+        <InlineWarning>
+          Couldn&apos;t list this installation&apos;s repos. Reload the form to retry — the server
+          resolves repos against the installation on save.
+        </InlineWarning>
+      </div>
+    );
+  }
+
+  const lower = filter.trim().toLowerCase();
+  const shown = lower ? available.filter((r) => r.toLowerCase().includes(lower)) : available;
+
+  function toggle(repo: string) {
+    if (selectedSet.has(repo)) onChange(selected.filter((r) => r !== repo));
+    else onChange([...selected, repo]);
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={LABEL_CLASS + " mb-0"}>
+          Repositories <span className="text-red-400/70">(required)</span>
+        </span>
+        <span className="text-xs text-zinc-600">
+          {selected.length} of {available.length} selected
+        </span>
+      </div>
+      <div className="mb-2 flex gap-2">
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter repos…"
+          className={INPUT_CLASS}
+        />
+        <Button type="button" variant="secondary" size="sm" onClick={() => onChange([...available])}>
+          All
+        </Button>
+        <Button type="button" variant="secondary" size="sm" onClick={() => onChange([])}>
+          None
+        </Button>
+      </div>
+      <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-lg border border-white/[0.06] bg-white/[0.02] p-2">
+        {shown.length === 0 ? (
+          <p className="px-1 py-2 text-xs text-zinc-600">No repos match “{filter}”.</p>
+        ) : (
+          shown.map((repo) => (
+            <label key={repo} className="flex cursor-pointer items-center gap-2.5 px-1 py-0.5">
+              <input
+                type="checkbox"
+                checked={selectedSet.has(repo)}
+                onChange={() => toggle(repo)}
+                className="h-4 w-4 accent-honey-500"
+              />
+              <span className="font-mono text-xs text-zinc-300">{repo}</span>
+            </label>
+          ))
+        )}
+      </div>
+      <p className="mt-1 text-xs text-zinc-600">
+        Repos the agent watches/acts on. All accessible repos are selected by default.
+      </p>
+    </div>
+  );
+}
+
+function GithubConfig({
+  github,
+  available,
+  onChange,
+}: {
+  github: PluginsFormState["github"];
+  available: string[];
+  onChange: (next: Partial<PluginsFormState["github"]>) => void;
+}) {
+  const watchValid = githubHasWatch(github);
+  return (
+    <div className="space-y-4">
+      <ReposPicker
+        available={available}
+        selected={github.repos}
+        onChange={(repos) => onChange({ repos })}
+      />
+
+      <div className="space-y-2.5">
+        <p className={LABEL_CLASS + " mb-0"}>Watches</p>
+        <CheckRow
+          checked={github.watch_new_prs}
+          onChange={(watch_new_prs) => onChange({ watch_new_prs })}
+          label="New PRs"
+        />
+        <CheckRow
+          checked={github.watch_review_requests}
+          onChange={(watch_review_requests) => onChange({ watch_review_requests })}
+          label="Review requests"
+        />
+        <CheckRow
+          checked={github.watch_mentions}
+          onChange={(watch_mentions) => onChange({ watch_mentions })}
+          label="Mentions"
+        />
+        {!watchValid && (
+          <InlineWarning>
+            Enable at least one watch — a GitHub plugin that watches nothing has no trigger.
+          </InlineWarning>
+        )}
+      </div>
+
+      {github.watch_new_prs && (
+        <div>
+          <label htmlFor="gh-pr-authors" className={LABEL_CLASS}>
+            New-PR author allowlist{" "}
+            <span className="text-zinc-600">(comma/space-separated, optional)</span>
+          </label>
+          <input
+            id="gh-pr-authors"
+            type="text"
+            value={(github.watch_new_prs_authors ?? []).join(", ")}
+            onChange={(e) => onChange({ watch_new_prs_authors: parseAuthorList(e.target.value) })}
+            placeholder="Leave empty to react to all authors"
+            className={INPUT_CLASS}
+          />
+          <p className="mt-1 text-xs text-zinc-600">
+            Empty = every author. Otherwise only these GitHub logins (max 50). Only meaningful with
+            “New PRs”.
+          </p>
+        </div>
+      )}
+
+      <NumberField
+        id="gh-poll"
+        label="Poll interval (seconds)"
+        value={github.poll_interval_secs}
+        min={30}
+        max={3600}
+        onChange={(poll_interval_secs) => onChange({ poll_interval_secs })}
+        hint="How often to scan GitHub. 30–3600s (default 300)."
+      />
+    </div>
+  );
+}
+
+function ScheduleConfig({
+  schedule,
+  onChange,
+}: {
+  schedule: PluginsFormState["schedule"];
+  onChange: (next: Partial<PluginsFormState["schedule"]>) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <NumberField
+          id="schedule-interval"
+          label="Interval (seconds)"
+          value={schedule.interval_secs}
+          min={300}
+          max={604800}
+          onChange={(interval_secs) => onChange({ interval_secs })}
+          hint="Between runs. 300s (5m) – 604800s (7d). Default 21600 (6h)."
+        />
+        <NumberField
+          id="schedule-jitter"
+          label="Jitter (seconds)"
+          value={schedule.jitter_secs}
+          min={0}
+          max={3600}
+          onChange={(jitter_secs) => onChange({ jitter_secs })}
+          hint="Random delay per run. ≤ interval, ≤ 3600s. Default 600 (10m)."
+        />
+      </div>
+      <div>
+        <label htmlFor="schedule-prompt" className={LABEL_CLASS}>
+          Schedule prompt <span className="text-red-400/70">(required)</span>
+        </label>
+        <textarea
+          id="schedule-prompt"
+          rows={3}
+          value={schedule.prompt}
+          maxLength={MAX_SCHEDULE_PROMPT_CHARS}
+          onChange={(e) => onChange({ prompt: e.target.value })}
+          placeholder="What should the agent do on each scheduled run?"
+          className={`${INPUT_CLASS} resize-y`}
+        />
+        <p className="mt-1 text-right text-xs text-zinc-600">
+          {schedule.prompt.length.toLocaleString()} / {MAX_SCHEDULE_PROMPT_CHARS.toLocaleString()}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plugins section
+// ---------------------------------------------------------------------------
+
+function PluginsSection({
+  plugins,
+  setPlugins,
+  installationRepos,
+}: {
+  plugins: PluginsFormState;
+  setPlugins: (next: PluginsFormState) => void;
+  installationRepos: string[];
+}) {
+  function patchGithub(next: Partial<PluginsFormState["github"]>) {
+    setPlugins({ ...plugins, github: { ...plugins.github, ...next } });
+  }
+  function patchSchedule(next: Partial<PluginsFormState["schedule"]>) {
+    setPlugins({ ...plugins, schedule: { ...plugins.schedule, ...next } });
   }
 
   return (
     <div className="space-y-3">
-      {TRIGGER_ORDER.map((key) => {
-        const t = triggers[key];
-        const enabled = t.enabled;
-        return (
-          <div
-            key={key}
-            className={`rounded-xl border p-4 transition-colors ${
-              enabled ? "border-honey-500/30 bg-honey-500/[0.03]" : "border-white/[0.06] bg-white/[0.02]"
-            }`}
-          >
-            <ToggleRow
-              checked={enabled}
-              onChange={(next) => patch(key, { enabled: next } as Partial<AgentTriggers[typeof key]>)}
-              label={TRIGGER_LABELS[key]}
-              description={TRIGGER_DESCRIPTIONS[key]}
-            />
+      <PluginShell
+        enabled={plugins.github.enabled}
+        onToggle={(enabled) =>
+          setPlugins({
+            ...plugins,
+            github: {
+              ...plugins.github,
+              enabled,
+              // First enable with nothing selected ⇒ default to all accessible repos.
+              repos:
+                enabled && plugins.github.repos.length === 0
+                  ? [...installationRepos]
+                  : plugins.github.repos,
+            },
+          })
+        }
+        title="GitHub"
+        description="Watch repositories for PRs, review requests, and mentions."
+      >
+        <GithubConfig github={plugins.github} available={installationRepos} onChange={patchGithub} />
+      </PluginShell>
 
-            {enabled && (
-              <div className="mt-4 space-y-4 border-t border-white/[0.04] pt-4">
-                {key === "schedule" && (
-                  <ScheduleSettings
-                    settings={triggers.schedule.settings}
-                    onChange={(next) =>
-                      patch("schedule", { settings: { ...triggers.schedule.settings, ...next } })
-                    }
-                  />
-                )}
-                {key === "pull_requests" && (
-                  <PullRequestsSettings
-                    settings={triggers.pull_requests.settings}
-                    onChange={(next) =>
-                      patch("pull_requests", {
-                        settings: { ...triggers.pull_requests.settings, ...next },
-                      })
-                    }
-                  />
-                )}
-                {key === "mentions" && (
-                  <NumberField
-                    id="trigger-mentions-poll"
-                    label="Poll interval (seconds)"
-                    value={triggers.mentions.settings.poll_interval_secs}
-                    min={30}
-                    max={3600}
-                    onChange={(poll_interval_secs) =>
-                      patch("mentions", {
-                        settings: { ...triggers.mentions.settings, poll_interval_secs },
-                      })
-                    }
-                    hint="How often to scan for new @mentions. 30–3600s."
-                  />
-                )}
-                {key === "tasks" && (
-                  <p className="text-xs text-zinc-500">
-                    The agent claims dispatched tasks from the dashboard task queue. No extra
-                    settings — enabling this grants the task capabilities shown below.
-                  </p>
-                )}
-                {key === "war_rooms" && (
-                  <ToggleRow
-                    checked={triggers.war_rooms.settings.contribute}
-                    onChange={(contribute) =>
-                      patch("war_rooms", {
-                        settings: { ...triggers.war_rooms.settings, contribute },
-                      })
-                    }
-                    label="Contribute (vs observe only)"
-                    description="When on, the agent posts contributions in war rooms. When off, it only watches/reads."
-                  />
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      <PluginShell
+        enabled={plugins.schedule.enabled}
+        onToggle={(enabled) => setPlugins({ ...plugins, schedule: { ...plugins.schedule, enabled } })}
+        title="Schedule"
+        description="Run the agent on a fixed interval with a standing prompt."
+      >
+        <ScheduleConfig schedule={plugins.schedule} onChange={patchSchedule} />
+      </PluginShell>
+
+      <PluginShell
+        enabled={plugins.tasks.enabled}
+        onToggle={(enabled) => setPlugins({ ...plugins, tasks: { enabled } })}
+        title="Tasks"
+        description="Claims tasks from the dashboard queue."
+      >
+        <p className="text-xs text-zinc-500">
+          No extra settings — the agent claims dispatched tasks from the dashboard task queue.
+        </p>
+      </PluginShell>
+
+      <PluginShell
+        enabled={plugins.war_rooms.enabled}
+        onToggle={(enabled) =>
+          setPlugins({ ...plugins, war_rooms: { ...plugins.war_rooms, enabled } })
+        }
+        title="War Rooms"
+        description="Participate in war-room governance discussions."
+      >
+        <CheckRow
+          checked={plugins.war_rooms.contribute}
+          onChange={(contribute) =>
+            setPlugins({ ...plugins, war_rooms: { ...plugins.war_rooms, contribute } })
+          }
+          label="Contribute (vs observe only)"
+          description="On = the agent posts contributions. Off = it only watches/reads."
+        />
+      </PluginShell>
 
       {/* Queen row — disabled, dashboard cannot grant it. */}
       <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 opacity-60">
-        <ToggleRow
+        <CheckRow
           checked={false}
           disabled
           onChange={() => {}}
@@ -359,130 +587,9 @@ function TriggerPanel({
   );
 }
 
-const TRIGGER_DESCRIPTIONS: Record<TriggerKey, string> = {
-  schedule: "Run the agent on a fixed interval with a standing prompt.",
-  pull_requests: "React to new PRs and review requests on the repo.",
-  mentions: "Respond when the agent is @mentioned in issues or PRs.",
-  tasks: "Claim and execute tasks dispatched from the dashboard.",
-  war_rooms: "Participate in war-room governance discussions.",
-};
-
-function ScheduleSettings({
-  settings,
-  onChange,
-}: {
-  settings: AgentTriggers["schedule"]["settings"];
-  onChange: (next: Partial<AgentTriggers["schedule"]["settings"]>) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <NumberField
-          id="schedule-interval"
-          label="Interval (seconds)"
-          value={settings.interval_secs}
-          min={300}
-          max={604800}
-          onChange={(interval_secs) => onChange({ interval_secs })}
-          hint="Between runs. 300s (5m) – 604800s (7d)."
-        />
-        <NumberField
-          id="schedule-jitter"
-          label="Jitter (seconds)"
-          value={settings.jitter_secs}
-          min={0}
-          max={3600}
-          onChange={(jitter_secs) => onChange({ jitter_secs })}
-          hint="Random delay added per run. ≤ interval, ≤ 3600s."
-        />
-      </div>
-      <div>
-        <label htmlFor="schedule-prompt" className={LABEL_CLASS}>
-          Schedule prompt <span className="text-red-400/70">(required)</span>
-        </label>
-        <textarea
-          id="schedule-prompt"
-          rows={3}
-          value={settings.prompt}
-          maxLength={MAX_SCHEDULE_PROMPT_CHARS}
-          onChange={(e) => onChange({ prompt: e.target.value })}
-          placeholder="What should the agent do on each scheduled run?"
-          className={`${INPUT_CLASS} resize-y`}
-        />
-        <p className="mt-1 text-right text-xs text-zinc-600">
-          {settings.prompt.length.toLocaleString()} / {MAX_SCHEDULE_PROMPT_CHARS.toLocaleString()}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function PullRequestsSettings({
-  settings,
-  onChange,
-}: {
-  settings: AgentTriggers["pull_requests"]["settings"];
-  onChange: (next: Partial<AgentTriggers["pull_requests"]["settings"]>) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="space-y-2.5">
-        <ToggleRow
-          checked={settings.watch_new_prs}
-          onChange={(watch_new_prs) => onChange({ watch_new_prs })}
-          label="Watch new PRs"
-        />
-        <ToggleRow
-          checked={settings.watch_review_requests}
-          onChange={(watch_review_requests) => onChange({ watch_review_requests })}
-          label="Watch review requests"
-        />
-      </div>
-      <div>
-        <label htmlFor="pr-allowlist" className={LABEL_CLASS}>
-          Author allowlist (comma-separated GitHub logins)
-        </label>
-        <input
-          id="pr-allowlist"
-          type="text"
-          value={settings.author_allowlist.join(", ")}
-          onChange={(e) =>
-            onChange({
-              author_allowlist: e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-          placeholder="Leave empty to react to all authors"
-          className={INPUT_CLASS}
-        />
-        <p className="mt-1 text-xs text-zinc-600">
-          Empty = react to every author. Otherwise, only these logins (max 50).
-        </p>
-      </div>
-      <NumberField
-        id="pr-poll"
-        label="Poll interval (seconds)"
-        value={settings.poll_interval_secs}
-        min={30}
-        max={3600}
-        onChange={(poll_interval_secs) => onChange({ poll_interval_secs })}
-        hint="How often to scan for matching PRs. 30–3600s."
-      />
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Token picker — link an EXISTING capability token (nothing is minted)
 // ---------------------------------------------------------------------------
-
-/** Loading state for the linkable-token catalog (fetched on mount). */
-type TokensState =
-  | { kind: "loading" }
-  | { kind: "loaded"; tokens: TokenSummary[] }
-  | { kind: "error"; message: string };
 
 function CapabilityChips({ caps }: { caps: string[] }) {
   if (caps.length === 0) {
@@ -507,18 +614,14 @@ function TokenPicker({
   selectedName,
   onSelect,
   selectedToken,
-  scoped,
   capabilityWarning,
   onRetry,
 }: {
   tokensState: TokensState;
   selectedName: string;
   onSelect: (name: string) => void;
-  /** The resolved summary for `selectedName`, or undefined when none is picked. */
   selectedToken: TokenSummary | undefined;
-  /** True when the selected token has ≥1 allowed repo. */
-  scoped: boolean;
-  /** Non-blocking warning when the token can't cover the agent's triggers. */
+  /** Non-blocking ⚠ warning when the token can't cover an enabled plugin. */
   capabilityWarning: string | null;
   onRetry: () => void;
 }) {
@@ -542,7 +645,7 @@ function TokenPicker({
   if (tokens.length === 0) {
     return (
       <ErrorBanner tone="amber">
-        No agent tokens yet. Create a repo-scoped token on{" "}
+        No agent tokens yet. Create a capability token on{" "}
         <a href="/dashboard/settings/byok" className="underline hover:text-amber-300">
           Credentials
         </a>{" "}
@@ -550,8 +653,6 @@ function TokenPicker({
       </ErrorBanner>
     );
   }
-
-  const repos = selectedToken?.policy?.allowed_repos ?? [];
 
   return (
     <div className="space-y-4">
@@ -573,8 +674,8 @@ function TokenPicker({
           ))}
         </select>
         <p className="mt-1 text-xs text-zinc-600">
-          The agent acts through this existing token. Its repo policy defines where the agent
-          operates. Manage tokens on{" "}
+          The agent acts through this existing token — it provides the agent&apos;s capabilities (not
+          its repos). Manage tokens on{" "}
           <a href="/dashboard/settings/byok" className="underline hover:text-zinc-400">
             Credentials
           </a>
@@ -583,54 +684,16 @@ function TokenPicker({
       </div>
 
       {selectedToken && (
-        <div className="space-y-4 rounded-lg border border-white/[0.04] bg-white/[0.02] p-4">
+        <div className="space-y-3 rounded-lg border border-white/[0.04] bg-white/[0.02] p-4">
           <div>
             <p className="mb-1.5 text-xs font-medium text-zinc-400">Token capabilities</p>
             <CapabilityChips caps={selectedToken.capabilities} />
           </div>
-
-          <div>
-            <p className="mb-1.5 text-xs font-medium text-zinc-400">Repo scope</p>
-            {scoped ? (
-              <p className="text-sm text-zinc-300">
-                This agent will operate on:{" "}
-                <span className="font-mono text-zinc-200">{repos.join(", ")}</span>
-              </p>
-            ) : (
-              <ErrorBanner tone="amber">
-                This token isn&apos;t scoped to any repo — scope it on{" "}
-                <a href="/dashboard/settings/byok" className="underline hover:text-amber-300">
-                  Credentials
-                </a>{" "}
-                first. The agent can&apos;t be created until then.
-              </ErrorBanner>
-            )}
-          </div>
-
-          {capabilityWarning && <ErrorBanner tone="amber">{capabilityWarning}</ErrorBanner>}
+          {capabilityWarning && <InlineWarning>{capabilityWarning}</InlineWarning>}
         </div>
       )}
     </div>
   );
-}
-
-/**
- * Map missing capabilities back to the human-facing trigger they belong to so
- * the warning reads in operator terms ("Tasks trigger enabled but this token
- * can't claim tasks") instead of raw capability strings.
- */
-function describeMissingCapabilityTriggers(missing: string[]): string {
-  const notes: string[] = [];
-  if (missing.some((c) => c.startsWith("tasks."))) {
-    notes.push("Tasks trigger enabled but this token can't claim tasks.");
-  }
-  if (missing.some((c) => c.startsWith("rooms."))) {
-    notes.push("War-rooms trigger enabled but this token can't participate in rooms.");
-  }
-  if (missing.includes("agent_health.report")) {
-    notes.push("This token can't report agent health.");
-  }
-  return notes.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -649,8 +712,7 @@ export function AgentConfigForm({
   const searchParams = useSearchParams();
   const isEdit = mode === "edit";
 
-  // Prefill (create-only) from ?name= for the "Adopt" flow. ?repo= is gone —
-  // the repo now comes from the linked token's policy.
+  // Prefill (create-only) from ?name= for the "Adopt" flow.
   const prefillName = !isEdit ? (searchParams.get("name") ?? "") : "";
 
   const [meta, setMeta] = useState<MetaState>({ kind: "loading" });
@@ -663,7 +725,9 @@ export function AgentConfigForm({
   const [agentTokenName, setAgentTokenName] = useState(initial?.agent_token_name ?? "");
   const [skills, setSkills] = useState<Set<string>>(() => new Set(initial?.skills ?? []));
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? "");
-  const [triggers, setTriggers] = useState<AgentTriggers>(initial?.triggers ?? defaultTriggers());
+  const [plugins, setPlugins] = useState<PluginsFormState>(() =>
+    hydratePluginsState(defaultPlugins(), initial?.plugins),
+  );
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -671,14 +735,10 @@ export function AgentConfigForm({
 
   // Seed create-mode defaults exactly once when the catalog first arrives:
   // pre-check standard skills + default the engine to the first catalog entry.
-  // Never reseed (so an operator's deselect sticks across a poll) and never on
-  // edit (the agent's saved config is authoritative).
+  // Never on edit (the saved config is authoritative).
   const seededRef = useRef(isEdit);
 
   // ---- load meta ----
-  // A monotonically-increasing request id discards the response of any fetch
-  // superseded by a newer one (e.g. a Retry while a load is in flight), so we
-  // never apply stale state. All setState is post-await; seeding runs once.
   const metaRequestRef = useRef(0);
   const loadMeta = useCallback(async () => {
     const requestId = ++metaRequestRef.current;
@@ -709,18 +769,11 @@ export function AgentConfigForm({
   }, []);
 
   useEffect(() => {
-    // Wrapped in a local function (rather than passing loadMeta directly) so the
-    // react-hooks set-state-in-effect rule sees an effect that synchronizes with
-    // an external system (the fetch) rather than a bare setState dispatch. The
-    // request-id guard inside loadMeta discards a response superseded by unmount
-    // or a Retry, so this fire-and-forget is safe.
     const run = () => void loadMeta();
     run();
   }, [loadMeta]);
 
   // ---- load linkable tokens ----
-  // Same request-id guard pattern as loadMeta — a Retry mid-flight or an unmount
-  // discards the stale response. Cookie-auth GET, no fresh-session needed.
   const tokensRequestRef = useRef(0);
   const loadTokens = useCallback(async () => {
     const requestId = ++tokensRequestRef.current;
@@ -760,79 +813,34 @@ export function AgentConfigForm({
     });
   }, []);
 
-  const capabilities = useMemo(
-    () =>
-      previewCapabilities({
-        schedule: triggers.schedule.enabled,
-        pull_requests: triggers.pull_requests.enabled,
-        mentions: triggers.mentions.enabled,
-        tasks: triggers.tasks.enabled,
-        war_rooms: triggers.war_rooms.enabled,
-        war_rooms_contribute: triggers.war_rooms.settings.contribute,
-      }),
-    [triggers],
-  );
-
   // The token the operator linked (resolved against the loaded catalog).
   const selectedToken = useMemo<TokenSummary | undefined>(() => {
     if (tokensState.kind !== "loaded" || !agentTokenName) return undefined;
     return tokensState.tokens.find((t) => t.name === agentTokenName);
   }, [tokensState, agentTokenName]);
 
-  // A token must be scoped to ≥1 repo — that's where the agent operates. An
-  // unscoped token blocks submit (the server rejects it with TOKEN_NOT_SCOPED).
-  const tokenScoped = (selectedToken?.policy?.allowed_repos?.length ?? 0) > 0;
-
-  // Non-blocking warning when the linked token can't grant what the enabled
-  // triggers need (e.g. the tasks trigger is on but the token can't claim
-  // tasks). Surfaced as guidance — the server is the authority and may still
-  // refuse, but we never hard-block on a coverage gap here.
+  // Non-blocking ⚠ warning when the linked token can't grant what an enabled
+  // plugin needs (tasks/war_rooms). The token is INDEPENDENT of the agent — the
+  // backend never rejects on this, so we never hard-block; we just inform.
   const capabilityWarning = useMemo<string | null>(() => {
     if (!selectedToken) return null;
-    const { covered, missing } = tokenCoversCapabilities(selectedToken.capabilities, capabilities);
-    if (covered) return null;
-    const missingTriggers = describeMissingCapabilityTriggers(missing);
-    return `This token is missing ${missing.join(", ")}. ${missingTriggers}`;
-  }, [selectedToken, capabilities]);
-
-  // ---- client-side validation (fast feedback; server re-validates) ----
-  function clientValidate(): string | null {
-    if (!isEdit) {
-      if (!NAME_REGEX.test(name)) {
-        return "Name must be a lowercase identifier starting with a letter (≤32 chars, a–z 0–9 _ -).";
-      }
-    }
-    if (!agentTokenName) return "Pick a token for this agent.";
-    // The token must be scoped to a repo — that's where the agent works. We
-    // block here for fast feedback; the server enforces the same rule
-    // (TOKEN_NOT_SCOPED). Only enforce when the catalog has loaded and resolved
-    // the selection, so a slow token fetch never blocks a valid submit.
-    if (selectedToken && !tokenScoped) {
-      return "The selected token isn't scoped to any repo. Scope it on Credentials first, then link it here.";
-    }
-    if (!engine) return "Pick an engine.";
-    if (displayName.trim().length > 80) return "Display name must be ≤80 characters.";
-    if (systemPrompt.length > MAX_SYSTEM_PROMPT_CHARS) {
-      return `System prompt must be ≤${MAX_SYSTEM_PROMPT_CHARS.toLocaleString()} characters.`;
-    }
-    if (triggers.schedule.enabled && triggers.schedule.settings.prompt.trim().length === 0) {
-      return "A schedule prompt is required when the schedule trigger is enabled.";
-    }
-    if (
-      triggers.pull_requests.enabled &&
-      !triggers.pull_requests.settings.watch_new_prs &&
-      !triggers.pull_requests.settings.watch_review_requests
-    ) {
-      return "Enable at least one of 'watch new PRs' / 'watch review requests' for the pull-requests trigger.";
-    }
-    return null;
-  }
+    const gaps = detectCapabilityGaps(plugins, selectedToken.capabilities);
+    return describeCapabilityGaps(gaps);
+  }, [selectedToken, plugins]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (submitting) return;
 
-    const validationError = clientValidate();
+    const validationError = validateForm({
+      isEdit,
+      name,
+      displayName,
+      engine,
+      agentTokenName,
+      systemPrompt,
+      plugins,
+    });
     if (validationError) {
       setFormError(validationError);
       return;
@@ -842,19 +850,17 @@ export function AgentConfigForm({
     setFormError(null);
 
     const trimmedDisplay = displayName.trim();
+    const pluginsPayload = buildPluginsPayload(plugins);
 
     try {
       let res: Response;
       if (isEdit) {
-        // PATCH only mutable fields. display_name can be cleared via null. The
-        // linked token is editable — re-pointing an agent at a different scoped
-        // token is allowed.
         const body: UpdateAgentPayload = {
           display_name: trimmedDisplay.length > 0 ? trimmedDisplay : null,
           engine,
           skills: Array.from(skills),
           system_prompt: systemPrompt,
-          triggers,
+          plugins: pluginsPayload,
           agent_token_name: agentTokenName,
         };
         res = await fetch(`/api/dashboard/fleet/agents/${encodeURIComponent(initial!.name)}`, {
@@ -869,7 +875,7 @@ export function AgentConfigForm({
           engine,
           skills: Array.from(skills),
           system_prompt: systemPrompt,
-          triggers,
+          plugins: pluginsPayload,
           agent_token_name: agentTokenName,
         };
         res = await fetch("/api/dashboard/fleet/agents", {
@@ -897,15 +903,12 @@ export function AgentConfigForm({
 
       if (isEdit) {
         const data = (await res.json()) as UpdateAgentResponse;
-        // Refresh server data so the detail page reflects the saved config.
         router.refresh();
-        // Reset the dirty system-prompt baseline by routing back to the agent.
         router.push(`/dashboard/agents/${encodeURIComponent(data.agent.name)}`);
         return;
       }
 
       const data = (await res.json()) as CreateAgentResponse;
-      // Nothing is minted anymore — go straight to the new agent's detail page.
       router.refresh();
       router.push(`/dashboard/agents/${encodeURIComponent(data.agent.name)}`);
     } catch {
@@ -954,7 +957,7 @@ export function AgentConfigForm({
     );
   }
 
-  const { skills_catalog, engine_catalog } = meta.meta;
+  const { skills_catalog, engine_catalog, installation_repos } = meta.meta;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -1003,27 +1006,25 @@ export function AgentConfigForm({
         </div>
       </Card>
 
-      {/* Token — links an existing scoped capability token. */}
+      {/* Acts as (Token) */}
       <Card padding="md" className="space-y-4">
         <SectionHeader
-          title="Token"
-          description="The existing capability token this agent acts through. Its repo policy defines where the agent operates."
+          title="Acts as"
+          description="The existing capability token this agent acts through. It provides the agent's capabilities (not its repos)."
         />
         <TokenPicker
           tokensState={tokensState}
           selectedName={agentTokenName}
           onSelect={setAgentTokenName}
           selectedToken={selectedToken}
-          scoped={tokenScoped}
           capabilityWarning={capabilityWarning}
           onRetry={loadTokens}
         />
       </Card>
 
-      {/* Runtime */}
+      {/* Engine */}
       <Card padding="md" className="space-y-5">
-        <SectionHeader title="Runtime" description="The engine this agent runs on." />
-
+        <SectionHeader title="Engine" description="The model/tool this agent runs on." />
         <div>
           <label htmlFor="agent-engine" className={LABEL_CLASS}>
             Engine
@@ -1044,11 +1045,24 @@ export function AgentConfigForm({
         </div>
       </Card>
 
+      {/* Plugins */}
+      <Card padding="md" className="space-y-4">
+        <SectionHeader
+          title="Plugins"
+          description="Enable the capabilities this agent should have, and configure each. At least one plugin is required."
+        />
+        <PluginsSection
+          plugins={plugins}
+          setPlugins={setPlugins}
+          installationRepos={installation_repos}
+        />
+      </Card>
+
       {/* Skills */}
       <Card padding="md" className="space-y-4">
         <SectionHeader
           title="Skills"
-          description={`Capabilities bundled into the agent's runtime. ${skills.size} selected.`}
+          description={`Knowledge bundled into the agent's runtime. ${skills.size} selected.`}
         />
         <SkillsPicker catalog={skills_catalog} selected={skills} onToggle={toggleSkill} />
       </Card>
@@ -1073,44 +1087,9 @@ export function AgentConfigForm({
         </p>
       </Card>
 
-      {/* Triggers */}
-      <Card padding="md" className="space-y-4">
-        <SectionHeader
-          title="Triggers"
-          description="When and how this agent activates. Each trigger you enable grants the matching capabilities below."
-        />
-        <TriggerPanel triggers={triggers} setTriggers={setTriggers} />
-      </Card>
-
-      {/* Capability preview */}
-      <Card padding="md" className="space-y-3">
-        <SectionHeader
-          title="Capabilities this agent will receive"
-          description="Least-privilege token scopes derived from the enabled triggers. Recomputed on every save."
-        />
-        <div className="flex flex-wrap gap-2">
-          {capabilities.map((cap) => (
-            <span
-              key={cap}
-              className="rounded-md bg-honey-500/10 px-2 py-1 font-mono text-xs text-honey-400"
-            >
-              {cap}
-            </span>
-          ))}
-        </div>
-      </Card>
-
       {/* Actions */}
       <div className="flex items-center gap-3">
-        <Button
-          type="submit"
-          variant="primary"
-          size="md"
-          // An unscoped token can never produce a valid agent (no repos to
-          // operate on) — the server rejects it, so block the submit. Coverage
-          // warnings, by contrast, never disable the button.
-          disabled={submitting || (selectedToken !== undefined && !tokenScoped)}
-        >
+        <Button type="submit" variant="primary" size="md" disabled={submitting}>
           {submitting ? (
             <span className="flex items-center gap-2">
               <Spinner className="h-3.5 w-3.5 animate-spin" />

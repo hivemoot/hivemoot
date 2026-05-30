@@ -42,7 +42,6 @@ def _mk_config(interval: int = 1) -> PluginConfig:
             health=HivemootHealthConfig(
                 enabled=True,
                 base_url="https://h/",
-                repo="o/r",
                 heartbeat_interval_secs=interval,
             ),
         ),
@@ -53,7 +52,6 @@ def _mk_plugin() -> MagicMock:
     """Stand-in plugin that exposes the methods the trigger reaches."""
     plugin = MagicMock()
     plugin.resolved_agent_id.return_value = "builder"
-    plugin.resolved_health_repo.return_value = "o/r"
     return plugin
 
 
@@ -65,7 +63,7 @@ class StartTests(unittest.TestCase):
             settings={},
             typed=HivemootConfig(
                 token_file=_ensure_token_file(),
-                health=HivemootHealthConfig(enabled=False, repo="o/r"),
+                health=HivemootHealthConfig(enabled=False),
             ),
         )
         with patch.object(health_api, "post_heartbeat") as hb:
@@ -90,10 +88,11 @@ class StartTests(unittest.TestCase):
         # One immediate + at least one periodic tick.
         self.assertGreaterEqual(calls["n"], 2)
 
-    def test_idle_when_agent_id_or_repo_missing(self) -> None:
+    def test_idle_when_agent_id_missing(self) -> None:
+        # Health is per-agent: AGENT_ID is the only identity dimension.
+        # Missing it leaves the trigger idle (no repo dimension exists).
         plugin = MagicMock()
         plugin.resolved_agent_id.return_value = ""
-        plugin.resolved_health_repo.return_value = "o/r"
         trig = HealthHeartbeatTrigger(plugin)
 
         with patch.object(health_api, "post_heartbeat") as hb, \

@@ -17,8 +17,12 @@ import httpx
 from apiarist.features.reconcile.models import (
     DesiredAgent,
     DesiredState,
+    FleetPlugins,
+    GithubPlugin,
     ResolvedEngine,
-    Triggers,
+    SchedulePlugin,
+    TasksPlugin,
+    WarRoomsPlugin,
 )
 
 DESIRED_STATE_PATH = "/api/fleet/desired-state"
@@ -29,6 +33,12 @@ DESIRED_STATE_PATH = "/api/fleet/desired-state"
 # backend (which also enforces this) is ever buggy or compromised. A violation
 # is a protocol error → the whole cycle fails closed (no container is touched).
 _AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+# Repo `owner/name` slug — mirrors the web's REPO_REGEX (fleet-store.ts): each
+# half starts alphanumeric then `[A-Za-z0-9._-]`, exactly one slash. Re-checked
+# here at the trust boundary because a repo string reaches yaml/log/label
+# surfaces; the explicit `..`/whitespace rejects below block path traversal.
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class FleetError(Exception):
@@ -159,7 +169,6 @@ def _parse_agent(entry: object) -> DesiredAgent:
     if not _AGENT_NAME_RE.fullmatch(name):
         # Never let a non-identifier name reach the filesystem/Docker layer.
         raise FleetProtocolError(f"agent name {name!r} is not a valid identifier")
-    repos = _parse_repos(entry.get("repos"), name)
     enabled = entry.get("enabled")
     managed = entry.get("managed")
     config_version = entry.get("config_version")
@@ -173,7 +182,7 @@ def _parse_agent(entry: object) -> DesiredAgent:
     system_prompt = entry.get("system_prompt")
     if not isinstance(system_prompt, str):
         raise FleetProtocolError(f"agent {name!r} missing string system_prompt")
-    triggers = _parse_triggers(entry.get("triggers"), name)
+    plugins = _parse_plugins(entry.get("plugins"), name)
 
     token = entry.get("token")
     if not isinstance(token, dict):
@@ -185,27 +194,36 @@ def _parse_agent(entry: object) -> DesiredAgent:
 
     return DesiredAgent(
         name=name,
-        repos=repos,
         enabled=enabled,
         managed=managed,
         config_version=config_version,
         engine=engine,
         skills=skills,
         system_prompt=system_prompt,
-        triggers=triggers,
+        plugins=plugins,
         token_name=token_name,
         agent_role=agent_role,
     )
 
 
-def _parse_repos(raw: object, name: str) -> tuple[str, ...]:
-    # The agent's repos come from the linked token's allowed_repos (non-empty).
-    if not isinstance(raw, list) or not raw:
-        raise FleetProtocolError(f"agent {name!r} missing non-empty list 'repos'")
+def _parse_repo_list(raw: object, field: str) -> tuple[str, ...]:
+    # `repos` live ONLY under plugins.github. Each entry must be a well-formed
+    # `owner/name` slug (mirrors the web's REPO_REGEX) — re-checked here at the
+    # trust boundary because the value reaches yaml/log/label surfaces. The
+    # regex enforces exactly one slash with non-empty halves, so `a/`, `/b`,
+    # `a/b/c`, and `a//b` are all rejected; the explicit `..`/whitespace guards
+    # block path traversal.
+    if not isinstance(raw, list):
+        raise FleetProtocolError(f"{field} must be a list")
     out: list[str] = []
     for r in raw:
-        if not isinstance(r, str) or "/" not in r or ".." in r or " " in r:
-            raise FleetProtocolError(f"agent {name!r} has invalid repo {r!r}")
+        if (
+            not isinstance(r, str)
+            or ".." in r
+            or " " in r
+            or not _REPO_RE.fullmatch(r)
+        ):
+            raise FleetProtocolError(f"{field} has invalid repo {r!r}")
         out.append(r)
     return tuple(out)
 
@@ -253,52 +271,116 @@ def _parse_skills(raw: object) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _trigger_block(triggers: dict[str, Any], key: str) -> tuple[bool, dict[str, Any]]:
-    block = triggers.get(key)
-    if not isinstance(block, dict):
-        return (False, {})
-    enabled = bool(block.get("enabled") is True)
-    settings = block.get("settings")
-    return (enabled, settings if isinstance(settings, dict) else {})
+# ---------------------------------------------------------------------------
+# Plugin parsing — FAIL-CLOSED. The web ships the canonical validated
+# `FleetPlugins` shape (web/src/server/fleet-store.ts): each present plugin is
+# an object with `enabled: bool` plus its typed fields. A malformed/type-wrong
+# plugin block raises FleetProtocolError, aborting the whole cycle (no-op) —
+# we never act on a partial/corrupt roster.
+# ---------------------------------------------------------------------------
 
 
-def _as_int(v: object, default: int) -> int:
-    return v if isinstance(v, int) and not isinstance(v, bool) else default
+def _req_bool(d: dict[str, Any], key: str, field: str) -> bool:
+    # Required: a present key with a real bool. The web always emits these
+    # (normalized output), so an absent/typewrong value is a contract violation.
+    v = d.get(key)
+    if not isinstance(v, bool):
+        raise FleetProtocolError(f"{field} must be a boolean")
+    return v
 
 
-def _parse_triggers(raw: object, name: str) -> Triggers:
+def _req_int(d: dict[str, Any], key: str, field: str) -> int:
+    v = d.get(key)
+    # bool is an int subclass — reject it so true/false can't satisfy an int.
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise FleetProtocolError(f"{field} must be an int")
+    return v
+
+
+def _parse_github_plugin(raw: object, name: str) -> GithubPlugin:
+    # The web ALWAYS normalizes and ships fully-populated github blocks (watch
+    # flags defaulted, poll clamped from a default). apiarist consumes that
+    # normalized output, so it REQUIRES every such field and fails the cycle
+    # closed on absence — never silently re-applying a default that would
+    # degrade a live container on a contract violation. The only optional field
+    # is `watch_new_prs_authors` (the web omits it when the allowlist is empty).
+    field = f"agent {name!r} plugins.github"
     if not isinstance(raw, dict):
-        raise FleetProtocolError(f"agent {name!r} missing object 'triggers'")
-
-    sched_on, sched = _trigger_block(raw, "schedule")
-    pr_on, pr = _trigger_block(raw, "pull_requests")
-    men_on, men = _trigger_block(raw, "mentions")
-    tasks_on, _ = _trigger_block(raw, "tasks")
-    war_on, war = _trigger_block(raw, "war_rooms")
-
-    raw_authors = pr.get("author_allowlist")
+        raise FleetProtocolError(f"{field} must be an object")
+    enabled = _req_bool(raw, "enabled", f"{field}.enabled")
+    repos = _parse_repo_list(raw.get("repos", []), f"{field}.repos")
+    # An ENABLED github plugin must have at least one repo — restores the v1
+    # trust-boundary guarantee (the web enforces this; disabled may be empty).
+    if enabled and not repos:
+        raise FleetProtocolError(f"{field}.repos must be non-empty when github is enabled")
+    authors_raw = raw.get("watch_new_prs_authors")
     authors: tuple[str, ...] = ()
-    if isinstance(raw_authors, list):
-        authors = tuple(a for a in raw_authors if isinstance(a, str))
+    if authors_raw is not None:
+        if not isinstance(authors_raw, list) or not all(isinstance(a, str) for a in authors_raw):
+            raise FleetProtocolError(f"{field}.watch_new_prs_authors must be a list of strings")
+        authors = tuple(authors_raw)
+    return GithubPlugin(
+        enabled=enabled,
+        repos=repos,
+        watch_new_prs=_req_bool(raw, "watch_new_prs", f"{field}.watch_new_prs"),
+        watch_review_requests=_req_bool(
+            raw, "watch_review_requests", f"{field}.watch_review_requests"
+        ),
+        watch_mentions=_req_bool(raw, "watch_mentions", f"{field}.watch_mentions"),
+        watch_new_prs_authors=authors,
+        poll_interval_secs=_req_int(raw, "poll_interval_secs", f"{field}.poll_interval_secs"),
+    )
 
-    prompt_raw = sched.get("prompt")
-    schedule_prompt = prompt_raw if isinstance(prompt_raw, str) else ""
 
-    return Triggers(
-        schedule_enabled=sched_on,
-        schedule_interval_secs=_as_int(sched.get("interval_secs"), 21600),
-        schedule_jitter_secs=_as_int(sched.get("jitter_secs"), 600),
-        schedule_prompt=schedule_prompt,
-        pr_enabled=pr_on,
-        pr_watch_new=bool(pr.get("watch_new_prs") is True),
-        pr_watch_reviews=bool(pr.get("watch_review_requests") is True),
-        pr_authors=authors,
-        pr_poll_secs=_as_int(pr.get("poll_interval_secs"), 300),
-        mentions_enabled=men_on,
-        mentions_poll_secs=_as_int(men.get("poll_interval_secs"), 90),
-        tasks_enabled=tasks_on,
-        war_rooms_enabled=war_on,
-        war_rooms_contribute=bool(war.get("contribute") is True),
+def _parse_schedule_plugin(raw: object, name: str) -> SchedulePlugin:
+    # The web ships fully-populated schedule blocks (interval/jitter clamped,
+    # prompt always set). REQUIRE every field; fail closed on absence rather
+    # than re-applying a default that could silently change a live container.
+    field = f"agent {name!r} plugins.schedule"
+    if not isinstance(raw, dict):
+        raise FleetProtocolError(f"{field} must be an object")
+    if "prompt" not in raw or not isinstance(raw.get("prompt"), str):
+        raise FleetProtocolError(f"{field}.prompt must be a string")
+    prompt = raw["prompt"]
+    return SchedulePlugin(
+        enabled=_req_bool(raw, "enabled", f"{field}.enabled"),
+        interval_secs=_req_int(raw, "interval_secs", f"{field}.interval_secs"),
+        jitter_secs=_req_int(raw, "jitter_secs", f"{field}.jitter_secs"),
+        prompt=prompt,
+    )
+
+
+def _parse_tasks_plugin(raw: object, name: str) -> TasksPlugin:
+    field = f"agent {name!r} plugins.tasks"
+    if not isinstance(raw, dict):
+        raise FleetProtocolError(f"{field} must be an object")
+    return TasksPlugin(enabled=_req_bool(raw, "enabled", f"{field}.enabled"))
+
+
+def _parse_war_rooms_plugin(raw: object, name: str) -> WarRoomsPlugin:
+    field = f"agent {name!r} plugins.war_rooms"
+    if not isinstance(raw, dict):
+        raise FleetProtocolError(f"{field} must be an object")
+    # The web always sets `contribute` (the capability gate distinguishes
+    # observe-only from contributing), so REQUIRE it — fail closed on absence.
+    return WarRoomsPlugin(
+        enabled=_req_bool(raw, "enabled", f"{field}.enabled"),
+        contribute=_req_bool(raw, "contribute", f"{field}.contribute"),
+    )
+
+
+def _parse_plugins(raw: object, name: str) -> FleetPlugins:
+    if not isinstance(raw, dict):
+        raise FleetProtocolError(f"agent {name!r} missing object 'plugins'")
+    github = raw.get("github")
+    schedule = raw.get("schedule")
+    tasks = raw.get("tasks")
+    war_rooms = raw.get("war_rooms")
+    return FleetPlugins(
+        github=_parse_github_plugin(github, name) if github is not None else None,
+        schedule=_parse_schedule_plugin(schedule, name) if schedule is not None else None,
+        tasks=_parse_tasks_plugin(tasks, name) if tasks is not None else None,
+        war_rooms=_parse_war_rooms_plugin(war_rooms, name) if war_rooms is not None else None,
     )
 
 

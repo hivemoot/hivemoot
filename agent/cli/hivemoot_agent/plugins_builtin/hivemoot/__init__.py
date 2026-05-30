@@ -26,7 +26,6 @@ YAML shape (``hivemoot.yaml``):
         token_file: !secret hivemoot_agent_token
         health:
           enabled: true
-          repo: hivemoot/hivemoot
         tasks:
           enabled: true
           claim_url: https://www.hivemoot.dev/api/tasks/claim
@@ -210,17 +209,14 @@ class HivemootPlugin:
         return errors
 
     def _validate_health(self, cfg: "HivemootConfig") -> list[str]:
+        # Health is a per-agent signal keyed solely on AGENT_ID — no
+        # repo dimension. Only base_url, a bearer token, and AGENT_ID
+        # are required.
         errors: list[str] = []
         if not cfg.health.base_url:
             errors.append(
                 "plugins.hivemoot.health.base_url is required when "
                 "health.enabled is true"
-            )
-        repo = self._resolve_health_repo(cfg)
-        if not repo:
-            errors.append(
-                "plugins.hivemoot.health.repo is required (or set "
-                "plugins.github.repos[0]) when health.enabled is true"
             )
         if cfg.token_file is None and not (
             os.environ.get("HIVEMOOT_AGENT_TOKEN_FILE")
@@ -947,14 +943,6 @@ class HivemootPlugin:
         """Return the AGENT_ID env var, stripped."""
         return (os.environ.get("AGENT_ID", "") or "").strip()
 
-    def resolved_health_repo(self) -> str:
-        """Return the configured health repo, falling back to
-        the github plugin's ``repos[0]``.  Empty when neither is set."""
-        cfg = self._cfg
-        if cfg is None:
-            return ""
-        return self._resolve_health_repo(cfg)
-
     # ── In-flight gate for the tasks trigger ──────────────────────
 
     def wait_task_slot(
@@ -1002,20 +990,6 @@ class HivemootPlugin:
         self._queen_inflight.set()
 
     # ── Private: shared resolvers ─────────────────────────────────
-
-    def _resolve_health_repo(self, cfg: "HivemootConfig") -> str:
-        if cfg.health.repo:
-            return cfg.health.repo
-        # Fall back to github plugin's repos[0].
-        try:
-            from hivemoot_agent.plugins import registry as _registry
-            gh_cfg = _registry.config_for_or_none("github")
-        except Exception:
-            return ""
-        if gh_cfg is None or gh_cfg.typed is None:
-            return ""
-        repos = getattr(gh_cfg.typed, "repos", None) or []
-        return repos[0] if repos else ""
 
     def _resolve_github_target_repo(self) -> str:
         try:
@@ -1082,12 +1056,11 @@ class HivemootPlugin:
             self._consecutive_failures += 1
 
         agent_id = self.resolved_agent_id()
-        repo = self._resolve_health_repo(cfg)
         bearer = resolve_agent_token(
             str(cfg.token_file) if cfg.token_file else "",
         )
 
-        if not agent_id or not repo or not bearer:
+        if not agent_id or not bearer:
             # validate() caught this at startup, but the token file
             # can disappear (rolling restart, bad rotation) or
             # AGENT_ID can get unset by a config reload.  Log once
@@ -1102,7 +1075,6 @@ class HivemootPlugin:
                 missing = [
                     n for n, v in (
                         ("AGENT_ID", agent_id),
-                        ("repo", repo),
                         ("bearer token", bearer),
                     ) if not v
                 ]
@@ -1131,7 +1103,6 @@ class HivemootPlugin:
             cfg.health.base_url,
             bearer,
             agent_id=agent_id,
-            repo=repo,
             run_id=run_id,
             outcome=outcome,
             duration_secs=duration_secs,
@@ -1143,7 +1114,7 @@ class HivemootPlugin:
         if not ok:
             print(
                 f"[hivemoot-health] run-report post returned non-200 "
-                f"(agent={agent_id} repo={repo} run={run_id})",
+                f"(agent={agent_id} run={run_id})",
                 file=sys.stderr, flush=True,
             )
         # Per-job state was popped above so there's nothing to reset.

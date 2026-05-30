@@ -2,46 +2,77 @@
  * Client-side fleet-agent models for the Agents dashboard.
  *
  * These MIRROR the server contracts under `/api/dashboard/fleet/**`. Keep them
- * in sync with `@/server/fleet-store` (FleetAgent / AgentTriggers) and
- * `@/server/agent-health-store` (HealthReport). They are intentionally a
- * narrow client copy so the dashboard never imports server-only modules.
+ * in sync with `@/server/fleet-store` (FleetAgent / FleetPlugins) and
+ * `@/server/agent-health-store` (HealthReport). They are intentionally a narrow
+ * client copy so the dashboard never imports server-only modules.
+ *
+ * PLUGIN-FIRST MODEL (Stage 5): an agent's behaviour is the set of plugins it
+ * enables. `repos` lives in exactly one place — `plugins.github.repos` — never
+ * at the top level, never on the token. There is no `duty` and no flat
+ * `triggers` object anymore.
  */
 
 // ---------------------------------------------------------------------------
-// Triggers
+// Plugins — the enableable capabilities of an agent (mirror FleetPlugins)
 // ---------------------------------------------------------------------------
 
-export interface ScheduleTriggerSettings {
+/**
+ * The `github` plugin — the ONLY place `repos` lives. The three watch flags are
+ * the plugin's triggers; at least one must be on when the plugin is enabled.
+ * `watch_new_prs_authors` is only meaningful alongside `watch_new_prs`
+ * (empty/absent = react to every author).
+ */
+export interface GithubPlugin {
+  enabled: boolean;
+  repos: string[];
+  watch_new_prs: boolean;
+  watch_review_requests: boolean;
+  watch_mentions: boolean;
+  watch_new_prs_authors?: string[];
+  poll_interval_secs: number;
+}
+
+export interface SchedulePlugin {
+  enabled: boolean;
   interval_secs: number;
   jitter_secs: number;
   prompt: string;
 }
 
-export interface PullRequestsTriggerSettings {
-  watch_new_prs: boolean;
-  watch_review_requests: boolean;
-  author_allowlist: string[];
-  poll_interval_secs: number;
+/** Tasks plugin has no v1 config — it claims from the dashboard queue. */
+export interface TasksPlugin {
+  enabled: boolean;
 }
 
-export interface MentionsTriggerSettings {
-  poll_interval_secs: number;
-}
-
-export interface WarRoomsTriggerSettings {
+export interface WarRoomsPlugin {
+  enabled: boolean;
+  /** false = observe only (watch+read); true = also present + contribute. */
   contribute: boolean;
 }
 
-export interface AgentTriggers {
-  schedule: { enabled: boolean; settings: ScheduleTriggerSettings };
-  pull_requests: { enabled: boolean; settings: PullRequestsTriggerSettings };
-  mentions: { enabled: boolean; settings: MentionsTriggerSettings };
-  tasks: { enabled: boolean; settings: Record<string, never> };
-  war_rooms: { enabled: boolean; settings: WarRoomsTriggerSettings };
+/**
+ * The set of plugins an agent can enable. Each is OPTIONAL. The dashboard form
+ * always carries every plugin block (enabled or not) so the PATCH replace-set
+ * semantics are unambiguous — but a stored record may omit unconfigured ones.
+ */
+export interface FleetPlugins {
+  github?: GithubPlugin;
+  schedule?: SchedulePlugin;
+  tasks?: TasksPlugin;
+  war_rooms?: WarRoomsPlugin;
 }
 
-/** Keys of `AgentTriggers` — used to iterate over trigger panels generically. */
-export type TriggerKey = keyof AgentTriggers;
+/** Plugin keys in canonical render order. */
+export type PluginKey = "github" | "schedule" | "tasks" | "war_rooms";
+
+export const PLUGIN_ORDER: PluginKey[] = ["github", "schedule", "tasks", "war_rooms"];
+
+export const PLUGIN_LABELS: Record<PluginKey, string> = {
+  github: "GitHub",
+  schedule: "Schedule",
+  tasks: "Tasks",
+  war_rooms: "War Rooms",
+};
 
 // ---------------------------------------------------------------------------
 // Agent record
@@ -50,16 +81,16 @@ export type TriggerKey = keyof AgentTriggers;
 export interface FleetAgent {
   name: string;
   display_name?: string;
-  /** Repos the agent operates on — sourced from the linked token's policy
-   * (`allowed_repos`). The agent itself no longer carries a single repo. */
-  repos: string[];
   engine: string;
   skills: string[];
   system_prompt: string;
-  triggers: AgentTriggers;
+  /** The enableable capabilities of this agent. `repos` lives ONLY under
+   * `plugins.github.repos`. */
+  plugins: FleetPlugins;
   enabled: boolean;
   managed: boolean;
-  /** The existing capability token this agent is bound to. */
+  /** The existing capability token this agent is bound to (CAPABILITIES only —
+   * no repo scope). */
   agent_token_name: string;
   created_at: string;
   created_by: string;
@@ -120,9 +151,9 @@ export interface HealthReport {
 // API envelopes
 // ---------------------------------------------------------------------------
 
+/** Observed-only agent (reporting health, not registered). Per-agent, no repo. */
 export interface ObservedAgent {
   agent_id: string;
-  repo: string;
   status: string;
   received_at: string;
 }
@@ -157,11 +188,15 @@ export interface EngineCatalogEntry {
 export interface FleetMetaResponse {
   skills_catalog: SkillCatalogEntry[];
   engine_catalog: EngineCatalogEntry[];
+  /** The installation's accessible repos — pre-fills the github plugin's repo
+   * picker. Best-effort: `[]` when the lister failed (the create/patch path
+   * re-checks coverage fail-closed, so an empty pre-fill is safe). */
+  installation_repos: string[];
 }
 
 /**
- * Create succeeds with just the agent — nothing is minted anymore. The agent
- * links an EXISTING token, so there is no once-shown secret to surface.
+ * Create succeeds with just the agent — nothing is minted. The agent links an
+ * EXISTING token, so there is no once-shown secret to surface.
  */
 export interface CreateAgentResponse {
   agent: FleetAgent;
@@ -175,24 +210,32 @@ export interface UpdateAgentResponse {
 // Create / update payloads (what the form POSTs / PATCHes)
 // ---------------------------------------------------------------------------
 
-/** POST body — links an existing token; no repo/duty, nothing minted. */
+/**
+ * POST body — links an existing token; sends the canonical `plugins` object.
+ * No top-level `repos` / `duty` / `triggers` — repos live only under
+ * `plugins.github.repos`.
+ */
 export interface CreateAgentPayload {
   name: string;
   display_name?: string;
   engine: string;
   skills: string[];
   system_prompt: string;
-  triggers: AgentTriggers;
+  plugins: FleetPlugins;
   agent_token_name: string;
 }
 
-/** PATCH body — every field optional; `display_name: null` clears the label. */
+/**
+ * PATCH body — every field optional; `display_name: null` clears the label.
+ * `plugins` REPLACES the whole plugin set (the form always sends the complete
+ * set the operator configured).
+ */
 export interface UpdateAgentPayload {
   display_name?: string | null;
   engine?: string;
   skills?: string[];
   system_prompt?: string;
-  triggers?: AgentTriggers;
+  plugins?: FleetPlugins;
   agent_token_name?: string;
 }
 
@@ -200,16 +243,11 @@ export interface UpdateAgentPayload {
 // Agent tokens (the linkable existing tokens)
 // ---------------------------------------------------------------------------
 
-/** Repo + permission scope persisted alongside a capability token. */
-export interface TokenPolicy {
-  allowed_repos: string[];
-  allowed_permissions?: Record<string, string>;
-}
-
 /**
  * One row from `GET /api/dashboard/agent-tokens` → `{ tokens }`. Mirrors the
- * server's `AgentTokenSummaryV1` (metadata only — never the raw bearer). This
- * is the source for the Token dropdown in the create/edit form.
+ * server's `AgentTokenSummaryV1` (metadata only — never the raw bearer). The
+ * token carries CAPABILITIES only (no repo scope); `capabilities` drives the
+ * soft capability warnings. This is the source for the Token dropdown.
  */
 export interface TokenSummary {
   name: string;
@@ -219,7 +257,6 @@ export interface TokenSummary {
   createdAt: string;
   createdBy: string;
   expiresAt: string | null;
-  policy?: TokenPolicy;
 }
 
 /** Envelope for `GET /api/dashboard/agent-tokens`. */
@@ -246,7 +283,8 @@ export const FLEET_ERROR_CODE = {
   INVALID_BODY: "fleet_invalid_body",
   VALIDATION: "fleet_validation",
   REPO_NOT_COVERED: "fleet_repo_not_covered",
-  COVERAGE_CHECK_FAILED: "fleet_coverage_check_failed",
+  /** Couldn't list installation repos (transient GitHub/App error). */
+  REPOS_UNAVAILABLE: "fleet_repos_unavailable",
   NAME_TAKEN: "fleet_name_taken",
   NOT_FOUND: "fleet_not_found",
   AGENT_LIMIT_REACHED: "fleet_agent_limit_reached",
@@ -254,8 +292,6 @@ export const FLEET_ERROR_CODE = {
   QUEEN_NOT_SUPPORTED: "fleet_queen_not_supported",
   /** Selected `agent_token_name` doesn't exist in the installation. */
   INVALID_TOKEN: "fleet_invalid_token",
-  /** Selected token has no `allowed_repos` — it isn't scoped to any repo. */
-  TOKEN_NOT_SCOPED: "fleet_token_not_scoped",
   LOCK_TIMEOUT: "fleet_lock_timeout",
   SERVER_ERROR: "fleet_server_error",
 } as const;
@@ -265,36 +301,30 @@ export const FLEET_ERROR_CODE = {
 // ---------------------------------------------------------------------------
 
 /**
- * Default trigger config for a brand-new agent. Intervals mirror the backend's
- * conventional defaults (5-min schedule poll, 60s PR/mention polls). Nothing is
- * enabled by default — the operator opts each trigger in.
+ * Default plugin config for a brand-new agent. Bounds mirror the backend's
+ * `@/server/fleet-store` defaults: github poll 300s, schedule 6h interval /
+ * 10m jitter. Nothing is enabled by default — the operator opts each plugin in.
+ * `repos` starts empty; the form fills it from `meta.installation_repos`
+ * (all-checked) once the catalog loads.
  */
-export function defaultTriggers(): AgentTriggers {
+export function defaultPlugins(): Required<FleetPlugins> {
   return {
+    github: {
+      enabled: false,
+      repos: [],
+      watch_new_prs: true,
+      watch_review_requests: true,
+      watch_mentions: false,
+      watch_new_prs_authors: [],
+      poll_interval_secs: 300,
+    },
     schedule: {
       enabled: false,
-      settings: { interval_secs: 300, jitter_secs: 30, prompt: "" },
+      interval_secs: 21600,
+      jitter_secs: 600,
+      prompt: "",
     },
-    pull_requests: {
-      enabled: false,
-      settings: {
-        watch_new_prs: true,
-        watch_review_requests: true,
-        author_allowlist: [],
-        poll_interval_secs: 60,
-      },
-    },
-    mentions: {
-      enabled: false,
-      settings: { poll_interval_secs: 60 },
-    },
-    tasks: {
-      enabled: false,
-      settings: {},
-    },
-    war_rooms: {
-      enabled: false,
-      settings: { contribute: false },
-    },
+    tasks: { enabled: false },
+    war_rooms: { enabled: false, contribute: false },
   };
 }

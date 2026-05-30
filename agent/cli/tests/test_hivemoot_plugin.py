@@ -122,23 +122,27 @@ class ValidateTests(unittest.TestCase):
         plugin = HivemootPlugin()
         # AGENT_ID deliberately unset.
         errors = plugin.validate(_mk_plugin_config(
-            health=HivemootHealthConfig(enabled=True, repo="o/r"),
+            health=HivemootHealthConfig(enabled=True),
         ))
         self.assertTrue(any("AGENT_ID" in e for e in errors))
 
-    def test_health_enabled_requires_repo(self) -> None:
+    def test_health_enabled_no_repo_required(self) -> None:
+        # Health is a per-agent signal — there is no repo dimension.
+        # With AGENT_ID + token + base_url set, validation passes
+        # without any repo config (and nothing mentions a repo).
         plugin = HivemootPlugin()
         os.environ["AGENT_ID"] = "builder"
         errors = plugin.validate(_mk_plugin_config(
             health=HivemootHealthConfig(enabled=True),
         ))
-        self.assertTrue(any("health.repo" in e for e in errors))
+        self.assertEqual(errors, [])
+        self.assertFalse(any("repo" in e for e in errors))
 
-    def test_health_enabled_with_agent_and_repo_passes(self) -> None:
+    def test_health_enabled_with_agent_passes(self) -> None:
         plugin = HivemootPlugin()
         os.environ["AGENT_ID"] = "builder"
         errors = plugin.validate(_mk_plugin_config(
-            health=HivemootHealthConfig(enabled=True, repo="o/r"),
+            health=HivemootHealthConfig(enabled=True),
         ))
         self.assertEqual(errors, [])
 
@@ -152,7 +156,7 @@ class ValidateTests(unittest.TestCase):
         try:
             errors = plugin.validate(_mk_plugin_config(
                 token_file=None,
-                health=HivemootHealthConfig(enabled=True, repo="o/r"),
+                health=HivemootHealthConfig(enabled=True),
             ))
             self.assertTrue(any("token_file" in e for e in errors))
         finally:
@@ -202,7 +206,7 @@ class TriggersTests(unittest.TestCase):
         )
         plugin = HivemootPlugin()
         plugin._cfg = _mk_plugin_config(
-            health=HivemootHealthConfig(enabled=True, repo="o/r"),
+            health=HivemootHealthConfig(enabled=True),
         ).typed
         triggers = plugin.triggers()
         self.assertEqual(len(triggers), 1)
@@ -211,7 +215,7 @@ class TriggersTests(unittest.TestCase):
     def test_both_triggers_when_both_enabled(self) -> None:
         plugin = HivemootPlugin()
         plugin._cfg = _mk_plugin_config(
-            health=HivemootHealthConfig(enabled=True, repo="o/r"),
+            health=HivemootHealthConfig(enabled=True),
             tasks=HivemootTasksConfig(
                 enabled=True,
                 claim_url="https://api/x",
@@ -686,7 +690,7 @@ class HealthLifecycleTests(unittest.TestCase):
     def _config(self) -> PluginConfig:
         return _mk_plugin_config(
             health=HivemootHealthConfig(
-                enabled=True, repo="o/r", base_url="https://h/",
+                enabled=True, base_url="https://h/",
             ),
         )
 
@@ -706,7 +710,8 @@ class HealthLifecycleTests(unittest.TestCase):
         rr.assert_called_once()
         kwargs = rr.call_args.kwargs
         self.assertEqual(kwargs["agent_id"], "builder")
-        self.assertEqual(kwargs["repo"], "o/r")
+        # Health is a per-agent signal — no repo is passed to the API.
+        self.assertNotIn("repo", kwargs)
         self.assertEqual(kwargs["outcome"], "success")
         self.assertEqual(kwargs["consecutive_failures"], 0)
 
@@ -767,7 +772,7 @@ class HealthLifecycleTests(unittest.TestCase):
     def test_post_run_reports_disabled(self) -> None:
         cfg = _mk_plugin_config(
             health=HivemootHealthConfig(
-                enabled=True, repo="o/r", post_run_reports=False,
+                enabled=True, post_run_reports=False,
             ),
         )
         plugin = HivemootPlugin()

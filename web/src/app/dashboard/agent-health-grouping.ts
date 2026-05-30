@@ -1,9 +1,7 @@
-export type GroupMode = "repo" | "agent";
 export type GroupStatus = "ok" | "failed" | "late" | "unknown";
 
 export interface GroupableAgent {
   agent_id: string;
-  repo: string;
   online?: boolean;
   outcome?: "success" | "failure" | "timeout";
   status?: GroupStatus;
@@ -63,14 +61,18 @@ export function getGroupStatus(agent: GroupableAgent): GroupStatus {
   return "unknown";
 }
 
+/**
+ * Groups health entries by `agent_id`. Health is per-agent now (one row per
+ * agent), so each group typically holds a single entry; the group machinery is
+ * retained for stable status aggregation and worst-status ordering.
+ */
 export function buildGroups<TAgent extends GroupableAgent>(
   agents: TAgent[],
-  mode: GroupMode,
 ): AgentGroup<TAgent>[] {
   const groups = new Map<string, AgentGroup<TAgent>>();
 
   for (const agent of agents) {
-    const groupName = mode === "repo" ? agent.repo : agent.agent_id;
+    const groupName = agent.agent_id;
     const status = getGroupStatus(agent);
     const statusPriority = GROUP_STATUS_PRIORITY[status];
 

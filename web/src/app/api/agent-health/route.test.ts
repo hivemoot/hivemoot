@@ -154,13 +154,20 @@ function makeGetRequest(params?: Record<string, string>) {
   return new NextRequest(url.toString(), { method: "GET" });
 }
 
+// Repo-less request body — what the migrated (Stage 3) agent now sends.
 const VALID_REQUEST_BODY = {
   agent_id: "bee-1",
-  repo: "hivemoot/sandbox",
   run_id: "20260224-100000-claude-bee-1",
   outcome: "success" as const,
   duration_secs: 42,
   consecutive_failures: 0,
+};
+
+// A body that STILL carries repo — a static agent mid-rollout. Ingest must
+// tolerate it (accept-and-ignore), not 400.
+const REQUEST_BODY_WITH_REPO = {
+  ...VALID_REQUEST_BODY,
+  repo: "hivemoot/sandbox",
 };
 
 const VALID_REPORT = {
@@ -188,7 +195,6 @@ beforeEach(() => {
     ok: true,
     heartbeat: {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       outcome: "heartbeat",
       received_at: "2026-03-14T12:00:00Z",
     },
@@ -203,13 +209,25 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/agent-health", () => {
-  it("accepts a valid report and returns confirmation", async () => {
+  it("accepts a valid repo-less report and returns confirmation (Stage-3 agent)", async () => {
     const res = await POST(makePostRequest(VALID_REQUEST_BODY));
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.received).toBe(true);
     expect(body.received_at).toBeDefined();
+  });
+
+  it("tolerates a report that still carries repo → 200 (static agent mid-rollout)", async () => {
+    // The store-level validateReport is mocked here; this asserts the route
+    // accepts (does not 400) a payload that includes repo and forwards it.
+    const res = await POST(makePostRequest(REQUEST_BODY_WITH_REPO));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(true);
+    // The rate-limit guard is keyed per-agent only (no repo positional arg).
+    expect(checkRateLimit).toHaveBeenCalledWith("inst-1", "bee-1", expect.anything());
   });
 
   it("calls recordHealthReport with validated report", async () => {
@@ -492,7 +510,6 @@ describe("POST /api/agent-health (heartbeat)", () => {
       ok: true,
       heartbeat: {
         agent_id: "bee-1",
-        repo: "hivemoot/sandbox",
         outcome: "heartbeat",
         next_run_at: futureIso,
         received_at: "2026-03-14T12:00:00Z",
@@ -524,7 +541,6 @@ describe("GET /api/agent-health", () => {
     vi.mocked(getOverview).mockResolvedValue([
       {
         agent_id: "bee-1",
-        repo: "hivemoot/sandbox",
         run_id: "20260224-100000-claude-bee-1",
         outcome: "success",
         duration_secs: 42,
@@ -544,11 +560,10 @@ describe("GET /api/agent-health", () => {
     expect(body.agents[0].run_summary).toBe("### Done\nCommented on #325.");
   });
 
-  it("returns history when agent_id and repo are provided", async () => {
+  it("returns per-agent history when only agent_id is provided (no repo)", async () => {
     vi.mocked(getHistory).mockResolvedValue([
       {
         agent_id: "bee-1",
-        repo: "hivemoot/sandbox",
         run_id: "20260224-100000-claude-bee-1",
         outcome: "success",
         duration_secs: 42,
@@ -558,25 +573,36 @@ describe("GET /api/agent-health", () => {
       },
     ]);
 
-    const res = await GET(makeGetRequest({
-      agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
-    }));
+    const res = await GET(makeGetRequest({ agent_id: "bee-1" }));
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.agent_id).toBe("bee-1");
-    expect(body.repo).toBe("hivemoot/sandbox");
+    expect(body.repo).toBeUndefined();
     expect(body.history).toHaveLength(1);
     expect(body.runs).toHaveLength(1);
     expect(body.history[0].run_summary).toBe("### Done\nCommented on #325.");
+    // getHistory is per-agent now — 3 positional args, no repo.
+    expect(getHistory).toHaveBeenCalledWith("inst-1", "bee-1", expect.anything());
+  });
+
+  it("ignores a stray repo param and still returns history (per-agent)", async () => {
+    vi.mocked(getHistory).mockResolvedValue([]);
+
+    const res = await GET(makeGetRequest({ agent_id: "bee-1", repo: "hivemoot/sandbox" }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.agent_id).toBe("bee-1");
+    expect(body.repo).toBeUndefined();
+    // repo is never forwarded to getHistory.
+    expect(getHistory).toHaveBeenCalledWith("inst-1", "bee-1", expect.anything());
   });
 
   it("returns history when history=true is provided", async () => {
     vi.mocked(getHistory).mockResolvedValue([
       {
         agent_id: "bee-1",
-        repo: "hivemoot/sandbox",
         run_id: "20260224-100000-claude-bee-1",
         outcome: "success",
         duration_secs: 42,
@@ -588,7 +614,6 @@ describe("GET /api/agent-health", () => {
     const res = await GET(makeGetRequest({
       history: "true",
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
     }));
 
     expect(res.status).toBe(200);
@@ -600,35 +625,7 @@ describe("GET /api/agent-health", () => {
   it("returns 400 when history=true is missing agent_id", async () => {
     const res = await GET(makeGetRequest({
       history: "true",
-      repo: "hivemoot/sandbox",
     }));
-    expect(res.status).toBe(400);
-
-    const body = await res.json();
-    expect(body.code).toBe("agent_health_missing_fields");
-  });
-
-  it("returns 400 when history=true is missing repo", async () => {
-    const res = await GET(makeGetRequest({
-      history: "true",
-      agent_id: "bee-1",
-    }));
-    expect(res.status).toBe(400);
-
-    const body = await res.json();
-    expect(body.code).toBe("agent_health_missing_fields");
-  });
-
-  it("returns 400 when only agent_id is provided", async () => {
-    const res = await GET(makeGetRequest({ agent_id: "bee-1" }));
-    expect(res.status).toBe(400);
-
-    const body = await res.json();
-    expect(body.code).toBe("agent_health_missing_fields");
-  });
-
-  it("returns 400 when only repo is provided", async () => {
-    const res = await GET(makeGetRequest({ repo: "hivemoot/sandbox" }));
     expect(res.status).toBe(400);
 
     const body = await res.json();
@@ -652,7 +649,6 @@ describe("GET /api/agent-health", () => {
   it("returns 400 when agent_id contains invalid characters", async () => {
     const res = await GET(makeGetRequest({
       agent_id: "bee 1; DROP TABLE",
-      repo: "hivemoot/sandbox",
     }));
     expect(res.status).toBe(400);
 
@@ -664,30 +660,6 @@ describe("GET /api/agent-health", () => {
   it("returns 400 when agent_id exceeds 64 characters", async () => {
     const res = await GET(makeGetRequest({
       agent_id: "a".repeat(65),
-      repo: "hivemoot/sandbox",
-    }));
-    expect(res.status).toBe(400);
-
-    const body = await res.json();
-    expect(body.code).toBe("agent_health_validation_failed");
-  });
-
-  it("returns 400 when repo is missing slash", async () => {
-    const res = await GET(makeGetRequest({
-      agent_id: "bee-1",
-      repo: "noseparator",
-    }));
-    expect(res.status).toBe(400);
-
-    const body = await res.json();
-    expect(body.code).toBe("agent_health_validation_failed");
-    expect(body.message).toContain("repo");
-  });
-
-  it("returns 400 when repo exceeds 200 characters", async () => {
-    const res = await GET(makeGetRequest({
-      agent_id: "bee-1",
-      repo: "a".repeat(100) + "/" + "b".repeat(101),
     }));
     expect(res.status).toBe(400);
 

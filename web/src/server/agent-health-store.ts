@@ -1,21 +1,25 @@
 /**
  * Agent health report storage and retrieval.
  *
+ * Health is a PER-AGENT signal — there is no `repo` dimension. One row per
+ * `agent_id` per installation.
+ *
  * Redis layout per agent:
  *
- *   agent-health:latest:{installId}:{agentId}:{repo}
+ *   agent-health:latest:{installId}:{agentId}
  *     → HealthReport JSON, dynamic TTL:
  *       max(24h, 2 × secondsUntilNextRun) when next_run_at is provided
  *
- *   agent-health:runs:{installId}:{agentId}:{repo}
+ *   agent-health:runs:{installId}:{agentId}
  *     → Sorted set, score = received_at epoch ms, member = JSON report
  *     → Trimmed to last 24 hours on each write
  *
  *   agent-health:index:{installId}
- *     → Set of "{agentId}:{repo}" combos for enumeration
+ *     → Set of "{agentId}" members for enumeration. Legacy "{agentId}:{repo}"
+ *       members (pre-per-agent) are self-healed away by getOverview.
  *
- *   agent-health:ratelimit:{installId}:{agentId}:{repo}
- *     → NX/EX guard — one report per agent per repo per 60 seconds
+ *   agent-health:ratelimit:{installId}:{agentId}
+ *     → NX/EX guard — one report per agent per 60 seconds
  *
  *   agent-health:idempotency:{installId}:{digest}
  *     → Run-id reservation for 24h dedupe/conflict checks, with
@@ -65,7 +69,6 @@ export interface TokenUsage {
 
 export interface HealthReport {
   agent_id: string;
-  repo: string;
   run_id: string;
   outcome: "success" | "failure" | "timeout";
   duration_secs: number;
@@ -82,7 +85,6 @@ export interface HealthReport {
 
 export interface HeartbeatPayload {
   agent_id: string;
-  repo: string;
   outcome: "heartbeat";
   next_run_at?: string;
   received_at: string; // server-assigned
@@ -92,7 +94,6 @@ export type AgentStatus = "ok" | "failed" | "late" | "unknown";
 
 export interface HealthOverviewEntry {
   agent_id: string;
-  repo: string;
   run_id?: string;
   outcome?: HealthReport["outcome"] | "heartbeat";
   duration_secs?: number;
@@ -118,30 +119,29 @@ function sanitizeRunSummary(input: string): string {
 // Key builders
 // ---------------------------------------------------------------------------
 
-function latestKey(installId: string, agentId: string, repo: string): string {
-  return `agent-health:latest:${installId}:${agentId}:${repo}`;
+function latestKey(installId: string, agentId: string): string {
+  return `agent-health:latest:${installId}:${agentId}`;
 }
 
-function runsKey(installId: string, agentId: string, repo: string): string {
-  return `agent-health:runs:${installId}:${agentId}:${repo}`;
+function runsKey(installId: string, agentId: string): string {
+  return `agent-health:runs:${installId}:${agentId}`;
 }
 
 function indexKey(installId: string): string {
   return `agent-health:index:${installId}`;
 }
 
-function rateLimitKey(installId: string, agentId: string, repo: string): string {
-  return `agent-health:ratelimit:${installId}:${agentId}:${repo}`;
+function rateLimitKey(installId: string, agentId: string): string {
+  return `agent-health:ratelimit:${installId}:${agentId}`;
 }
 
 function idempotencyKey(
   installId: string,
   agentId: string,
-  repo: string,
   runId: string,
 ): string {
   const digest = createHash("sha256")
-    .update(`${agentId}\u0000${repo}\u0000${runId}`)
+    .update(`${agentId}\u0000${runId}`)
     .digest("hex");
   return `agent-health:idempotency:${installId}:${digest}`;
 }
@@ -156,7 +156,6 @@ function idempotencyPayloadHash(report: HealthReport): string {
   return createHash("sha256")
     .update(JSON.stringify({
       agent_id: report.agent_id,
-      repo: report.repo,
       run_id: report.run_id,
       outcome: report.outcome,
       duration_secs: report.duration_secs,
@@ -211,7 +210,7 @@ async function getIdempotencyRecord(
   redis: Redis,
 ): Promise<StoredIdempotencyRecord | null> {
   const existing = await redis.get(
-    idempotencyKey(installId, report.agent_id, report.repo, report.run_id),
+    idempotencyKey(installId, report.agent_id, report.run_id),
   );
   return parseIdempotencyRecord(existing);
 }
@@ -228,6 +227,10 @@ export type IdempotencyReservation =
 
 const VALID_OUTCOMES = new Set(["success", "failure", "timeout"]);
 const VALID_TRIGGERS = new Set<TriggerType>(["scheduled", "mention", "manual", "task"]);
+// `repo` is accepted-and-ignored (NOT validated, NOT stored). Health is now a
+// per-agent signal, but a still-running static agent may keep sending `repo`
+// during the rollout — tolerate it so those posts don't 400. New repo-less
+// agents simply omit it.
 const ALLOWED_FIELDS = new Set([
   "agent_id",
   "repo",
@@ -285,17 +288,8 @@ export function validateReport(body: unknown): ValidationResult {
     };
   }
 
-  if (
-    typeof obj.repo !== "string"
-    || obj.repo.length < 1
-    || obj.repo.length > 200
-    || !obj.repo.includes("/")
-  ) {
-    return {
-      ok: false,
-      message: "repo must be 1-200 chars in owner/name format",
-    };
-  }
+  // `repo` is intentionally not validated — it is accepted and ignored (see
+  // ALLOWED_FIELDS) so static agents still mid-rollout don't 400.
 
   if (
     typeof obj.run_id !== "string"
@@ -493,7 +487,6 @@ export function validateReport(body: unknown): ValidationResult {
 
   const report: HealthReport = {
     agent_id: obj.agent_id,
-    repo: obj.repo,
     run_id: obj.run_id,
     outcome: obj.outcome as HealthReport["outcome"],
     duration_secs: obj.duration_secs,
@@ -526,8 +519,8 @@ export type HeartbeatValidationResult = {
 
 /**
  * Validates a heartbeat payload — the lightweight liveness signal agents send
- * between runs. Only agent_id, repo, outcome ("heartbeat"), and optional
- * next_run_at are accepted.
+ * between runs. Only agent_id, outcome ("heartbeat"), and optional next_run_at
+ * are meaningful. `repo` is accepted-and-ignored for rollout tolerance.
  */
 export function validateHeartbeat(body: unknown): HeartbeatValidationResult {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -554,17 +547,8 @@ export function validateHeartbeat(body: unknown): HeartbeatValidationResult {
     };
   }
 
-  if (
-    typeof obj.repo !== "string"
-    || obj.repo.length < 1
-    || obj.repo.length > 200
-    || !obj.repo.includes("/")
-  ) {
-    return {
-      ok: false,
-      message: "repo must be 1-200 chars in owner/name format",
-    };
-  }
+  // `repo` is intentionally not validated — accepted and ignored (rollout
+  // tolerance for static agents still sending it).
 
   if (obj.outcome !== "heartbeat") {
     return { ok: false, message: "outcome must be 'heartbeat'" };
@@ -589,7 +573,6 @@ export function validateHeartbeat(body: unknown): HeartbeatValidationResult {
 
   const heartbeat: HeartbeatPayload = {
     agent_id: obj.agent_id,
-    repo: obj.repo,
     outcome: "heartbeat",
     received_at: new Date().toISOString(),
   };
@@ -604,7 +587,7 @@ export function validateHeartbeat(body: unknown): HeartbeatValidationResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Reserves a run_id for this installation+agent+repo tuple.
+ * Reserves a run_id for this installation+agent pair.
  * - first time: kind "new"
  * - exact retry: kind "duplicate" (same payload hash)
  * - conflicting retry: kind "conflict" (same run_id, different payload)
@@ -633,7 +616,7 @@ export async function reserveHealthReportIdempotency(
     state: "pending",
   };
 
-  const key = idempotencyKey(installId, report.agent_id, report.repo, report.run_id);
+  const key = idempotencyKey(installId, report.agent_id, report.run_id);
   const reserved = await redis.set(
     key,
     JSON.stringify(record),
@@ -662,7 +645,7 @@ export async function commitHealthReportIdempotency(
   report: HealthReport,
   redis: Redis,
 ): Promise<void> {
-  const key = idempotencyKey(installId, report.agent_id, report.repo, report.run_id);
+  const key = idempotencyKey(installId, report.agent_id, report.run_id);
   const record: StoredIdempotencyRecord = {
     payload_hash: idempotencyPayloadHash(report),
     received_at: report.received_at,
@@ -676,7 +659,7 @@ export async function releaseHealthReportIdempotency(
   report: HealthReport,
   redis: Redis,
 ): Promise<void> {
-  await redis.del(idempotencyKey(installId, report.agent_id, report.repo, report.run_id));
+  await redis.del(idempotencyKey(installId, report.agent_id, report.run_id));
 }
 
 // ---------------------------------------------------------------------------
@@ -690,11 +673,10 @@ export async function releaseHealthReportIdempotency(
 export async function checkRateLimit(
   installId: string,
   agentId: string,
-  repo: string,
   redis: Redis,
 ): Promise<boolean> {
   const result = await redis.set(
-    rateLimitKey(installId, agentId, repo),
+    rateLimitKey(installId, agentId),
     "1",
     { nx: true, ex: RATE_LIMIT_SECONDS },
   );
@@ -738,7 +720,7 @@ export async function recordHealthReport(
   report: HealthReport,
   redis: Redis,
 ): Promise<void> {
-  const { agent_id, repo, received_at } = report;
+  const { agent_id, received_at } = report;
   const score = new Date(received_at).getTime();
   const cutoff = score - HISTORY_RETENTION_MS;
   const ttl = computeLatestTtl(report);
@@ -746,17 +728,17 @@ export async function recordHealthReport(
   await redis
     .multi()
     .set(
-      latestKey(installId, agent_id, repo),
+      latestKey(installId, agent_id),
       report,
       { ex: ttl },
     )
     .zadd(
-      runsKey(installId, agent_id, repo),
+      runsKey(installId, agent_id),
       { score, member: JSON.stringify(report) },
     )
-    .sadd(indexKey(installId), `${agent_id}:${repo}`)
+    .sadd(indexKey(installId), agent_id)
     .zremrangebyscore(
-      runsKey(installId, agent_id, repo),
+      runsKey(installId, agent_id),
       "-inf",
       cutoff,
     )
@@ -776,8 +758,8 @@ export async function recordHeartbeat(
   heartbeat: HeartbeatPayload,
   redis: Redis,
 ): Promise<void> {
-  const { agent_id, repo } = heartbeat;
-  const key = latestKey(installId, agent_id, repo);
+  const { agent_id } = heartbeat;
+  const key = latestKey(installId, agent_id);
 
   // Read existing latest report to preserve run data
   const existing = await redis.get(key);
@@ -801,7 +783,7 @@ export async function recordHeartbeat(
   await redis
     .multi()
     .set(key, dataToStore, { ex: ttl })
-    .sadd(indexKey(installId), `${agent_id}:${repo}`)
+    .sadd(indexKey(installId), agent_id)
     .exec();
 }
 
@@ -852,8 +834,15 @@ function deriveStatus(report: Partial<HealthReport> | null): AgentStatus {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns an overview of all agents for an installation.
- * One entry per agent+repo combo, with status derived from latest report.
+ * Returns an overview of all agents for an installation — one entry per
+ * agent_id, with status derived from the latest report.
+ *
+ * Self-heal: the index now stores plain `{agentId}` members, but a legacy
+ * `{agentId}:{repo}` member may linger from the per-repo era. For such a member
+ * we best-effort read the per-agent latest key (the part before the first `:`),
+ * and if that misses we SREM the stale legacy member. The read is dedup'd by
+ * the resolved key so two legacy `agentId:repoA` / `agentId:repoB` members
+ * collapse to a single row. Malformed members never crash the read.
  */
 export async function getOverview(
   installId: string,
@@ -862,76 +851,92 @@ export async function getOverview(
   const members = await redis.smembers(indexKey(installId));
   if (!members || members.length === 0) return [];
 
-  const indexed = members
-    .map((member) => {
-      const separatorIdx = member.indexOf(":");
-      if (separatorIdx <= 0 || separatorIdx === member.length - 1) return null;
+  // Resolve each raw index member to a per-agent latest key, remembering the
+  // original member string so a stale one can be SREM'd. A member containing
+  // `:` is legacy (agentId:repo); we take the agentId before the first `:`.
+  const resolved: Array<{ rawMember: string; agentId: string; key: string }> = [];
+  for (const member of members) {
+    if (typeof member !== "string" || member.length === 0) continue;
+    const separatorIdx = member.indexOf(":");
+    // We resolve a legacy `{agentId}:{repo}` member to the NEW per-agent latest
+    // key only. A pre-refactor record's DATA lived at the old repo-suffixed
+    // `latest:...:{agentId}:{repo}` key and is intentionally NOT migrated — it
+    // TTLs out (24h); a mid-rollout static agent simply re-appears under its new
+    // per-agent key on its next heartbeat.
+    const agentId = separatorIdx === -1 ? member : member.slice(0, separatorIdx);
+    if (agentId.length === 0) {
+      // Unparseable member (e.g. leading ":"). Drop it defensively.
+      void srembStaleMember(installId, member, redis);
+      continue;
+    }
+    resolved.push({ rawMember: member, agentId, key: latestKey(installId, agentId) });
+  }
 
-      const agentId = member.slice(0, separatorIdx);
-      const repo = member.slice(separatorIdx + 1);
-      return {
-        agentId,
-        repo,
-        key: latestKey(installId, agentId, repo),
-      };
-    })
-    .filter((entry): entry is { agentId: string; repo: string; key: string } => entry !== null);
+  if (resolved.length === 0) return [];
 
-  if (indexed.length === 0) return [];
-
+  // Dedup reads by latest key so two legacy members for the same agent collapse.
+  const uniqueKeys = [...new Set(resolved.map((r) => r.key))];
   const pipeline = redis.pipeline();
-  for (const entry of indexed) {
-    pipeline.get(entry.key);
+  for (const key of uniqueKeys) {
+    pipeline.get(key);
   }
   const results = await pipeline.exec();
 
-  const entries: HealthOverviewEntry[] = [];
+  const reportByKey = new Map<string, unknown>();
+  for (let i = 0; i < uniqueKeys.length; i += 1) {
+    reportByKey.set(uniqueKeys[i], results[i] ?? null);
+  }
 
-  for (let i = 0; i < indexed.length; i += 1) {
-    const reportRaw = results[i] ?? null;
+  const entries: HealthOverviewEntry[] = [];
+  const seenAgents = new Set<string>();
+
+  for (const { rawMember, agentId, key } of resolved) {
+    const reportRaw = reportByKey.get(key) ?? null;
 
     if (typeof reportRaw === "object" && reportRaw !== null && !Array.isArray(reportRaw)) {
       const report = reportRaw as Partial<HealthReport>;
 
       if (
         typeof report.agent_id === "string"
-        && typeof report.repo === "string"
         && typeof report.received_at === "string"
       ) {
-        entries.push({
-          agent_id: report.agent_id,
-          repo: report.repo,
-          run_id: typeof report.run_id === "string" ? report.run_id : undefined,
-          outcome: DISPLAY_OUTCOMES.has((report.outcome as string) ?? "")
-            ? (report.outcome as HealthOverviewEntry["outcome"])
-            : undefined,
-          duration_secs: typeof report.duration_secs === "number" ? report.duration_secs : undefined,
-          consecutive_failures: typeof report.consecutive_failures === "number"
-            ? report.consecutive_failures
-            : undefined,
-          model: typeof report.model === "string" ? report.model : undefined,
-          error: typeof report.error === "string" ? report.error : undefined,
-          exit_code: typeof report.exit_code === "number" ? report.exit_code : undefined,
-          received_at: report.received_at,
-          status: deriveStatus(report),
-          next_run_at: typeof report.next_run_at === "string" ? report.next_run_at : undefined,
-          run_summary: typeof report.run_summary === "string" ? report.run_summary : undefined,
-          trigger: typeof report.trigger === "string" && VALID_TRIGGERS.has(report.trigger as TriggerType) ? report.trigger : undefined,
-          token_usage: "token_usage" in report ? report.token_usage : undefined,
-        });
+        // A legacy member resolved to a live per-agent key — it's stale (the
+        // canonical member is the plain agentId). Self-heal it away.
+        if (rawMember !== agentId) {
+          void srembStaleMember(installId, rawMember, redis);
+        }
+
+        if (!seenAgents.has(report.agent_id)) {
+          seenAgents.add(report.agent_id);
+          entries.push({
+            agent_id: report.agent_id,
+            run_id: typeof report.run_id === "string" ? report.run_id : undefined,
+            outcome: DISPLAY_OUTCOMES.has((report.outcome as string) ?? "")
+              ? (report.outcome as HealthOverviewEntry["outcome"])
+              : undefined,
+            duration_secs: typeof report.duration_secs === "number" ? report.duration_secs : undefined,
+            consecutive_failures: typeof report.consecutive_failures === "number"
+              ? report.consecutive_failures
+              : undefined,
+            model: typeof report.model === "string" ? report.model : undefined,
+            error: typeof report.error === "string" ? report.error : undefined,
+            exit_code: typeof report.exit_code === "number" ? report.exit_code : undefined,
+            received_at: report.received_at,
+            status: deriveStatus(report),
+            next_run_at: typeof report.next_run_at === "string" ? report.next_run_at : undefined,
+            run_summary: typeof report.run_summary === "string" ? report.run_summary : undefined,
+            trigger: typeof report.trigger === "string" && VALID_TRIGGERS.has(report.trigger as TriggerType) ? report.trigger : undefined,
+            token_usage: "token_usage" in report ? report.token_usage : undefined,
+          });
+        }
         continue;
       }
     }
 
-    // Latest key expired or corrupt — remove stale index entry.
-    // The agent re-registers via SADD on its next POST.
-    redis.srem(indexKey(installId), `${indexed[i].agentId}:${indexed[i].repo}`).catch((err) => {
-      console.warn("[agent-health] Failed to remove stale index entry", {
-        agentId: indexed[i].agentId,
-        repo: indexed[i].repo,
-        error: err,
-      });
-    });
+    // Latest key expired or corrupt — remove the stale index member. A live
+    // agent re-registers via SADD on its next POST. (A plain-agentId member is
+    // self-healed here too once its latest key expires.)
+    void srembStaleMember(installId, rawMember, redis);
   }
 
   // Sort by received_at descending (most recent first)
@@ -941,16 +946,30 @@ export async function getOverview(
 }
 
 /**
- * Returns the run history for a specific agent+repo combo.
+ * Best-effort removal of a stale index member. Never throws — a failed cleanup
+ * is logged and ignored so a read is never blocked by index hygiene.
+ */
+function srembStaleMember(installId: string, member: string, redis: Redis): Promise<void> {
+  return Promise.resolve(redis.srem(indexKey(installId), member))
+    .then(() => undefined)
+    .catch((err) => {
+      console.warn("[agent-health] Failed to remove stale index entry", {
+        member,
+        error: err,
+      });
+    });
+}
+
+/**
+ * Returns the run history for a specific agent (per-agent — no repo dimension).
  * Results are sorted newest-first, limited to MAX_HISTORY_ENTRIES.
  */
 export async function getHistory(
   installId: string,
   agentId: string,
-  repo: string,
   redis: Redis,
 ): Promise<HealthReport[]> {
-  const key = runsKey(installId, agentId, repo);
+  const key = runsKey(installId, agentId);
 
   // Trim stale entries first
   const now = Date.now();

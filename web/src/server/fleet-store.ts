@@ -57,42 +57,52 @@ const ANSI_ESCAPE_PATTERN = /[\u001B\u009B](?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 const CONTROL_CHARS_PATTERN = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — plugins (an agent's enableable capabilities + their config/triggers)
 // ---------------------------------------------------------------------------
 
-export interface ScheduleTriggerSettings {
+/**
+ * The `github` plugin — the ONLY place `repos` lives in the model. `repos` is
+ * resolved against the installation's accessible repos at the route boundary
+ * (see `resolveGithubRepos` in fleet-routes), so the stored list is always a
+ * subset of repos the installation can actually see. The three watch flags are
+ * the plugin's triggers; at least one must be on for the plugin to do anything.
+ */
+export interface GithubPlugin {
+  enabled: boolean;
+  repos: string[];
+  watch_new_prs: boolean;
+  watch_review_requests: boolean;
+  watch_mentions: boolean;
+  /** Empty/absent = react to all authors; non-empty = only these GitHub logins. */
+  watch_new_prs_authors?: string[];
+  poll_interval_secs: number;
+}
+export interface SchedulePlugin {
+  enabled: boolean;
   interval_secs: number;
   jitter_secs: number;
   prompt: string;
 }
-export interface PullRequestsTriggerSettings {
-  watch_new_prs: boolean;
-  watch_review_requests: boolean;
-  /** Empty = react to all authors; non-empty = only these GitHub logins. */
-  author_allowlist: string[];
-  poll_interval_secs: number;
+/** Tasks plugin has no v1 config — it claims from the dashboard queue. */
+export interface TasksPlugin {
+  enabled: boolean;
 }
-export interface MentionsTriggerSettings {
-  poll_interval_secs: number;
-}
-// Tasks/war-room participation have no extra settings beyond enabled / contribute.
-export type TasksTriggerSettings = Record<string, never>;
-export interface WarRoomsTriggerSettings {
+export interface WarRoomsPlugin {
+  enabled: boolean;
   /** false = observe only (watch+read); true = also present + contribute. */
   contribute: boolean;
 }
 
-export interface TriggerState<S> {
-  enabled: boolean;
-  settings: S;
-}
-
-export interface AgentTriggers {
-  schedule: TriggerState<ScheduleTriggerSettings>;
-  pull_requests: TriggerState<PullRequestsTriggerSettings>;
-  mentions: TriggerState<MentionsTriggerSettings>;
-  tasks: TriggerState<TasksTriggerSettings>;
-  war_rooms: TriggerState<WarRoomsTriggerSettings>;
+/**
+ * The set of plugins an agent can enable. Each is OPTIONAL — an agent only
+ * carries the plugins it has configured. At least one must be enabled (an agent
+ * with no enabled plugin does nothing); enforced in `validatePlugins`.
+ */
+export interface FleetPlugins {
+  github?: GithubPlugin;
+  schedule?: SchedulePlugin;
+  tasks?: TasksPlugin;
+  war_rooms?: WarRoomsPlugin;
 }
 
 export interface FleetAgent {
@@ -100,20 +110,18 @@ export interface FleetAgent {
    * container AGENT_ID and the health-join key. */
   name: string;
   display_name?: string;
-  /** owner/name repos the agent operates on — a snapshot of the linked token's
-   * `allowed_repos` policy at create/link time. The token is the single source
-   * of truth for both auth (capabilities) AND repo scope. */
-  repos: string[];
   engine: string;
   skills: string[];
   system_prompt: string;
-  triggers: AgentTriggers;
+  /** The enableable capabilities of this agent. `repos` lives ONLY under
+   * `plugins.github.repos` — never at the top level, never on the token. */
+  plugins: FleetPlugins;
   /** false = paused (reconciler stops the container; still listed in desired-state). */
   enabled: boolean;
   /** true = the on-prem reconciler owns this agent's lifecycle. */
   managed: boolean;
   /** The existing V1 capability token this agent authenticates as (operator-selected,
-   * NOT minted by the agent flow). Its policy provides `repos`. */
+   * NOT minted by the agent flow). Validated to EXIST; carries CAPABILITIES only. */
   agent_token_name: string;
   created_at: string;
   created_by: string;
@@ -128,19 +136,18 @@ export interface CreateAgentInput {
   engine: string;
   skills: string[];
   system_prompt: string;
-  triggers: AgentTriggers;
-  /** The existing capability token to link (carries capabilities + repo scope). */
+  plugins: FleetPlugins;
+  /** The existing capability token to link (capabilities only — no repo scope). */
   agent_token_name: string;
 }
 
-/** PATCH input. `name` is immutable; `repos` are not set directly — they follow
- * the linked token (re-point `agent_token_name` to change scope). */
+/** PATCH input. `name` is immutable. */
 export interface UpdateAgentInput {
   display_name?: string | null;
   engine?: string;
   skills?: string[];
   system_prompt?: string;
-  triggers?: AgentTriggers;
+  plugins?: FleetPlugins;
   agent_token_name?: string;
 }
 
@@ -241,115 +248,208 @@ function clampInt(value: unknown, min: number, max: number): number | null {
   return n;
 }
 
-function validateScheduleTrigger(raw: unknown): FleetValidation<TriggerState<ScheduleTriggerSettings>> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers.schedule", "must be an object.");
-  const t = raw as Record<string, unknown>;
-  const enabled = t.enabled === true;
-  const s = (t.settings ?? {}) as Record<string, unknown>;
-  const interval = clampInt(s.interval_secs ?? 21600, MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
-  if (interval === null) {
-    return fail("triggers.schedule.interval_secs", `must be an integer in [${MIN_INTERVAL_SECS}, ${MAX_INTERVAL_SECS}].`);
-  }
-  const jitter = clampInt(s.jitter_secs ?? 600, 0, MAX_JITTER_SECS);
-  if (jitter === null) return fail("triggers.schedule.jitter_secs", `must be an integer in [0, ${MAX_JITTER_SECS}].`);
-  if (jitter > interval) return fail("triggers.schedule.jitter_secs", "jitter must be ≤ interval.");
-  const prompt = typeof s.prompt === "string" ? sanitizePrompt(s.prompt, MAX_SCHEDULE_PROMPT_CHARS) : "";
-  if (enabled && prompt.length === 0) {
-    return fail("triggers.schedule.prompt", "a schedule prompt is required when the schedule trigger is enabled.");
-  }
-  return { ok: true, value: { enabled, settings: { interval_secs: interval, jitter_secs: jitter, prompt } } };
+/** A field that defaults to false but, when PRESENT, must be a real boolean —
+ * never silently coerced. Type-validity holds regardless of `enabled` so a
+ * malformed-but-disabled block can't be stored and shipped to the reconciler. */
+function validateOptionalBoolean(
+  value: unknown,
+  field: string,
+): FleetValidation<boolean> {
+  if (value === undefined) return { ok: true, value: false };
+  if (typeof value !== "boolean") return fail(field, `${field} must be a boolean.`);
+  return { ok: true, value };
 }
 
-function validatePullRequestsTrigger(raw: unknown): FleetValidation<TriggerState<PullRequestsTriggerSettings>> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers.pull_requests", "must be an object.");
+/**
+ * Validate the `github` plugin. TYPE-validity of every field holds whenever the
+ * block is PRESENT (regardless of `enabled`) — repos is string[], the watch
+ * flags are booleans, poll_interval_secs is an int — so a malformed-but-disabled
+ * block can never be persisted and shipped to the reconciler (which fail-closes
+ * on it in Stage 2). The ENABLED-only requirements (≥1 watch flag, non-empty
+ * repos) stay gated on `enabled`. Installation-coverage is checked separately by
+ * `resolveGithubRepos` at the route boundary (it needs the live roster).
+ */
+function validateGithubPlugin(raw: unknown): FleetValidation<GithubPlugin> {
+  if (typeof raw !== "object" || raw === null) return fail("plugins.github", "must be an object.");
   const t = raw as Record<string, unknown>;
   const enabled = t.enabled === true;
-  const s = (t.settings ?? {}) as Record<string, unknown>;
-  const watch_new_prs = s.watch_new_prs !== false; // default true
-  const watch_review_requests = s.watch_review_requests !== false; // default true
-  if (enabled && !watch_new_prs && !watch_review_requests) {
-    return fail("triggers.pull_requests", "enable at least one of watch_new_prs / watch_review_requests.");
+
+  const newPrs = validateOptionalBoolean(t.watch_new_prs, "plugins.github.watch_new_prs");
+  if (!newPrs.ok) return newPrs;
+  const reviewReq = validateOptionalBoolean(t.watch_review_requests, "plugins.github.watch_review_requests");
+  if (!reviewReq.ok) return reviewReq;
+  const mentions = validateOptionalBoolean(t.watch_mentions, "plugins.github.watch_mentions");
+  if (!mentions.ok) return mentions;
+  const watch_new_prs = newPrs.value;
+  const watch_review_requests = reviewReq.value;
+  const watch_mentions = mentions.value;
+  if (enabled && !watch_new_prs && !watch_review_requests && !watch_mentions) {
+    return fail(
+      "plugins.github",
+      "enable at least one of watch_new_prs / watch_review_requests / watch_mentions.",
+    );
   }
-  const poll = clampInt(s.poll_interval_secs ?? 300, MIN_POLL_SECS, MAX_POLL_SECS);
-  if (poll === null) return fail("triggers.pull_requests.poll_interval_secs", `must be in [${MIN_POLL_SECS}, ${MAX_POLL_SECS}].`);
-  const rawAllow = Array.isArray(s.author_allowlist) ? s.author_allowlist : [];
+
+  // poll_interval_secs default 300: matches the conventional PR-poll cadence;
+  // a lower value polls GitHub harder (rate-limit pressure), a higher one adds
+  // latency before the agent reacts. Omitted ⇒ 300; present ⇒ clamp to [30,3600].
+  const poll = clampInt(t.poll_interval_secs ?? 300, MIN_POLL_SECS, MAX_POLL_SECS);
+  if (poll === null) {
+    return fail("plugins.github.poll_interval_secs", `must be an integer in [${MIN_POLL_SECS}, ${MAX_POLL_SECS}].`);
+  }
+
+  // repos: TYPE-valid (string[] of well-formed owner/name) whenever present.
+  // NON-empty is NOT required here even when enabled — the route resolver fills
+  // an empty enabled list with ALL installed repos (and coverage-checks a
+  // non-empty one). Keeping the per-entry format/type checks closes traversal.
+  if (t.repos !== undefined && !Array.isArray(t.repos)) {
+    return fail("plugins.github.repos", "repos must be an array of owner/name strings.");
+  }
+  const rawRepos = Array.isArray(t.repos) ? t.repos : [];
+  const repos: string[] = [];
+  const seenRepos = new Set<string>();
+  for (const r of rawRepos) {
+    const v = validateRepo(r);
+    if (!v.ok) return fail("plugins.github.repos", v.message);
+    if (!seenRepos.has(v.value)) {
+      seenRepos.add(v.value);
+      repos.push(v.value);
+    }
+  }
+
+  if (t.watch_new_prs_authors !== undefined && !Array.isArray(t.watch_new_prs_authors)) {
+    return fail("plugins.github.watch_new_prs_authors", "must be an array of GitHub logins.");
+  }
+  const rawAllow = Array.isArray(t.watch_new_prs_authors) ? t.watch_new_prs_authors : [];
   if (rawAllow.length > MAX_AUTHOR_ALLOWLIST) {
-    return fail("triggers.pull_requests.author_allowlist", `at most ${MAX_AUTHOR_ALLOWLIST} authors.`);
+    return fail("plugins.github.watch_new_prs_authors", `at most ${MAX_AUTHOR_ALLOWLIST} authors.`);
   }
-  const author_allowlist: string[] = [];
-  const seen = new Set<string>();
+  const authors: string[] = [];
+  const seenAuthors = new Set<string>();
   for (const a of rawAllow) {
     if (typeof a !== "string" || !GITHUB_LOGIN_REGEX.test(a)) {
-      return fail("triggers.pull_requests.author_allowlist", `invalid GitHub login ${JSON.stringify(a)}.`);
+      return fail("plugins.github.watch_new_prs_authors", `invalid GitHub login ${JSON.stringify(a)}.`);
     }
-    if (!seen.has(a)) {
-      seen.add(a);
-      author_allowlist.push(a);
+    if (!seenAuthors.has(a)) {
+      seenAuthors.add(a);
+      authors.push(a);
     }
   }
-  return {
-    ok: true,
-    value: { enabled, settings: { watch_new_prs, watch_review_requests, author_allowlist, poll_interval_secs: poll } },
+
+  const value: GithubPlugin = {
+    enabled,
+    repos,
+    watch_new_prs,
+    watch_review_requests,
+    watch_mentions,
+    poll_interval_secs: poll,
+    // Only persist the authors key when non-empty (empty = all authors).
+    ...(authors.length > 0 ? { watch_new_prs_authors: authors } : {}),
   };
+  return { ok: true, value };
 }
 
-function validateMentionsTrigger(raw: unknown): FleetValidation<TriggerState<MentionsTriggerSettings>> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers.mentions", "must be an object.");
+/**
+ * Validate the `schedule` plugin. interval/jitter type-validity (integers in
+ * range, jitter ≤ interval) holds whenever the block is PRESENT; the non-empty
+ * `prompt` requirement is gated on `enabled`. `prompt` must be a string when
+ * present (a non-string is rejected, not coerced) and is trimmed/sanitized.
+ */
+function validateSchedulePlugin(raw: unknown): FleetValidation<SchedulePlugin> {
+  if (typeof raw !== "object" || raw === null) return fail("plugins.schedule", "must be an object.");
   const t = raw as Record<string, unknown>;
   const enabled = t.enabled === true;
-  const s = (t.settings ?? {}) as Record<string, unknown>;
-  const poll = clampInt(s.poll_interval_secs ?? 90, MIN_POLL_SECS, MAX_POLL_SECS);
-  if (poll === null) return fail("triggers.mentions.poll_interval_secs", `must be in [${MIN_POLL_SECS}, ${MAX_POLL_SECS}].`);
-  return { ok: true, value: { enabled, settings: { poll_interval_secs: poll } } };
+  const interval = clampInt(t.interval_secs ?? 21600, MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
+  if (interval === null) {
+    return fail("plugins.schedule.interval_secs", `must be an integer in [${MIN_INTERVAL_SECS}, ${MAX_INTERVAL_SECS}].`);
+  }
+  const jitter = clampInt(t.jitter_secs ?? 600, 0, MAX_JITTER_SECS);
+  if (jitter === null) return fail("plugins.schedule.jitter_secs", `must be an integer in [0, ${MAX_JITTER_SECS}].`);
+  if (jitter > interval) return fail("plugins.schedule.jitter_secs", "jitter must be ≤ interval.");
+  // prompt: reject a non-string when present (no silent coercion to "").
+  if (t.prompt !== undefined && typeof t.prompt !== "string") {
+    return fail("plugins.schedule.prompt", "prompt must be a string.");
+  }
+  const prompt = typeof t.prompt === "string" ? sanitizePrompt(t.prompt, MAX_SCHEDULE_PROMPT_CHARS) : "";
+  // sanitizePrompt already trims; an enabled schedule needs a non-empty prompt
+  // (an empty/whitespace-only prompt gives the agent nothing to do on each tick).
+  if (enabled && prompt.trim().length === 0) {
+    return fail("plugins.schedule.prompt", "a schedule prompt is required when the schedule plugin is enabled.");
+  }
+  return { ok: true, value: { enabled, interval_secs: interval, jitter_secs: jitter, prompt } };
 }
 
-function validateTasksTrigger(raw: unknown): FleetValidation<TriggerState<TasksTriggerSettings>> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers.tasks", "must be an object.");
+function validateTasksPlugin(raw: unknown): FleetValidation<TasksPlugin> {
+  if (typeof raw !== "object" || raw === null) return fail("plugins.tasks", "must be an object.");
   const enabled = (raw as Record<string, unknown>).enabled === true;
-  return { ok: true, value: { enabled, settings: {} } };
+  return { ok: true, value: { enabled } };
 }
 
-function validateWarRoomsTrigger(raw: unknown): FleetValidation<TriggerState<WarRoomsTriggerSettings>> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers.war_rooms", "must be an object.");
+/**
+ * Validate the `war_rooms` plugin. `contribute` must be a real boolean whenever
+ * the block is PRESENT (regardless of `enabled`) — never silently undefined. The
+ * capability gate distinguishes observe-only (watch+read) from contributing
+ * (also posting), so a non-boolean here is a hard VALIDATION error.
+ */
+function validateWarRoomsPlugin(raw: unknown): FleetValidation<WarRoomsPlugin> {
+  if (typeof raw !== "object" || raw === null) return fail("plugins.war_rooms", "must be an object.");
   const t = raw as Record<string, unknown>;
   const enabled = t.enabled === true;
-  const s = (t.settings ?? {}) as Record<string, unknown>;
-  const contribute = s.contribute === true;
-  return { ok: true, value: { enabled, settings: { contribute } } };
+  if (typeof t.contribute !== "boolean") {
+    return fail("plugins.war_rooms.contribute", "contribute must be a boolean.");
+  }
+  return { ok: true, value: { enabled, contribute: t.contribute } };
 }
 
-export function validateTriggers(raw: unknown): FleetValidation<AgentTriggers> {
-  if (typeof raw !== "object" || raw === null) return fail("triggers", "triggers must be an object.");
+/**
+ * Validate the full `plugins` object. Each present plugin is validated; at least
+ * ONE must be enabled (an agent that enables nothing does nothing). Returns a
+ * normalized FleetPlugins carrying only the keys that were supplied — a plugin
+ * the caller omits stays omitted (it is simply not configured for this agent).
+ */
+export function validatePlugins(raw: unknown): FleetValidation<FleetPlugins> {
+  if (typeof raw !== "object" || raw === null) return fail("plugins", "plugins must be an object.");
   const t = raw as Record<string, unknown>;
-  const schedule = validateScheduleTrigger(t.schedule ?? {});
-  if (!schedule.ok) return schedule;
-  const pull_requests = validatePullRequestsTrigger(t.pull_requests ?? {});
-  if (!pull_requests.ok) return pull_requests;
-  const mentions = validateMentionsTrigger(t.mentions ?? {});
-  if (!mentions.ok) return mentions;
-  const tasks = validateTasksTrigger(t.tasks ?? {});
-  if (!tasks.ok) return tasks;
-  const war_rooms = validateWarRoomsTrigger(t.war_rooms ?? {});
-  if (!war_rooms.ok) return war_rooms;
 
   // Reject the privileged war-room "queen" surface from the dashboard: any
   // truthy queen/creation flag means the caller wants room creation/synthesis,
-  // which needs mint/merge caps + an explicit repo policy the dashboard can't
-  // supply. Route those through the admin token path instead.
-  if ((t as Record<string, unknown>).queen != null && (t as { queen?: { enabled?: unknown } }).queen?.enabled === true) {
-    return fail("triggers.queen", "War-room creation/synthesis (queen) is not available from the dashboard — issue a queen token via the admin path.");
+  // which needs mint/merge caps the dashboard can't issue. Admin token path only.
+  if ((t as { queen?: { enabled?: unknown } }).queen != null && (t as { queen?: { enabled?: unknown } }).queen?.enabled === true) {
+    return fail("plugins.queen", "War-room creation/synthesis (queen) is not available from the dashboard — issue a queen token via the admin path.");
   }
 
-  return {
-    ok: true,
-    value: {
-      schedule: schedule.value,
-      pull_requests: pull_requests.value,
-      mentions: mentions.value,
-      tasks: tasks.value,
-      war_rooms: war_rooms.value,
-    },
-  };
+  const out: FleetPlugins = {};
+  if (t.github !== undefined) {
+    const r = validateGithubPlugin(t.github);
+    if (!r.ok) return r;
+    out.github = r.value;
+  }
+  if (t.schedule !== undefined) {
+    const r = validateSchedulePlugin(t.schedule);
+    if (!r.ok) return r;
+    out.schedule = r.value;
+  }
+  if (t.tasks !== undefined) {
+    const r = validateTasksPlugin(t.tasks);
+    if (!r.ok) return r;
+    out.tasks = r.value;
+  }
+  if (t.war_rooms !== undefined) {
+    const r = validateWarRoomsPlugin(t.war_rooms);
+    if (!r.ok) return r;
+    out.war_rooms = r.value;
+  }
+
+  const anyEnabled =
+    out.github?.enabled === true ||
+    out.schedule?.enabled === true ||
+    out.tasks?.enabled === true ||
+    out.war_rooms?.enabled === true;
+  if (!anyEnabled) {
+    return fail("plugins", "enable at least one plugin (an agent with no enabled plugin does nothing).");
+  }
+
+  return { ok: true, value: out };
 }
 
 function validateLinkedTokenName(value: unknown): FleetValidation<string> {
@@ -401,8 +501,8 @@ export function validateCreateAgentInput(raw: Record<string, unknown>): FleetVal
   if (!skills.ok) return skills;
   const system_prompt = validateSystemPrompt(raw.system_prompt);
   if (!system_prompt.ok) return system_prompt;
-  const triggers = validateTriggers(raw.triggers ?? {});
-  if (!triggers.ok) return triggers;
+  const plugins = validatePlugins(raw.plugins ?? {});
+  if (!plugins.ok) return plugins;
   const display_name = validateDisplayName(raw.display_name);
   if (!display_name.ok) return display_name;
   const token = validateLinkedTokenName(raw.agent_token_name);
@@ -415,20 +515,28 @@ export function validateCreateAgentInput(raw: Record<string, unknown>): FleetVal
       engine: engine.value,
       skills: skills.value,
       system_prompt: system_prompt.value,
-      triggers: triggers.value,
+      plugins: plugins.value,
       agent_token_name: token.value,
       ...(display_name.value !== undefined ? { display_name: display_name.value } : {}),
     },
   };
 }
 
-/** Validate a PATCH body — only present fields are validated/returned. */
+/**
+ * Validate a PATCH body — only present fields are validated/returned.
+ *
+ * REPLACE-not-merge: a provided `plugins` object REPLACES the agent's entire
+ * plugins set (it is NOT deep-merged into the existing one). The dashboard form
+ * always submits the complete plugin set, so a PATCH that omits a plugin means
+ * "this agent no longer has that plugin", not "leave it as-is". A PATCH that
+ * omits `plugins` entirely leaves the stored plugins untouched.
+ */
 export function validateUpdateAgentInput(raw: Record<string, unknown>): FleetValidation<UpdateAgentInput> {
   const patch: UpdateAgentInput = {};
-  if ("name" in raw || "repo" in raw || "repos" in raw) {
+  if ("name" in raw || "repo" in raw || "repos" in raw || "triggers" in raw || "duty" in raw) {
     return fail(
       "name",
-      "name is immutable; repos follow the linked token (re-point agent_token_name to change scope).",
+      "name is immutable; top-level repos/triggers/duty no longer exist (configure repos under plugins.github).",
     );
   }
   if ("display_name" in raw) {
@@ -456,10 +564,10 @@ export function validateUpdateAgentInput(raw: Record<string, unknown>): FleetVal
     if (!r.ok) return r;
     patch.system_prompt = r.value;
   }
-  if ("triggers" in raw) {
-    const r = validateTriggers(raw.triggers);
+  if ("plugins" in raw) {
+    const r = validatePlugins(raw.plugins);
     if (!r.ok) return r;
-    patch.triggers = r.value;
+    patch.plugins = r.value;
   }
   return { ok: true, value: patch };
 }
@@ -538,29 +646,50 @@ async function appendAudit(args: {
 // Defensive parsing
 // ---------------------------------------------------------------------------
 
-function isTriggerStateShape(v: unknown): v is { enabled: boolean; settings: Record<string, unknown> } {
+/** A plugin entry must at minimum be an object with a boolean `enabled`. We
+ * keep this lenient (the route-side validators are authoritative on write); the
+ * parser only rejects records that are structurally unusable. */
+function isPluginShape(v: unknown): v is { enabled: boolean } {
   return typeof v === "object" && v !== null && typeof (v as { enabled?: unknown }).enabled === "boolean";
 }
 
 /** Parse a stored record into a FleetAgent, returning null on any shape
  * violation (no-throw, like the task store) so a single corrupt record can't
- * break a list read. */
+ * break a list read. The registry stores ONLY the plugin shape (no migration /
+ * back-compat — there are no legacy records): a record carrying the old
+ * top-level `triggers`/`repos` and no `plugins` is rejected as malformed. */
 function parseStoredAgent(raw: unknown): FleetAgent | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.name !== "string" || !Array.isArray(r.repos) || typeof r.engine !== "string") return null;
+  if (typeof r.name !== "string" || typeof r.engine !== "string") return null;
   if (typeof r.system_prompt !== "string" || !Array.isArray(r.skills)) return null;
-  const tr = r.triggers as Record<string, unknown> | undefined;
-  if (
-    !tr ||
-    !isTriggerStateShape(tr.schedule) ||
-    !isTriggerStateShape(tr.pull_requests) ||
-    !isTriggerStateShape(tr.mentions) ||
-    !isTriggerStateShape(tr.tasks) ||
-    !isTriggerStateShape(tr.war_rooms)
-  ) {
-    return null;
+  if (typeof r.agent_token_name !== "string") return null;
+
+  const plugins = r.plugins;
+  if (typeof plugins !== "object" || plugins === null || Array.isArray(plugins)) return null;
+  const p = plugins as Record<string, unknown>;
+  // Each PRESENT plugin must be a well-shaped object; absent plugins are fine.
+  for (const key of ["github", "schedule", "tasks", "war_rooms"] as const) {
+    if (p[key] !== undefined && !isPluginShape(p[key])) return null;
   }
+  // The github plugin must carry a repos array if present (the only repo source).
+  if (p.github !== undefined) {
+    const githubRepos = (p.github as Record<string, unknown>).repos;
+    if (!Array.isArray(githubRepos)) return null;
+    // Fail-closed on the security-sensitive field: every stored repo MUST still
+    // be a string in `owner/name` format. A row whose repos were tampered with
+    // (or written by an older/buggy path) is rejected rather than handed to the
+    // reconciler — repos flow straight into the rendered container's scope.
+    for (const repo of githubRepos) {
+      if (!validateRepo(repo).ok) return null;
+    }
+  }
+  // At least one plugin enabled — a stored agent with nothing enabled is corrupt.
+  const anyEnabled = (["github", "schedule", "tasks", "war_rooms"] as const).some(
+    (k) => isPluginShape(p[k]) && (p[k] as { enabled: boolean }).enabled === true,
+  );
+  if (!anyEnabled) return null;
+
   return raw as FleetAgent;
 }
 
@@ -589,12 +718,13 @@ export async function countAgents(installationId: string, redis: Redis): Promise
  * Persist a new agent record. Serialized per-installation via a create lock so
  * the `MAX_AGENTS_PER_INSTALLATION` cap check is race-free (TOCTOU-safe). The
  * agent LINKS an existing token (`agentTokenName`) — this flow never mints,
- * mutates, or revokes it. `repos` is a snapshot of that token's `allowed_repos`.
+ * mutates, or revokes it. The token carries CAPABILITIES only; repos live under
+ * `input.plugins.github.repos`, already resolved against the installation by the
+ * route before this is called.
  */
 export async function createAgent(args: {
   installationId: string;
   input: CreateAgentInput;
-  repos: string[];
   createdBy: string;
   agentTokenName: string;
   managed?: boolean;
@@ -614,18 +744,20 @@ export async function createAgent(args: {
     const record: FleetAgent = {
       name: input.name,
       ...(input.display_name !== undefined ? { display_name: input.display_name } : {}),
-      repos: args.repos,
       engine: input.engine,
       skills: input.skills,
       system_prompt: input.system_prompt,
-      triggers: input.triggers,
+      plugins: input.plugins,
       enabled: true,
       managed: args.managed ?? true,
       agent_token_name: args.agentTokenName,
       created_at: nowIso,
       created_by: args.createdBy,
       updated_at: nowIso,
-      config_version: 1,
+      // Start at 2: the plugin-shape config model is the second generation of
+      // the desired-state contract (the first was top-level repos/triggers).
+      // The registry is empty so this is purely a forward signal to reconcilers.
+      config_version: 2,
     };
     await redis.set(agentKey(installationId, input.name), JSON.stringify(record));
     await redis.zadd(indexKey(installationId), { score: nowMs, member: input.name });
@@ -636,7 +768,11 @@ export async function createAgent(args: {
       action: "create",
       name: input.name,
       actor: args.createdBy,
-      detail: { repos: args.repos, engine: input.engine, token: args.agentTokenName },
+      detail: {
+        engine: input.engine,
+        token: args.agentTokenName,
+        github_repos: input.plugins.github?.enabled ? input.plugins.github.repos : [],
+      },
     });
     return record;
   });
@@ -680,13 +816,17 @@ export async function listAgents(args: {
   return out;
 }
 
+/**
+ * Apply a validated PATCH to an existing agent. Each present patch field
+ * overwrites the stored value; absent fields are left as-is. NOTE: `patch.plugins`
+ * REPLACES the whole plugins set (replace-not-merge) — the caller (route → form)
+ * submits the complete plugin set, and repos in `patch.plugins.github` have
+ * already been coverage-resolved by the route before this is called.
+ */
 export async function updateAgent(args: {
   installationId: string;
   name: string;
   patch: UpdateAgentInput;
-  /** When the linked token changes, the route re-derives its allowed_repos and
-   * passes them here so the agent's repo snapshot stays in sync with the token. */
-  repos?: string[];
   actor: string;
   redis: Redis;
 }): Promise<FleetAgent> {
@@ -699,9 +839,8 @@ export async function updateAgent(args: {
       ...(patch.engine !== undefined ? { engine: patch.engine } : {}),
       ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
       ...(patch.system_prompt !== undefined ? { system_prompt: patch.system_prompt } : {}),
-      ...(patch.triggers !== undefined ? { triggers: patch.triggers } : {}),
+      ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
       ...(patch.agent_token_name !== undefined ? { agent_token_name: patch.agent_token_name } : {}),
-      ...(args.repos !== undefined ? { repos: args.repos } : {}),
       updated_at: new Date().toISOString(),
       config_version: existing.config_version + 1,
     };

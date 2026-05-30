@@ -28,13 +28,15 @@ def post_heartbeat(
     bearer: str,
     *,
     agent_id: str,
-    repo: str,
     next_run_at: str = "",
 ) -> bool:
-    """POST a heartbeat.  Returns True on 200."""
+    """POST a heartbeat.  Returns True on 200.
+
+    Health is a per-agent signal — keyed solely on ``agent_id``
+    (one identity per container). No ``repo`` dimension.
+    """
     payload: dict = {
         "agent_id": agent_id,
-        "repo": repo,
         "outcome": "heartbeat",
     }
     if next_run_at:
@@ -48,7 +50,6 @@ def post_run_report(
     bearer: str,
     *,
     agent_id: str,
-    repo: str,
     run_id: str,
     outcome: str,
     duration_secs: int,
@@ -60,13 +61,15 @@ def post_run_report(
 ) -> bool:
     """POST a run report.  Returns True on 200.
 
+    Health is a per-agent signal — keyed solely on ``agent_id``.
+    No ``repo`` dimension.
+
     ``outcome`` must be one of ``success`` | ``failure`` | ``timeout``.
     ``trigger`` (optional) must be one of ``scheduled`` | ``mention`` |
     ``manual`` | ``task``; pass empty to omit.
     """
     payload: dict = {
         "agent_id": agent_id,
-        "repo": repo,
         "run_id": run_id,
         "outcome": outcome,
         "duration_secs": duration_secs,
