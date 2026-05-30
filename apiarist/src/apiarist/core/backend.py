@@ -247,18 +247,14 @@ class BackendClient:
                     "backend endpoint is scaffolded but minting not wired yet"
                 )
             if 500 <= response.status_code < 600:
-                last_error = BackendUnavailableError(
-                    f"HTTP {response.status_code} from backend"
-                )
+                last_error = BackendUnavailableError(f"HTTP {response.status_code} from backend")
                 if not _should_retry_on_exception(attempt, self._retries):
                     raise last_error
                 await asyncio.sleep(_backoff(attempt))
                 continue
             # Any other status (4xx other than the ones above) is a bug
             # we should learn about, not silently retry.
-            raise BackendError(
-                f"unexpected HTTP {response.status_code} from backend"
-            )
+            raise BackendError(f"unexpected HTTP {response.status_code} from backend")
 
         # Loop exited via `continue` after exhausting retries — last_error
         # holds the final attempt's failure.
@@ -297,13 +293,9 @@ def _parse_success(response: httpx.Response) -> InstallationAccessToken:
     if not isinstance(token, str) or not token:
         raise BackendProtocolError("response missing required string field 'token'")
     if not isinstance(expires_at_raw, str) or not expires_at_raw:
-        raise BackendProtocolError(
-            "response missing required string field 'expires_at'"
-        )
+        raise BackendProtocolError("response missing required string field 'expires_at'")
     if not isinstance(installation_id, str) or not installation_id:
-        raise BackendProtocolError(
-            "response missing required string field 'installation_id'"
-        )
+        raise BackendProtocolError("response missing required string field 'installation_id'")
 
     try:
         expires_at = _parse_iso8601(expires_at_raw)
@@ -371,9 +363,7 @@ def _parse_repositories(raw: object) -> list[Repository]:
     repos: list[Repository] = []
     for entry in raw:
         if not isinstance(entry, dict):
-            raise BackendProtocolError(
-                f"response 'repositories' entry is not an object: {entry!r}"
-            )
+            raise BackendProtocolError(f"response 'repositories' entry is not an object: {entry!r}")
         full_name = entry.get("full_name")
         repo_id = entry.get("id")
         if not isinstance(full_name, str) or not full_name:
@@ -382,9 +372,7 @@ def _parse_repositories(raw: object) -> list[Repository]:
             )
         if not isinstance(repo_id, int) or isinstance(repo_id, bool):
             # bool is a subtype of int in Python — explicit reject.
-            raise BackendProtocolError(
-                f"response 'repositories' entry missing int 'id': {entry!r}"
-            )
+            raise BackendProtocolError(f"response 'repositories' entry missing int 'id': {entry!r}")
         repos.append(Repository(full_name=full_name, id=repo_id))
     return repos
 

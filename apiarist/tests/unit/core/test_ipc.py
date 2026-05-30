@@ -126,9 +126,7 @@ def test_success_response_to_wire() -> None:
 
 
 def test_error_response_to_wire_known_request_id() -> None:
-    out = ErrorResponse(
-        request_id="r1", code=ErrorCode.UNKNOWN_OP, message="nope"
-    ).to_wire()
+    out = ErrorResponse(request_id="r1", code=ErrorCode.UNKNOWN_OP, message="nope").to_wire()
     assert out == {
         "request_id": "r1",
         "ok": False,

@@ -21,6 +21,7 @@ import {
   PlusIcon,
   relativeTime,
   RepoIcon,
+  TokenIcon,
   TRIGGER_CHIP_LABELS,
 } from "./shared";
 
@@ -80,13 +81,19 @@ function AgentCard({ agent }: { agent: AgentListEntry }) {
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
-        <span className="inline-flex items-center gap-1.5">
-          <RepoIcon className="h-3.5 w-3.5 text-zinc-600" />
-          <span className="truncate">{agent.repo}</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <RepoIcon className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+          <span className="truncate">
+            {agent.repos.length > 0 ? agent.repos.join(", ") : "No repos"}
+          </span>
         </span>
         <span className="inline-flex items-center gap-1.5">
           <EngineIcon className="h-3.5 w-3.5 text-zinc-600" />
           <span className="font-mono">{agent.engine}</span>
+        </span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <TokenIcon className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+          <span className="truncate font-mono">{agent.agent_token_name}</span>
         </span>
       </div>
 
@@ -106,9 +113,9 @@ function AgentCard({ agent }: { agent: AgentListEntry }) {
 // ---------------------------------------------------------------------------
 
 function ObservedRow({ entry }: { entry: ObservedAgent }) {
-  const adoptHref = `/dashboard/agents/new?name=${encodeURIComponent(
-    entry.agent_id,
-  )}&repo=${encodeURIComponent(entry.repo)}`;
+  // The repo now comes from the token the operator links, not the observed
+  // report — so the adopt deep-link only prefills the name.
+  const adoptHref = `/dashboard/agents/new?name=${encodeURIComponent(entry.agent_id)}`;
   return (
     <li className="flex items-center justify-between gap-4 p-4">
       <div className="min-w-0 flex-1">

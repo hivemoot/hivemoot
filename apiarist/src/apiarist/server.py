@@ -198,16 +198,16 @@ class Server:
         """
         request_id: str | None = None
         try:
-            request = await asyncio.wait_for(
-                self._read_request(reader), timeout=self._read_timeout
-            )
+            request = await asyncio.wait_for(self._read_request(reader), timeout=self._read_timeout)
             request_id = request.request_id
             log.debug("request received", op=request.op, request_id=request_id)
 
             handler = self._registry.get(request.op)
             if handler is None:
                 await self._send_error(
-                    writer, request_id, ErrorCode.UNKNOWN_OP,
+                    writer,
+                    request_id,
+                    ErrorCode.UNKNOWN_OP,
                     f"op {request.op!r} not registered (known ops: {self._registry.list_ops()})",
                 )
                 return
@@ -257,7 +257,9 @@ class Server:
                 timeout_seconds=self._read_timeout,
             )
             await self._send_error(
-                writer, request_id, ErrorCode.BAD_REQUEST,
+                writer,
+                request_id,
+                ErrorCode.BAD_REQUEST,
                 f"no complete request within {self._read_timeout}s",
             )
         except (ConnectionResetError, BrokenPipeError):
@@ -271,7 +273,9 @@ class Server:
             )
             with contextlib.suppress(Exception):
                 await self._send_error(
-                    writer, request_id, ErrorCode.INTERNAL,
+                    writer,
+                    request_id,
+                    ErrorCode.INTERNAL,
                     "internal error (see daemon logs)",
                 )
         finally:
@@ -288,15 +292,11 @@ class Server:
         prefix = await reader.readexactly(LENGTH_PREFIX_BYTES)
         (length,) = struct.unpack(LENGTH_PREFIX_FORMAT, prefix)
         if length > MAX_PAYLOAD_BYTES:
-            raise FramingError(
-                f"declared payload length {length} exceeds cap {MAX_PAYLOAD_BYTES}"
-            )
+            raise FramingError(f"declared payload length {length} exceeds cap {MAX_PAYLOAD_BYTES}")
         body = await reader.readexactly(length)
         return decode_request(body)
 
-    async def _send(
-        self, writer: asyncio.StreamWriter, payload: dict[str, Any]
-    ) -> None:
+    async def _send(self, writer: asyncio.StreamWriter, payload: dict[str, Any]) -> None:
         """Encode + write one framed message."""
         writer.write(encode_message(payload))
         await writer.drain()

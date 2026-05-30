@@ -29,7 +29,7 @@ const ENGINE_CATALOG_HASH = createHash("sha256")
 
 export interface DesiredStateAgent {
   name: string;
-  repo: string;
+  repos: string[];
   /** Paused agents stay listed with enabled:false so the sidecar stops them. */
   enabled: boolean;
   managed: boolean;
@@ -80,7 +80,7 @@ export function buildDesiredState(args: {
         };
       return {
         name: a.name,
-        repo: a.repo,
+        repos: a.repos,
         enabled: a.enabled,
         managed: a.managed,
         config_version: a.config_version,

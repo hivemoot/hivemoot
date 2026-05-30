@@ -64,8 +64,7 @@ def _success_body() -> dict[str, Any]:
     return {
         "token": "ghs_e2e_test_token",
         "expires_at": (
-            (datetime.now(UTC) + timedelta(seconds=3600))
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            (datetime.now(UTC) + timedelta(seconds=3600)).strftime("%Y-%m-%dT%H:%M:%SZ")
         ),
         "installation_id": "67890",
         "permissions": {"contents": "read"},
@@ -221,7 +220,8 @@ async def test_backend_501_maps_to_wire_code(sock_path: Path) -> None:
         resp = await _request(
             sock_path,
             {
-                "op": "mint_token", "request_id": "m1",
+                "op": "mint_token",
+                "request_id": "m1",
                 "params": {"service": "s", "repo": "owner/r"},
             },
         )
@@ -245,7 +245,8 @@ async def test_invalid_params_returns_bad_request(sock_path: Path) -> None:
         resp = await _request(
             sock_path,
             {
-                "op": "mint_token", "request_id": "m1",
+                "op": "mint_token",
+                "request_id": "m1",
                 "params": {"service": "s"},  # missing repo
             },
         )
@@ -268,9 +269,7 @@ async def test_malformed_json_returns_bad_request(sock_path: Path) -> None:
     )
     serve_task = asyncio.create_task(server.serve_forever())
     try:
-        reader, writer = await asyncio.open_unix_connection(
-            path=str(sock_path)
-        )
+        reader, writer = await asyncio.open_unix_connection(path=str(sock_path))
         try:
             body = b"not even close to json"
             writer.write(struct.pack(LENGTH_PREFIX_FORMAT, len(body)) + body)
@@ -305,11 +304,13 @@ async def test_concurrent_mints_for_different_services(sock_path: Path) -> None:
     )
     serve_task = asyncio.create_task(server.serve_forever())
     try:
+
         async def one(i: int) -> dict[str, Any]:
             return await _request(
                 sock_path,
                 {
-                    "op": "mint_token", "request_id": f"r{i}",
+                    "op": "mint_token",
+                    "request_id": f"r{i}",
                     "params": {"service": f"svc-{i}", "repo": f"owner/repo-{i}"},
                 },
             )
@@ -357,13 +358,19 @@ async def test_concurrent_mints_across_services_share_single_flight(
         results = await asyncio.gather(
             _request(
                 sock_path,
-                {"op": "mint_token", "request_id": "a",
-                 "params": {"service": "svc-a", "repo": "owner/repo"}},
+                {
+                    "op": "mint_token",
+                    "request_id": "a",
+                    "params": {"service": "svc-a", "repo": "owner/repo"},
+                },
             ),
             _request(
                 sock_path,
-                {"op": "mint_token", "request_id": "b",
-                 "params": {"service": "svc-b", "repo": "owner/repo"}},
+                {
+                    "op": "mint_token",
+                    "request_id": "b",
+                    "params": {"service": "svc-b", "repo": "owner/repo"},
+                },
             ),
         )
         assert all(r["ok"] for r in results)
@@ -396,12 +403,16 @@ async def test_health_records_after_mint(sock_path: Path) -> None:
         # First a mint to populate the recorder.
         await _request(
             sock_path,
-            {"op": "mint_token", "request_id": "m",
-             "params": {"service": "svc", "repo": "owner/repo"}},
+            {
+                "op": "mint_token",
+                "request_id": "m",
+                "params": {"service": "svc", "repo": "owner/repo"},
+            },
         )
         # Then health — last_backend_* must be populated.
         h = await _request(
-            sock_path, {"op": "health", "request_id": "h"},
+            sock_path,
+            {"op": "health", "request_id": "h"},
         )
         assert h["data"]["last_backend_status"] == "ok"
         assert isinstance(h["data"]["last_backend_roundtrip_ms"], (int, float))
@@ -426,11 +437,15 @@ async def test_health_records_after_mint_error(sock_path: Path) -> None:
         # Mint that fails server-side.
         await _request(
             sock_path,
-            {"op": "mint_token", "request_id": "m",
-             "params": {"service": "svc", "repo": "owner/repo"}},
+            {
+                "op": "mint_token",
+                "request_id": "m",
+                "params": {"service": "svc", "repo": "owner/repo"},
+            },
         )
         h = await _request(
-            sock_path, {"op": "health", "request_id": "h"},
+            sock_path,
+            {"op": "health", "request_id": "h"},
         )
         # Status carries the exception class name so operators see at
         # a glance which failure mode hit (vs just "error").
@@ -567,9 +582,7 @@ async def test_oversize_length_prefix_returns_bad_request(sock_path: Path) -> No
     )
     serve_task = asyncio.create_task(server.serve_forever())
     try:
-        reader, writer = await asyncio.open_unix_connection(
-            path=str(sock_path)
-        )
+        reader, writer = await asyncio.open_unix_connection(path=str(sock_path))
         try:
             # Length prefix declaring a body 1 byte over the cap; send
             # NO body — the server must reject on the prefix alone, so
@@ -604,9 +617,7 @@ async def test_slow_client_hits_read_timeout(sock_path: Path) -> None:
     Override the timeout to 0.1s so the test runs quickly; the
     behaviour is identical to the production 30s default.
     """
-    transport = httpx.MockTransport(
-        lambda r: httpx.Response(200, json=_success_body())
-    )
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json=_success_body()))
     backend = BackendClient(
         backend_url="https://www.hivemoot.dev",
         agent_token="hm_test",
@@ -632,16 +643,12 @@ async def test_slow_client_hits_read_timeout(sock_path: Path) -> None:
     await server.bind()
     serve_task = asyncio.create_task(server.serve_forever())
     try:
-        reader, writer = await asyncio.open_unix_connection(
-            path=str(sock_path)
-        )
+        reader, writer = await asyncio.open_unix_connection(path=str(sock_path))
         try:
             # Don't write anything; just wait for the server to give up.
             # If the response doesn't arrive within ~1s, the timeout
             # logic is broken.
-            prefix = await asyncio.wait_for(
-                reader.readexactly(LENGTH_PREFIX_BYTES), timeout=1.0
-            )
+            prefix = await asyncio.wait_for(reader.readexactly(LENGTH_PREFIX_BYTES), timeout=1.0)
             (length,) = struct.unpack(LENGTH_PREFIX_FORMAT, prefix)
             resp_body = await reader.readexactly(length)
             resp = json.loads(resp_body)
@@ -685,8 +692,6 @@ async def test_bind_refuses_non_socket_file(sock_path: Path) -> None:
         with pytest.raises(RuntimeError, match="not a Unix socket"):
             await server.bind()
         # The original file content must be preserved.
-        assert sock_path.read_text() == (
-            "important data the operator does NOT want deleted"
-        )
+        assert sock_path.read_text() == ("important data the operator does NOT want deleted")
     finally:
         await backend.aclose()

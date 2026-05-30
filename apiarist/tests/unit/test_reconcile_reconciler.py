@@ -41,7 +41,7 @@ def _triggers() -> Triggers:
 def _agent(name: str = "builder", enabled: bool = True, managed: bool = True) -> DesiredAgent:
     return DesiredAgent(
         name=name,
-        repo="hivemoot/hivemoot",
+        repos=("hivemoot/hivemoot",),
         enabled=enabled,
         managed=managed,
         config_version=1,

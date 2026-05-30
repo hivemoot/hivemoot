@@ -23,8 +23,7 @@ def _success_body() -> dict[str, Any]:
     return {
         "token": "ghs_minted_token_value_test",
         "expires_at": (
-            (datetime.now(UTC) + timedelta(seconds=3600))
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            (datetime.now(UTC) + timedelta(seconds=3600)).strftime("%Y-%m-%dT%H:%M:%SZ")
         ),
         "installation_id": "67890",
         "permissions": {"contents": "read", "pull_requests": "write"},
@@ -144,6 +143,7 @@ async def test_mint_token_passes_agent_id_through() -> None:
 
     def handler(req: httpx.Request) -> httpx.Response:
         import json
+
         captured["body"] = json.loads(req.content)
         return httpx.Response(200, json=_success_body())
 
@@ -172,6 +172,7 @@ async def test_mint_token_propagates_backend_501() -> None:
     this to the wire-level BACKEND_NOT_IMPLEMENTED code; the op
     handler itself just lets the exception propagate.
     """
+
     def handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(501, json={"error": "not_implemented"})
 

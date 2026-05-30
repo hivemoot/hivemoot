@@ -47,19 +47,19 @@ export type TriggerKey = keyof AgentTriggers;
 // Agent record
 // ---------------------------------------------------------------------------
 
-export type AgentDuty = "standing" | "dispatch";
-
 export interface FleetAgent {
   name: string;
   display_name?: string;
-  repo: string;
+  /** Repos the agent operates on — sourced from the linked token's policy
+   * (`allowed_repos`). The agent itself no longer carries a single repo. */
+  repos: string[];
   engine: string;
-  duty: AgentDuty;
   skills: string[];
   system_prompt: string;
   triggers: AgentTriggers;
   enabled: boolean;
   managed: boolean;
+  /** The existing capability token this agent is bound to. */
   agent_token_name: string;
   created_at: string;
   created_by: string;
@@ -145,7 +145,7 @@ export interface SkillCatalogEntry {
   id: string;
   name: string;
   description: string;
-  source: "builtin" | "apiary";
+  source: "builtin";
   standard: boolean;
 }
 
@@ -159,15 +159,74 @@ export interface FleetMetaResponse {
   engine_catalog: EngineCatalogEntry[];
 }
 
+/**
+ * Create succeeds with just the agent — nothing is minted anymore. The agent
+ * links an EXISTING token, so there is no once-shown secret to surface.
+ */
 export interface CreateAgentResponse {
   agent: FleetAgent;
-  token: string;
-  token_fingerprint: string;
-  message: string;
 }
 
 export interface UpdateAgentResponse {
   agent: FleetAgent;
+}
+
+// ---------------------------------------------------------------------------
+// Create / update payloads (what the form POSTs / PATCHes)
+// ---------------------------------------------------------------------------
+
+/** POST body — links an existing token; no repo/duty, nothing minted. */
+export interface CreateAgentPayload {
+  name: string;
+  display_name?: string;
+  engine: string;
+  skills: string[];
+  system_prompt: string;
+  triggers: AgentTriggers;
+  agent_token_name: string;
+}
+
+/** PATCH body — every field optional; `display_name: null` clears the label. */
+export interface UpdateAgentPayload {
+  display_name?: string | null;
+  engine?: string;
+  skills?: string[];
+  system_prompt?: string;
+  triggers?: AgentTriggers;
+  agent_token_name?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Agent tokens (the linkable existing tokens)
+// ---------------------------------------------------------------------------
+
+/** Repo + permission scope persisted alongside a capability token. */
+export interface TokenPolicy {
+  allowed_repos: string[];
+  allowed_permissions?: Record<string, string>;
+}
+
+/**
+ * One row from `GET /api/dashboard/agent-tokens` → `{ tokens }`. Mirrors the
+ * server's `AgentTokenSummaryV1` (metadata only — never the raw bearer). This
+ * is the source for the Token dropdown in the create/edit form.
+ */
+export interface TokenSummary {
+  name: string;
+  agent_role: string;
+  capabilities: string[];
+  fingerprint: string;
+  createdAt: string;
+  createdBy: string;
+  expiresAt: string | null;
+  policy?: TokenPolicy;
+}
+
+/** Envelope for `GET /api/dashboard/agent-tokens`. */
+export interface AgentTokensResponse {
+  tokens: TokenSummary[];
+  presets: string[];
+  capabilities: string[];
 }
 
 /** Error envelope shared by every `/api/dashboard/fleet/**` route. */
@@ -193,6 +252,10 @@ export const FLEET_ERROR_CODE = {
   AGENT_LIMIT_REACHED: "fleet_agent_limit_reached",
   RATE_LIMITED: "fleet_rate_limited",
   QUEEN_NOT_SUPPORTED: "fleet_queen_not_supported",
+  /** Selected `agent_token_name` doesn't exist in the installation. */
+  INVALID_TOKEN: "fleet_invalid_token",
+  /** Selected token has no `allowed_repos` — it isn't scoped to any repo. */
+  TOKEN_NOT_SCOPED: "fleet_token_not_scoped",
   LOCK_TIMEOUT: "fleet_lock_timeout",
   SERVER_ERROR: "fleet_server_error",
 } as const;

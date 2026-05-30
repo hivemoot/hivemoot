@@ -40,9 +40,7 @@ class Registry:
         first.
         """
         if op in self._handlers:
-            raise ValueError(
-                f"op {op!r} is already registered to {self._handlers[op]!r}"
-            )
+            raise ValueError(f"op {op!r} is already registered to {self._handlers[op]!r}")
         self._handlers[op] = handler
 
     def unregister(self, op: str) -> None:

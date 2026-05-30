@@ -75,9 +75,7 @@ class Config(BaseModel):
     # mass-delete valve). Set a canary allowlist for first enforce.
     reconcile_managed_agents: list[str] = Field(default_factory=list)
     reconcile_image: str = "ghcr.io/hivemoot/agent:latest"
-    reconcile_image_allowlist: list[str] = Field(
-        default_factory=lambda: ["ghcr.io/hivemoot/agent"]
-    )
+    reconcile_image_allowlist: list[str] = Field(default_factory=lambda: ["ghcr.io/hivemoot/agent"])
     reconcile_max_delete_per_cycle: int = Field(default=1, ge=0)
     reconcile_allow_mass_delete: bool = False
     reconcile_stop_grace_seconds: int = Field(default=30, ge=1)
@@ -175,8 +173,7 @@ def _load_file_overlay(config_path: Path | None) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         raise ConfigError(
-            f"{path} must contain a YAML mapping at the top level "
-            f"(got {type(data).__name__})"
+            f"{path} must contain a YAML mapping at the top level (got {type(data).__name__})"
         )
     return data
 

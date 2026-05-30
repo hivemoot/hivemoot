@@ -159,7 +159,7 @@ def _parse_agent(entry: object) -> DesiredAgent:
     if not _AGENT_NAME_RE.fullmatch(name):
         # Never let a non-identifier name reach the filesystem/Docker layer.
         raise FleetProtocolError(f"agent name {name!r} is not a valid identifier")
-    repo = _req_str(entry, "repo")
+    repos = _parse_repos(entry.get("repos"), name)
     enabled = entry.get("enabled")
     managed = entry.get("managed")
     config_version = entry.get("config_version")
@@ -185,7 +185,7 @@ def _parse_agent(entry: object) -> DesiredAgent:
 
     return DesiredAgent(
         name=name,
-        repo=repo,
+        repos=repos,
         enabled=enabled,
         managed=managed,
         config_version=config_version,
@@ -196,6 +196,18 @@ def _parse_agent(entry: object) -> DesiredAgent:
         token_name=token_name,
         agent_role=agent_role,
     )
+
+
+def _parse_repos(raw: object, name: str) -> tuple[str, ...]:
+    # The agent's repos come from the linked token's allowed_repos (non-empty).
+    if not isinstance(raw, list) or not raw:
+        raise FleetProtocolError(f"agent {name!r} missing non-empty list 'repos'")
+    out: list[str] = []
+    for r in raw:
+        if not isinstance(r, str) or "/" not in r or ".." in r or " " in r:
+            raise FleetProtocolError(f"agent {name!r} has invalid repo {r!r}")
+        out.append(r)
+    return tuple(out)
 
 
 def _parse_engine(raw: object) -> ResolvedEngine:
