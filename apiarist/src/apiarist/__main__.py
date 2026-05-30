@@ -22,6 +22,11 @@ from apiarist.config import Config, ConfigError, load_config
 from apiarist.core.backend import BackendClient
 from apiarist.core.registry import Registry
 from apiarist.features import health as health_feature
+from apiarist.features.reconcile.client import FleetClient
+from apiarist.features.reconcile.docker import HttpxDockerClient
+from apiarist.features.reconcile.loop import ReconcileLoop
+from apiarist.features.reconcile.loop import register as reconcile_register
+from apiarist.features.reconcile.reconcile import Reconciler
 from apiarist.features.tokens import plugin as tokens_feature
 from apiarist.features.tokens.cache import TokenCache
 from apiarist.logging import configure_logging
@@ -29,6 +34,7 @@ from apiarist.server import Server
 from apiarist.version import __version__
 
 _AGENT_TOKEN_ENV = "APIARIST_AGENT_TOKEN"
+_FLEET_TOKEN_ENV = "APIARIST_FLEET_TOKEN"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,15 +117,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # The reconciler (V2) needs its own least-privilege fleet.read bearer,
+    # separate from the broker's mint token. Required only when enabled.
+    fleet_token = os.environ.get(_FLEET_TOKEN_ENV, "").strip()
+    if config.reconcile_enabled and not fleet_token:
+        print(
+            f"apiarist: reconcile_enabled is set but {_FLEET_TOKEN_ENV} is missing "
+            "(the fleet.read bearer for desired-state polling).",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
-        return asyncio.run(_run(config, agent_token))
+        return asyncio.run(_run(config, agent_token, fleet_token))
     except KeyboardInterrupt:
         # asyncio.run raises this on Ctrl-C if no signal handler caught
         # it first. Fall through cleanly; structured shutdown is in _run.
         return 0
 
 
-async def _run(config: Config, agent_token: str) -> int:
+async def _run(config: Config, agent_token: str, fleet_token: str) -> int:
     """The actual daemon loop, separated from main() for asyncio.run."""
     log = structlog.get_logger()
 
@@ -140,6 +157,45 @@ async def _run(config: Config, agent_token: str) -> int:
         health_state=health_state,
         agent_token=agent_token,
     )
+
+    # --- Reconcile feature (V2) — wired only when enabled -------------
+    reconcile_loop: ReconcileLoop | None = None
+    fleet_client: FleetClient | None = None
+    docker_client: HttpxDockerClient | None = None
+    if config.reconcile_enabled:
+        fleet_client = FleetClient(
+            backend_url=config.backend_url,
+            fleet_token=fleet_token,
+            timeout_seconds=config.backend_timeout_seconds,
+            retries=config.backend_retries,
+        )
+        docker_client = HttpxDockerClient(
+            socket_path=config.docker_socket_path,
+            fleet_data_root=config.fleet_data_root,
+            stop_grace_seconds=config.reconcile_stop_grace_seconds,
+        )
+        reconciler = Reconciler(
+            fleet_client=fleet_client,
+            docker_client=docker_client,
+            backend_url=config.backend_url,
+            image=config.reconcile_image,
+            image_allowlist=config.reconcile_image_allowlist,
+            # Empty allowlist ⇒ manage all (None); a non-empty list scopes the canary.
+            managed_filter=set(config.reconcile_managed_agents) or None,
+            dry_run=config.reconcile_dry_run,
+            max_delete_per_cycle=config.reconcile_max_delete_per_cycle,
+            allow_mass_delete=config.reconcile_allow_mass_delete,
+        )
+        reconcile_loop = ReconcileLoop(
+            reconciler=reconciler, interval_seconds=config.reconcile_interval_seconds
+        )
+        reconcile_register(registry, loop=reconcile_loop)
+        log.info(
+            "reconcile feature enabled",
+            dry_run=config.reconcile_dry_run,
+            interval_seconds=config.reconcile_interval_seconds,
+            managed_agents=config.reconcile_managed_agents or "all",
+        )
 
     server = Server(
         socket_path=config.socket_path,
@@ -174,6 +230,11 @@ async def _run(config: Config, agent_token: str) -> int:
     # --- Serve until signaled -----------------------------------------
     serve_task = asyncio.create_task(server.serve_forever(), name="serve_forever")
     stop_task = asyncio.create_task(stop_event.wait(), name="stop_event")
+    reconcile_task: asyncio.Task[None] | None = (
+        asyncio.create_task(reconcile_loop.run(), name="reconcile_loop")
+        if reconcile_loop is not None
+        else None
+    )
 
     done, pending = await asyncio.wait(
         {serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
@@ -186,6 +247,16 @@ async def _run(config: Config, agent_token: str) -> int:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+    if reconcile_loop is not None and reconcile_task is not None:
+        reconcile_loop.stop()
+        reconcile_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await reconcile_task
+    if fleet_client is not None:
+        await fleet_client.aclose()
+    if docker_client is not None:
+        await docker_client.aclose()
 
     await backend.aclose()
     log.info("apiarist stopped")
