@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 DEFAULT_CONFIG_PATH = Path("/etc/apiarist/apiarist.yaml")
 ENV_PREFIX = "APIARIST_"
@@ -31,7 +31,10 @@ ENV_PREFIX = "APIARIST_"
 #                             before constructing the BackendClient; see DESIGN.md
 #                             §9 multi-token support — the secret never lives in
 #                             Config because Config is logged at startup)
-_NON_FIELD_ENV_KEYS: frozenset[str] = frozenset({"config", "agent_token"})
+#   - APIARIST_FLEET_TOKEN  → the reconciler's fleet.read bearer (read directly
+#                             by __main__.py; a secret, kept out of Config which
+#                             is logged at startup)
+_NON_FIELD_ENV_KEYS: frozenset[str] = frozenset({"config", "agent_token", "fleet_token"})
 
 LogLevel = str  # validated to one of {debug, info, warning, error, critical}
 _VALID_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
@@ -61,6 +64,34 @@ class Config(BaseModel):
     backend_timeout_seconds: int = Field(default=10, ge=1)
     backend_retries: int = Field(default=3, ge=0)
     log_level: LogLevel = "info"
+
+    # --- Reconcile feature (apiarist V2; SAFE DEFAULTS) -----------------
+    # Ships fully off: reconcile_enabled=False ⇒ pure V1 token-broker behavior.
+    # First enable should keep dry_run=True (observe-only) before enforcing.
+    reconcile_enabled: bool = False
+    reconcile_dry_run: bool = True
+    reconcile_interval_seconds: int = Field(default=60, ge=10)
+    # Empty list ⇒ manage ALL desired-state agents (still gated by dry_run +
+    # mass-delete valve). Set a canary allowlist for first enforce.
+    reconcile_managed_agents: list[str] = Field(default_factory=list)
+    reconcile_image: str = "ghcr.io/hivemoot/agent:latest"
+    reconcile_image_allowlist: list[str] = Field(
+        default_factory=lambda: ["ghcr.io/hivemoot/agent"]
+    )
+    reconcile_max_delete_per_cycle: int = Field(default=1, ge=0)
+    reconcile_allow_mass_delete: bool = False
+    reconcile_stop_grace_seconds: int = Field(default=30, ge=1)
+    docker_socket_path: Path = Path("/var/run/docker.sock")
+    fleet_data_root: Path = Path("/var/lib/apiarist/fleet")
+
+    @field_validator("reconcile_managed_agents", "reconcile_image_allowlist", mode="before")
+    @classmethod
+    def _split_csv(cls, value: Any) -> Any:
+        # Env overlay delivers list fields as comma-separated strings; split
+        # them so APIARIST_RECONCILE_MANAGED_AGENTS="a,b" works like YAML lists.
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
     # frozen so callers can't mutate config after load; extra=forbid catches
     # typos in YAML/env/CLI before they silently fall through to defaults.
