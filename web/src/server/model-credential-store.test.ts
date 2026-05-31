@@ -478,6 +478,17 @@ describe("getModelCredentialSummary / listModelCredentials exclude ciphertext", 
     ).rejects.toThrow(ModelCredentialNotFoundError);
   });
 
+  it("getModelCredentialSummary: a name that EXISTS under another installation is NotFound (no cross-tenant oracle)", async () => {
+    await createModelCredential(defaultCreateArgs(redis)); // installation 12345
+    await expect(
+      getModelCredentialSummary({
+        installationId: "99999",
+        name: "team-claude",
+        redis,
+      }),
+    ).rejects.toThrow(ModelCredentialNotFoundError);
+  });
+
   it("list returns summaries in creation order, none with ciphertext", async () => {
     await createModelCredential({ ...defaultCreateArgs(redis), name: "first" });
     await createModelCredential({
@@ -568,6 +579,47 @@ describe("rotateModelCredential", () => {
         redis,
       }),
     ).rejects.toThrow(ModelCredentialNotFoundError);
+  });
+
+  it("a name that EXISTS under another installation is NotFound (no cross-tenant rotate)", async () => {
+    await createModelCredential(defaultCreateArgs(redis)); // installation 12345
+    await expect(
+      rotateModelCredential({
+        installationId: "99999",
+        name: "team-claude",
+        value: "sk-ant-attacker",
+        rotatedBy: "attacker",
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      }),
+    ).rejects.toThrow(ModelCredentialNotFoundError);
+    // The victim's record is untouched.
+    const victim = await getModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      redis,
+    });
+    expect(decryptModelCredentialPayload(victim, KEYRING).value).toBe(
+      "sk-ant-secret-value-001",
+    );
+  });
+
+  it("the returned summary never exposes crypto fields", async () => {
+    await createModelCredential(defaultCreateArgs(redis));
+    const summary = await rotateModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      value: "sk-ant-secret-value-002",
+      rotatedBy: "operator",
+      keyring: KEYRING,
+      keyVersion: "v1",
+      redis,
+    });
+    expect("ciphertext" in summary).toBe(false);
+    expect("iv" in summary).toBe(false);
+    expect("tag" in summary).toBe(false);
+    expect("keyVersion" in summary).toBe(false);
   });
 });
 
@@ -711,6 +763,60 @@ describe("reEncryptModelCredential", () => {
         redis,
       }),
     ).rejects.toThrow(ModelCredentialNotFoundError);
+  });
+
+  it("a name that EXISTS under another installation is NotFound (no cross-tenant re-encrypt)", async () => {
+    await createModelCredential({
+      ...defaultCreateArgs(redis),
+      keyring: KEYRING_V2,
+      keyVersion: "v1",
+    }); // installation 12345
+    await expect(
+      reEncryptModelCredential({
+        installationId: "99999",
+        name: "team-claude",
+        activeKeyVersion: "v2",
+        keyring: KEYRING_V2,
+        redis,
+      }),
+    ).rejects.toThrow(ModelCredentialNotFoundError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GCM authentication of kind/provider (tamper detection)
+// ---------------------------------------------------------------------------
+
+describe("decryptModelCredentialPayload — GCM tamper detection", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("a corrupted GCM tag fails to decrypt (does not silently return data)", async () => {
+    await createModelCredential(defaultCreateArgs(redis));
+    const env = redis._store.get(
+      envelopeKey("12345", "team-claude"),
+    ) as ModelCredentialEnvelopeV1;
+    // Flip the auth tag — decryption MUST throw, never return plaintext.
+    const tampered = { ...env, tag: Buffer.alloc(16, 7).toString("base64") };
+    expect(() => decryptModelCredentialPayload(tampered, KEYRING)).toThrow();
+  });
+
+  it("kind/provider come from the authenticated plaintext, not the clear envelope fields", async () => {
+    await createModelCredential(defaultCreateArgs(redis));
+    const env = redis._store.get(
+      envelopeKey("12345", "team-claude"),
+    ) as ModelCredentialEnvelopeV1;
+    // Swap only the CLEAR metadata copies; the GCM-sealed plaintext is unchanged.
+    const swapped = { ...env, kind: "oauth_subscription", provider: "openai" };
+    const decrypted = decryptModelCredentialPayload(
+      swapped as ModelCredentialEnvelopeV1,
+      KEYRING,
+    );
+    // The trusted values are the ones sealed inside the ciphertext.
+    expect(decrypted.kind).toBe("api_key");
+    expect(decrypted.provider).toBe("anthropic");
   });
 });
 
