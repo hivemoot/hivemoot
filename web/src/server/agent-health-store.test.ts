@@ -165,7 +165,27 @@ function makeMockRedis() {
 // ---------------------------------------------------------------------------
 
 describe("validateReport", () => {
-  it("accepts a valid report", () => {
+  it("accepts a valid report (no repo)", () => {
+    const result = validateReport({
+      agent_id: "bee-1",
+      run_id: "20260224-100000-claude-bee-1",
+      outcome: "success",
+      duration_secs: 42,
+      consecutive_failures: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.report.agent_id).toBe("bee-1");
+      expect(result.report.outcome).toBe("success");
+      expect(result.report.duration_secs).toBe(42);
+      expect(result.report.consecutive_failures).toBe(0);
+      expect(result.report.received_at).toBeDefined();
+      // repo is no longer a field on the report
+      expect((result.report as unknown as Record<string, unknown>).repo).toBeUndefined();
+    }
+  });
+
+  it("accepts (and ignores) a report that still carries repo — rollout tolerance", () => {
     const result = validateReport({
       agent_id: "bee-1",
       repo: "hivemoot/sandbox",
@@ -177,11 +197,8 @@ describe("validateReport", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.report.agent_id).toBe("bee-1");
-      expect(result.report.repo).toBe("hivemoot/sandbox");
-      expect(result.report.outcome).toBe("success");
-      expect(result.report.duration_secs).toBe(42);
-      expect(result.report.consecutive_failures).toBe(0);
-      expect(result.report.received_at).toBeDefined();
+      // repo is accepted but stripped — never stored on the report
+      expect((result.report as unknown as Record<string, unknown>).repo).toBeUndefined();
     }
   });
 
@@ -288,7 +305,7 @@ describe("validateReport", () => {
     if (!result.ok) expect(result.message).toContain("agent_id");
   });
 
-  it("rejects invalid repo format", () => {
+  it("does NOT validate repo — any repo value is tolerated and ignored", () => {
     const result = validateReport({
       agent_id: "bee-1",
       repo: "not-a-repo",
@@ -297,8 +314,10 @@ describe("validateReport", () => {
       duration_secs: 1,
       consecutive_failures: 0,
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.message).toContain("owner/name");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect((result.report as unknown as Record<string, unknown>).repo).toBeUndefined();
+    }
   });
 
   it("rejects missing run_id", () => {
@@ -809,7 +828,6 @@ describe("reserveHealthReportIdempotency", () => {
 
   const baseReport: HealthReport = {
     agent_id: "bee-1",
-    repo: "hivemoot/sandbox",
     run_id: "run-42",
     outcome: "success",
     duration_secs: 42,
@@ -928,25 +946,25 @@ describe("checkRateLimit", () => {
   });
 
   it("allows the first request", async () => {
-    const allowed = await checkRateLimit("inst-1", "bee-1", "repo", redis);
+    const allowed = await checkRateLimit("inst-1", "bee-1", redis);
     expect(allowed).toBe(true);
   });
 
-  it("blocks a second request within the window", async () => {
-    await checkRateLimit("inst-1", "bee-1", "repo", redis);
-    const allowed = await checkRateLimit("inst-1", "bee-1", "repo", redis);
+  it("blocks a second request within the window (per-agent)", async () => {
+    await checkRateLimit("inst-1", "bee-1", redis);
+    const allowed = await checkRateLimit("inst-1", "bee-1", redis);
     expect(allowed).toBe(false);
   });
 
   it("allows requests from different agents", async () => {
-    await checkRateLimit("inst-1", "bee-1", "repo", redis);
-    const allowed = await checkRateLimit("inst-1", "bee-2", "repo", redis);
+    await checkRateLimit("inst-1", "bee-1", redis);
+    const allowed = await checkRateLimit("inst-1", "bee-2", redis);
     expect(allowed).toBe(true);
   });
 
-  it("allows requests for different repos", async () => {
-    await checkRateLimit("inst-1", "bee-1", "repo-a", redis);
-    const allowed = await checkRateLimit("inst-1", "bee-1", "repo-b", redis);
+  it("allows requests from the same agent in different installations", async () => {
+    await checkRateLimit("inst-1", "bee-1", redis);
+    const allowed = await checkRateLimit("inst-2", "bee-1", redis);
     expect(allowed).toBe(true);
   });
 });
@@ -966,7 +984,6 @@ describe("recordHealthReport", () => {
   it("writes through Redis multi pipeline", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -979,10 +996,9 @@ describe("recordHealthReport", () => {
     expect(redis.multi).toHaveBeenCalledTimes(1);
   });
 
-  it("stores the latest report with default TTL when no next_run_at", async () => {
+  it("stores the latest report under a per-agent key (no repo) with default TTL when no next_run_at", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -993,7 +1009,7 @@ describe("recordHealthReport", () => {
     await recordHealthReport("inst-1", report, redis);
 
     expect(redis.set).toHaveBeenCalledWith(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
       report,
       { ex: 86400 },
     );
@@ -1004,7 +1020,6 @@ describe("recordHealthReport", () => {
     const nextRunAt = new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString();
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -1025,10 +1040,9 @@ describe("recordHealthReport", () => {
     expect(ttl).toBeLessThanOrEqual(14 * 60 * 60 * 2); // ~2x 14h
   });
 
-  it("adds to the runs sorted set", async () => {
+  it("adds to the runs sorted set under a per-agent key", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "failure",
       duration_secs: 64,
@@ -1041,7 +1055,7 @@ describe("recordHealthReport", () => {
     await recordHealthReport("inst-1", report, redis);
 
     expect(redis.zadd).toHaveBeenCalledWith(
-      "agent-health:runs:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:runs:inst-1:bee-1",
       {
         score: new Date("2026-02-24T10:00:00Z").getTime(),
         member: JSON.stringify(report),
@@ -1049,10 +1063,9 @@ describe("recordHealthReport", () => {
     );
   });
 
-  it("adds agent:repo to the index set", async () => {
+  it("adds the plain agent_id to the index set (no repo)", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 1,
@@ -1064,14 +1077,13 @@ describe("recordHealthReport", () => {
 
     expect(redis.sadd).toHaveBeenCalledWith(
       "agent-health:index:inst-1",
-      "bee-1:hivemoot/sandbox",
+      "bee-1",
     );
   });
 
   it("trims old entries from runs", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 1,
@@ -1085,7 +1097,7 @@ describe("recordHealthReport", () => {
     const cutoff = receivedMs - 24 * 60 * 60 * 1000;
 
     expect(redis.zremrangebyscore).toHaveBeenCalledWith(
-      "agent-health:runs:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:runs:inst-1:bee-1",
       "-inf",
       cutoff,
     );
@@ -1109,10 +1121,9 @@ describe("getOverview", () => {
     expect(result).toEqual([]);
   });
 
-  it("returns overview entries for indexed agents", async () => {
+  it("returns one entry per agent_id (per-agent, no repo)", async () => {
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "failure",
       duration_secs: 33,
@@ -1123,14 +1134,14 @@ describe("getOverview", () => {
       received_at: "2026-02-24T10:00:00Z",
     };
 
-    // Simulate state after recordHealthReport
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", report);
+    // Simulate state after recordHealthReport — plain agent_id index member.
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", report);
 
     const result = await getOverview("inst-1", redis);
     expect(result).toHaveLength(1);
     expect(result[0].agent_id).toBe("bee-1");
-    expect(result[0].repo).toBe("hivemoot/sandbox");
+    expect((result[0] as unknown as Record<string, unknown>).repo).toBeUndefined();
     expect(result[0].outcome).toBe("failure");
     expect(result[0].consecutive_failures).toBe(2);
     expect(result[0].model).toBe("openai/gpt-4o");
@@ -1139,10 +1150,9 @@ describe("getOverview", () => {
   });
 
   it("uses Redis pipeline for overview reads", async () => {
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 1,
@@ -1157,20 +1167,72 @@ describe("getOverview", () => {
   });
 
   it("removes stale index entry when latest key has expired", async () => {
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
     // No latest key stored → expired
 
     const result = await getOverview("inst-1", redis);
     expect(result).toHaveLength(0);
     // Stale entry should be removed from the index
+    expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1")).toBe(false);
+  });
+
+  it("self-heals a legacy agentId:repo index member with no backing latest key (SREM, no crash)", async () => {
+    // A leftover from the per-repo era. There is no per-agent latest key for it,
+    // so getOverview must SREM the stale legacy member and return nothing —
+    // without throwing on the unexpected member shape.
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
+
+    const result = await getOverview("inst-1", redis);
+    expect(result).toHaveLength(0);
     expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1:hivemoot/sandbox")).toBe(false);
   });
 
-  it("derives ok status for successful outcome without next_run_at", async () => {
+  it("self-heals a legacy agentId:repo member but still surfaces the agent when a per-agent key exists", async () => {
+    // The agent has migrated (a plain per-agent latest key exists) but a legacy
+    // member lingers in the index. getOverview reads the per-agent key via the
+    // best-effort agentId, returns one row, and SREMs the legacy member.
     redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      received_at: "2026-02-24T10:00:00Z",
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result).toHaveLength(1);
+    expect(result[0].agent_id).toBe("bee-1");
+    // The legacy member was self-healed away.
+    expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1:hivemoot/sandbox")).toBe(false);
+  });
+
+  it("collapses legacy + new members for the same agent into a single row", async () => {
+    // Both a legacy agentId:repo member and the new plain agentId member point at
+    // the same per-agent key. The read dedups → exactly one overview row.
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1", "bee-1:hivemoot/sandbox"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
+      agent_id: "bee-1",
+      run_id: "run-1",
+      outcome: "success",
+      duration_secs: 1,
+      consecutive_failures: 0,
+      received_at: "2026-02-24T10:00:00Z",
+    });
+
+    const result = await getOverview("inst-1", redis);
+    expect(result).toHaveLength(1);
+    expect(result[0].agent_id).toBe("bee-1");
+    // Legacy member healed; the canonical plain member remains.
+    expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1:hivemoot/sandbox")).toBe(false);
+    expect(redis._sets.get("agent-health:index:inst-1")?.has("bee-1")).toBe(true);
+  });
+
+  it("derives ok status for successful outcome without next_run_at", async () => {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
+      agent_id: "bee-1",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -1184,10 +1246,9 @@ describe("getOverview", () => {
 
   it("derives ok status for successful outcome with future next_run_at", async () => {
     const futureIso = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -1205,10 +1266,9 @@ describe("getOverview", () => {
     // received_at 2h ago, next_run_at 1h ago → interval was 1h, buffer 30min, now past both
     const receivedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     const nextRunAt = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
@@ -1223,10 +1283,9 @@ describe("getOverview", () => {
 
   it("derives failed status for failure outcome regardless of next_run_at", async () => {
     const futureIso = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "failure",
       duration_secs: 42,
@@ -1241,10 +1300,9 @@ describe("getOverview", () => {
   });
 
   it("derives failed status for timeout outcome", async () => {
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "timeout",
       duration_secs: 3600,
@@ -1257,22 +1315,17 @@ describe("getOverview", () => {
   });
 
   it("sorts entries by received_at descending", async () => {
-    redis._sets.set("agent-health:index:inst-1", new Set([
-      "bee-1:hivemoot/sandbox",
-      "bee-2:hivemoot/sandbox",
-    ]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1", "bee-2"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 42,
       consecutive_failures: 0,
       received_at: "2026-02-24T09:00:00Z",
     });
-    redis._store.set("agent-health:latest:inst-1:bee-2:hivemoot/sandbox", {
+    redis._store.set("agent-health:latest:inst-1:bee-2", {
       agent_id: "bee-2",
-      repo: "hivemoot/sandbox",
       run_id: "run-2",
       outcome: "failure",
       duration_secs: 20,
@@ -1299,15 +1352,14 @@ describe("getHistory", () => {
   });
 
   it("returns empty array when no history exists", async () => {
-    const result = await getHistory("inst-1", "bee-1", "repo", redis);
+    const result = await getHistory("inst-1", "bee-1", redis);
     expect(result).toEqual([]);
   });
 
-  it("returns parsed reports from sorted set", async () => {
+  it("returns parsed reports from the per-agent sorted set", async () => {
     const recentTimestamp = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
     const report: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-1",
       outcome: "success",
       duration_secs: 9,
@@ -1316,13 +1368,13 @@ describe("getHistory", () => {
       received_at: recentTimestamp,
     };
 
-    // Simulate stored sorted set data
-    const key = "agent-health:runs:inst-1:bee-1:hivemoot/sandbox";
+    // Simulate stored sorted set data — per-agent key, no repo.
+    const key = "agent-health:runs:inst-1:bee-1";
     redis._sortedSets.set(key, new Map([
       [JSON.stringify(report), new Date(recentTimestamp).getTime()],
     ]));
 
-    const result = await getHistory("inst-1", "bee-1", "hivemoot/sandbox", redis);
+    const result = await getHistory("inst-1", "bee-1", redis);
     expect(result).toHaveLength(1);
     expect(result[0].agent_id).toBe("bee-1");
     expect(result[0].outcome).toBe("success");
@@ -1330,7 +1382,7 @@ describe("getHistory", () => {
   });
 
   it("trims stale entries before returning", async () => {
-    await getHistory("inst-1", "bee-1", "repo", redis);
+    await getHistory("inst-1", "bee-1", redis);
     expect(redis.zremrangebyscore).toHaveBeenCalled();
   });
 });
@@ -1340,7 +1392,21 @@ describe("getHistory", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateHeartbeat", () => {
-  it("accepts a minimal heartbeat", () => {
+  it("accepts a minimal heartbeat (no repo)", () => {
+    const result = validateHeartbeat({
+      agent_id: "bee-1",
+      outcome: "heartbeat",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.heartbeat.agent_id).toBe("bee-1");
+      expect(result.heartbeat.outcome).toBe("heartbeat");
+      expect(result.heartbeat.received_at).toBeDefined();
+      expect((result.heartbeat as unknown as Record<string, unknown>).repo).toBeUndefined();
+    }
+  });
+
+  it("accepts (and ignores) a heartbeat that still carries repo — rollout tolerance", () => {
     const result = validateHeartbeat({
       agent_id: "bee-1",
       repo: "hivemoot/sandbox",
@@ -1348,10 +1414,7 @@ describe("validateHeartbeat", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.heartbeat.agent_id).toBe("bee-1");
-      expect(result.heartbeat.repo).toBe("hivemoot/sandbox");
-      expect(result.heartbeat.outcome).toBe("heartbeat");
-      expect(result.heartbeat.received_at).toBeDefined();
+      expect((result.heartbeat as unknown as Record<string, unknown>).repo).toBeUndefined();
     }
   });
 
@@ -1359,7 +1422,6 @@ describe("validateHeartbeat", () => {
     const futureIso = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
     const result = validateHeartbeat({
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       outcome: "heartbeat",
       next_run_at: futureIso,
     });
@@ -1400,14 +1462,16 @@ describe("validateHeartbeat", () => {
     if (!result.ok) expect(result.message).toContain("agent_id");
   });
 
-  it("rejects invalid repo format", () => {
+  it("does NOT validate repo — any repo value is tolerated and ignored", () => {
     const result = validateHeartbeat({
       agent_id: "bee-1",
       repo: "no-slash",
       outcome: "heartbeat",
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.message).toContain("repo");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect((result.heartbeat as unknown as Record<string, unknown>).repo).toBeUndefined();
+    }
   });
 
   it("rejects non-object body", () => {
@@ -1443,23 +1507,22 @@ describe("recordHeartbeat", () => {
 
   const baseHeartbeat: HeartbeatPayload = {
     agent_id: "bee-1",
-    repo: "hivemoot/sandbox",
     outcome: "heartbeat",
     received_at: "2026-03-14T12:00:00Z",
   };
 
-  it("stores a minimal heartbeat entry when no prior report exists", async () => {
+  it("stores a minimal heartbeat entry under a per-agent key when no prior report exists", async () => {
     await recordHeartbeat("inst-1", baseHeartbeat, redis);
 
     expect(redis.multi).toHaveBeenCalledTimes(1);
     expect(redis.set).toHaveBeenCalledWith(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
       expect.objectContaining({ outcome: "heartbeat" }),
       expect.objectContaining({ ex: expect.any(Number) }),
     );
     expect(redis.sadd).toHaveBeenCalledWith(
       "agent-health:index:inst-1",
-      "bee-1:hivemoot/sandbox",
+      "bee-1",
     );
   });
 
@@ -1472,7 +1535,6 @@ describe("recordHeartbeat", () => {
   it("patches existing report preserving run data", async () => {
     const existingReport: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-42",
       outcome: "success",
       duration_secs: 300,
@@ -1481,14 +1543,14 @@ describe("recordHeartbeat", () => {
     };
 
     redis._store.set(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
       existingReport,
     );
 
     await recordHeartbeat("inst-1", baseHeartbeat, redis);
 
     const stored = redis._store.get(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
     ) as Record<string, unknown>;
 
     // Run data preserved
@@ -1503,7 +1565,6 @@ describe("recordHeartbeat", () => {
     const futureIso = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
     const existingReport: HealthReport = {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-42",
       outcome: "success",
       duration_secs: 300,
@@ -1512,14 +1573,14 @@ describe("recordHeartbeat", () => {
     };
 
     redis._store.set(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
       existingReport,
     );
 
     await recordHeartbeat("inst-1", { ...baseHeartbeat, next_run_at: futureIso }, redis);
 
     const stored = redis._store.get(
-      "agent-health:latest:inst-1:bee-1:hivemoot/sandbox",
+      "agent-health:latest:inst-1:bee-1",
     ) as Record<string, unknown>;
 
     expect(stored.next_run_at).toBe(futureIso);
@@ -1539,10 +1600,9 @@ describe("getOverview (heartbeat status)", () => {
   });
 
   it("derives ok status for a heartbeat-only entry", async () => {
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       outcome: "heartbeat",
       received_at: new Date().toISOString(),
     });
@@ -1555,10 +1615,9 @@ describe("getOverview (heartbeat status)", () => {
 
   it("preserves failed status from patched report (heartbeat does not mask failure)", async () => {
     // Simulate: a failed run was stored, then a heartbeat patched received_at
-    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1:hivemoot/sandbox"]));
-    redis._store.set("agent-health:latest:inst-1:bee-1:hivemoot/sandbox", {
+    redis._sets.set("agent-health:index:inst-1", new Set(["bee-1"]));
+    redis._store.set("agent-health:latest:inst-1:bee-1", {
       agent_id: "bee-1",
-      repo: "hivemoot/sandbox",
       run_id: "run-42",
       outcome: "failure",
       duration_secs: 300,

@@ -8,9 +8,9 @@
  *        setup session cookie (for dashboard users).
  *        Query params:
  *          (none)                       → overview of all agents
- *          ?agent_id=X&repo=Y           → run history for one agent+repo
- *          ?history=true&agent_id=X&repo=Y
- *                                       → same as above (explicit history request)
+ *          ?agent_id=X                  → run history for one agent (per-agent)
+ *          ?history=true&agent_id=X     → same as above (explicit history request)
+ *        A `repo` param is accepted-and-ignored (health is per-agent now).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -132,7 +132,6 @@ export async function POST(request: NextRequest) {
   const allowed = await checkRateLimit(
     auth.installationId,
     report.agent_id,
-    report.repo,
     auth.redis,
   );
 
@@ -149,7 +148,7 @@ export async function POST(request: NextRequest) {
     }
     return agentHealthError(
       AGENT_HEALTH_ERROR.RATE_LIMITED,
-      "Rate limited — one report per agent per repo per 60 seconds",
+      "Rate limited — one report per agent per 60 seconds",
       429,
     );
   }
@@ -197,14 +196,13 @@ async function handleHeartbeat(body: unknown, request: NextRequest) {
   const allowed = await checkRateLimit(
     auth.installationId,
     heartbeat.agent_id,
-    heartbeat.repo,
     auth.redis,
   );
 
   if (!allowed) {
     return agentHealthError(
       AGENT_HEALTH_ERROR.RATE_LIMITED,
-      "Rate limited — one report per agent per repo per 60 seconds",
+      "Rate limited — one report per agent per 60 seconds",
       429,
     );
   }
@@ -222,39 +220,32 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const agentId = searchParams.get("agent_id");
-  const repo = searchParams.get("repo");
   const historyFlag = searchParams.get("history");
   const wantsHistory = historyFlag === "true";
+  // `repo` is accepted-and-ignored (health is per-agent now).
 
   // Null-installation sessions have no agents reporting. Return the same
   // empty shape the dashboard already renders gracefully.
   if (installationId === null) {
-    if (wantsHistory || agentId || repo) {
-      return NextResponse.json({ agent_id: agentId ?? "", repo: repo ?? "", history: [], runs: [] });
+    if (wantsHistory || agentId) {
+      return NextResponse.json({ agent_id: agentId ?? "", history: [], runs: [] });
     }
     return NextResponse.json({ agents: [] });
   }
 
-  if (wantsHistory && (!agentId || !repo)) {
+  if (wantsHistory && !agentId) {
     return agentHealthError(
       AGENT_HEALTH_ERROR.MISSING_FIELDS,
-      "history=true requires both agent_id and repo",
+      "history=true requires agent_id",
       400,
     );
   }
 
-  if (agentId && repo) {
+  if (agentId) {
     if (agentId.length < 1 || agentId.length > 64 || !AGENT_ID_PATTERN.test(agentId)) {
       return agentHealthError(
         AGENT_HEALTH_ERROR.VALIDATION_FAILED,
         "agent_id must be 1-64 chars and match [a-z0-9_-]",
-        400,
-      );
-    }
-    if (repo.length < 1 || repo.length > 200 || !repo.includes("/")) {
-      return agentHealthError(
-        AGENT_HEALTH_ERROR.VALIDATION_FAILED,
-        "repo must be 1-200 chars in owner/name format",
         400,
       );
     }
@@ -263,13 +254,11 @@ export async function GET(request: NextRequest) {
       const history = await getHistory(
         installationId,
         agentId,
-        repo,
         auth.redis,
       );
 
       return NextResponse.json({
         agent_id: agentId,
-        repo,
         history,
         runs: history,
       });
@@ -277,7 +266,6 @@ export async function GET(request: NextRequest) {
       console.error("[agent-health] Failed to fetch history", {
         installationId,
         agentId,
-        repo,
         error: err,
       });
       return agentHealthError(
@@ -286,14 +274,6 @@ export async function GET(request: NextRequest) {
         500,
       );
     }
-  }
-
-  if (agentId || repo) {
-    return agentHealthError(
-      AGENT_HEALTH_ERROR.MISSING_FIELDS,
-      "Both agent_id and repo are required for history queries",
-      400,
-    );
   }
 
   try {

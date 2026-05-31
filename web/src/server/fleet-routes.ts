@@ -14,13 +14,19 @@ import {
   validateRepo,
 } from "@/server/fleet-store";
 import { getAgentTokenSummary, TokenNotFoundError } from "@/server/agent-token-v1";
+import {
+  listInstallationRepos,
+  InstallationReposError,
+  type Fetcher,
+} from "@/server/github-installation-repos";
 
 export const FLEET_ERROR = {
   INVALID_BODY: "fleet_invalid_body",
   VALIDATION: "fleet_validation",
   INVALID_TOKEN: "fleet_invalid_token",
-  TOKEN_NOT_SCOPED: "fleet_token_not_scoped",
   REPO_NOT_COVERED: "fleet_repo_not_covered",
+  /** Couldn't enumerate the installation's repos (fail-closed; no agent). */
+  REPOS_UNAVAILABLE: "fleet_repos_unavailable",
   COVERAGE_CHECK_FAILED: "fleet_coverage_check_failed",
   NAME_TAKEN: "fleet_name_taken",
   NOT_FOUND: "fleet_not_found",
@@ -92,27 +98,28 @@ export function mapFleetStorageError(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Linked-token resolution
+// Linked-token validation (existence only — the token carries CAPABILITIES, not
+// repo scope; the dashboard cannot issue repo-scoped tokens).
 // ---------------------------------------------------------------------------
 
-export type ResolveTokenReposResult =
-  | { ok: true; repos: string[] }
+export type ValidateLinkedTokenResult =
+  | { ok: true }
   | { ok: false; response: NextResponse };
 
 /**
- * Validate that a linked capability token exists for this installation and is
- * repo-scoped, returning its `allowed_repos`. The token (managed on Credentials)
- * is the source of truth for the agent's repo scope — an agent can't be created
- * against a token that isn't scoped to any repo.
+ * Verify a linked capability token EXISTS for this installation. Existence-only:
+ * the token is the agent's capability bearer, decoupled from repo scope (repos
+ * come from `plugins.github.repos`, resolved against the installation). A missing
+ * token → INVALID_TOKEN. installationId is supplied by the route from the
+ * session — a guessed token name from another tenant resolves to a miss here.
  */
-export async function resolveTokenRepos(
+export async function validateLinkedToken(
   installationId: string,
   tokenName: string,
   redis: Redis,
-): Promise<ResolveTokenReposResult> {
-  let summary;
+): Promise<ValidateLinkedTokenResult> {
   try {
-    summary = await getAgentTokenSummary({ installationId, name: tokenName, redis });
+    await getAgentTokenSummary({ installationId, name: tokenName, redis });
   } catch (err) {
     if (err instanceof TokenNotFoundError) {
       return {
@@ -127,35 +134,130 @@ export async function resolveTokenRepos(
     }
     throw err;
   }
-  const repos = summary.policy?.allowed_repos ?? [];
-  if (repos.length === 0) {
-    return {
-      ok: false,
-      response: fleetError(
-        FLEET_ERROR.TOKEN_NOT_SCOPED,
-        `Token '${tokenName}' isn't scoped to any repo. Set its allowed repos on the Credentials screen, then try again.`,
-        400,
-        { field: "agent_token_name" },
-      ),
-    };
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// GitHub repo resolution (run whenever a github plugin block is PRESENT —
+// enabled or not — so an uncovered repo can never be persisted/shipped).
+// ---------------------------------------------------------------------------
+
+export type ResolveGithubReposResult =
+  | { ok: true; repos: string[] }
+  | { ok: false; response: NextResponse };
+
+export interface ResolveGithubReposOptions {
+  /**
+   * Behavior when `requested` is empty/undefined:
+   * - `true` (use when the github plugin is ENABLED): default to ALL installed
+   *   repos (and 400 REPO_NOT_COVERED if the installation has none — an enabled
+   *   github agent with zero repos has nothing to operate on).
+   * - `false` (use when the plugin is DISABLED): return `[]` WITHOUT calling the
+   *   lister at all (no repos requested, none to cover — nothing to fetch).
+   */
+  defaultAllWhenEmpty: boolean;
+  /** Injected only for tests; production uses the global `fetch`. */
+  fetcher?: Fetcher;
+}
+
+/**
+ * Resolve a github plugin's repo set against the installation's accessible
+ * repos. Fail-closed throughout — an agent is NEVER stored against repos the
+ * installation can't see, whether or not the plugin is enabled.
+ *
+ * - `requested` NON-EMPTY: each entry must be well-formed (`validateRepo`, else
+ *   VALIDATION) AND covered by the installation (case-insensitive match; the
+ *   installation's canonical casing is returned); results are deduped. Any
+ *   uncovered entry → 400 REPO_NOT_COVERED. (This path runs the coverage check
+ *   regardless of `defaultAllWhenEmpty` / enabled state.)
+ * - `requested` EMPTY/undefined: when `defaultAllWhenEmpty` is true, return ALL
+ *   installed repos (empty installation → 400 REPO_NOT_COVERED); when false,
+ *   return `[]` without touching the lister.
+ * - The lister throwing `InstallationReposError` → 503 REPOS_UNAVAILABLE
+ *   (fail-closed; no agent; never default to "all" on error).
+ */
+export async function resolveGithubRepos(
+  installationId: string,
+  requested: string[] | undefined,
+  opts: ResolveGithubReposOptions,
+): Promise<ResolveGithubReposResult> {
+  const hasRequested = Array.isArray(requested) && requested.length > 0;
+
+  // Disabled + nothing requested: nothing to cover, so don't even call the
+  // lister — return an empty set (the stored disabled block keeps repos: []).
+  if (!hasRequested && !opts.defaultAllWhenEmpty) {
+    return { ok: true, repos: [] };
   }
-  // Defense in depth: token policies are typeof-checked but not format-validated
-  // at issue time, and these repos flow to the reconciler's hivemoot.yaml. Reject
-  // any malformed (non-`owner/name`, traversal, whitespace) repo, fail-closed.
-  for (const r of repos) {
-    if (!validateRepo(r).ok) {
+
+  let installed: string[];
+  try {
+    installed = opts.fetcher
+      ? await listInstallationRepos(installationId, opts.fetcher)
+      : await listInstallationRepos(installationId);
+  } catch (err) {
+    if (err instanceof InstallationReposError) {
       return {
         ok: false,
         response: fleetError(
-          FLEET_ERROR.INVALID_TOKEN,
-          `Token '${tokenName}' has a malformed repo (${JSON.stringify(r)}). Fix its allowed repos on the Credentials screen.`,
-          400,
-          { field: "agent_token_name" },
+          FLEET_ERROR.REPOS_UNAVAILABLE,
+          "Couldn't read the repositories this installation can access. Try again in a moment.",
+          503,
+          { field: "plugins.github.repos" },
         ),
       };
     }
+    throw err;
   }
-  return { ok: true, repos: [...repos] };
+
+  if (installed.length === 0) {
+    return {
+      ok: false,
+      response: fleetError(
+        FLEET_ERROR.REPO_NOT_COVERED,
+        "The Hivemoot Bot isn't installed on any repository. Install it on a repo, then try again.",
+        400,
+        { field: "plugins.github.repos" },
+      ),
+    };
+  }
+
+  // Case-insensitive lookup → canonical casing as the installation reports it.
+  const canonicalByLower = new Map<string, string>();
+  for (const r of installed) canonicalByLower.set(r.toLowerCase(), r);
+
+  if (hasRequested) {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const r of requested as string[]) {
+      const v = validateRepo(r);
+      if (!v.ok) {
+        return {
+          ok: false,
+          response: fleetError(FLEET_ERROR.VALIDATION, v.message, 400, { field: "plugins.github.repos" }),
+        };
+      }
+      const canonical = canonicalByLower.get(v.value.toLowerCase());
+      if (!canonical) {
+        return {
+          ok: false,
+          response: fleetError(
+            FLEET_ERROR.REPO_NOT_COVERED,
+            `Repository '${v.value}' isn't accessible to this installation. Pick a repo the Hivemoot Bot is installed on.`,
+            400,
+            { field: "plugins.github.repos" },
+          ),
+        };
+      }
+      if (!seen.has(canonical)) {
+        seen.add(canonical);
+        out.push(canonical);
+      }
+    }
+    return { ok: true, repos: out };
+  }
+
+  // Empty request + defaultAllWhenEmpty: every repo the installation can access.
+  return { ok: true, repos: [...installed] };
 }
 
 // ---------------------------------------------------------------------------

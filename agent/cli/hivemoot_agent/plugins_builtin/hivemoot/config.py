@@ -14,7 +14,6 @@ YAML shape:
         health:
           enabled: true
           base_url: https://www.hivemoot.dev
-          repo: hivemoot/hivemoot
           heartbeat_interval_secs: 120
         tasks:
           enabled: true
@@ -58,24 +57,13 @@ class HivemootHealthConfig(StrictPluginConfig):
             "environments."
         ),
     )
-    repo: str = Field(
-        default="",
-        description=(
-            "Repo label (``owner/name``) reported with every heartbeat "
-            "and run report.  Empty = derive from the github plugin's "
-            "``repos[0]`` at validate() time; still empty after that "
-            "is a validation error.  Task-dispatch agents that service "
-            "many repos should set a synthetic label (e.g. "
-            "``hivemoot/attendant``)."
-        ),
-    )
     heartbeat_interval_secs: int = Field(
         default=120,
         ge=1,
         description=(
-            "Seconds between heartbeat posts.  The backend rate-limits "
-            "at one per agent+repo per 60s; keep this >= 60 to avoid "
-            "wasted 429s."
+            "Seconds between heartbeat posts.  Health is a per-agent "
+            "signal; the backend rate-limits at one per agent per 60s, "
+            "so keep this >= 60 to avoid wasted 429s."
         ),
     )
     post_run_reports: bool = Field(

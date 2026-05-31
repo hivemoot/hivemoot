@@ -6,7 +6,6 @@ import {
   getGroupStatus,
   GROUP_STATUS_META,
   GROUP_STATUS_ORDER,
-  type GroupMode,
   type GroupStatus,
 } from "./agent-health-grouping";
 import { MarkdownContent } from "./MarkdownContent";
@@ -44,7 +43,6 @@ interface TokenUsage {
 
 interface AgentOverviewEntry {
   agent_id: string;
-  repo: string;
   run_id?: string;
   outcome?: "success" | "failure" | "timeout";
   duration_secs?: number;
@@ -62,7 +60,6 @@ interface AgentOverviewEntry {
 
 interface HealthHistoryEntry {
   agent_id: string;
-  repo: string;
   run_id: string;
   outcome: "success" | "failure" | "timeout";
   duration_secs: number;
@@ -293,8 +290,6 @@ function TokenSummary({ tu }: { tu: TokenUsage }) {
   );
 }
 
-const GROUP_MODE_STORAGE_KEY = "hivemoot-dashboard-group";
-
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const seconds = Math.floor(diff / 1000);
@@ -331,22 +326,17 @@ const REFRESH_INTERVAL_MS = 30_000; // 30 seconds
 
 export default function AgentHealthDashboard() {
   const [agents, setAgents] = useState<AgentOverviewEntry[]>([]);
-  const [groupMode, setGroupMode] = useState<GroupMode>("repo");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<{
     agent_id: string;
-    repo: string;
   } | null>(null);
   const [history, setHistory] = useState<HealthHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const historyAbortRef = useRef<AbortController | null>(null);
   const historyRequestIdRef = useRef(0);
-  const groupedAgents = useMemo(
-    () => buildGroups(agents, groupMode),
-    [agents, groupMode],
-  );
+  const groupedAgents = useMemo(() => buildGroups(agents), [agents]);
 
   const fetchOverview = useCallback(async () => {
     try {
@@ -376,43 +366,24 @@ export default function AgentHealthDashboard() {
   }, [fetchOverview]);
 
   useEffect(() => {
-    try {
-      const savedGroupMode = window.localStorage.getItem(GROUP_MODE_STORAGE_KEY);
-      if (savedGroupMode === "repo" || savedGroupMode === "agent") {
-        setGroupMode(savedGroupMode);
-      }
-    } catch {
-      // Ignore localStorage errors and keep default grouping mode.
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(GROUP_MODE_STORAGE_KEY, groupMode);
-    } catch {
-      // Ignore localStorage errors and continue with in-memory preference.
-    }
-  }, [groupMode]);
-
-  useEffect(() => {
     return () => {
       historyAbortRef.current?.abort();
     };
   }, []);
 
-  async function viewHistory(agentId: string, repo: string) {
+  async function viewHistory(agentId: string) {
     historyAbortRef.current?.abort();
     const abortController = new AbortController();
     historyAbortRef.current = abortController;
     const requestId = ++historyRequestIdRef.current;
 
-    setSelectedAgent({ agent_id: agentId, repo });
+    setSelectedAgent({ agent_id: agentId });
     setHistory([]);
     setHistoryError(null);
     setHistoryLoading(true);
 
     try {
-      const params = new URLSearchParams({ agent_id: agentId, repo });
+      const params = new URLSearchParams({ agent_id: agentId });
       const res = await fetch(`/api/agent-health?${params}`, {
         signal: abortController.signal,
       });
@@ -482,7 +453,6 @@ export default function AgentHealthDashboard() {
           <h2 className="text-lg font-semibold text-[#fafafa]">
             {selectedAgent.agent_id}
           </h2>
-          <p className="mt-1 text-sm text-zinc-400">{selectedAgent.repo}</p>
         </div>
 
         {historyLoading ? (
@@ -599,37 +569,6 @@ export default function AgentHealthDashboard() {
 
   return (
     <div className="space-y-6">
-      <div
-        className="inline-flex rounded-lg border border-white/[0.06] bg-[#141414] p-1"
-        role="group"
-        aria-label="Group dashboard by"
-      >
-        <button
-          type="button"
-          onClick={() => setGroupMode("repo")}
-          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            groupMode === "repo"
-              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
-              : "text-zinc-400 hover:text-zinc-300"
-          }`}
-          aria-pressed={groupMode === "repo"}
-        >
-          By Repo
-        </button>
-        <button
-          type="button"
-          onClick={() => setGroupMode("agent")}
-          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            groupMode === "agent"
-              ? "border border-honey-500/40 bg-honey-500/10 text-honey-400"
-              : "text-zinc-400 hover:text-zinc-300"
-          }`}
-          aria-pressed={groupMode === "agent"}
-        >
-          By Agent
-        </button>
-      </div>
-
       <div className="space-y-6">
         {groupedAgents.map((group) => (
           <section key={group.name}>
@@ -657,8 +596,8 @@ export default function AgentHealthDashboard() {
                 const nextRunIn = relativeTimeUntil(agent.next_run_at);
                 return (
                   <button
-                    key={`${group.name}:${agent.agent_id}:${agent.repo}`}
-                    onClick={() => viewHistory(agent.agent_id, agent.repo)}
+                    key={`${group.name}:${agent.agent_id}:${agent.received_at}`}
+                    onClick={() => viewHistory(agent.agent_id)}
                     className="group rounded-2xl border border-white/[0.06] bg-[#141414] p-5 text-left transition-colors hover:border-white/10"
                   >
                     <div className="flex items-center justify-between">
@@ -669,7 +608,7 @@ export default function AgentHealthDashboard() {
                           }`}
                         />
                         <span className="truncate text-sm font-medium text-[#fafafa]">
-                          {groupMode === "repo" ? agent.agent_id : agent.repo}
+                          {agent.agent_id}
                         </span>
                       </div>
                       <span

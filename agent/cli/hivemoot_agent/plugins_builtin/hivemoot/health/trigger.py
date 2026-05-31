@@ -45,13 +45,12 @@ class HealthHeartbeatTrigger:
 
         token_file = str(cfg.token_file) if cfg.token_file else ""
         agent_id = self._plugin.resolved_agent_id()
-        repo = self._plugin.resolved_health_repo()
         base_url = cfg.health.base_url
         interval = cfg.health.heartbeat_interval_secs
 
-        if not agent_id or not repo or not base_url:
+        if not agent_id or not base_url:
             print(
-                "[hivemoot-health] missing agent_id/repo/base_url; "
+                "[hivemoot-health] missing agent_id/base_url; "
                 "heartbeat trigger idle",
                 file=sys.stderr, flush=True,
             )
@@ -60,7 +59,7 @@ class HealthHeartbeatTrigger:
         self._stop_event.clear()
         print(
             f"[hivemoot-health] heartbeating {base_url} every {interval}s "
-            f"(agent={agent_id} repo={repo})",
+            f"(agent={agent_id})",
             file=sys.stderr, flush=True,
         )
 
@@ -70,17 +69,17 @@ class HealthHeartbeatTrigger:
         # POST.
         if self._stop_event.is_set():
             return
-        self._tick(base_url, token_file, agent_id, repo)
+        self._tick(base_url, token_file, agent_id)
 
         while not self._stop_event.wait(interval):
-            self._tick(base_url, token_file, agent_id, repo)
+            self._tick(base_url, token_file, agent_id)
 
     def stop(self) -> None:
         self._stop_event.set()
 
     @staticmethod
     def _tick(
-        base_url: str, token_file: str, agent_id: str, repo: str,
+        base_url: str, token_file: str, agent_id: str,
     ) -> None:
         # Re-resolve the bearer per tick so token rotation takes
         # effect within one interval rather than waiting for a
@@ -89,18 +88,18 @@ class HealthHeartbeatTrigger:
         bearer = auth.resolve_agent_token(token_file)
         try:
             ok = api.post_heartbeat(
-                base_url, bearer, agent_id=agent_id, repo=repo,
+                base_url, bearer, agent_id=agent_id,
             )
             if not ok:
                 print(
                     f"[hivemoot-health] heartbeat returned non-200 "
-                    f"(agent={agent_id} repo={repo})",
+                    f"(agent={agent_id})",
                     file=sys.stderr, flush=True,
                 )
         except Exception as exc:
             print(
                 f"[hivemoot-health] heartbeat error "
-                f"(agent={agent_id} repo={repo}): "
+                f"(agent={agent_id}): "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr, flush=True,
             )

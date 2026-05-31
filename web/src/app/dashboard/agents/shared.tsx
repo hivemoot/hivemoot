@@ -7,10 +7,11 @@
 import type { StatusTone } from "@/app/dashboard/ui";
 import type {
   AgentHealthStatus,
-  AgentTriggers,
+  FleetPlugins,
+  PluginKey,
   TokenUsage,
-  TriggerKey,
 } from "./types";
+import { PLUGIN_LABELS, PLUGIN_ORDER } from "./types";
 
 // ---------------------------------------------------------------------------
 // Status mapping
@@ -50,37 +51,15 @@ export function outcomeTone(outcome: "success" | "failure" | "timeout"): StatusT
 }
 
 // ---------------------------------------------------------------------------
-// Trigger labels
+// Plugins (replaces the old flat-triggers helpers)
 // ---------------------------------------------------------------------------
 
-export const TRIGGER_ORDER: TriggerKey[] = [
-  "schedule",
-  "pull_requests",
-  "mentions",
-  "tasks",
-  "war_rooms",
-];
-
-export const TRIGGER_LABELS: Record<TriggerKey, string> = {
-  schedule: "Schedule",
-  pull_requests: "Pull requests",
-  mentions: "Mentions",
-  tasks: "Tasks",
-  war_rooms: "War rooms",
-};
-
-/** Short chip labels for the list view. */
-export const TRIGGER_CHIP_LABELS: Record<TriggerKey, string> = {
-  schedule: "schedule",
-  pull_requests: "PRs",
-  mentions: "mentions",
-  tasks: "tasks",
-  war_rooms: "war rooms",
-};
-
-export function enabledTriggerKeys(triggers: AgentTriggers): TriggerKey[] {
-  return TRIGGER_ORDER.filter((k) => triggers[k].enabled);
+/** The plugin keys an agent has enabled, in canonical render order. */
+export function enabledPluginKeys(plugins: FleetPlugins): PluginKey[] {
+  return PLUGIN_ORDER.filter((k) => plugins[k]?.enabled === true);
 }
+
+export { PLUGIN_LABELS };
 
 // ---------------------------------------------------------------------------
 // Time + number formatting (mirrors AgentHealthDashboard)

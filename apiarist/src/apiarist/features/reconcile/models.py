@@ -39,39 +39,83 @@ class ResolvedEngine:
     tool_options: dict[str, str] | None
 
 
-@dataclass(frozen=True)
-class Triggers:
-    """Flattened trigger config — the shape render.py consumes."""
+# ---------------------------------------------------------------------------
+# Plugins — the canonical agent-config shape (mirrors `FleetPlugins` in
+# web/src/server/fleet-store.ts). `repos` live ONLY under `plugins.github`;
+# the old top-level `repos` + `triggers` shape is gone (v2 of the contract).
+# ---------------------------------------------------------------------------
 
-    schedule_enabled: bool
-    schedule_interval_secs: int
-    schedule_jitter_secs: int
-    schedule_prompt: str
-    pr_enabled: bool
-    pr_watch_new: bool
-    pr_watch_reviews: bool
-    pr_authors: tuple[str, ...]
-    pr_poll_secs: int
-    mentions_enabled: bool
-    mentions_poll_secs: int
-    tasks_enabled: bool
-    war_rooms_enabled: bool
-    war_rooms_contribute: bool
+
+@dataclass(frozen=True)
+class GithubPlugin:
+    """The `github` plugin — the ONLY place `repos` lives.
+
+    Field names/types mirror `GithubPlugin` in web/src/server/fleet-store.ts.
+    The three `watch_*` flags are the plugin's triggers; `poll_interval_secs`
+    is the web-side field name (rendered as `watch_poll_interval_secs`).
+    `watch_new_prs_authors` is empty when react-to-all-authors.
+    """
+
+    enabled: bool
+    repos: tuple[str, ...]
+    watch_new_prs: bool
+    watch_review_requests: bool
+    watch_mentions: bool
+    watch_new_prs_authors: tuple[str, ...]
+    poll_interval_secs: int
+
+
+@dataclass(frozen=True)
+class SchedulePlugin:
+    """The `schedule` plugin — periodic prompt ticks (rendered to `cron`)."""
+
+    enabled: bool
+    interval_secs: int
+    jitter_secs: int
+    prompt: str
+
+
+@dataclass(frozen=True)
+class TasksPlugin:
+    """The `tasks` plugin — claims from the dashboard queue (no v1 config)."""
+
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class WarRoomsPlugin:
+    """The `war_rooms` plugin — observe, and optionally contribute."""
+
+    enabled: bool
+    contribute: bool
+
+
+@dataclass(frozen=True)
+class FleetPlugins:
+    """The set of plugins an agent can enable. Each is OPTIONAL — an agent only
+    carries the plugins it has configured (mirrors `FleetPlugins` in the web)."""
+
+    github: GithubPlugin | None = None
+    schedule: SchedulePlugin | None = None
+    tasks: TasksPlugin | None = None
+    war_rooms: WarRoomsPlugin | None = None
 
 
 @dataclass(frozen=True)
 class DesiredAgent:
-    """One agent from the backend's desired-state roster."""
+    """One agent from the backend's desired-state roster.
+
+    `repos` is NOT a top-level field — it lives only under `plugins.github.repos`.
+    """
 
     name: str
-    repos: tuple[str, ...]
     enabled: bool
     managed: bool
     config_version: int
     engine: ResolvedEngine
     skills: tuple[str, ...]
     system_prompt: str
-    triggers: Triggers
+    plugins: FleetPlugins
     token_name: str
     agent_role: str
 

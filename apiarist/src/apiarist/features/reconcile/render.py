@@ -6,6 +6,14 @@ driven by the desired-state entry instead of static YAML. Produces the
 content-addressed `config_hash` used to detect "changed" without inspecting a
 running container's internals.
 
+This is a near-passthrough of the agent's `plugins` block (the canonical config
+shape — mirrors `FleetPlugins` in web/src/server/fleet-store.ts) plus the always-
+on plumbing the dashboard never exposes: `hivemoot.health` (per-agent, NO repo),
+the `hivemoot.apiarist` token broker (its `repo` = `plugins.github.repos[0]` when
+github is enabled, else omitted — task-only agents mint per-task), and
+`github_workflows`. The `github`/`cron`/`tasks`/`war_rooms` blocks are emitted
+only when their plugin is enabled. `repos` live ONLY under `plugins.github`.
+
 NOTE: the exact `hivemoot.yaml` plugin schema must be re-verified against the
 agent runtime when the reconciler is first ENABLED on a hive (it ships disabled).
 Plugin-block ORDER is load-bearing: `hivemoot` is emitted before `github` so the
@@ -55,7 +63,10 @@ def render_agent(
     return RenderedContainer(
         container_name=container_name_for(agent.name),
         agent_name=agent.name,
-        repo=agent.repos[0],  # primary repo — label/observability only
+        # The `dev.hivemoot.repo` Docker label: the primary github repo when the
+        # github plugin is enabled, else "" (label-only/observability; a task-
+        # only agent has no repo and an empty label is safe).
+        repo=_primary_repo(agent),
         engine_id=agent.engine.id,
         image=image,
         hivemoot_yaml=hivemoot_yaml,
@@ -65,61 +76,73 @@ def render_agent(
     )
 
 
+def _primary_repo(agent: DesiredAgent) -> str:
+    """The agent's primary repo: `plugins.github.repos[0]` when the github
+    plugin is enabled and has repos, else "". Repos live ONLY under github."""
+    github = agent.plugins.github
+    if github is not None and github.enabled and github.repos:
+        return github.repos[0]
+    return ""
+
+
 def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
-    t = agent.triggers
+    p = agent.plugins
     base = backend_url.rstrip("/")
+    primary_repo = _primary_repo(agent)
 
     # hivemoot plugin (emitted FIRST — load-bearing order for the broker path).
-    # health + apiarist are single-repo config fields; use the primary repo.
-    primary_repo = agent.repos[0]
+    # health is per-agent now: NO `repo` field. The apiarist broker's `repo` is
+    # the primary github repo when github is enabled; OMITTED entirely for
+    # task-only agents (they mint per-task, so there's no single repo to broker).
     hivemoot: dict[str, Any] = {
         "token_file": "/run/secrets/hivemoot-agent-token",
-        "health": {"enabled": True, "repo": primary_repo},
+        "health": {"enabled": True},
         "github_workflows": {
             "enabled": True,
             "role_name": agent.name,
             "workspace": "/data/workspace",
         },
-        "apiarist": {
-            "enabled": True,
-            "socket_path": "/run/apiarist.sock",
-            "repo": primary_repo,
-        },
+        "apiarist": _apiarist_block(primary_repo),
     }
-    if t.tasks_enabled:
+    if p.tasks is not None and p.tasks.enabled:
         hivemoot["tasks"] = {
             "enabled": True,
             "claim_url": f"{base}/api/tasks/claim",
             "execute_base_url": f"{base}/api/tasks",
             "workspace": "/data/workspace",
         }
-    if t.war_rooms_enabled:
-        hivemoot["war_rooms"] = {"enabled": True}
+    if p.war_rooms is not None and p.war_rooms.enabled:
+        hivemoot["war_rooms"] = {"enabled": True, "contribute": p.war_rooms.contribute}
 
-    # github plugin (brokered installation token via apiarist subscriber).
-    github: dict[str, Any] = {
-        "repos": list(agent.repos),
-        "token_source": "subscriber",
-        "workspace": "/data/workspace",
-        "watch_mentions": t.mentions_enabled,
-        "watch_new_prs": t.pr_enabled and t.pr_watch_new,
-        "watch_review_requests": t.pr_enabled and t.pr_watch_reviews,
-    }
-    if t.pr_enabled and t.pr_authors:
-        github["watch_new_prs_authors"] = list(t.pr_authors)
-    github["watch_poll_interval_secs"] = t.pr_poll_secs if t.pr_enabled else t.mentions_poll_secs
+    plugins: dict[str, Any] = {"hivemoot": hivemoot}
 
-    plugins: dict[str, Any] = {"hivemoot": hivemoot, "github": github}
+    # github plugin (brokered installation token via apiarist subscriber) — only
+    # when the github plugin is enabled. Near-passthrough of plugins.github.
+    github_plugin = p.github
+    if github_plugin is not None and github_plugin.enabled:
+        github: dict[str, Any] = {
+            "repos": list(github_plugin.repos),
+            "watch_new_prs": github_plugin.watch_new_prs,
+            "watch_review_requests": github_plugin.watch_review_requests,
+            "watch_mentions": github_plugin.watch_mentions,
+        }
+        if github_plugin.watch_new_prs_authors:
+            github["watch_new_prs_authors"] = list(github_plugin.watch_new_prs_authors)
+        github["watch_poll_interval_secs"] = github_plugin.poll_interval_secs
+        github["token_source"] = "subscriber"
+        github["workspace"] = "/data/workspace"
+        plugins["github"] = github
 
-    # cron plugin (periodic scan) — only when the schedule trigger is enabled.
-    if t.schedule_enabled:
+    # cron plugin (periodic scan) — only when the schedule plugin is enabled.
+    schedule = p.schedule
+    if schedule is not None and schedule.enabled:
         plugins["cron"] = {
             "schedules": [
                 {
                     "name": "autonomous",
-                    "schedule": f"@every {t.schedule_interval_secs}s",
-                    "jitter_secs": t.schedule_jitter_secs,
-                    "prompt": t.schedule_prompt,
+                    "schedule": f"@every {schedule.interval_secs}s",
+                    "jitter_secs": schedule.jitter_secs,
+                    "prompt": schedule.prompt,
                 }
             ]
         }
@@ -127,10 +150,23 @@ def _render_hivemoot_yaml(agent: DesiredAgent, *, backend_url: str) -> str:
     return yaml.safe_dump({"plugins": plugins}, sort_keys=False, default_flow_style=False)
 
 
+def _apiarist_block(primary_repo: str) -> dict[str, Any]:
+    """Always-on token broker. Its `repo` is the primary github repo when github
+    is enabled; the key is OMITTED entirely for task-only agents (no repo)."""
+    block: dict[str, Any] = {"enabled": True, "socket_path": "/run/apiarist.sock"}
+    if primary_repo:
+        block["repo"] = primary_repo
+    return block
+
+
 def _render_identity(agent: DesiredAgent) -> str:
     # The image's root_system_prompt.md provides the non-negotiable baseline;
     # identity.md carries this agent's persona + operator system prompt.
-    header = f"# Agent: {agent.name}\n\nRepositories: {', '.join(agent.repos)}\n"
+    github = agent.plugins.github
+    repos = list(github.repos) if (github is not None and github.enabled) else []
+    header = f"# Agent: {agent.name}\n"
+    if repos:
+        header += f"\nRepositories: {', '.join(repos)}\n"
     if agent.skills:
         header += f"Skills: {', '.join(agent.skills)}\n"
     body = agent.system_prompt.strip()
@@ -160,7 +196,8 @@ def _render_env(agent: DesiredAgent, *, backend_url: str) -> dict[str, str]:
         var, path = _PROVIDER_KEY_FILE_ENV[provider]
         env[var] = path
 
-    if agent.triggers.tasks_enabled:
+    tasks = agent.plugins.tasks
+    if tasks is not None and tasks.enabled:
         base = backend_url.rstrip("/")
         env["AGENT_TASK_CLAIM_URL"] = f"{base}/api/tasks/claim"
         env["AGENT_TASK_EXECUTE_BASE_URL"] = f"{base}/api/tasks"

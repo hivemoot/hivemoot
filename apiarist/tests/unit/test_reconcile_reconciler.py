@@ -8,10 +8,11 @@ from apiarist.features.reconcile.client import FleetUnavailableError, NotModifie
 from apiarist.features.reconcile.models import (
     DesiredAgent,
     DesiredState,
+    FleetPlugins,
+    GithubPlugin,
     ManagedContainer,
     RenderedContainer,
     ResolvedEngine,
-    Triggers,
 )
 from apiarist.features.reconcile.reconcile import Reconciler
 
@@ -19,29 +20,23 @@ IMAGE = "ghcr.io/hivemoot/agent:latest"
 ALLOWLIST = ["ghcr.io/hivemoot/agent"]
 
 
-def _triggers() -> Triggers:
-    return Triggers(
-        schedule_enabled=False,
-        schedule_interval_secs=21600,
-        schedule_jitter_secs=600,
-        schedule_prompt="",
-        pr_enabled=False,
-        pr_watch_new=True,
-        pr_watch_reviews=True,
-        pr_authors=(),
-        pr_poll_secs=300,
-        mentions_enabled=False,
-        mentions_poll_secs=90,
-        tasks_enabled=False,
-        war_rooms_enabled=False,
-        war_rooms_contribute=False,
+def _plugins() -> FleetPlugins:
+    return FleetPlugins(
+        github=GithubPlugin(
+            enabled=True,
+            repos=("hivemoot/hivemoot",),
+            watch_new_prs=True,
+            watch_review_requests=True,
+            watch_mentions=False,
+            watch_new_prs_authors=(),
+            poll_interval_secs=300,
+        )
     )
 
 
 def _agent(name: str = "builder", enabled: bool = True, managed: bool = True) -> DesiredAgent:
     return DesiredAgent(
         name=name,
-        repos=("hivemoot/hivemoot",),
         enabled=enabled,
         managed=managed,
         config_version=1,
@@ -50,7 +45,7 @@ def _agent(name: str = "builder", enabled: bool = True, managed: bool = True) ->
         ),
         skills=(),
         system_prompt="hi",
-        triggers=_triggers(),
+        plugins=_plugins(),
         token_name=name,
         agent_role=name,
     )

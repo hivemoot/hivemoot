@@ -5,8 +5,10 @@
  *        agents for adoption.
  * POST → register an agent that LINKS an existing capability token. The flow
  *        never mints/mutates/revokes a token — it validates the selected token
- *        exists and is repo-scoped, and snapshots its `allowed_repos` as the
- *        agent's repos. installationId always comes from the session.
+ *        EXISTS (capabilities only). When the github plugin is enabled it
+ *        resolves the requested repos against the installation's accessible
+ *        repos (fail-closed) and writes the resolved list back into
+ *        `plugins.github.repos`. installationId always comes from the session.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -18,7 +20,8 @@ import {
   readJsonObject,
   mapFleetStorageError,
   checkFleetCreateRateLimit,
-  resolveTokenRepos,
+  validateLinkedToken,
+  resolveGithubRepos,
 } from "@/server/fleet-routes";
 import {
   createAgent,
@@ -61,8 +64,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       getOverview(installationId, auth.redis),
     ]);
 
-    // An agent may operate on several repos and report health per repo — join by
-    // agent_id and keep the most recent health entry.
+    // Health is a per-agent signal (one entry per agent_id). The map is a
+    // defensive collapse — a duplicate agent_id keeps the most recent entry.
     const latestByAgent = new Map<string, HealthOverviewEntry>();
     for (const h of overview) {
       const prev = latestByAgent.get(h.agent_id);
@@ -74,9 +77,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // Observed-only: a health record whose agent_id has no registry record yet
     // (e.g. statically-deployed agents during migration). Offered for adoption.
+    // Health is per-agent now — surface last-seen instead of a repo.
     const observed = overview
       .filter((h) => !registeredNames.has(h.agent_id))
-      .map((h) => ({ agent_id: h.agent_id, repo: h.repo, status: h.status, received_at: h.received_at }));
+      .map((h) => ({ agent_id: h.agent_id, status: h.status, received_at: h.received_at }));
 
     return NextResponse.json({ agents: view, observed });
   } catch (err) {
@@ -103,7 +107,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const validation = validateCreateAgentInput(parsed.body);
   if (!validation.ok) {
-    const code = validation.field === "triggers.queen" ? FLEET_ERROR.QUEEN_NOT_SUPPORTED : FLEET_ERROR.VALIDATION;
+    const code = validation.field === "plugins.queen" ? FLEET_ERROR.QUEEN_NOT_SUPPORTED : FLEET_ERROR.VALIDATION;
     return fleetError(code, validation.message, 400, { field: validation.field });
   }
   const input = validation.value;
@@ -117,17 +121,29 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Link an EXISTING capability token. The token (managed on Credentials) is the
-  // source of truth for BOTH capabilities and repo scope — validate it exists and
-  // is repo-scoped, then snapshot its allowed_repos.
-  const repos = await resolveTokenRepos(installationId, input.agent_token_name, auth.redis);
-  if (!repos.ok) return repos.response;
+  // Link an EXISTING capability token — existence only (capabilities, not repo
+  // scope). installationId is the session's, so a guessed cross-tenant token
+  // name resolves to a miss here.
+  const tokenCheck = await validateLinkedToken(installationId, input.agent_token_name, auth.redis);
+  if (!tokenCheck.ok) return tokenCheck.response;
+
+  // Whenever a github plugin block is PRESENT (enabled or not), resolve its
+  // repos against the installation's accessible repos (fail-closed) and write
+  // the canonical resolved list back. defaultAllWhenEmpty mirrors enabled:
+  // enabled+empty → all installed; present+non-empty → coverage-checked;
+  // disabled+empty → stays []. An uncovered repo can never be stored.
+  if (input.plugins.github) {
+    const resolved = await resolveGithubRepos(installationId, input.plugins.github.repos, {
+      defaultAllWhenEmpty: input.plugins.github.enabled,
+    });
+    if (!resolved.ok) return resolved.response;
+    input.plugins.github.repos = resolved.repos;
+  }
 
   try {
     const record = await createAgent({
       installationId,
       input,
-      repos: repos.repos,
       createdBy: auth.session.userLogin,
       agentTokenName: input.agent_token_name,
       redis: auth.redis,

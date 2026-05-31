@@ -60,6 +60,15 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.base_url, "https://www.hivemoot.dev")
         self.assertEqual(cfg.heartbeat_interval_secs, 120)
         self.assertTrue(cfg.post_run_reports)
+        # Health is a per-agent signal — there is no repo dimension.
+        self.assertFalse(hasattr(cfg, "repo"))
+
+    def test_health_repo_field_removed(self) -> None:
+        # The repo field was dropped (health is per-agent now); a
+        # leftover ``repo:`` in fleet YAML must surface as a strict
+        # validation error rather than being silently accepted.
+        with self.assertRaises(ValidationError):
+            HivemootHealthConfig(repo="o/r")
 
     def test_tasks_defaults(self) -> None:
         cfg = HivemootTasksConfig()

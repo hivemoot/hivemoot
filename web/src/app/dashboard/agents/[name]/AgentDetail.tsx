@@ -19,17 +19,19 @@ import type {
   AgentDetailResponse,
   FleetAgent,
   FleetErrorBody,
+  GithubPlugin,
   HealthReport,
+  SchedulePlugin,
+  WarRoomsPlugin,
 } from "../types";
+import { PLUGIN_LABELS } from "../types";
 import {
   ArrowLeftIcon,
   EngineIcon,
-  enabledTriggerKeys,
+  enabledPluginKeys,
   outcomeTone,
   relativeTime,
-  RepoIcon,
   TokenIcon,
-  TRIGGER_LABELS,
 } from "../shared";
 
 const REFRESH_INTERVAL_MS = 30_000; // 30s — matches the rest of the dashboard
@@ -265,12 +267,12 @@ export function AgentDetail({ name }: { name: string }) {
           <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
             {agent.display_name && <span className="font-mono text-zinc-500">{agent.name}</span>}
             <span className="inline-flex items-center gap-1.5">
-              <RepoIcon className="h-3.5 w-3.5 text-zinc-600" />
-              {agent.repos.length > 0 ? agent.repos.join(", ") : "No repos"}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
               <EngineIcon className="h-3.5 w-3.5 text-zinc-600" />
               <span className="font-mono">{agent.engine}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <TokenIcon className="h-3.5 w-3.5 text-zinc-600" />
+              <span className="font-mono">{agent.agent_token_name}</span>
             </span>
           </span>
         }
@@ -346,26 +348,16 @@ function OverviewTab({
   onToggleEnabled: (next: boolean) => void;
   onDelete: () => void;
 }) {
-  const triggerKeys = enabledTriggerKeys(agent.triggers);
+  const pluginKeys = enabledPluginKeys(agent.plugins);
   return (
     <div className="space-y-6">
       {/* Summary */}
       <Card padding="md">
         <SectionHeader title="Details" className="mb-4" />
         <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-          <Detail
-            label="Repos"
-            value={
-              agent.repos.length > 0 ? (
-                <span className="font-mono">{agent.repos.join(", ")}</span>
-              ) : (
-                <span className="text-zinc-500">No repos</span>
-              )
-            }
-          />
           <Detail label="Engine" value={<span className="font-mono">{agent.engine}</span>} />
           <Detail
-            label="Token"
+            label="Acts as (token)"
             value={
               <span className="inline-flex items-center gap-1.5 font-mono">
                 <TokenIcon className="h-3.5 w-3.5 text-zinc-600" />
@@ -389,17 +381,38 @@ function OverviewTab({
             value={<span suppressHydrationWarning>{relativeTime(agent.updated_at)}</span>}
           />
         </dl>
+        <p className="mt-4 text-xs text-zinc-600">
+          The linked token provides this agent&apos;s capabilities (not its repos). Repos live under
+          the GitHub plugin below. Manage the token on Credentials.
+        </p>
       </Card>
 
-      {/* Triggers */}
+      {/* Plugins (with settings) */}
       <Card padding="md">
-        <SectionHeader title="Active triggers" className="mb-3" />
-        {triggerKeys.length === 0 ? (
-          <p className="text-sm text-zinc-500">No triggers enabled.</p>
+        <SectionHeader title="Plugins" className="mb-3" />
+        {pluginKeys.length === 0 ? (
+          <p className="text-sm text-zinc-500">No plugins enabled.</p>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            {triggerKeys.map((k) => (
-              <StatusBadge key={k} tone="honey" label={TRIGGER_LABELS[k]} />
+          <div className="space-y-3">
+            {pluginKeys.map((k) => (
+              <div
+                key={k}
+                className="space-y-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4"
+              >
+                <StatusBadge tone="honey" label={PLUGIN_LABELS[k]} />
+                {k === "github" && agent.plugins.github && (
+                  <GithubPluginDetail g={agent.plugins.github} />
+                )}
+                {k === "schedule" && agent.plugins.schedule && (
+                  <SchedulePluginDetail s={agent.plugins.schedule} />
+                )}
+                {k === "tasks" && (
+                  <p className="text-xs text-zinc-500">Claims tasks from the dashboard queue.</p>
+                )}
+                {k === "war_rooms" && agent.plugins.war_rooms && (
+                  <WarRoomsPluginDetail w={agent.plugins.war_rooms} />
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -478,5 +491,68 @@ function Detail({ label, value }: { label: string; value: React.ReactNode }) {
       <dt className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</dt>
       <dd className="mt-1 text-zinc-300">{value}</dd>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plugin detail blocks (read-only config view in the Overview tab)
+// ---------------------------------------------------------------------------
+
+function fmtSecs(secs: number): string {
+  if (secs >= 86400 && secs % 86400 === 0) return `${secs / 86400}d`;
+  if (secs >= 3600 && secs % 3600 === 0) return `${secs / 3600}h`;
+  if (secs >= 60 && secs % 60 === 0) return `${secs / 60}m`;
+  return `${secs}s`;
+}
+
+function PluginDetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <dt className="text-xs font-medium text-zinc-500">{label}</dt>
+      <dd className="font-mono text-xs text-zinc-300">{value}</dd>
+    </div>
+  );
+}
+
+function GithubPluginDetail({ g }: { g: GithubPlugin }) {
+  const watches = [
+    g.watch_new_prs && "new PRs",
+    g.watch_review_requests && "review requests",
+    g.watch_mentions && "mentions",
+  ].filter(Boolean) as string[];
+  return (
+    <dl className="space-y-1.5">
+      <PluginDetailRow label="Repos" value={g.repos.length > 0 ? g.repos.join(", ") : "—"} />
+      <PluginDetailRow label="Watches" value={watches.length > 0 ? watches.join(", ") : "—"} />
+      {g.watch_new_prs && (g.watch_new_prs_authors?.length ?? 0) > 0 && (
+        <PluginDetailRow label="PR authors" value={(g.watch_new_prs_authors ?? []).join(", ")} />
+      )}
+      <PluginDetailRow label="Poll" value={fmtSecs(g.poll_interval_secs)} />
+    </dl>
+  );
+}
+
+function SchedulePluginDetail({ s }: { s: SchedulePlugin }) {
+  return (
+    <dl className="space-y-1.5">
+      <PluginDetailRow label="Every" value={fmtSecs(s.interval_secs)} />
+      <PluginDetailRow label="Jitter" value={fmtSecs(s.jitter_secs)} />
+      {s.prompt && (
+        <div className="mt-2">
+          <p className="text-xs font-medium text-zinc-500">Prompt</p>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-lg border border-white/[0.04] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+            {s.prompt}
+          </pre>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+function WarRoomsPluginDetail({ w }: { w: WarRoomsPlugin }) {
+  return (
+    <dl className="space-y-1.5">
+      <PluginDetailRow label="Mode" value={w.contribute ? "contribute" : "observe only"} />
+    </dl>
   );
 }

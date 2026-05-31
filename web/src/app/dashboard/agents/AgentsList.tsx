@@ -15,26 +15,25 @@ import type { AgentListEntry, ObservedAgent } from "./types";
 import {
   BotIcon,
   EngineIcon,
-  enabledTriggerKeys,
+  enabledPluginKeys,
   healthLabel,
   healthTone,
+  PLUGIN_LABELS,
   PlusIcon,
   relativeTime,
-  RepoIcon,
   TokenIcon,
-  TRIGGER_CHIP_LABELS,
 } from "./shared";
 
 const REFRESH_INTERVAL_MS = 30_000; // 30 seconds — mirrors AgentHealthDashboard
 
 // ---------------------------------------------------------------------------
-// Trigger chips
+// Plugin chips
 // ---------------------------------------------------------------------------
 
-function TriggerChips({ agent }: { agent: AgentListEntry }) {
-  const keys = enabledTriggerKeys(agent.triggers);
+function PluginChips({ agent }: { agent: AgentListEntry }) {
+  const keys = enabledPluginKeys(agent.plugins);
   if (keys.length === 0) {
-    return <span className="text-[11px] text-zinc-600">No triggers enabled</span>;
+    return <span className="text-[11px] text-zinc-600">No plugins enabled</span>;
   }
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -43,7 +42,7 @@ function TriggerChips({ agent }: { agent: AgentListEntry }) {
           key={k}
           className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[10px] font-medium text-zinc-400"
         >
-          {TRIGGER_CHIP_LABELS[k]}
+          {PLUGIN_LABELS[k]}
         </span>
       ))}
     </div>
@@ -81,12 +80,6 @@ function AgentCard({ agent }: { agent: AgentListEntry }) {
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <RepoIcon className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
-          <span className="truncate">
-            {agent.repos.length > 0 ? agent.repos.join(", ") : "No repos"}
-          </span>
-        </span>
         <span className="inline-flex items-center gap-1.5">
           <EngineIcon className="h-3.5 w-3.5 text-zinc-600" />
           <span className="font-mono">{agent.engine}</span>
@@ -98,7 +91,7 @@ function AgentCard({ agent }: { agent: AgentListEntry }) {
       </div>
 
       <div className="mt-3">
-        <TriggerChips agent={agent} />
+        <PluginChips agent={agent} />
       </div>
 
       <div className="mt-auto pt-3 text-xs text-zinc-600" suppressHydrationWarning>
@@ -113,8 +106,8 @@ function AgentCard({ agent }: { agent: AgentListEntry }) {
 // ---------------------------------------------------------------------------
 
 function ObservedRow({ entry }: { entry: ObservedAgent }) {
-  // The repo now comes from the token the operator links, not the observed
-  // report — so the adopt deep-link only prefills the name.
+  // Health is per-agent now (no repo) — the adopt deep-link only prefills the
+  // name; repos come from the github plugin the operator configures.
   const adoptHref = `/dashboard/agents/new?name=${encodeURIComponent(entry.agent_id)}`;
   return (
     <li className="flex items-center justify-between gap-4 p-4">
@@ -125,10 +118,6 @@ function ObservedRow({ entry }: { entry: ObservedAgent }) {
           </span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
-          <span className="inline-flex items-center gap-1.5">
-            <RepoIcon className="h-3.5 w-3.5 text-zinc-600" />
-            <span className="truncate">{entry.repo}</span>
-          </span>
           <span suppressHydrationWarning>Last seen {relativeTime(entry.received_at)}</span>
         </div>
       </div>
@@ -224,7 +213,7 @@ export function AgentsList() {
           />
           <ul className="divide-y divide-white/[0.04] overflow-hidden rounded-2xl border border-white/[0.06] bg-[#141414]">
             {observed.map((entry) => (
-              <ObservedRow key={`${entry.agent_id}:${entry.repo}`} entry={entry} />
+              <ObservedRow key={entry.agent_id} entry={entry} />
             ))}
           </ul>
         </section>
