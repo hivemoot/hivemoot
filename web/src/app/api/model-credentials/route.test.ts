@@ -245,8 +245,8 @@ describe("GET /api/model-credentials", () => {
 
   it("does NOT require a fresh session (read)", async () => {
     await GET(makeRequest(undefined));
-    expect(mockAuth).toHaveBeenCalledWith(expect.anything());
-    expect(mockAuth.mock.calls[0][1]).toBeUndefined();
+    // Read posture is EXPLICIT { requireFresh: false }, not argument omission.
+    expect(mockAuth.mock.calls[0][1]).toEqual({ requireFresh: false });
   });
 
   it("returns summaries, none containing ciphertext", async () => {
