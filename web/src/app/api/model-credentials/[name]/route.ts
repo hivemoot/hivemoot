@@ -17,7 +17,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> },
 ) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: false });
   if (!auth.ok) return auth.response;
 
   const installationCheck = requireInstallation(auth.session);

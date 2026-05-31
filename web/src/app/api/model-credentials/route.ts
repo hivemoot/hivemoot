@@ -160,7 +160,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const auth = await authenticateByokRequest(request);
+  const auth = await authenticateByokRequest(request, { requireFresh: false });
   if (!auth.ok) return auth.response;
 
   const installationCheck = requireInstallation(auth.session);

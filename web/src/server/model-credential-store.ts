@@ -584,6 +584,10 @@ export async function getModelCredential(args: {
   name: string;
   redis: Redis;
 }): Promise<ModelCredentialEnvelopeV1> {
+  // Validate the name before it becomes a Redis key segment — defense in depth,
+  // matching every mutation path. A malformed name can't forge a key shape; it
+  // surfaces as the same NotFound a missing name would (no existence oracle).
+  validateName(args.name);
   const raw = await args.redis.get<ModelCredentialEnvelopeV1>(
     envelopeKey(args.installationId, args.name),
   );
