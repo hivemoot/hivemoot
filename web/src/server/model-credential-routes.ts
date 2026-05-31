@@ -18,6 +18,7 @@ import {
   LimitReachedError,
   InvalidKindError,
   InvalidProviderError,
+  RevokedCredentialError,
 } from "@/server/model-credential-store";
 
 /**
@@ -128,6 +129,16 @@ export function mapModelCredentialError(
   }
   if (err instanceof LimitReachedError) {
     return mcError(MODEL_CREDENTIAL_ERROR.LIMIT_REACHED, err.message, 422);
+  }
+  if (err instanceof RevokedCredentialError) {
+    // Revoke is terminal — a rotate/mutation on a revoked credential is a
+    // conflict with its current state, not a not-found.
+    return mcError(
+      MODEL_CREDENTIAL_ERROR.REVOKED,
+      err.message,
+      409,
+      context.name ? { name: context.name } : undefined,
+    );
   }
   if (err instanceof InvalidKindError) {
     return mcError(MODEL_CREDENTIAL_ERROR.INVALID_KIND, err.message, 400);

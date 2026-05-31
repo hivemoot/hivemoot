@@ -46,7 +46,10 @@ import { createHash } from "crypto";
 import { type Redis } from "@upstash/redis";
 import { encrypt, decrypt, type EncryptedEnvelope } from "@/server/crypto";
 import { withRedisLock } from "@hivemoot/war-room/redis-lock";
-import { validateName } from "@/server/agent-token-capabilities";
+import {
+  validateName,
+  CapabilityValidationError,
+} from "@/server/agent-token-capabilities";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,6 +87,33 @@ export function auditStreamKey(installationId: string): string {
 
 export function lockKey(installationId: string, name: string): string {
   return `${LOCK_PREFIX}${installationId}:${name}`;
+}
+
+/**
+ * Names that would collide with a non-envelope Redis key in this namespace.
+ * NAME_REGEX permits these, but `auditStreamKey(id)` is `…:{id}:audit` and
+ * `envelopeKey(id, "audit")` is byte-identical — so a credential literally named
+ * `audit` would alias the installation's audit STREAM with a STRING, a WRONGTYPE
+ * collision that corrupts the whole installation's audit trail. Reject the
+ * reserved suffix(es) on every path (create AND every by-name read/mutation) so
+ * such a name can never be addressed. Keep in sync with the key constructors above.
+ */
+const RESERVED_CREDENTIAL_NAMES: ReadonlySet<string> = new Set(["audit"]);
+
+/**
+ * Validate a credential name at every boundary: NAME_REGEX (shared with
+ * agent-tokens) PLUS a reserved-suffix guard. Throws `CapabilityValidationError`
+ * so the route layer maps it to `invalid_name` uniformly.
+ */
+function assertValidCredentialName(name: string): void {
+  validateName(name);
+  if (RESERVED_CREDENTIAL_NAMES.has(name)) {
+    throw new CapabilityValidationError(
+      "name",
+      name,
+      `'${name}' is reserved (it collides with an internal key) — choose another name`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +293,21 @@ export class InvalidKindError extends Error {
     );
     this.name = "InvalidKindError";
     this.value = value;
+  }
+}
+
+/**
+ * Thrown when a mutation targets a revoked credential. Revoke is terminal:
+ * a revoked credential cannot be rotated or otherwise resurrected (design §6
+ * "mutating an already-revoked envelope fails closed", matching the agent-token
+ * sibling's TokenExpiredForMutation). Route maps it to `revoked` / HTTP 409.
+ */
+export class RevokedCredentialError extends Error {
+  constructor(installationId: string, name: string) {
+    super(
+      `Model credential '${name}' for installation ${installationId} is revoked and cannot be mutated`,
+    );
+    this.name = "RevokedCredentialError";
   }
 }
 
@@ -477,7 +522,7 @@ export async function createModelCredential(args: {
   limit?: number;
   auditContext?: ModelCredentialAuditContext;
 }): Promise<ModelCredentialSummaryV1> {
-  validateName(args.name);
+  assertValidCredentialName(args.name);
   assertKind(args.kind);
   assertProvider(args.provider);
 
@@ -587,7 +632,7 @@ export async function getModelCredential(args: {
   // Validate the name before it becomes a Redis key segment — defense in depth,
   // matching every mutation path. A malformed name can't forge a key shape; it
   // surfaces as the same NotFound a missing name would (no existence oracle).
-  validateName(args.name);
+  assertValidCredentialName(args.name);
   const raw = await args.redis.get<ModelCredentialEnvelopeV1>(
     envelopeKey(args.installationId, args.name),
   );
@@ -692,7 +737,7 @@ export async function rotateModelCredential(args: {
   redis: Redis;
   auditContext?: ModelCredentialAuditContext;
 }): Promise<ModelCredentialSummaryV1> {
-  validateName(args.name);
+  assertValidCredentialName(args.name);
 
   return await withRedisLock(
     lockKey(args.installationId, args.name),
@@ -703,6 +748,12 @@ export async function rotateModelCredential(args: {
       );
       if (!existing) {
         throw new ModelCredentialNotFoundError(args.installationId, args.name);
+      }
+      // Revoke is terminal — fail closed on a revoked credential (design §6,
+      // matching the agent-token sibling). To put a credential back in service
+      // the operator creates a new one; rotate never resurrects a revoked record.
+      if (existing.status === "revoked") {
+        throw new RevokedCredentialError(args.installationId, args.name);
       }
 
       const payload: ModelCredentialSecretPayload = {
@@ -722,8 +773,8 @@ export async function rotateModelCredential(args: {
         iv: encrypted.iv,
         tag: encrypted.tag,
         keyVersion: encrypted.keyVersion,
-        // Rotating a revoked credential reactivates it with a fresh value —
-        // the new value is live, so the status must reflect that.
+        // Status stays "active" (guaranteed above: a revoked record can't reach
+        // here). Rotate replaces the secret of a live credential.
         status: "active",
         fingerprint: fingerprintSecret(args.value),
         rotatedAt: new Date().toISOString(),
@@ -773,7 +824,7 @@ export async function revokeModelCredential(args: {
   redis: Redis;
   auditContext?: ModelCredentialAuditContext;
 }): Promise<ModelCredentialSummaryV1> {
-  validateName(args.name);
+  assertValidCredentialName(args.name);
 
   return await withRedisLock(
     lockKey(args.installationId, args.name),
@@ -835,7 +886,7 @@ export async function reEncryptModelCredential(args: {
   redis: Redis;
   auditContext?: ModelCredentialAuditContext;
 }): Promise<{ action: "re_encrypted" | "skipped"; reason?: string }> {
-  validateName(args.name);
+  assertValidCredentialName(args.name);
 
   return await withRedisLock(
     lockKey(args.installationId, args.name),

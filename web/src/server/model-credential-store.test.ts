@@ -31,6 +31,7 @@ import {
   LimitReachedError,
   InvalidKindError,
   InvalidProviderError,
+  RevokedCredentialError,
   MAX_MODEL_CREDENTIALS_PER_INSTALLATION,
   envelopeKey,
   installationIndexKey,
@@ -302,6 +303,15 @@ describe("createModelCredential", () => {
     await expect(
       createModelCredential({ ...defaultCreateArgs(redis), name: "Team" }),
     ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("rejects the reserved name 'audit' (would alias the audit-stream key) without touching Redis", async () => {
+    await expect(
+      createModelCredential({ ...defaultCreateArgs(redis), name: "audit" }),
+    ).rejects.toThrow(CapabilityValidationError);
+    // The audit-stream key must be untouched — no string written over the stream.
+    expect(redis._store.has(envelopeKey("12345", "audit"))).toBe(false);
+    expect(redis._streams.has(auditStreamKey("12345"))).toBe(false);
   });
 
   it("rejects invalid kind", async () => {
@@ -893,5 +903,205 @@ describe("Upstash-Lua compatibility (no sandbox-missing libs)", () => {
         expect(p.test(script)).toBe(false);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rotate-on-revoked: terminal revoke (fail closed)
+// ---------------------------------------------------------------------------
+
+describe("rotate fails closed on a revoked credential", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it("rotating a revoked credential throws RevokedCredentialError and leaves it revoked", async () => {
+    await createModelCredential(defaultCreateArgs(redis));
+    await revokeModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      revokedBy: "operator",
+      redis,
+    });
+
+    await expect(
+      rotateModelCredential({
+        installationId: "12345",
+        name: "team-claude",
+        value: "sk-ant-secret-value-002",
+        rotatedBy: "operator",
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      }),
+    ).rejects.toThrow(RevokedCredentialError);
+
+    // Still revoked, ciphertext still blanked — rotate did NOT resurrect it.
+    const env = redis._store.get(
+      envelopeKey("12345", "team-claude"),
+    ) as ModelCredentialEnvelopeV1;
+    expect(env.status).toBe("revoked");
+    expect(env.ciphertext).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// name validation is enforced on every by-name read/mutation path
+// ---------------------------------------------------------------------------
+
+describe("validateName is enforced on read + mutation paths (not just create)", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  const BAD = "Bad-NAME"; // uppercase → fails NAME_REGEX
+
+  it("getModelCredentialSummary rejects a malformed name", async () => {
+    await expect(
+      getModelCredentialSummary({ installationId: "12345", name: BAD, redis }),
+    ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("getModelCredential rejects a malformed name", async () => {
+    await expect(
+      getModelCredential({ installationId: "12345", name: BAD, redis }),
+    ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("rotateModelCredential rejects a malformed name", async () => {
+    await expect(
+      rotateModelCredential({
+        installationId: "12345",
+        name: BAD,
+        value: "x",
+        rotatedBy: "operator",
+        keyring: KEYRING,
+        keyVersion: "v1",
+        redis,
+      }),
+    ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("revokeModelCredential rejects a malformed name", async () => {
+    await expect(
+      revokeModelCredential({
+        installationId: "12345",
+        name: BAD,
+        revokedBy: "operator",
+        redis,
+      }),
+    ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("reEncryptModelCredential rejects a malformed name", async () => {
+    await expect(
+      reEncryptModelCredential({
+        installationId: "12345",
+        name: BAD,
+        activeKeyVersion: "v2",
+        keyring: KEYRING_V2,
+        redis,
+      }),
+    ).rejects.toThrow(CapabilityValidationError);
+  });
+
+  it("all four reserve the name 'audit' too", async () => {
+    for (const fn of [
+      () =>
+        getModelCredentialSummary({
+          installationId: "12345",
+          name: "audit",
+          redis,
+        }),
+      () =>
+        revokeModelCredential({
+          installationId: "12345",
+          name: "audit",
+          revokedBy: "operator",
+          redis,
+        }),
+    ]) {
+      await expect(fn()).rejects.toThrow(CapabilityValidationError);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// audit trail: every mutation emits an XADD with the documented wire shape
+// ---------------------------------------------------------------------------
+
+describe("audit stream emission", () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  function lastAuditEntry(installationId: string) {
+    const entries = redis._streams.get(auditStreamKey(installationId)) ?? [];
+    expect(entries.length).toBeGreaterThan(0);
+    return JSON.parse(entries[entries.length - 1].fields.entry) as {
+      action: string;
+      name: string;
+      actor: string;
+      detail?: Record<string, unknown>;
+    };
+  }
+
+  it("create with an auditContext records a 'create' entry attributed to the operator", async () => {
+    await createModelCredential({
+      ...defaultCreateArgs(redis),
+      auditContext: { operator: "alice" },
+    });
+    const e = lastAuditEntry("12345");
+    expect(e.action).toBe("create");
+    expect(e.name).toBe("team-claude");
+    expect(e.actor).toBe("alice");
+  });
+
+  it("rotate records a 'rotate' entry with old + new fingerprints", async () => {
+    await createModelCredential({
+      ...defaultCreateArgs(redis),
+      auditContext: { operator: "alice" },
+    });
+    const before = await getModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      redis,
+    });
+    await rotateModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      value: "sk-ant-secret-value-002",
+      rotatedBy: "bob",
+      keyring: KEYRING,
+      keyVersion: "v1",
+      redis,
+      auditContext: { operator: "bob" },
+    });
+    const e = lastAuditEntry("12345");
+    expect(e.action).toBe("rotate");
+    expect(e.actor).toBe("bob");
+    expect(e.detail?.fingerprint_old).toBe(before.fingerprint);
+    expect(e.detail?.fingerprint_new).toBeDefined();
+    expect(e.detail?.fingerprint_new).not.toBe(before.fingerprint);
+  });
+
+  it("revoke records a 'revoke' entry", async () => {
+    await createModelCredential({
+      ...defaultCreateArgs(redis),
+      auditContext: { operator: "alice" },
+    });
+    await revokeModelCredential({
+      installationId: "12345",
+      name: "team-claude",
+      revokedBy: "carol",
+      redis,
+      auditContext: { operator: "carol" },
+    });
+    const e = lastAuditEntry("12345");
+    expect(e.action).toBe("revoke");
+    expect(e.actor).toBe("carol");
   });
 });

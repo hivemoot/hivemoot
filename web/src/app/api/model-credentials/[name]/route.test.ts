@@ -46,6 +46,7 @@ import {
   revokeModelCredential,
   reEncryptModelCredential,
   ModelCredentialNotFoundError,
+  RevokedCredentialError,
 } from "@/server/model-credential-store";
 
 import { GET } from "./route";
@@ -226,6 +227,19 @@ describe("POST /api/model-credentials/[name]/rotate", () => {
     );
     expect(res.status).toBe(404);
     expect(mockRotate).not.toHaveBeenCalled();
+  });
+
+  it("409 'revoked' when rotating a revoked credential (terminal revoke)", async () => {
+    mockRotate.mockRejectedValue(
+      new RevokedCredentialError("12345", "team-claude"),
+    );
+    const res = await ROTATE(
+      makeRequest({ value: "sk-ant-new" }),
+      params("team-claude"),
+    );
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.code).toBe("revoked");
   });
 });
 
