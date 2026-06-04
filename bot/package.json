@@ -33,7 +33,7 @@
     "minimatch": "10.2.5",
     "octokit": "^5.0.5",
     "probot": "^13.0.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
