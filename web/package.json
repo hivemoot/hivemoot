@@ -19,7 +19,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
