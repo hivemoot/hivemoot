@@ -15,7 +15,7 @@
     "@hivemoot/war-room": "file:../shared/war-room",
     "@lottiefiles/dotlottie-react": "^0.18.1",
     "@upstash/redis": "^1.37.0",
-    "next": "^16.2.4",
+    "next": "^16.2.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
