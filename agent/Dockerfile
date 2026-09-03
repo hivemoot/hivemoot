@@ -4,7 +4,7 @@
 ARG PROVIDER=all
 ARG GH_VERSION=2.92.0
 
-FROM golang:1.26.3-bookworm AS gh-builder
+FROM golang:1.27.1-bookworm AS gh-builder
 
 ARG GH_VERSION
 RUN GOBIN=/tmp/gh-bin go install github.com/cli/cli/v2/cmd/gh@v${GH_VERSION}
